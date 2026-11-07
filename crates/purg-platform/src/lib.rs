@@ -11,6 +11,7 @@ extern crate std;
 pub mod sync;
 
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::string::String;
 
 /// Platform errors carry Inferno-style error strings.
@@ -26,10 +27,8 @@ pub trait Console: Send + Sync {
     fn write(&self, buf: &[u8]) -> Result<usize>;
 }
 
-/// Services the portable core needs from its environment.
-///
-/// Later milestones add `spawn_kproc` and the `Rendez` sleep/wakeup
-/// primitive here; M1 runs one prog on the calling thread.
+/// Services the portable core needs from its environment. Sleep and wakeup
+/// go through [`sync::Rendez`].
 pub trait Platform: Send + Sync {
     /// Wall-clock time in nanoseconds since the Unix epoch.
     fn now_ns(&self) -> u64;
@@ -46,4 +45,8 @@ pub trait Platform: Send + Sync {
     /// Hosted keeps this thread-local.
     fn current_pid(&self) -> u32;
     fn set_current_pid(&self, pid: u32);
+    /// Starts a kernel process (Inferno's `kproc`) running `f`: an OS thread
+    /// on hosted, a kernel thread on bare metal. Fails with `"no free
+    /// procs"` when none can be created.
+    fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()>;
 }

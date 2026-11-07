@@ -15,5 +15,8 @@ purg-abi.workspace = true
 purg-styx.workspace = true
 purg-platform.workspace = true
 
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
+
 [lints]
 workspace = true

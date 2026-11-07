@@ -21,7 +21,7 @@ jobs:
       - name: clippy (guests, wasm32-wasip1)
         run: >
           cargo clippy --target wasm32-wasip1
-          -p purgatorio -p appl-cmd-echo -p appl-cmd-cat -p appl-cmd-emuinit -p appl-test-abi
+          -p purgatorio -p appl-cmd-echo -p appl-cmd-cat -p appl-cmd-emuinit -p appl-test-abi -p appl-test-procs
           -- -D warnings
       - name: root/ is free of case collisions
         run: |
@@ -115,6 +115,19 @@ jobs:
           cargo clippy -p purg-probe --target aarch64-unknown-none --profile probe -- -D warnings
       - name: xtask probe
         run: cargo xtask probe
+
+  loom:
+    name: loom models (Rendez, qio)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: loom
+        env:
+          RUSTFLAGS: --cfg loom -D warnings
+          CARGO_TARGET_DIR: target/loom
+        run: cargo test -p purg-core --features std --test loom --release
 
   no-std:
     name: shared crates on aarch64-unknown-none (${{ matrix.os }})

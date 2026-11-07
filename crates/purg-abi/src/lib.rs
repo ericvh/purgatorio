@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.1";
+pub const ABI_VERSION: &str = "0.2";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -45,10 +45,50 @@ pub mod sys {
     pub const FSTAT: &str = "fstat";
     /// `dirread(fd, buf, blen) -> n` (concatenated 9P stat entries)
     pub const DIRREAD: &str = "dirread";
-    /// `exec(path, plen, argv, alen) -> !`: replace the running module in
-    /// the same prog. `argv` is NUL-terminated strings back to back. This is
-    /// the M1 shortcut used by `emuinit` until `spawn_prog` exists.
-    pub const EXEC: &str = "exec";
+    /// `open(path, plen, mode) -> fd` with Inferno mode bits
+    pub const OPEN: &str = "open";
+    /// `create(path, plen, mode, perm) -> fd`
+    pub const CREATE: &str = "create";
+    /// `wstat(path, plen, dir, dlen) -> 0`; null fields mean "don't change"
+    pub const WSTAT: &str = "wstat";
+    /// `fwstat(fd, dir, dlen) -> 0`
+    pub const FWSTAT: &str = "fwstat";
+    /// `remove(path, plen) -> 0`
+    pub const REMOVE: &str = "remove";
+    /// `fd2path(fd, buf, blen) -> n`
+    pub const FD2PATH: &str = "fd2path";
+    /// `chdir(path, plen) -> 0`; moves the live `.` preopen
+    pub const CHDIR: &str = "chdir";
+    /// `dup(old, new) -> fd`; `new = -1` picks the lowest free fd
+    pub const DUP: &str = "dup";
+    /// `pipe(fds) -> 0`; writes two `i32` fds
+    pub const PIPE: &str = "pipe";
+    /// `iounit(fd) -> n`
+    pub const IOUNIT: &str = "iounit";
+    /// `bind(name, nlen, old, olen, flags) -> 0`
+    pub const BIND: &str = "bind";
+    /// `unmount(name, nlen, old, olen) -> 0`; `nlen = 0` unmounts everything
+    /// on `old`
+    pub const UNMOUNT: &str = "unmount";
+    /// `pctl(flags, movefd, n) -> pid`; `movefd` holds `n` `i32` fds kept by
+    /// `NEWFD`
+    pub const PCTL: &str = "pctl";
+    /// `spawn_prog(path, plen, argv, alen, flags, fdmap, n) -> pid`. `argv` is
+    /// NUL-terminated strings back to back; `fdmap` holds `n` pairs of `i32`
+    /// `(parent fd, child fd)` installed in the child after `flags` apply.
+    pub const SPAWN_PROG: &str = "spawn_prog";
+}
+
+/// `pctl` and `spawn_prog` flags (`Sys->NEWFD` ...).
+pub mod pctl {
+    pub const NEWFD: u32 = 1 << 0;
+    pub const FORKFD: u32 = 1 << 1;
+    pub const NEWNS: u32 = 1 << 2;
+    pub const FORKNS: u32 = 1 << 3;
+    pub const NEWPGRP: u32 = 1 << 4;
+    pub const NODEVS: u32 = 1 << 5;
+    pub const NEWENV: u32 = 1 << 6;
+    pub const FORKENV: u32 = 1 << 7;
 }
 
 /// WASI preview1 names, constants and errnos.
@@ -67,6 +107,20 @@ pub mod wasi {
     pub const OFLAGS_DIRECTORY: u16 = 2;
     pub const OFLAGS_EXCL: u16 = 4;
     pub const OFLAGS_TRUNC: u16 = 8;
+
+    pub const FDFLAGS_APPEND: u16 = 1;
+
+    pub const LOOKUPFLAGS_SYMLINK_FOLLOW: u32 = 1;
+
+    pub const FSTFLAGS_ATIM: u16 = 1;
+    pub const FSTFLAGS_ATIM_NOW: u16 = 2;
+    pub const FSTFLAGS_MTIM: u16 = 4;
+    pub const FSTFLAGS_MTIM_NOW: u16 = 8;
+
+    pub const EVENTTYPE_CLOCK: u8 = 0;
+    pub const EVENTTYPE_FD_READ: u8 = 1;
+    pub const EVENTTYPE_FD_WRITE: u8 = 2;
+    pub const SUBCLOCKFLAGS_ABSTIME: u16 = 1;
 
     pub const RIGHTS_FD_READ: u64 = 1 << 1;
     pub const RIGHTS_FD_WRITE: u64 = 1 << 6;
@@ -92,9 +146,11 @@ pub mod wasi {
         pub const NOSPC: i32 = 51;
         pub const NOSYS: i32 = 52;
         pub const NOTDIR: i32 = 54;
+        pub const NOTEMPTY: i32 = 55;
         pub const NOTSUP: i32 = 58;
         pub const PIPE: i32 = 64;
         pub const SPIPE: i32 = 70;
+        pub const XDEV: i32 = 75;
     }
 }
 
@@ -142,6 +198,14 @@ pub mod error {
     pub const ENOTIMPL: &str = "not implemented";
     pub const EBADEXEC: &str = "bad executable";
     pub const ENOTSEEK: &str = "seek on a stream";
+    pub const ENOTEMPTY: &str = "directory not empty";
+    pub const ENOCREATE: &str = "mounted directory forbids creation";
+    pub const ENOATTACH: &str = "mount/attach disallowed";
+    pub const EUNMOUNT: &str = "not mounted";
+    pub const EISMOUNT: &str = "inconsistent mount";
+    pub const ENOPROC: &str = "no free procs";
+    pub const EINUSE: &str = "device or object already in use";
+    pub const EXDEV: &str = "rename across directories";
 }
 
 /// Maps an Inferno error string to the closest WASI errno. Strings without a
@@ -163,6 +227,8 @@ pub fn errno_for(err: &str) -> i32 {
         ENOSPACE => errno::NOSPC,
         ENOTIMPL => errno::NOTSUP,
         ENOTSEEK => errno::SPIPE,
+        ENOTEMPTY => errno::NOTEMPTY,
+        EXDEV => errno::XDEV,
         _ => errno::IO,
     }
 }

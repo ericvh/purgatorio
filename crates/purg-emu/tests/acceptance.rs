@@ -1,4 +1,4 @@
-//! M1 acceptance tests: run `emu` on the repository's `root/` on both WASM
+//! Acceptance tests: run `emu` on the repository's `root/` on both WASM
 //! backends. Requires `cargo xtask build-root` first.
 
 use std::io::Write;
@@ -117,18 +117,31 @@ fn names_are_case_exact() {
 }
 
 #[test]
-fn emuinit_execs_command() {
+fn emuinit_spawns_command() {
     for vm in VMS {
         let o = emu(vm, &["emuinit", "echo", "via", "emuinit"], b"");
         assert_eq!(stdout(&o), "via emuinit\n", "{vm}");
         assert!(o.status.success(), "{vm}");
+        let failing = emu(vm, &["emuinit", "cat", "/nonexistent"], b"");
+        assert!(!failing.status.success(), "{vm}");
         let missing = emu(vm, &["emuinit", "nosuch"], b"");
         assert!(!missing.status.success(), "{vm}");
-        let err = String::from_utf8_lossy(&missing.stderr);
-        assert!(
-            err.contains("/bin/nosuch.wasm: file does not exist"),
-            "{vm}: {err}"
+        assert_eq!(
+            stdout(&missing),
+            "emuinit: /bin/nosuch.wasm: file does not exist\n",
+            "{vm}"
         );
+    }
+}
+
+#[test]
+fn procs_conformance() {
+    for vm in VMS {
+        let o = emu(vm, &["/bin/test/procs.wasm"], b"");
+        let out = stdout(&o);
+        assert!(o.status.success(), "{vm}:\n{out}");
+        assert!(!out.contains("FAIL"), "{vm}:\n{out}");
+        assert!(out.contains("ok bind_and_unmount"), "{vm}:\n{out}");
     }
 }
 
@@ -145,6 +158,10 @@ fn boots_emuinit_without_command() {
 fn devices_are_listed() {
     for vm in VMS {
         let o = emu(vm, &["cat", "/dev/drivers"], b"");
-        assert_eq!(stdout(&o), "#/ root\n#c cons\n#U fs\n", "{vm}");
+        assert_eq!(
+            stdout(&o),
+            "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#U fs\n",
+            "{vm}"
+        );
     }
 }

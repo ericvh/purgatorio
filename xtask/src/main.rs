@@ -127,6 +127,8 @@ fn build_root() -> Result<()> {
         cmd.args(["-p", &g.package]);
     }
     run(&mut cmd)?;
+    let tmp = ws.join("root/tmp");
+    fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
     let out_dir = ws.join("target").join(GUEST_TARGET).join(GUEST_PROFILE);
     for g in &guests {
         let src = out_dir.join(format!("{}.wasm", g.bin));

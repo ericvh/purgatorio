@@ -1,9 +1,11 @@
 //! [`Platform`] for the probe: PL011 console, PL031 wall clock, generic
 //! timer. One core, one prog at a time.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use purg_abi::error;
 use purg_platform::{Console, Platform, Result};
 
 use crate::hw;
@@ -90,5 +92,10 @@ impl Platform for Probe {
 
     fn set_current_pid(&self, pid: u32) {
         self.pid.store(pid, Ordering::Relaxed);
+    }
+
+    /// The probe runs one prog at a time, on the boot CPU.
+    fn spawn_kproc(&self, _name: &str, _f: Box<dyn FnOnce() + Send>) -> Result<()> {
+        Err(error::ENOPROC.into())
     }
 }

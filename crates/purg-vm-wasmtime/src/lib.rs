@@ -1,14 +1,23 @@
 //! wasmtime backend for [`purg_vm::Engine`]: Cranelift-compiled, the hosted
 //! default.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use purg_abi::error::EBADEXEC;
 use purg_core::Error;
 use purg_vm::{Ctx, Mem, Stop};
 use wasmtime::{AsContextMut, Caller, Config, Engine, Extern, Linker, Module, Store};
 
+/// Compiled modules kept for reuse; the cache is emptied when full.
+const CACHED_MODULES: usize = 64;
+
 pub struct Wasmtime {
     engine: Engine,
     linker: Linker<Ctx>,
+    /// Compiling is the slow part of starting a prog, so modules are cached
+    /// by their exact bytes.
+    modules: Mutex<HashMap<Box<[u8]>, Module>>,
 }
 
 impl Wasmtime {
@@ -16,7 +25,25 @@ impl Wasmtime {
         let engine = Engine::new(&Config::new()).map_err(|e| Error::from(e.to_string()))?;
         let mut linker = Linker::new(&engine);
         link(&mut linker).map_err(|e| Error::from(e.to_string()))?;
-        Ok(Wasmtime { engine, linker })
+        Ok(Wasmtime {
+            engine,
+            linker,
+            modules: Mutex::new(HashMap::new()),
+        })
+    }
+
+    fn module(&self, wasm: &[u8]) -> Result<Module, Error> {
+        let lock = || self.modules.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(m) = lock().get(wasm) {
+            return Ok(m.clone());
+        }
+        let module = Module::new(&self.engine, wasm).map_err(bad_exec)?;
+        let mut cache = lock();
+        if cache.len() >= CACHED_MODULES {
+            cache.clear();
+        }
+        cache.insert(wasm.into(), module.clone());
+        Ok(module)
     }
 }
 
@@ -50,7 +77,7 @@ fn bad_exec(e: impl std::fmt::Display) -> Error {
 
 impl Wasmtime {
     fn call(&self, store: &mut Store<Ctx>, wasm: &[u8]) -> Result<Stop, Error> {
-        let module = Module::new(&self.engine, wasm).map_err(bad_exec)?;
+        let module = self.module(wasm)?;
         let instance = self
             .linker
             .instantiate(&mut *store, &module)
