@@ -72,12 +72,13 @@ jobs:
       - name: record guest module hashes
         shell: bash
         run: |
-          cd root && find bin -name '*.wasm' | sort | xargs shasum -a 256 > "$RUNNER_TEMP/wasm-sha256.txt"
-          cat "$RUNNER_TEMP/wasm-sha256.txt"
+          mkdir -p "$RUNNER_TEMP/wasm" && cp -R root/bin "$RUNNER_TEMP/wasm/"
+          cd root && find bin -name '*.wasm' | sort | xargs shasum -a 256 > "$RUNNER_TEMP/wasm/wasm-sha256.txt"
+          cat "$RUNNER_TEMP/wasm/wasm-sha256.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: wasm-sha256-${{ matrix.os }}
-          path: ${{ runner.temp }}/wasm-sha256.txt
+          path: ${{ runner.temp }}/wasm
 
   reproducible:
     name: guest modules are byte-identical across hosts

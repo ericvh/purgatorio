@@ -57,7 +57,9 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = "debuginfo"
+# Symbol names carry Cargo metadata hashes, which depend on the build host;
+# stripping them keeps guest modules byte-identical across hosts.
+strip = "symbols"
 
 [profile.probe]
 inherits = "release"
