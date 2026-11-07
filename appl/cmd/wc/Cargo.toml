@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-wc"
+description = "wc: count lines, words and bytes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wc"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

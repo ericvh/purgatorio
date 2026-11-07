@@ -15,13 +15,18 @@
 //! }
 //! ```
 
+pub mod arg;
+pub mod bufio;
+pub mod daytime;
+pub mod env;
 pub mod sys;
+pub mod task;
 
 use std::fmt;
 use std::os::fd::{FromRawFd, OwnedFd};
 
 pub use purg_abi as abi;
-pub use purg_styx::{Dir, Qid};
+pub use purg_styx::{DMAPPEND, DMAUTH, DMDIR, DMEXCL, Dir, Qid};
 pub use purgatorio_macros::main;
 
 /// Length of [`ABI_BYTES`].

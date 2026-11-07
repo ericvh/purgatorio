@@ -158,12 +158,15 @@ fn chdir_relative(base: &str) -> Result<(), String> {
     let dot = purgatorio::dot().map_err(e)?;
     let via_sdk = purgatorio::open("rel", mode::OREAD).map_err(e)?;
     let named = purgatorio::fd2path(via_sdk.as_raw_fd()).map_err(e)?;
+    let absolute = std::fs::read_to_string(format!("{dir}/rel")).map_err(io)?;
     purgatorio::chdir(&back).map_err(e)?;
     let content = std::fs::read_to_string(format!("{dir}/rel")).map_err(io)?;
     std::fs::remove_file(format!("{dir}/rel")).map_err(io)?;
     std::fs::remove_dir(&dir).map_err(io)?;
-    if dot != dir || named != format!("{dir}/rel") || content != "relative" {
-        return Err(format!("dot {dot:?} fd2path {named:?} content {content:?}"));
+    if dot != dir || named != format!("{dir}/rel") || content != "relative" || absolute != content {
+        return Err(format!(
+            "dot {dot:?} fd2path {named:?} content {content:?} absolute {absolute:?}"
+        ));
     }
     Ok(())
 }

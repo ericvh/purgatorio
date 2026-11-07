@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ls"
+description = "ls: list files and directories"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ls"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

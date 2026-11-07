@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-sleep"
+description = "sleep: wait for a while"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sleep"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

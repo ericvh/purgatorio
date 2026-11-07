@@ -9,6 +9,8 @@
 //!   boot it in `qemu-system-aarch64` (or `$QEMU`) and check its serial
 //!   output and semihosting exit code.
 //! - `check-wasm <file.wasm>...`: check modules without building.
+//! - `clippy-guests`: run clippy on every guest crate and the SDK for
+//!   `wasm32-wasip1`, denying warnings.
 
 mod wasm;
 
@@ -146,6 +148,17 @@ fn build_root() -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn clippy_guests() -> Result<()> {
+    let ws = workspace();
+    let mut cmd = cargo();
+    cmd.current_dir(&ws)
+        .args(["clippy", "--target", GUEST_TARGET, "-p", "purgatorio"]);
+    for g in guests(&ws)? {
+        cmd.args(["-p", &g.package]);
+    }
+    run(cmd.args(["--", "-D", "warnings"]))
 }
 
 fn run_emu(args: &[String]) -> Result<ExitCode> {
@@ -322,8 +335,9 @@ fn main() -> ExitCode {
         }
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
         Some("probe") => probe().map(|()| ExitCode::SUCCESS),
+        Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe | check-wasm file.wasm...",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe | clippy-guests | check-wasm file.wasm...",
         )),
     };
     match res {

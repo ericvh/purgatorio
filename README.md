@@ -24,7 +24,9 @@ macOS arm64, and the shared kernel crates build for `aarch64-unknown-none`.
 `#U` is unioned after it and takes creates, `#c` is bound before `/dev`, `#e`
 on `/env` and `#p` on `/prog`. `emu` then runs a WASM command as the first
 prog, whose fds 0, 1 and 2 are `/dev/cons`; each prog it spawns runs on its
-own host thread.
+own host thread. With no command it runs `emuinit`, which starts `sh -l`:
+the shell runs `/lib/sh/profile`, then reads commands from the console with
+a `; ` prompt.
 
 | Piece | State |
 |---|---|
@@ -34,8 +36,10 @@ own host thread.
 | Progs: `spawn_prog`, `pctl` (`NEWFD FORKFD NEWNS FORKNS NEWPGRP NODEVS NEWENV FORKENV`), wait messages; `Rendez` and qio checked with loom | done |
 | WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
 | App ABI v0.2: WASI preview1 subset plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)) | done |
-| Apps: `echo`, `cat`, `emuinit`, ABI and procs tests | done |
-| `sh` subset and the W1 commands | next |
+| `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, builtins `cd exit run wait` | done |
+| W1 commands: `bind cat cp date echo emuinit env ls mkdir mv pwd rm sleep unmount wc` | done |
+| SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
+| `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
 | `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi | done |
 
@@ -53,11 +57,13 @@ crates/
   purg-emu/          std     the `emu` binary: #U, console, src/host/{unix,linux,macos}.rs
   purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, semihosting)
 sdk/
-  purgatorio/                guest SDK (errstr, Dir, open/create, bind, pctl, spawn, wait, ...)
+  purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
   purgatorio-macros/         #[purgatorio::main]
-appl/cmd/{echo,cat,emuinit}/ commands, built to root/bin/<name>.wasm
+appl/cmd/<name>/             commands (sh, ls, ...), built to root/bin/<name>.wasm
 appl/test/{abi,procs}/       conformance guests, built to root/bin/test/<name>.wasm
 root/                        the file tree emu serves as #U (build-root adds root/tmp)
+  lib/sh/profile             run by sh -l at boot
+  lib/test/sh/               sh scripts and their expected output
 xtask/                       build tasks
 ```
 
@@ -79,7 +85,8 @@ echo hi | cargo xtask run-emu -- cat         # hi
 cargo xtask run-emu -- --vm=wasmi cat /lib/probe/hello.txt
 cargo xtask run-emu -- /bin/test/abi.wasm    # ABI conformance checks
 cargo xtask run-emu -- /bin/test/procs.wasm  # spawn, pipes, env, files (writes in /tmp)
-cargo xtask run-emu                          # boots /bin/emuinit.wasm
+cargo xtask run-emu -- sh -c 'ls -l /bin | wc -l'
+cargo xtask run-emu                          # boots emuinit, then sh -l on the console
 ```
 
 You can also run the binary directly: `target/debug/emu [-r root] [--vm=wasmtime|wasmi] [cmd [args...]]`.

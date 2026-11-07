@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-sh"
+description = "sh: the command interpreter (Inferno sh subset)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sh"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
