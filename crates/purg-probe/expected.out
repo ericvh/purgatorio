@@ -19,4 +19,34 @@ ok fstat_stdout
 ok dirread_root
 ok werrstr_roundtrip
 probe: ok
+probe: run /bin/test/procs.wasm
+ok spawn_echo
+cat: /nonexistent: file does not exist
+ok child_failure_status
+ok spawn_missing
+ok env_inherited
+ok newfd_child
+ok std_sleep
+ok files
+ok chdir_relative
+ok bind_and_unmount
+probe: ok
+probe: sh /lib/test/sh/bind.sh
+probe: ok
+probe: sh /lib/test/sh/depth.sh
+probe: ok
+probe: sh /lib/test/sh/env.sh
+probe: ok
+probe: sh /lib/test/sh/files.sh
+probe: ok
+probe: sh /lib/test/sh/jobs.sh
+probe: ok
+probe: sh /lib/test/sh/pipes.sh
+probe: ok
+probe: sh /lib/test/sh/redir.sh
+probe: ok
+probe: sh /lib/test/sh/status.sh
+probe: ok
+probe: sh /lib/test/sh/words.sh
+probe: ok
 probe: pass
