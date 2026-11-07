@@ -112,7 +112,12 @@ fn build_root() -> Result<()> {
             "--profile",
             GUEST_PROFILE,
         ])
-        .env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags(&ws));
+        .env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags(&ws))
+        .env(WRAPPER_ENV, "1")
+        .env(
+            "RUSTC_WORKSPACE_WRAPPER",
+            env::current_exe().map_err(|e| format!("xtask path: {e}"))?,
+        );
     for g in &guests {
         cmd.args(["-p", &g.package]);
     }
@@ -163,8 +168,57 @@ fn check_wasm(files: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Set when xtask runs as cargo's `RUSTC_WORKSPACE_WRAPPER` for guest builds.
+const WRAPPER_ENV: &str = "PURG_XTASK_RUSTC_WRAPPER";
+
+/// Runs rustc with every `-C metadata=<hash>` replaced by one derived from
+/// the crate name alone. On stable, Cargo's hash covers `rustc -vV`,
+/// including the host triple; rustc orders generic instantiations by symbol
+/// name, which contains that hash, so the build host would otherwise change
+/// function order in guest modules.
+fn rustc_wrapper(args: &[String]) -> ExitCode {
+    let Some((rustc, rest)) = args.split_first() else {
+        eprintln!("xtask: rustc wrapper called without rustc");
+        return ExitCode::FAILURE;
+    };
+    let crate_name = rest
+        .iter()
+        .position(|a| a == "--crate-name")
+        .and_then(|i| rest.get(i + 1))
+        .cloned();
+    let mut out = Vec::with_capacity(rest.len());
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match (a.as_str(), &crate_name) {
+            ("-C", Some(name)) => {
+                let v = it.next().map(String::as_str).unwrap_or_default();
+                out.push(a.clone());
+                if v.starts_with("metadata=") {
+                    out.push(format!("metadata=purgatorio-{name}"));
+                } else {
+                    out.push(v.to_string());
+                }
+            }
+            (s, Some(name)) if s.starts_with("-Cmetadata=") => {
+                out.push(format!("-Cmetadata=purgatorio-{name}"));
+            }
+            _ => out.push(a.clone()),
+        }
+    }
+    match Command::new(rustc).args(&out).status() {
+        Ok(s) => ExitCode::from(s.code().unwrap_or(1).clamp(0, 255) as u8),
+        Err(e) => {
+            eprintln!("xtask: {rustc}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    if env::var_os(WRAPPER_ENV).is_some() {
+        return rustc_wrapper(&args);
+    }
     let rest: Vec<String> = args
         .iter()
         .skip(1)

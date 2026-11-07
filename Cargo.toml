@@ -57,8 +57,9 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
-# Symbol names carry Cargo metadata hashes, which depend on the build host;
-# stripping them keeps guest modules byte-identical across hosts.
+# The name section records the output file name, which carries a Cargo hash
+# of the build host; stripping it keeps guest modules byte-identical across
+# hosts.
 strip = "symbols"
 
 [profile.probe]
