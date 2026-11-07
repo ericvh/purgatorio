@@ -1,7 +1,8 @@
 //! `purg-probe`: a bare-metal aarch64 image for QEMU virt that runs the
 //! current milestone's portable test subset on the same `purg-core` and
-//! `purg-vm-wasmi` code the emu uses, with `#c` on the PL011 and a
-//! read-only root embedded in the image.
+//! `purg-vm-wasmi` code the emu uses, with `#c` on the PL011, kprocs as
+//! cooperative kernel threads, and a writable RAM root seeded with files
+//! embedded in the image.
 //!
 //! It prints each command's output on the serial console, then exits QEMU
 //! through semihosting with 0 if every command ended as expected and 1
@@ -29,3 +30,5 @@ mod hw;
 mod platform;
 #[cfg(target_os = "none")]
 mod probe;
+#[cfg(target_os = "none")]
+mod sched;

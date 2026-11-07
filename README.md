@@ -41,7 +41,7 @@ a `; ` prompt.
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
-| `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi | done |
+| `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi: cooperative kernel threads, a writable RAM root, and the `sh` corpus | done |
 
 ## Layout
 
@@ -50,12 +50,12 @@ crates/
   purg-abi/          no_std  ABI constants shared by host and guest
   purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec
   purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam)
-  purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio; #/ #c #e #| #p
+  purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree; #/ #c #e #| #p
   purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, spawn
   purg-vm-wasmi/     no_std  wasmi interpreter backend
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
   purg-emu/          std     the `emu` binary: #U, console, src/host/{unix,linux,macos}.rs
-  purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, semihosting)
+  purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, kernel threads)
 sdk/
   purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
   purgatorio-macros/         #[purgatorio::main]
@@ -117,11 +117,15 @@ RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \
 ```
 
 `cargo xtask probe` builds `purg-probe`, a bare-metal aarch64 image that
-embeds a read-only root (`/bin/{echo,cat}.wasm`, `/bin/test/abi.wasm`,
-`/lib/probe/hello.txt`) and runs the milestone's portable test subset on
-`purg-core` and wasmi, with `#c` on the PL011 UART. It boots the image with
+embeds `root/bin` and `root/lib` and runs the milestone's portable test
+subset on `purg-core` and wasmi, with `#c` on the PL011 UART. Its kprocs are
+cooperative kernel threads with their own stacks, switched when a
+`Rendez` sleeps. Its `#U` is a writable RAM tree seeded with the embedded
+files, so it boots the emu's namespace (`#U` after `#/`, `#c`, `#e`, `#p`).
+It runs the ABI and procs conformance guests, then every script in the `sh`
+corpus with its output captured and compared with the `.out` file. It boots the image with
 `qemu-system-aarch64 -M virt -cpu cortex-a72 -nographic -semihosting`,
-requires a semihosting exit code of 0 within 30 s, and compares the serial
+requires a semihosting exit code of 0 within 120 s, and compares the serial
 output with `crates/purg-probe/expected.out`.
 
 CI (`.github/workflows/ci.yml`) runs fmt and clippy, then runs the unit and

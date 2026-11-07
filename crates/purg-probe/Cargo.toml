@@ -20,6 +20,7 @@ purg-platform.workspace = true
 purg-vm.workspace = true
 purg-vm-wasmi.workspace = true
 linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
+spin.workspace = true
 
 [lints]
 workspace = true

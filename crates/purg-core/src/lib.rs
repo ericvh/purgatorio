@@ -12,6 +12,7 @@ pub mod devcons;
 pub mod devenv;
 pub mod devpipe;
 pub mod devprog;
+pub mod devram;
 pub mod devroot;
 pub mod error;
 pub mod fgrp;

@@ -1,14 +1,14 @@
 //! [`Platform`] for the probe: PL011 console, PL031 wall clock, generic
-//! timer. One core, one prog at a time.
+//! timer, and kprocs as cooperative kernel threads ([`crate::sched`]).
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use purg_abi::error;
 use purg_platform::{Console, Platform, Result};
 
 use crate::hw;
+use crate::sched::SCHED;
 
 struct Pl011;
 
@@ -30,7 +30,6 @@ pub struct Probe {
     boot_epoch_ns: u64,
     boot_counter: u64,
     hz: u64,
-    pid: AtomicU32,
     /// splitmix64 state for [`Platform::entropy`].
     seed: AtomicU64,
 }
@@ -43,7 +42,6 @@ impl Probe {
             boot_epoch_ns: hw::rtc_seconds() * 1_000_000_000,
             boot_counter,
             hz: hw::counter_hz().max(1),
-            pid: AtomicU32::new(0),
             seed: AtomicU64::new(boot_counter ^ 0x9e37_79b9_7f4a_7c15),
         }
     }
@@ -87,15 +85,15 @@ impl Platform for Probe {
     }
 
     fn current_pid(&self) -> u32 {
-        self.pid.load(Ordering::Relaxed)
+        SCHED.current_pid()
     }
 
     fn set_current_pid(&self, pid: u32) {
-        self.pid.store(pid, Ordering::Relaxed);
+        SCHED.set_current_pid(pid);
     }
 
-    /// The probe runs one prog at a time, on the boot CPU.
-    fn spawn_kproc(&self, _name: &str, _f: Box<dyn FnOnce() + Send>) -> Result<()> {
-        Err(error::ENOPROC.into())
+    fn spawn_kproc(&self, _name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {
+        SCHED.spawn(f);
+        Ok(())
     }
 }

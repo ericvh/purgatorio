@@ -834,6 +834,7 @@ dependencies = [
  "purg-platform",
  "purg-vm",
  "purg-vm-wasmi",
+ "spin 0.10.1",
 ]
 
 [[package]]

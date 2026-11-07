@@ -84,13 +84,15 @@ impl Prog {
     pub fn read(&mut self, fd: i32, buf: &mut [u8]) -> Result<usize> {
         let c = self.fgrp.get(fd)?;
         check_access(&c, mode::OREAD)?;
-        let mut off = c.offset.lock();
+        // As in Inferno's kread, the offset lock is not held across the
+        // device read, which may block (a pipe, the console).
+        let off = *c.offset.lock();
         let n = if c.is_dir() {
-            dir_read(&c, buf, *off)?
+            dir_read(&c, buf, off)?
         } else {
-            c.dev.read(&c, buf, *off)?
+            c.dev.read(&c, buf, off)?
         };
-        *off += n as u64;
+        *c.offset.lock() += n as u64;
         Ok(n)
     }
 
@@ -110,9 +112,9 @@ impl Prog {
         if c.is_dir() {
             return Err(Error::new(error::EISDIR));
         }
-        let mut off = c.offset.lock();
-        let n = c.dev.write(&c, buf, *off)?;
-        *off += n as u64;
+        let off = *c.offset.lock();
+        let n = c.dev.write(&c, buf, off)?;
+        *c.offset.lock() += n as u64;
         Ok(n)
     }
 
