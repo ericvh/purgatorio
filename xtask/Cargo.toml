@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Purgatorio build tasks: build-root, run-emu, check-wasm"
+description = "Purgatorio build tasks: build-root, run-emu, probe, check-wasm"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,0 +1,22 @@
+purg-probe: aarch64 bare metal, wasmi
+probe: run echo hello world
+hello world
+probe: ok
+probe: run cat /lib/probe/hello.txt
+hello from the probe root
+probe: ok
+probe: run cat /nonexistent
+cat: /nonexistent: file does not exist
+probe: failed as expected: fail:errors
+probe: run /bin/test/abi.wasm
+ok bad_pointer_read
+ok bad_pointer_stat
+ok std_open_missing
+ok std_read_file
+ok std_read_dir
+ok stat_dir
+ok fstat_stdout
+ok dirread_root
+ok werrstr_roundtrip
+probe: ok
+probe: pass

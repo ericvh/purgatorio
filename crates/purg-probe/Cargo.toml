@@ -1,0 +1,25 @@
+[package]
+name = "purg-probe"
+description = "Bare-metal aarch64 test image for QEMU virt: runs each milestone's portable subset on purg-core and wasmi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "purg-probe"
+path = "src/main.rs"
+test = false
+bench = false
+
+[target.'cfg(target_os = "none")'.dependencies]
+purg-abi.workspace = true
+purg-core.workspace = true
+purg-platform.workspace = true
+purg-vm.workspace = true
+purg-vm-wasmi.workspace = true
+linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
+
+[lints]
+workspace = true

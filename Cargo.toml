@@ -9,6 +9,7 @@ members = [
     "crates/purg-vm-wasmtime",
     "crates/purg-vm-wasmi",
     "crates/purg-emu",
+    "crates/purg-probe",
     "sdk/purgatorio",
     "sdk/purgatorio-macros",
     "appl/cmd/cat",
