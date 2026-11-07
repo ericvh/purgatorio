@@ -1,0 +1,15 @@
+[package]
+name = "purgatorio"
+description = "Purgatorio application SDK: Inferno Sys extensions on top of Rust std for wasm32-wasip1"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+purg-abi.workspace = true
+purg-styx.workspace = true
+purgatorio-macros.workspace = true
+
+[lints]
+workspace = true

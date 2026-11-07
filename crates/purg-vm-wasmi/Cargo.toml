@@ -1,0 +1,16 @@
+[package]
+name = "purg-vm-wasmi"
+description = "wasmi (interpreter, no_std) backend for purg-vm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+purg-abi.workspace = true
+purg-core.workspace = true
+purg-vm.workspace = true
+wasmi.workspace = true
+
+[lints]
+workspace = true

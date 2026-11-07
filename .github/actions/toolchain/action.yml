@@ -1,0 +1,15 @@
+name: Rust toolchain
+description: Install the toolchain pinned in rust-toolchain.toml, installing rustup first if the runner lacks it.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        if ! command -v rustup >/dev/null 2>&1; then
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+        rustup toolchain install || rustup show
+        rustc --version --verbose

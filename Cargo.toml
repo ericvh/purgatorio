@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/purg-abi",
+    "crates/purg-styx",
+    "crates/purg-platform",
+    "crates/purg-core",
+    "crates/purg-vm",
+    "crates/purg-vm-wasmtime",
+    "crates/purg-vm-wasmi",
+    "crates/purg-emu",
+    "sdk/purgatorio",
+    "sdk/purgatorio-macros",
+    "appl/cmd/cat",
+    "appl/cmd/echo",
+    "appl/cmd/emuinit",
+    "appl/test/abi",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+repository = "https://github.com/ericvh/purgatorio"
+
+[workspace.dependencies]
+purg-abi = { path = "crates/purg-abi" }
+purg-styx = { path = "crates/purg-styx" }
+purg-platform = { path = "crates/purg-platform" }
+purg-core = { path = "crates/purg-core" }
+purg-vm = { path = "crates/purg-vm" }
+purg-vm-wasmtime = { path = "crates/purg-vm-wasmtime" }
+purg-vm-wasmi = { path = "crates/purg-vm-wasmi" }
+purgatorio = { path = "sdk/purgatorio" }
+purgatorio-macros = { path = "sdk/purgatorio-macros" }
+
+spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock"] }
+libc = "0.2"
+dlmalloc = { version = "0.2", features = ["global"] }
+wasmi = { version = "2", default-features = false, features = ["stable", "validate", "libm"] }
+wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+
+[profile.dev]
+panic = "unwind"
+
+[profile.wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"
+
+[profile.probe]
+inherits = "release"
+panic = "abort"

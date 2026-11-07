@@ -1,0 +1,2 @@
+This directory is the file tree emu serves as #U and unions after #/ at /.
+Built applications are installed into bin/ by `cargo xtask build-root`.

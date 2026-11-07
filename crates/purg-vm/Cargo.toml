@@ -1,0 +1,15 @@
+[package]
+name = "purg-vm"
+description = "Runtime-agnostic WASM prog executor: WASI preview1 subset and purgatorio imports over the namespace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+purg-abi.workspace = true
+purg-core.workspace = true
+purg-styx.workspace = true
+
+[lints]
+workspace = true

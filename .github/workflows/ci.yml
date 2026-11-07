@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: fmt and lints
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - name: clippy (guests, wasm32-wasip1)
+        run: >
+          cargo clippy --target wasm32-wasip1
+          -p purgatorio -p appl-cmd-echo -p appl-cmd-cat -p appl-cmd-emuinit -p appl-test-abi
+          -- -D warnings
+      - name: root/ is free of case collisions
+        run: |
+          dups=$(git ls-files root | tr '[:upper:]' '[:lower:]' | sort | uniq -d)
+          if [ -n "$dups" ]; then echo "case collisions in root/: $dups"; exit 1; fi
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: clippy (host)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: build guest binaries into root/
+        run: cargo xtask build-root
+      - name: unit and acceptance tests (wasmtime and wasmi)
+        run: cargo test --workspace
+      - name: xtask run-emu smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          for vm in wasmtime wasmi; do
+            out=$(cargo xtask run-emu -- --vm=$vm echo hello world 2>/dev/null)
+            test "$out" = "hello world"
+            out=$(echo hi | cargo xtask run-emu -- --vm=$vm cat 2>/dev/null)
+            test "$out" = "hi"
+            if cargo xtask run-emu -- --vm=$vm cat /nonexistent >/tmp/out 2>/dev/null; then
+              echo "cat /nonexistent succeeded"; exit 1
+            fi
+            grep -qx 'cat: /nonexistent: file does not exist' /tmp/out
+          done
+      - name: case-exact names on a case-sensitive APFS volume
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          hdiutil create -size 64m -fs "Case-sensitive APFS" -volname purgcs /tmp/cs.dmg
+          hdiutil attach /tmp/cs.dmg -mountpoint /tmp/cs
+          cp -R root /tmp/cs/root
+          test "$(target/debug/emu -r /tmp/cs/root cat /lib/probe/hello.txt)" = "hello from the probe root"
+          if target/debug/emu -r /tmp/cs/root cat /LIB/probe/hello.txt; then exit 1; fi
+          hdiutil detach /tmp/cs
+      - name: record guest module hashes
+        shell: bash
+        run: |
+          cd root && find bin -name '*.wasm' | sort | xargs shasum -a 256 > "$RUNNER_TEMP/wasm-sha256.txt"
+          cat "$RUNNER_TEMP/wasm-sha256.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-sha256-${{ matrix.os }}
+          path: ${{ runner.temp }}/wasm-sha256.txt
+
+  reproducible:
+    name: guest modules are byte-identical across hosts
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wasm-sha256-*
+      - run: |
+          set -euo pipefail
+          ls -R
+          first=$(ls -d wasm-sha256-* | head -1)
+          for d in wasm-sha256-*; do
+            echo "== $d"; diff "$first/wasm-sha256.txt" "$d/wasm-sha256.txt"
+          done
+
+  no-std:
+    name: shared crates on aarch64-unknown-none (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: >
+          cargo build --target aarch64-unknown-none
+          -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
+      - name: clippy
+        run: >
+          cargo clippy --target aarch64-unknown-none
+          -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
+          -- -D warnings

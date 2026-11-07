@@ -1,0 +1,19 @@
+[package]
+name = "purg-core"
+description = "Portable Purgatorio kernel core: channels, devices, namespaces, progs, Sys file ops"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+std = ["purg-platform/std"]
+
+[dependencies]
+purg-abi.workspace = true
+purg-styx.workspace = true
+purg-platform.workspace = true
+
+[lints]
+workspace = true

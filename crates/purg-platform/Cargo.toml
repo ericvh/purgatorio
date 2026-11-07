@@ -1,0 +1,18 @@
+[package]
+name = "purg-platform"
+description = "Platform seam between the portable Purgatorio core and a host or bare-metal kernel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+## Back the lock facade with std::sync (hosted). Without it, spinlocks are used.
+std = []
+
+[dependencies]
+spin.workspace = true
+
+[lints]
+workspace = true

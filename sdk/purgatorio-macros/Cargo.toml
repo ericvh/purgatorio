@@ -1,0 +1,13 @@
+[package]
+name = "purgatorio-macros"
+description = "#[purgatorio::main] for Purgatorio commands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[lints]
+workspace = true
