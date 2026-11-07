@@ -25,14 +25,16 @@ and `cargo xtask build-root` rejects modules that import anything outside it.
 
 - **One fd table.** WASI fds and `purgatorio` fds are the same integers from
   the prog's Fgrp. Fds 0, 1 and 2 are `/dev/cons`.
-- **Preopens.** Fd 3 is `/`, the prog's namespace root. Fd 4 is `.`, which
-  always resolves against the prog's *current* dot. Both numbers are
+- **Preopens.** Fd 3 is `.`, which always resolves against the prog's
+  *current* dot. Fd 4 is `/`, the prog's namespace root. wasi-libc strips
+  both names to an empty prefix and prefers the preopen it registered last,
+  so `/` comes second and absolute names resolve from the root. Both numbers are
   reserved in every prog: `pctl(NEWFD)` and `spawn_prog` reinstall them, and
   an fd map may not target them. `path_open(dirfd, path)` resolves `path`
   with `namec` in the prog's namespace, so binds and unions apply.
 - **Current directory.** wasi-libc keeps its own copy of the current
   directory (initially `/`) and turns relative names into absolute ones
-  under the `/` preopen. The SDK therefore sets it from `fd2path(4)` at
+  under the `/` preopen. The SDK therefore sets it from `fd2path(3)` at
   start-up and after `chdir` and `pctl(NEWNS|FORKNS)`. Third-party WASI
   programs see relative names resolved from `/`.
 - **Errors.** WASI calls return an errno, and the host also records the
@@ -80,7 +82,7 @@ milestones.
 | `werrstr`, `%r` | `purgatorio.errstr`, `purgatorio.werrstr` (M1) | WASI errnos are lossy | |
 | exit status | `purgatorio.exits(status)` (M1) | WASI `proc_exit(i32)` is numeric | `proc_exit(0)` means `""` and `proc_exit(n)` means `"exit n"` (M1). |
 | `spawn` (of a command) | `purgatorio.spawn_prog` (M2) | missing in WASI | Exit messages are read from `/prog/<pid>/wait`. |
-| `spawn` (in-module), `chan of T`, `alt` | SDK tasks and `chan_*` | missing in WASI | M2–M3 |
+| `spawn` (in-module), `chan of T`, `alt` | SDK tasks and `chan_*` | missing in WASI | M2: `purgatorio::task` runs tasks cooperatively in one instance with `Chan<T>` and needs no imports. Kernel channels (`chan_*`) and `alt` come in M3. |
 | `dial`, `announce`, `listen` | SDK file operations on `/net` | WASI p1 sockets are not used | M4 |
 | `load` | `purgatorio.load`, `purgatorio.call` | missing in WASI | M5 |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
@@ -99,7 +101,7 @@ create(path, plen, mode, perm) -> fd
 wstat(path, plen, dir, dlen) -> 0 dir is a packed Dir; ~0 and "" fields are untouched
 fwstat(fd, dir, dlen) -> 0
 remove(path, plen) -> 0
-fd2path(fd, buf, blen) -> n       fd 4 gives the current directory
+fd2path(fd, buf, blen) -> n       fd 3 gives the current directory
 chdir(path, plen) -> 0
 dup(old, new) -> fd               new = -1 picks the lowest free fd
 pipe(fds) -> 0                    writes two i32 fds at fds

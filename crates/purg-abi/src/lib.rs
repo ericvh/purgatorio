@@ -25,11 +25,14 @@ pub const ENTRY: &str = "_start";
 /// Guest export holding linear memory.
 pub const MEMORY: &str = "memory";
 
-/// Fd preopened as the prog's namespace root.
-pub const PREOPEN_ROOT_FD: i32 = 3;
 /// Fd preopened as the prog's current directory ("dot"); it always follows
 /// the prog's current dot rather than a fixed directory.
-pub const PREOPEN_DOT_FD: i32 = 4;
+pub const PREOPEN_DOT_FD: i32 = 3;
+/// Fd preopened as the prog's namespace root. wasi-libc strips both preopen
+/// names to the empty prefix and breaks the tie in favour of the preopen it
+/// found last, so the root must follow dot for absolute names to resolve
+/// from `/`.
+pub const PREOPEN_ROOT_FD: i32 = 4;
 
 /// Imports in the `purgatorio` module implemented in this ABI version.
 pub mod sys {

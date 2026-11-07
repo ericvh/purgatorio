@@ -145,12 +145,68 @@ fn procs_conformance() {
     }
 }
 
+/// With no command, emu boots emuinit, which runs `sh -l` on the console.
 #[test]
-fn boots_emuinit_without_command() {
+fn boots_to_login_shell() {
     for vm in VMS {
-        let o = emu(vm, &[], b"");
+        let o = emu(vm, &[], b"echo $user\n");
+        let user = stdout(&emu(vm, &["cat", "/dev/user"], b""));
         assert!(o.status.success(), "{vm}: {o:?}");
-        assert!(stdout(&o).contains("emuinit: no command"), "{vm}");
+        assert_eq!(stdout(&o), format!("; {user}\n; "), "{vm}");
+    }
+}
+
+/// Runs every `/lib/test/sh/*.sh` and compares its output with the `.out`
+/// file next to it.
+#[test]
+fn sh_script_corpus() {
+    let dir = root().join("lib/test/sh");
+    let mut scripts: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".sh").map(String::from)
+        })
+        .collect();
+    scripts.sort();
+    assert!(scripts.len() >= 8, "{scripts:?}");
+    for vm in VMS {
+        for s in &scripts {
+            let want = std::fs::read_to_string(dir.join(format!("{s}.out"))).unwrap();
+            let o = emu(vm, &["sh", &format!("/lib/test/sh/{s}.sh")], b"");
+            assert_eq!(stdout(&o), want, "{vm} {s}.sh");
+            assert!(o.status.success(), "{vm} {s}.sh: {o:?}");
+        }
+    }
+}
+
+/// The plan's M2 session, typed at the login shell.
+#[test]
+fn interactive_session() {
+    let session = [
+        "ls -l /bin | wc -l",
+        "x=hello",
+        "echo $x > /env/x; cat /env/x",
+        "rm -rf /tmp/ia /tmp/ib; mkdir /tmp/ia /tmp/ib",
+        "echo 1 > /tmp/ia/one; echo 2 > /tmp/ib/two",
+        "bind -b /tmp/ia /tmp/ib; ls /tmp/ib",
+        "sleep 10 & ; echo bg",
+        "echo a b c | cat | cat | wc -w",
+        "unmount /tmp/ia /tmp/ib; rm -r /tmp/ia /tmp/ib",
+    ];
+    let input = session.join("\n") + "\n";
+    let bins = std::fs::read_dir(root().join("bin")).unwrap().count();
+    for vm in VMS {
+        let start = std::time::Instant::now();
+        let o = emu(vm, &[], input.as_bytes());
+        let out = stdout(&o).replace("; ", "");
+        assert!(o.status.success(), "{vm}: {o:?}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(10),
+            "{vm}: waited for the background sleep"
+        );
+        let want = format!("{bins:>7}\nhello\n/tmp/ib/one\n/tmp/ib/two\nbg\n      3\n");
+        assert_eq!(out, want, "{vm}");
     }
 }
 

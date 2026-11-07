@@ -12,9 +12,22 @@ members = [
     "crates/purg-probe",
     "sdk/purgatorio",
     "sdk/purgatorio-macros",
+    "appl/cmd/bind",
     "appl/cmd/cat",
+    "appl/cmd/cp",
+    "appl/cmd/date",
     "appl/cmd/echo",
     "appl/cmd/emuinit",
+    "appl/cmd/env",
+    "appl/cmd/ls",
+    "appl/cmd/mkdir",
+    "appl/cmd/mv",
+    "appl/cmd/pwd",
+    "appl/cmd/rm",
+    "appl/cmd/sh",
+    "appl/cmd/sleep",
+    "appl/cmd/unmount",
+    "appl/cmd/wc",
     "appl/test/abi",
     "appl/test/procs",
     "xtask",
@@ -41,7 +54,7 @@ purgatorio-macros = { path = "sdk/purgatorio-macros" }
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }
 libc = "0.2"
 dlmalloc = { version = "0.2", features = ["global"] }
-wasmi = { version = "2", default-features = false, features = ["stable", "validate", "libm"] }
+wasmi = { version = "2", default-features = false, features = ["stable", "validate", "libm", "auto-dispatch"] }
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
 
 [workspace.lints.rust]
@@ -53,6 +66,20 @@ dbg_macro = "warn"
 
 [profile.dev]
 panic = "unwind"
+
+# Debug builds of the compiler take seconds per guest module; optimizing
+# just these keeps the acceptance tests fast.
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+
+[profile.dev.package.cranelift-frontend]
+opt-level = 2
+
+[profile.dev.package.regalloc2]
+opt-level = 2
+
+[profile.dev.package.wasmparser]
+opt-level = 2
 
 [profile.wasm]
 inherits = "release"

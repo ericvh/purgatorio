@@ -80,7 +80,7 @@ pub trait Engine: Send + Sync {
 }
 
 /// Opens the standard fds every command starts with: 0, 1 and 2 on
-/// `/dev/cons`, then the WASI preopens `/` (fd 3) and `.` (fd 4).
+/// `/dev/cons`, then the WASI preopens `.` (fd 3) and `/` (fd 4).
 pub fn init_fds(prog: &mut Prog) -> Result<(), Error> {
     for (want, path, omode) in [
         (0, "/dev/cons", mode::OREAD),
@@ -93,7 +93,7 @@ pub fn init_fds(prog: &mut Prog) -> Result<(), Error> {
     init_preopens(prog)
 }
 
-/// Installs the WASI preopens: `/` at fd 3 and `.` at fd 4. wasi-libc stops
+/// Installs the WASI preopens: `.` at fd 3 and `/` at fd 4. wasi-libc stops
 /// scanning for preopens at the first fd that is not one, so these two
 /// numbers are reserved in every prog.
 pub fn init_preopens(prog: &mut Prog) -> Result<(), Error> {
