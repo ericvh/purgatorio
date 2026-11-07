@@ -14,6 +14,20 @@ use crate::dev::Dev;
 /// shared by clones of an unopened Chan.
 pub type Aux = Option<Arc<dyn Any + Send + Sync>>;
 
+/// One directory of a union, with the bind flags it was added with.
+#[derive(Clone)]
+pub struct Member {
+    pub chan: Arc<Chan>,
+    pub flags: u32,
+}
+
+impl Member {
+    /// Whether `create` in the union may use this member (`MCREATE`).
+    pub fn can_create(&self) -> bool {
+        self.flags & purg_abi::mount::MCREATE != 0
+    }
+}
+
 /// An open or walkable reference to a file, as Inferno's `Chan`.
 ///
 /// A Chan is created by attach or walk (unopened), becomes open through
@@ -35,7 +49,7 @@ pub struct Chan {
     /// Members of the union directory this Chan was resolved to, in search
     /// order, when the name crossed a mount point. The first member is the
     /// Chan itself.
-    pub union: Option<Arc<[Arc<Chan>]>>,
+    pub union: Option<Arc<[Member]>>,
     /// Snapshot of packed directory entries for sequential directory reads.
     pub(crate) dirbuf: Mutex<Vec<u8>>,
 }

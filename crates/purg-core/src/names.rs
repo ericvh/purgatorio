@@ -52,6 +52,23 @@ pub fn split_device(path: &str) -> (Option<&str>, &str) {
     }
 }
 
+/// Quotes `s` as Inferno's `%q` does when it is empty or contains white
+/// space or a quote: wrapped in `'`, with `'` doubled.
+pub fn quote(s: &str) -> String {
+    if !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c == '\'') {
+        return String::from(s);
+    }
+    let mut out = String::from("'");
+    for c in s.chars() {
+        if c == '\'' {
+            out.push('\'');
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
 /// The non-empty elements of a cleaned path, without any device prefix.
 pub fn elements(path: &str) -> impl Iterator<Item = &str> {
     split_device(path).1.split('/').filter(|e| !e.is_empty())

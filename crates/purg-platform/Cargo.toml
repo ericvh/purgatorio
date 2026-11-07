@@ -14,5 +14,8 @@ std = []
 [dependencies]
 spin.workspace = true
 
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
 [lints]
 workspace = true

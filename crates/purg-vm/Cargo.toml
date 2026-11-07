@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 purg-abi.workspace = true
 purg-core.workspace = true
+purg-platform.workspace = true
 purg-styx.workspace = true
 
 [lints]

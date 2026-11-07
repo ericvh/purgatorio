@@ -3,20 +3,67 @@
 //! On non-WASI targets (host builds of app crates, used by `cargo check` and
 //! clippy) these are stubs that fail with "not implemented".
 
+macro_rules! imports {
+    ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {
+        #[cfg(target_os = "wasi")]
+        #[link(wasm_import_module = "purgatorio")]
+        unsafe extern "C" {
+            $(pub fn $name($($arg: $ty),*) -> $ret;)*
+        }
+
+        #[cfg(not(target_os = "wasi"))]
+        mod stubs {
+            #![allow(clippy::missing_safety_doc)]
+            $(
+                pub unsafe fn $name($(_: $ty),*) -> $ret {
+                    -1
+                }
+            )*
+        }
+
+        #[cfg(not(target_os = "wasi"))]
+        pub use stubs::*;
+    };
+}
+
+imports! {
+    fn werrstr(msg: *const u8, len: usize) -> i32;
+    fn stat(path: *const u8, plen: usize, buf: *mut u8, len: usize) -> i32;
+    fn fstat(fd: i32, buf: *mut u8, len: usize) -> i32;
+    fn dirread(fd: i32, buf: *mut u8, len: usize) -> i32;
+    fn open(path: *const u8, plen: usize, mode: i32) -> i32;
+    fn create(path: *const u8, plen: usize, mode: i32, perm: u32) -> i32;
+    fn wstat(path: *const u8, plen: usize, dir: *const u8, dlen: usize) -> i32;
+    fn fwstat(fd: i32, dir: *const u8, dlen: usize) -> i32;
+    fn remove(path: *const u8, plen: usize) -> i32;
+    fn fd2path(fd: i32, buf: *mut u8, len: usize) -> i32;
+    fn chdir(path: *const u8, plen: usize) -> i32;
+    fn dup(old: i32, new: i32) -> i32;
+    fn pipe(fds: *mut i32) -> i32;
+    fn iounit(fd: i32) -> i32;
+    fn bind(name: *const u8, nlen: usize, old: *const u8, olen: usize, flags: u32) -> i32;
+    fn unmount(name: *const u8, nlen: usize, old: *const u8, olen: usize) -> i32;
+    fn pctl(flags: u32, movefd: *const i32, n: usize) -> i32;
+    fn spawn_prog(
+        path: *const u8,
+        plen: usize,
+        argv: *const u8,
+        alen: usize,
+        flags: u32,
+        fdmap: *const i32,
+        n: usize
+    ) -> i32;
+}
+
 #[cfg(target_os = "wasi")]
 #[link(wasm_import_module = "purgatorio")]
 unsafe extern "C" {
     pub fn errstr(buf: *mut u8, len: usize) -> i32;
-    pub fn werrstr(msg: *const u8, len: usize) -> i32;
     pub fn exits(status: *const u8, len: usize) -> !;
-    pub fn stat(path: *const u8, plen: usize, buf: *mut u8, len: usize) -> i32;
-    pub fn fstat(fd: i32, buf: *mut u8, len: usize) -> i32;
-    pub fn dirread(fd: i32, buf: *mut u8, len: usize) -> i32;
-    pub fn exec(path: *const u8, plen: usize, argv: *const u8, alen: usize) -> i32;
 }
 
 #[cfg(not(target_os = "wasi"))]
-mod stubs {
+mod host {
     #![allow(clippy::missing_safety_doc)]
     const MSG: &str = purg_abi::error::ENOTIMPL;
 
@@ -26,25 +73,10 @@ mod stubs {
         unsafe { core::ptr::copy_nonoverlapping(MSG.as_ptr(), buf, n) };
         n as i32
     }
-    pub unsafe fn werrstr(_msg: *const u8, _len: usize) -> i32 {
-        -1
-    }
     pub unsafe fn exits(_status: *const u8, len: usize) -> ! {
         std::process::exit(i32::from(len != 0))
-    }
-    pub unsafe fn stat(_path: *const u8, _plen: usize, _buf: *mut u8, _len: usize) -> i32 {
-        -1
-    }
-    pub unsafe fn fstat(_fd: i32, _buf: *mut u8, _len: usize) -> i32 {
-        -1
-    }
-    pub unsafe fn dirread(_fd: i32, _buf: *mut u8, _len: usize) -> i32 {
-        -1
-    }
-    pub unsafe fn exec(_path: *const u8, _plen: usize, _argv: *const u8, _alen: usize) -> i32 {
-        -1
     }
 }
 
 #[cfg(not(target_os = "wasi"))]
-pub use stubs::*;
+pub use host::{errstr, exits};

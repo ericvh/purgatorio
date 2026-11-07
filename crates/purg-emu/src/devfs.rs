@@ -1,10 +1,12 @@
-//! `#U`: a host directory tree, read-only in M1.
+//! `#U`: a host directory tree.
 
 use std::any::Any;
-use std::fs::{self, File, Metadata};
+use std::fs::{self, File, Metadata, OpenOptions};
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 
 use purg_abi::{error, mode};
 use purg_core::{Chan, Dev, Dir, Error, Qid, Result, Walked};
@@ -121,13 +123,20 @@ impl Dev for DevFs {
 
     fn open(&self, c: &mut Chan, omode: u8) -> Result<()> {
         let access = omode & mode::ACCESS;
-        if (access != mode::OREAD && access != mode::OEXEC) || omode & mode::OTRUNC != 0 {
-            return Err(Error::new(error::EPERM));
+        let write = access == mode::OWRITE || access == mode::ORDWR;
+        if c.is_dir() {
+            if write || omode & mode::OTRUNC != 0 {
+                return Err(Error::new(error::EISDIR));
+            }
+            return Ok(());
         }
-        if !c.is_dir() {
-            let f = File::open(self.path(c)?).map_err(host_err)?;
-            *c.state.lock() = Some(Box::new(f));
-        }
+        let f = OpenOptions::new()
+            .read(!write || access == mode::ORDWR)
+            .write(write)
+            .truncate(write && omode & mode::OTRUNC != 0)
+            .open(self.path(c)?)
+            .map_err(host_err)?;
+        *c.state.lock() = Some(Box::new(f));
         Ok(())
     }
 
@@ -161,7 +170,92 @@ impl Dev for DevFs {
         Ok(out)
     }
 
-    fn write(&self, _c: &Chan, _buf: &[u8], _offset: u64) -> Result<usize> {
-        Err(Error::new(error::EPERM))
+    fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize> {
+        let state = c.state.lock();
+        let f = state
+            .as_ref()
+            .and_then(|s| s.downcast_ref::<File>())
+            .ok_or(Error::new(error::EBADUSEFD))?;
+        host::write_at(f, buf, offset).map_err(host_err)
     }
+
+    fn create(&self, dir: &Chan, name: &str, perm: u32) -> Result<Walked> {
+        check_name(name)?;
+        let path = self.path(dir)?.join(name);
+        if perm & DMDIR != 0 {
+            fs::DirBuilder::new()
+                .mode(perm & 0o777)
+                .create(&path)
+                .map_err(host_err)?;
+        } else {
+            OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(perm & 0o777)
+                .open(&path)
+                .map_err(host_err)?;
+        }
+        DevFs::walked(path)
+    }
+
+    fn remove(&self, c: &Chan) -> Result<()> {
+        let path = self.path(c)?;
+        if path == self.root {
+            return Err(Error::new(error::EPERM));
+        }
+        if c.is_dir() {
+            fs::remove_dir(path).map_err(host_err)
+        } else {
+            fs::remove_file(path).map_err(host_err)
+        }
+    }
+
+    fn wstat(&self, c: &Chan, d: &Dir) -> Result<()> {
+        let path = self.path(c)?;
+        let md = fs::metadata(path).map_err(host_err)?;
+        if d.length != !0 {
+            if md.is_dir() {
+                return Err(Error::new(error::EISDIR));
+            }
+            OpenOptions::new()
+                .write(true)
+                .open(path)
+                .and_then(|f| f.set_len(d.length))
+                .map_err(host_err)?;
+        }
+        if d.mode != !0 {
+            if (d.mode & DMDIR != 0) != md.is_dir() {
+                return Err(Error::new(error::EPERM));
+            }
+            fs::set_permissions(path, fs::Permissions::from_mode(d.mode & 0o777))
+                .map_err(host_err)?;
+        }
+        if d.mtime != !0 {
+            let t = UNIX_EPOCH + Duration::from_secs(d.mtime.into());
+            File::open(path)
+                .and_then(|f| f.set_modified(t))
+                .map_err(host_err)?;
+        }
+        // The rename comes last: the Chan still names the old path.
+        if !d.name.is_empty() && path.file_name().is_some_and(|n| n != d.name.as_str()) {
+            check_name(&d.name)?;
+            if path == self.root {
+                return Err(Error::new(error::EPERM));
+            }
+            let to = path.with_file_name(&d.name);
+            if fs::symlink_metadata(&to).is_ok() {
+                return Err(Error::new(error::EEXIST));
+            }
+            fs::rename(path, to).map_err(host_err)?;
+        }
+        Ok(())
+    }
+}
+
+fn check_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\0']) {
+        return Err(Error::new(error::EBADARG));
+    }
+    Ok(())
 }
