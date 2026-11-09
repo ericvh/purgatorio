@@ -145,6 +145,27 @@ fn procs_conformance() {
     }
 }
 
+#[test]
+fn tcp_dial_export_and_os() {
+    for vm in VMS {
+        let o = emu(vm, &["/bin/test/net.wasm"], b"");
+        let out = stdout(&o);
+        assert!(
+            o.status.success(),
+            "{vm}:\n{out}\n{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(out.contains("ok cs"), "{vm}:\n{out}");
+        assert!(out.contains("ok os\n"), "{vm}:\n{out}");
+        assert!(out.contains("ok dial"), "{vm}:\n{out}");
+        assert!(out.contains("ok export"), "{vm}:\n{out}");
+        assert!(
+            !out.contains("net_skip"),
+            "{vm}: the host has a network stack"
+        );
+    }
+}
+
 /// With no command, emu boots emuinit, which runs `sh -l` on the console.
 #[test]
 fn boots_to_login_shell() {
@@ -216,7 +237,7 @@ fn devices_are_listed() {
         let o = emu(vm, &["cat", "/dev/drivers"], b"");
         assert_eq!(
             stdout(&o),
-            "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#U fs\n",
+            "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#I ip\n#C cmd\n#U fs\n",
             "{vm}"
         );
     }

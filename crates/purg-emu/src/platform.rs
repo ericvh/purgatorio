@@ -2,9 +2,11 @@
 
 use std::cell::Cell;
 use std::io::{Read, Write};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use purg_abi::error;
+use purg_platform::net::{Command, Net};
 use purg_platform::{Console, Platform, Result};
 
 use crate::host;
@@ -45,6 +47,7 @@ pub struct Emu {
     console: StdConsole,
     user: String,
     sysname: String,
+    net: host::HostNet,
 }
 
 impl Emu {
@@ -54,6 +57,7 @@ impl Emu {
             console: StdConsole,
             user: host::user_name(),
             sysname: host::host_name(),
+            net: host::HostNet,
         }
     }
 }
@@ -104,5 +108,13 @@ impl Platform for Emu {
             .spawn(f)
             .map(drop)
             .map_err(|_| error::ENOPROC.into())
+    }
+
+    fn net(&self) -> Option<&dyn Net> {
+        Some(&self.net)
+    }
+
+    fn command(&self, line: &str) -> Result<Arc<dyn Command>> {
+        host::start_command(line)
     }
 }

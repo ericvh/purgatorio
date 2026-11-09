@@ -18,6 +18,7 @@
 pub mod arg;
 pub mod bufio;
 pub mod daytime;
+pub mod dial;
 pub mod env;
 pub mod file2chan;
 pub mod styx;

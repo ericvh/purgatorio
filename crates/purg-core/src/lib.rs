@@ -9,9 +9,11 @@ extern crate alloc;
 pub mod block;
 pub mod chan;
 pub mod dev;
+pub mod devcmd;
 pub mod devcons;
 pub mod devdup;
 pub mod devenv;
+pub mod devip;
 pub mod devmem;
 pub mod devmnt;
 pub mod devpipe;
@@ -54,8 +56,8 @@ pub struct Portable {
     pub mnt: Arc<DevMnt>,
 }
 
-/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d` and `#%`. Embedders add `#/` and
-/// their own devices.
+/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I` and `#C`. Embedders
+/// add `#/` and their own devices.
 pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Portable {
     let srv = Arc::new(devsrv::DevSrv::new(procs.user()));
     let mnt = Arc::new(devmnt::DevMnt::new(platform.clone()));
@@ -68,6 +70,8 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
         mnt.clone(),
         Arc::new(devdup::DevDup::new(procs.clone())),
         Arc::new(devmem::DevMem::new(platform.clone())),
+        Arc::new(devip::DevIp::new(platform.clone())),
+        Arc::new(devcmd::DevCmd::new(platform.clone())),
     ];
     Portable { devs, srv, mnt }
 }

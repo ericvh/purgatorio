@@ -61,7 +61,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-cs"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-date"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-dial"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -103,6 +117,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-export"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-fc"
 version = "0.1.0"
 dependencies = [
@@ -117,7 +138,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-import"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-kill"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-listen"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -166,7 +201,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-netstat"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ns"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-os"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -222,6 +271,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-styxlisten"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-tail"
 version = "0.1.0"
 dependencies = [
@@ -265,6 +321,13 @@ dependencies = [
 
 [[package]]
 name = "appl-test-m3"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-test-net"
 version = "0.1.0"
 dependencies = [
  "purgatorio",

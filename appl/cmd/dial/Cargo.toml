@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-dial"
+description = "dial: connect to an address and copy standard input and output"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dial"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
