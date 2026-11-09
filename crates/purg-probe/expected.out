@@ -54,6 +54,8 @@ probe: sh /lib/test/sh/jobs.sh
 probe: ok
 probe: sh /lib/test/sh/m3.sh
 probe: ok
+probe: sh /lib/test/sh/m5.sh
+probe: ok
 probe: sh /lib/test/sh/pipes.sh
 probe: ok
 probe: sh /lib/test/sh/redir.sh
