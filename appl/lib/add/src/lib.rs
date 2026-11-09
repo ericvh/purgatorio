@@ -1,11 +1,15 @@
 //! Reactor loaded by `load add`. Export `add` reads `a b` from its argument
 //! bytes and writes their sum back over those bytes.
-#![no_std]
+//!
+//! `no_std` only on wasm. A host `clippy --workspace` builds this cdylib
+//! with unwinding panics, which a `no_std` crate cannot do.
+#![cfg_attr(target_arch = "wasm32", no_std)]
 
 #[used]
 #[unsafe(link_section = "purgatorio.abi")]
 static ABI: [u8; 3] = *b"0.4";
 
+#[cfg(target_arch = "wasm32")]
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
