@@ -11,6 +11,8 @@ pub enum Part {
     Var(String, VarKind),
     /// `` `{...} ``: the source between the braces.
     Subst(String),
+    /// `${name args}`: a loaded builtin. The string is the source inside.
+    Builtin(String),
     /// `(a b c)`: a list of words.
     List(Vec<Word>),
 }
@@ -338,6 +340,10 @@ impl<'a> Lexer<'a> {
     }
 
     fn var(&mut self) -> Result<Part> {
+        if self.peek() == Some('{') {
+            self.bump();
+            return Ok(Part::Builtin(String::from(self.braced()?)));
+        }
         let kind = match self.peek() {
             Some('#') => VarKind::Count,
             Some('"') => VarKind::Join,
