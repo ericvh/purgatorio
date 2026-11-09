@@ -16,7 +16,7 @@ use crate::error::{Error, Result};
 use crate::names::{cleanname, elements, sh_quote, split_device};
 
 /// Devices a `NODEVS` namespace may still attach (Inferno's list).
-const NODEVS_ALLOWED: &[char] = &['e', 's', '|', 'M'];
+const NODEVS_ALLOWED: &[char] = &['e', 's', '|', 'M', '¤'];
 
 #[derive(Clone)]
 struct Mount {

@@ -191,6 +191,26 @@ fn export_mount_loopback() {
     server.join().unwrap();
 }
 
+#[test]
+fn factotum_signs_a_challenge() {
+    let (mut p, _) = setup();
+    let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
+    let fd = p.open("#¤/ctl", mode::OWRITE).unwrap();
+    assert_eq!(p.write(fd, &seed).unwrap(), seed.len());
+    p.close(fd).unwrap();
+    let msg = b"challenge";
+    let fd = p.open("#¤/rpc", mode::ORDWR).unwrap();
+    assert_eq!(p.write(fd, msg).unwrap(), msg.len());
+    p.seek(fd, 0, 0).unwrap();
+    let mut buf = [0u8; purg_core::auth::PROOF];
+    assert_eq!(p.read(fd, &mut buf).unwrap(), buf.len());
+    let public = purg_core::auth::public_key(&seed);
+    let signature: [u8; purg_core::auth::SIGNATURE] =
+        buf[..purg_core::auth::SIGNATURE].try_into().unwrap();
+    assert!(purg_core::auth::verify(&public, msg, &signature));
+    assert_eq!(&buf[purg_core::auth::SIGNATURE..], &public);
+}
+
 #[cfg(feature = "std")]
 fn install_fixture(p: &mut Prog) {
     p.bind(
@@ -258,6 +278,33 @@ fn authenticated_mount_reads_a_file() {
     let fd = p.open("#R/hello", mode::OREAD).unwrap();
     let n = p.read(fd, &mut buf).unwrap();
     assert_eq!(&buf[..n], b"hi");
+    p.close(fd).unwrap();
+    p.unmount(None, "#R/mnt").unwrap();
+    server.join().unwrap();
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn factotum_mount_without_a_key_file() {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    p.remove("/lib/test/auth.key").unwrap();
+    let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
+    let fd = p.open("#¤/ctl", mode::OWRITE).unwrap();
+    assert_eq!(p.write(fd, &seed).unwrap(), seed.len());
+    p.close(fd).unwrap();
+    let (server, b) = spawn_export(&mut p, mock, "#R");
+    p.mount(
+        b,
+        -1,
+        "#R/mnt",
+        purg_abi::mount::MREPL | purg_abi::mount::MCREATE,
+        "",
+    )
+    .unwrap();
+    p.close(b).unwrap();
+    let fd = p.create("#R/mnt/hello", mode::OWRITE, 0o644).unwrap();
+    assert_eq!(p.write(fd, b"hi").unwrap(), 2);
     p.close(fd).unwrap();
     p.unmount(None, "#R/mnt").unwrap();
     server.join().unwrap();
