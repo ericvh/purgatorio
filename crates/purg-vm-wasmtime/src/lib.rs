@@ -1,13 +1,13 @@
 //! wasmtime backend for [`purg_vm::Engine`]: Cranelift-compiled, the hosted
 //! default.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 
-use purg_abi::error::EBADEXEC;
+use purg_abi::error::{EBADADDR, EBADEXEC};
 use purg_core::Error;
 use purg_vm::{Ctx, Mem, Stop};
-use wasmtime::{AsContextMut, Caller, Config, Engine, Extern, Linker, Module, Store};
+use wasmtime::{AsContextMut, Caller, Config, Engine, Extern, Instance, Linker, Module, Store};
 
 /// Compiled modules kept for reuse; the cache is emptied when full.
 const CACHED_MODULES: usize = 64;
@@ -25,6 +25,7 @@ impl Wasmtime {
         let engine = Engine::new(&Config::new()).map_err(|e| Error::from(e.to_string()))?;
         let mut linker = Linker::new(&engine);
         link(&mut linker).map_err(|e| Error::from(e.to_string()))?;
+        register_modules(&mut linker).map_err(|e| Error::from(e.to_string()))?;
         Ok(Wasmtime {
             engine,
             linker,
@@ -69,6 +70,158 @@ fn link(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
     }
     purg_vm::for_each_import!(register);
     Ok(())
+}
+
+type Reactors = Arc<Mutex<BTreeMap<u32, Vec<Instance>>>>;
+
+fn register_modules(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
+    let modules: Reactors = Arc::new(Mutex::new(BTreeMap::new()));
+    let loading = modules.clone();
+    let calling = modules;
+    linker.func_wrap(
+        purg_abi::MODULE,
+        purg_abi::sys::LOAD,
+        move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> i32 {
+            match load_reactor(&mut caller, &loading, path, plen) {
+                Ok(handle) => handle,
+                Err(e) => {
+                    caller.data_mut().prog.set_error(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+    linker.func_wrap(
+        purg_abi::MODULE,
+        purg_abi::sys::CALL,
+        move |mut caller: Caller<'_, Ctx>,
+              handle: i32,
+              name: i32,
+              nlen: i32,
+              args: i32,
+              alen: i32,
+              out: i32,
+              olen: i32|
+              -> i32 {
+            match call_reactor(
+                &mut caller,
+                &calling,
+                Call {
+                    handle,
+                    name,
+                    nlen,
+                    args,
+                    alen,
+                    out,
+                    olen,
+                },
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    caller.data_mut().prog.set_error(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+    Ok(())
+}
+
+const PAGE: usize = 65536;
+
+fn guest_vec(caller: &mut Caller<'_, Ctx>, ptr: i32, len: i32) -> Result<Vec<u8>, Error> {
+    let (data, _) = memory(caller).map_err(|_| Error::new(EBADADDR))?;
+    Ok(Mem(data).slice(ptr, len)?.to_vec())
+}
+
+fn guest_str(caller: &mut Caller<'_, Ctx>, ptr: i32, len: i32) -> Result<String, Error> {
+    Ok(std::str::from_utf8(&guest_vec(caller, ptr, len)?)
+        .map_err(|_| Error::new(purg_abi::error::EBADARG))?
+        .to_string())
+}
+
+fn load_reactor(
+    caller: &mut Caller<'_, Ctx>,
+    modules: &Reactors,
+    path: i32,
+    plen: i32,
+) -> Result<i32, Error> {
+    let path = guest_str(caller, path, plen)?;
+    let wasm = {
+        let ctx = caller.data_mut();
+        purg_vm::load_module(&mut ctx.prog, &path)?
+    };
+    let engine = caller.engine().clone();
+    let module = Module::new(&engine, &wasm).map_err(bad_exec)?;
+    let mut linker = Linker::new(&engine);
+    link(&mut linker).map_err(|e| Error::from(e.to_string()))?;
+    register_modules(&mut linker).map_err(|e| Error::from(e.to_string()))?;
+    let instance = linker
+        .instantiate(&mut *caller, &module)
+        .map_err(bad_exec)?;
+    let pid = caller.data().prog.pid;
+    let mut table = modules.lock().unwrap_or_else(|e| e.into_inner());
+    let list = table.entry(pid).or_default();
+    list.push(instance);
+    Ok(list.len() as i32)
+}
+
+struct Call {
+    handle: i32,
+    name: i32,
+    nlen: i32,
+    args: i32,
+    alen: i32,
+    out: i32,
+    olen: i32,
+}
+
+fn call_reactor(
+    caller: &mut Caller<'_, Ctx>,
+    modules: &Reactors,
+    call: Call,
+) -> Result<i32, Error> {
+    let export = guest_str(caller, call.name, call.nlen)?;
+    let arguments = guest_vec(caller, call.args, call.alen)?;
+    if arguments.len() > PAGE || call.olen < 0 {
+        return Err(Error::from("bad argument"));
+    }
+    let instance = {
+        let pid = caller.data().prog.pid;
+        let table = modules.lock().unwrap_or_else(|e| e.into_inner());
+        let list = table.get(&pid).ok_or(Error::from("bad module handle"))?;
+        let index = usize::try_from(call.handle)
+            .ok()
+            .and_then(|h| h.checked_sub(1))
+            .ok_or(Error::from("bad module handle"))?;
+        *list.get(index).ok_or(Error::from("bad module handle"))?
+    };
+    let callee = instance
+        .get_memory(&mut *caller, purg_abi::MEMORY)
+        .ok_or(Error::from("module exports no memory"))?;
+    let old = callee
+        .grow(&mut *caller, 1)
+        .map_err(|_| Error::from("out of memory"))?;
+    let base = usize::try_from(old).map_err(|_| Error::from("out of memory"))? * PAGE;
+    callee
+        .write(&mut *caller, base, &arguments)
+        .map_err(|_| Error::new(EBADADDR))?;
+    let func = instance
+        .get_typed_func::<(i32, i32), i32>(&mut *caller, &export)
+        .map_err(|_| Error::from("export not found"))?;
+    let n = func
+        .call(&mut *caller, (base as i32, arguments.len() as i32))
+        .map_err(|e| Error::from(format!("trap: {e}")))?;
+    if n < 0 || n as usize > PAGE || n as usize > call.olen as usize {
+        return Err(Error::from("bad result length"));
+    }
+    let mut result = vec![0u8; n as usize];
+    callee
+        .read(&mut *caller, base, &mut result)
+        .map_err(|_| Error::new(EBADADDR))?;
+    let (data, _) = memory(caller).map_err(|_| Error::new(EBADADDR))?;
+    Mem(data).write(call.out, &result)?;
+    Ok(n)
 }
 
 fn bad_exec(e: impl std::fmt::Display) -> Error {

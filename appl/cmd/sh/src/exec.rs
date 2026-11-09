@@ -81,6 +81,8 @@ pub struct Shell {
     /// Exit messages for progs not yet waited for.
     exited: HashMap<u32, String>,
     pub status: String,
+    /// Handles from `load` of `/bin/lib/<name>.wasm`.
+    mods: HashMap<String, i32>,
     /// `load std` has installed the control-flow builtins.
     std: bool,
     /// `load expr` has installed `${expr}`.
@@ -116,6 +118,7 @@ impl Shell {
             std: false,
             expr: false,
             fns: HashMap::new(),
+            mods: HashMap::new(),
         }
     }
 
@@ -550,7 +553,12 @@ impl Shell {
             match name.as_str() {
                 "std" => self.std = true,
                 "expr" => self.expr = true,
-                other => return Err(Error(format!("load: {other}: module not found"))),
+                other => {
+                    let path = format!("/bin/lib/{other}.wasm");
+                    let handle = purgatorio::load(&path)
+                        .map_err(|e| Error(format!("load: {other}: {e}")))?;
+                    self.mods.insert(String::from(other), handle);
+                }
             }
         }
         Ok(())
@@ -577,6 +585,13 @@ impl Shell {
                 return Err(Error::from("expr: module not loaded"));
             }
             return Ok(vec![eval_expr(&argv[1..])?]);
+        }
+        if let Some(&handle) = self.mods.get(name) {
+            let args = argv[1..].join(" ");
+            let out = purgatorio::call(handle, name, args.as_bytes())
+                .map_err(|e| Error(format!("{name}: {e}")))?;
+            let text = String::from_utf8_lossy(&out);
+            return Ok(text.split_whitespace().map(String::from).collect());
         }
         Err(Error(format!(
             "{name}: only expr is a ${{}} builtin; use it as a command"

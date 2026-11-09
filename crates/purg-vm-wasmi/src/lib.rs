@@ -5,13 +5,17 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
 
-use purg_abi::error::EBADEXEC;
+use purg_abi::error::{EBADADDR, EBADEXEC};
 use purg_core::Error;
 use purg_vm::{Ctx, Mem, Stop};
-use wasmi::{Caller, Engine, Extern, Linker, Module, Store};
+use wasmi::{Caller, Engine, Extern, Instance, Linker, Module, Store};
 
 pub struct Wasmi {
     engine: Engine,
@@ -23,9 +27,13 @@ impl Wasmi {
         let engine = Engine::default();
         let mut linker = Linker::new(&engine);
         link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
+        register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
         Ok(Wasmi { engine, linker })
     }
 }
+
+/// Reactor instances loaded by `load`, keyed by the prog that loaded them.
+type Modules = Arc<spin::Mutex<BTreeMap<u32, Vec<Instance>>>>;
 
 /// Carries a [`Stop`] through wasmi's trap machinery.
 #[derive(Debug)]
@@ -63,6 +71,150 @@ fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
     }
     purg_vm::for_each_import!(register);
     Ok(())
+}
+
+fn register_modules(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
+    let modules: Modules = Arc::new(spin::Mutex::new(BTreeMap::new()));
+    let loading = modules.clone();
+    let calling = modules;
+    linker.func_wrap(
+        purg_abi::MODULE,
+        purg_abi::sys::LOAD,
+        move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> i32 {
+            match load_reactor(&mut caller, &loading, path, plen) {
+                Ok(handle) => handle,
+                Err(e) => {
+                    caller.data_mut().prog.set_error(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+    linker.func_wrap(
+        purg_abi::MODULE,
+        purg_abi::sys::CALL,
+        move |mut caller: Caller<'_, Ctx>,
+              handle: i32,
+              name: i32,
+              nlen: i32,
+              args: i32,
+              alen: i32,
+              out: i32,
+              olen: i32|
+              -> i32 {
+            match call_reactor(
+                &mut caller,
+                &calling,
+                Call {
+                    handle,
+                    name,
+                    nlen,
+                    args,
+                    alen,
+                    out,
+                    olen,
+                },
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    caller.data_mut().prog.set_error(&e);
+                    -1
+                }
+            }
+        },
+    )?;
+    Ok(())
+}
+
+const PAGE: usize = 65536;
+
+fn guest_vec(caller: &mut Caller<'_, Ctx>, ptr: i32, len: i32) -> Result<Vec<u8>, Error> {
+    let (data, _) = memory(caller).map_err(|_| Error::new(EBADADDR))?;
+    Ok(Mem(data).slice(ptr, len)?.to_vec())
+}
+
+fn guest_str(caller: &mut Caller<'_, Ctx>, ptr: i32, len: i32) -> Result<String, Error> {
+    Ok(String::from(
+        core::str::from_utf8(&guest_vec(caller, ptr, len)?)
+            .map_err(|_| Error::new(purg_abi::error::EBADARG))?,
+    ))
+}
+
+fn load_reactor(
+    caller: &mut Caller<'_, Ctx>,
+    modules: &Modules,
+    path: i32,
+    plen: i32,
+) -> Result<i32, Error> {
+    let path = guest_str(caller, path, plen)?;
+    let wasm = {
+        let ctx = caller.data_mut();
+        purg_vm::load_module(&mut ctx.prog, &path)?
+    };
+    let engine = caller.engine().clone();
+    let module = Module::new(&engine, &wasm).map_err(bad_exec)?;
+    let mut linker = Linker::new(&engine);
+    link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
+    register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
+    let instance = linker
+        .instantiate_and_start(&mut *caller, &module)
+        .map_err(bad_exec)?;
+    let pid = caller.data().prog.pid;
+    let mut table = modules.lock();
+    let list = table.entry(pid).or_default();
+    list.push(instance);
+    Ok(list.len() as i32)
+}
+
+struct Call {
+    handle: i32,
+    name: i32,
+    nlen: i32,
+    args: i32,
+    alen: i32,
+    out: i32,
+    olen: i32,
+}
+
+fn call_reactor(caller: &mut Caller<'_, Ctx>, modules: &Modules, call: Call) -> Result<i32, Error> {
+    let export = guest_str(caller, call.name, call.nlen)?;
+    let arguments = guest_vec(caller, call.args, call.alen)?;
+    if arguments.len() > PAGE {
+        return Err(Error::from("argument too big"));
+    }
+    let instance = {
+        let pid = caller.data().prog.pid;
+        let table = modules.lock();
+        let list = table.get(&pid).ok_or(Error::from("bad module handle"))?;
+        let index = usize::try_from(call.handle)
+            .ok()
+            .and_then(|h| h.checked_sub(1))
+            .ok_or(Error::from("bad module handle"))?;
+        *list.get(index).ok_or(Error::from("bad module handle"))?
+    };
+    let callee = instance
+        .get_memory(&*caller, purg_abi::MEMORY)
+        .ok_or(Error::from("module exports no memory"))?;
+    let old = callee.size(&*caller);
+    callee
+        .grow(&mut *caller, 1)
+        .map_err(|_| Error::from("out of memory"))?;
+    let base = usize::try_from(old).map_err(|_| Error::from("out of memory"))? * PAGE;
+    callee.data_mut(&mut *caller)[base..base + arguments.len()].copy_from_slice(&arguments);
+    let func = instance
+        .get_typed_func::<(i32, i32), i32>(&*caller, &export)
+        .map_err(|_| Error::from("export not found"))?;
+    let n = func
+        .call(&mut *caller, (base as i32, arguments.len() as i32))
+        .map_err(|e| Error::from(format!("trap: {e}")))?;
+    if n < 0 || call.olen < 0 || n as usize > PAGE || n as usize > call.olen as usize {
+        return Err(Error::from("bad result length"));
+    }
+    let mut result = vec![0u8; n as usize];
+    result.copy_from_slice(&callee.data(&*caller)[base..base + n as usize]);
+    let (data, _) = memory(caller).map_err(|_| Error::new(EBADADDR))?;
+    Mem(data).write(call.out, &result)?;
+    Ok(n)
 }
 
 fn bad_exec(e: impl core::fmt::Display) -> Error {

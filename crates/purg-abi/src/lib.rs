@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.3";
+pub const ABI_VERSION: &str = "0.4";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -112,6 +112,15 @@ pub mod sys {
     /// (0 fd read, 1 fd write, 2 chan recv, 3 chan send) and the fd or handle.
     /// `timeout_ms < 0` waits without a limit. Returns -1 on timeout.
     pub const WAIT: &str = "wait";
+    /// `load(path, plen) -> handle`. Instantiates a reactor module in this
+    /// prog. The handle is a small positive integer.
+    pub const LOAD: &str = "load";
+    /// `call(handle, name, nlen, args, alen, out, olen) -> n`. Calls export
+    /// `name`, which has type `(i32, i32) -> i32`: the host writes `args` into
+    /// a fresh page of the module's memory and the export overwrites that
+    /// page with its result, returning the result length. `n` bytes are
+    /// copied to `out`.
+    pub const CALL: &str = "call";
 }
 
 /// Bytes on a `file2chan` request or reply channel.

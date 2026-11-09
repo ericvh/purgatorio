@@ -12,6 +12,7 @@ members = [
     "crates/purg-probe",
     "sdk/purgatorio",
     "sdk/purgatorio-macros",
+    "appl/lib/add",
     "appl/cmd/bind",
     "appl/cmd/cmp",
     "appl/cmd/cat",
