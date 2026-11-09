@@ -11,14 +11,14 @@ use purgatorio::{Context, Error};
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, "mount [-abrcA] fd-or-addr mtpt [spec]");
-    let (mut order, mut create) = (mount::MREPL, 0);
+    let (mut order, mut create, mut noauth) = (mount::MREPL, 0, 0);
     while let Some(c) = arg.opt() {
         match c {
             'a' => order = mount::MAFTER,
             'b' => order = mount::MBEFORE,
             'r' => order = mount::MREPL,
             'c' => create = mount::MCREATE,
-            'A' => {}
+            'A' => noauth = mount::MNOAUTH,
             _ => return Err(arg.usage()),
         }
     }
@@ -39,7 +39,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         conn = None;
         rest[0].parse().map_err(|_| Error::from("bad fd"))?
     };
-    purgatorio::mount(fd, -1, &rest[1], order | create, spec)
+    purgatorio::mount(fd, -1, &rest[1], order | create | noauth, spec)
         .map_err(|e| Error(format!("mount: {e}")))?;
     // The mount's session holds the conversation. Dropping `conn` closes this
     // prog's descriptor and leaves the session's reference in place.

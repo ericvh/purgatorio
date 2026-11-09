@@ -308,7 +308,7 @@ fn probe() -> Result<()> {
 fn mount_probe(ws: &Path) -> Result<()> {
     let emu = ws.join("target/debug/emu");
     let script = format!(
-        "mkdir -p /tmp/probe-mnt; mount -A tcp!127.0.0.1!{PROBE_NET_PORT} /tmp/probe-mnt; cat /tmp/probe-mnt/lib/probe/hello.txt"
+        "mkdir -p /tmp/probe-mnt; mount tcp!127.0.0.1!{PROBE_NET_PORT} /tmp/probe-mnt; cat /tmp/probe-mnt/lib/probe/hello.txt"
     );
     let mut child = Command::new(&emu)
         .arg("-r")

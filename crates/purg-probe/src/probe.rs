@@ -199,7 +199,13 @@ fn serve_export(sys: &System) -> Result<(), Error> {
     }
     let data = prog.open(&format!("/net/tcp/{new_id}/data"), mode::ORDWR)?;
     let chan = prog.chan(data)?;
-    purg_core::export::serve(sys.pgrp.clone(), "/", &chan)?;
+    purg_core::export::serve(
+        sys.pgrp.clone(),
+        "/",
+        &chan,
+        sys.kernel.platform.as_ref(),
+        false,
+    )?;
     println!("probe: net served");
     Ok(())
 }
