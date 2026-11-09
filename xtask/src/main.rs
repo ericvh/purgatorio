@@ -19,6 +19,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const GUEST_TARGET: &str = "wasm32-wasip1";
@@ -181,12 +182,15 @@ fn run_emu(args: &[String]) -> Result<ExitCode> {
 
 const PROBE_TARGET: &str = "aarch64-unknown-none";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Host port forwarded to the probe's `tcp!*!6666` export.
+const PROBE_NET_PORT: u16 = 17666;
 
 /// Builds `purg-probe` over a fresh `root/`, boots it in QEMU and compares
 /// its serial output with `crates/purg-probe/expected.out`.
 fn probe() -> Result<()> {
     build_root()?;
     let ws = workspace();
+    run(cargo().current_dir(&ws).args(["build", "-p", "purg-emu"]))?;
     run(cargo().current_dir(&ws).args([
         "build",
         "-p",
@@ -201,6 +205,7 @@ fn probe() -> Result<()> {
         .join(PROBE_TARGET)
         .join("probe/purg-probe");
     let qemu = env::var("QEMU").unwrap_or_else(|_| String::from("qemu-system-aarch64"));
+    let fwd = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{PROBE_NET_PORT}-:6666");
     let mut child = Command::new(&qemu)
         .args([
             "-M",
@@ -211,6 +216,12 @@ fn probe() -> Result<()> {
             "512M",
             "-nographic",
             "-semihosting",
+            "-netdev",
+            &fwd,
+            "-global",
+            "virtio-mmio.force-legacy=off",
+            "-device",
+            "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56",
             "-kernel",
         ])
         .arg(&image)
@@ -219,27 +230,54 @@ fn probe() -> Result<()> {
         .spawn()
         .map_err(|e| format!("{qemu}: {e}"))?;
     let mut stdout = child.stdout.take().expect("piped stdout");
+    let serial = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let serial_for_reader = Arc::clone(&serial);
     let reader = std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        out
+        let mut tmp = [0u8; 512];
+        loop {
+            match stdout.read(&mut tmp) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => serial_for_reader
+                    .lock()
+                    .expect("serial")
+                    .extend_from_slice(&tmp[..n]),
+            }
+        }
     });
     let start = Instant::now();
+    let mut mounted = false;
     let status = loop {
+        if !mounted {
+            let text = String::from_utf8_lossy(&serial.lock().expect("serial")).replace('\r', "");
+            if text.contains("probe: net ready\n") {
+                mounted = true;
+                if let Err(e) = mount_probe(&ws) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = reader.join();
+                    let got =
+                        String::from_utf8_lossy(&serial.lock().expect("serial")).replace('\r', "");
+                    eprint!("{got}");
+                    return Err(e);
+                }
+            }
+        }
         if let Some(s) = child.try_wait().map_err(|e| format!("{qemu}: {e}"))? {
             break s;
         }
         if start.elapsed() > PROBE_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            let out = reader.join().unwrap_or_default();
+            let _ = reader.join();
+            let out = serial.lock().expect("serial").clone();
             eprint!("{}", String::from_utf8_lossy(&out));
             return Err(format!("probe did not exit within {PROBE_TIMEOUT:?}"));
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(20));
     };
     let elapsed = start.elapsed();
-    let out = reader.join().map_err(|_| "reading QEMU output failed")?;
+    let _ = reader.join();
+    let out = serial.lock().expect("serial").clone();
     let got = String::from_utf8_lossy(&out).replace('\r', "");
     print!("{got}");
     let golden = ws.join("crates/purg-probe/expected.out");
@@ -253,7 +291,54 @@ fn probe() -> Result<()> {
             golden.display()
         ));
     }
+    if !mounted {
+        return Err(String::from("probe finished without announcing tcp!*!6666"));
+    }
     eprintln!("probe: passed in {:.2}s", elapsed.as_secs_f64());
+    Ok(())
+}
+
+/// Mounts the probe's export from this host and reads a file through it.
+fn mount_probe(ws: &Path) -> Result<()> {
+    let emu = ws.join("target/debug/emu");
+    let script = format!(
+        "mkdir -p /tmp/probe-mnt; mount -A tcp!127.0.0.1!{PROBE_NET_PORT} /tmp/probe-mnt; cat /tmp/probe-mnt/lib/probe/hello.txt"
+    );
+    let mut child = Command::new(&emu)
+        .arg("-r")
+        .arg(ws.join("root"))
+        .arg("--vm=wasmi")
+        .args(["sh", "-c", &script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", emu.display()))?;
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| format!("emu: {e}"))? {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(20) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(String::from("probe export mount timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    let out_status = status;
+    if stdout.trim() != "hello from the probe root" {
+        return Err(format!(
+            "probe export mount failed ({out_status})\n{stdout}{stderr}"
+        ));
+    }
     Ok(())
 }
 

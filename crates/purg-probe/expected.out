@@ -39,7 +39,8 @@ probe: ok
 probe: run /bin/test/net.wasm
 ok cs
 ok os_skip
-ok net_skip
+ok dial
+ok export
 probe: ok
 probe: sh /lib/test/sh/bind.sh
 probe: ok
@@ -63,4 +64,6 @@ probe: sh /lib/test/sh/tools.sh
 probe: ok
 probe: sh /lib/test/sh/words.sh
 probe: ok
+probe: net ready
+probe: net served
 probe: pass

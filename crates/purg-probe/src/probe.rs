@@ -176,6 +176,34 @@ impl System {
     }
 }
 
+/// Announces `tcp!*!6666` and serves `/` to the first connection. The host
+/// forwards that port and mounts it; this returns when the client hangs up.
+fn serve_export(sys: &System) -> Result<(), Error> {
+    let mut prog = Prog::new(sys.kernel.clone(), sys.pgrp.clone());
+    sys.kernel.platform.set_current_pid(prog.pid);
+    let ctl = prog.open("/net/tcp/clone", mode::ORDWR)?;
+    let mut buf = [0u8; 32];
+    let n = prog.read(ctl, &mut buf)?;
+    let id = core::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+    if id.is_empty() {
+        return Err(Error::from("net: clone failed"));
+    }
+    prog.write(ctl, b"announce *!6666")?;
+    println!("probe: net ready");
+    let listen = prog.open(&format!("/net/tcp/{id}/listen"), mode::OREAD)?;
+    buf = [0u8; 32];
+    let n = prog.read(listen, &mut buf)?;
+    let new_id = core::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+    if new_id.is_empty() {
+        return Err(Error::from("net: listen failed"));
+    }
+    let data = prog.open(&format!("/net/tcp/{new_id}/data"), mode::ORDWR)?;
+    let chan = prog.chan(data)?;
+    purg_core::export::serve(sys.pgrp.clone(), "/", &chan)?;
+    println!("probe: net served");
+    Ok(())
+}
+
 fn report(failed: &mut usize, verdict: Result<String, String>) {
     match verdict {
         Ok(v) => println!("probe: {v}"),
@@ -217,6 +245,12 @@ fn script() -> Result<usize, Error> {
             &mut failed,
             sys.sh_script(path, want).map(|()| String::from("ok")),
         );
+    }
+    if failed == 0
+        && let Err(e) = serve_export(&sys)
+    {
+        println!("probe: net fail {e}");
+        failed += 1;
     }
     Ok(failed)
 }
