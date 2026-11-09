@@ -133,7 +133,7 @@ impl Session {
         &self,
         user: &str,
         aname: &str,
-        secret: impl Fn() -> Result<[u8; auth::SEED]>,
+        secret: impl Fn(&[u8]) -> Result<[u8; auth::PROOF]>,
     ) -> Result<Option<u32>> {
         const AFID: u32 = 0xfffe;
         let buf = self.rpc(Fcall::Tauth {
@@ -160,12 +160,7 @@ impl Session {
             }
             _ => return Err(Error::new(error::EIO)),
         };
-        let seed = secret()?;
-        let signature = auth::sign(&seed, &challenge);
-        let public = auth::public_key(&seed);
-        let mut proof = [0u8; auth::PROOF];
-        proof[..auth::SIGNATURE].copy_from_slice(&signature);
-        proof[auth::SIGNATURE..].copy_from_slice(&public);
+        let proof = secret(&challenge)?;
         let buf = self.rpc(Fcall::Twrite {
             fid: AFID,
             offset: 0,
@@ -217,7 +212,7 @@ impl DevMnt {
         aname: &str,
         user: &str,
         noauth: bool,
-        secret: impl Fn() -> Result<[u8; auth::SEED]>,
+        secret: impl Fn(&[u8]) -> Result<[u8; auth::PROOF]>,
     ) -> Result<Chan> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let msize = Arc::new(AtomicU32::new(MAX_MSIZE));

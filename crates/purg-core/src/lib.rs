@@ -14,6 +14,7 @@ pub mod devcmd;
 pub mod devcons;
 pub mod devdup;
 pub mod devenv;
+pub mod devfactotum;
 pub mod devip;
 pub mod devmem;
 pub mod devmnt;
@@ -57,8 +58,8 @@ pub struct Portable {
     pub mnt: Arc<DevMnt>,
 }
 
-/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I` and `#C`. Embedders
-/// add `#/` and their own devices.
+/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C` and `#¤`.
+/// Embedders add `#/` and their own devices.
 pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Portable {
     let srv = Arc::new(devsrv::DevSrv::new(procs.user()));
     let mnt = Arc::new(devmnt::DevMnt::new(platform.clone()));
@@ -73,6 +74,7 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
         Arc::new(devmem::DevMem::new(platform.clone())),
         Arc::new(devip::DevIp::new(platform.clone())),
         Arc::new(devcmd::DevCmd::new(platform.clone())),
+        Arc::new(devfactotum::DevFactotum::new(platform.clone())),
     ];
     Portable { devs, srv, mnt }
 }
