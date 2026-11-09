@@ -59,7 +59,11 @@ fn manifest_name(manifest: &str, section: &str) -> Option<String> {
 
 fn guests(ws: &Path) -> Result<Vec<Guest>> {
     let mut out = Vec::new();
-    for (sub, dir) in [("appl/cmd", "bin"), ("appl/test", "bin/test")] {
+    for (sub, dir) in [
+        ("appl/cmd", "bin"),
+        ("appl/test", "bin/test"),
+        ("appl/lib", "bin/lib"),
+    ] {
         let mut entries: Vec<_> = fs::read_dir(ws.join(sub))
             .map_err(|e| format!("{sub}: {e}"))?
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -71,7 +75,9 @@ fn guests(ws: &Path) -> Result<Vec<Guest>> {
             };
             let package = manifest_name(&manifest, "[package]")
                 .ok_or_else(|| format!("{}: no package name", path.display()))?;
-            let bin = manifest_name(&manifest, "[[bin]]").unwrap_or_else(|| package.clone());
+            let bin = manifest_name(&manifest, "[[bin]]")
+                .or_else(|| manifest_name(&manifest, "[lib]"))
+                .unwrap_or_else(|| package.clone());
             out.push(Guest { package, bin, dir });
         }
     }

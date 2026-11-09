@@ -15,3 +15,5 @@ greet there
 and {~ a a} {echo and-yes}
 if {not {~ a b}} {echo not-yes}
 or {~ a b} {echo or-yes}
+load add
+echo ${add 20 22}

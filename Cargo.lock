@@ -313,6 +313,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-lib-add"
+version = "0.1.0"
+
+[[package]]
 name = "appl-test-abi"
 version = "0.1.0"
 dependencies = [
@@ -1109,6 +1113,7 @@ dependencies = [
  "purg-abi",
  "purg-core",
  "purg-vm",
+ "spin 0.10.1",
  "wasmi",
 ]
 

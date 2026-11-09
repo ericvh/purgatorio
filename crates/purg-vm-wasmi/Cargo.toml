@@ -11,6 +11,7 @@ purg-abi.workspace = true
 purg-core.workspace = true
 purg-vm.workspace = true
 wasmi.workspace = true
+spin.workspace = true
 
 [lints]
 workspace = true

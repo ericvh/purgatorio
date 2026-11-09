@@ -77,6 +77,16 @@ imports! {
     fn chan_recv(h: i32, buf: *mut u8, blen: usize, handles: *mut i32, maxh: usize) -> i32;
     fn alt(ops: *mut i32, nops: usize, block: i32) -> i32;
     fn wait(ops: *const i32, nops: usize, timeout_ms: i32) -> i32;
+    fn load(path: *const u8, plen: usize) -> i32;
+    fn call(
+        handle: i32,
+        name: *const u8,
+        nlen: usize,
+        args: *const u8,
+        alen: usize,
+        out: *mut u8,
+        olen: usize
+    ) -> i32;
 }
 
 #[cfg(target_os = "wasi")]

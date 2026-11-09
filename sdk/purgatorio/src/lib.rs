@@ -240,6 +240,32 @@ pub fn pipe() -> Result<[OwnedFd; 2], Error> {
     Ok([fd(fds[0])?, fd(fds[1])?])
 }
 
+/// Instantiates the reactor at `path` in this prog. The handle is passed to
+/// [`call`].
+pub fn load(path: &str) -> Result<i32, Error> {
+    let n = check(unsafe { sys::load(path.as_ptr(), path.len()) })?;
+    i32::try_from(n).map_err(|_| Error::from("bad module handle"))
+}
+
+/// Calls export `name` in a module from [`load`]. `args` are the raw bytes
+/// the export reads; the bytes it writes back are the result.
+pub fn call(handle: i32, name: &str, args: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut buf = vec![0u8; 65536];
+    let n = check(unsafe {
+        sys::call(
+            handle,
+            name.as_ptr(),
+            name.len(),
+            args.as_ptr(),
+            args.len(),
+            buf.as_mut_ptr(),
+            buf.len(),
+        )
+    })?;
+    buf.truncate(n);
+    Ok(buf)
+}
+
 /// `sys->iounit`: the largest atomic I/O on `fd`; 0 means no limit.
 pub fn iounit(fd: i32) -> Result<usize, Error> {
     check(unsafe { sys::iounit(fd) })
