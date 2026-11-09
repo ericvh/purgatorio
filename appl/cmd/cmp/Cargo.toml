@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-cmp"
+description = "cmp: compare two files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cmp"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

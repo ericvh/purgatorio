@@ -65,15 +65,24 @@ fn boot(root: PathBuf) -> Result<Prog, Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform::Emu::new());
     let procs = Procs::new(platform.clone());
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
-    devs.extend(purg_core::portable_devices(&platform, &procs));
+    let portable = purg_core::portable_devices(&platform, &procs);
+    devs.extend(portable.devs);
     devs.push(Arc::new(devfs::DevFs::new(root)?));
     let devtab = DevTab::new(devs);
-    let kernel = Kernel::new(platform.clone(), devtab.clone(), procs);
+    let kernel = Kernel::new(
+        platform.clone(),
+        devtab.clone(),
+        procs,
+        portable.srv,
+        portable.mnt,
+    );
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "")?);
     pgrp.bind("#U", "/", MAFTER | MCREATE)?;
     pgrp.bind("#c", "/dev", MBEFORE)?;
     pgrp.bind("#e", "/env", MREPL | MCREATE)?;
     pgrp.bind("#p", "/prog", MREPL)?;
+    pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
+    pgrp.bind("#d", "/fd", MREPL)?;
     let mut prog = Prog::new(kernel, pgrp);
     platform.set_current_pid(prog.pid);
     purg_vm::init_fds(&mut prog)?;

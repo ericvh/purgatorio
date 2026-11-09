@@ -25,6 +25,11 @@ pub trait Console: Send + Sync {
     fn read(&self, buf: &mut [u8]) -> Result<usize>;
     /// Writes all of `buf`.
     fn write(&self, buf: &[u8]) -> Result<usize>;
+    /// Turns the host terminal's raw mode on or off. Devices that are already
+    /// byte streams (a UART, a pipe) do nothing.
+    fn set_raw(&self, _on: bool) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Services the portable core needs from its environment. Sleep and wakeup
@@ -49,4 +54,15 @@ pub trait Platform: Send + Sync {
     /// on hosted, a kernel thread on bare metal. Fails with `"no free
     /// procs"` when none can be created.
     fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()>;
+    /// Bytes of memory in use and bytes available to the system, for `#c/memory`
+    /// and `#%`. `(0, 0)` means the platform has no figures.
+    fn memory(&self) -> (u64, u64) {
+        (0, 0)
+    }
+    /// Records which prog's [`sync::Note`] `kill` should interrupt on this
+    /// thread. The hosted emu keeps it thread-local; bare metal keeps it on
+    /// the current kernel thread.
+    fn set_note(&self, note: Option<alloc::sync::Arc<sync::Note>>) {
+        sync::set_current_note(note);
+    }
 }

@@ -11,14 +11,14 @@ just as `.dis` files did.
 
 The work is phased:
 
-1. A hosted `emu` on Linux and macOS. **Milestone 2 is in progress.**
+1. A hosted `emu` on Linux and macOS. **Milestone 3 is in progress.**
 2. A native aarch64 kernel under QEMU `virt`.
 3. Graphics (draw, Tk, wm), deliberately last.
 
 Every milestone is validated on aarch64. CI runs natively on Linux aarch64 and
 macOS arm64, and the shared kernel crates build for `aarch64-unknown-none`.
 
-## Status: Milestone 2
+## Status: Milestone 3
 
 `emu` boots a namespace like Inferno's emu. `#/` is the root, the host tree
 `#U` is unioned after it and takes creates, `#c` is bound before `/dev`, `#e`
@@ -31,13 +31,15 @@ a `; ` prompt.
 | Piece | State |
 |---|---|
 | `#/` root, `#c` (`cons`, `null`, `user`, `sysname`, `time`, `pid`, `drivers`), `#U` (read/write host fs) | done |
-| `#e` (per-Egrp environment), `#\|` (pipes over qio queues), `#p` (`wait` only until M3) | done |
+| `#e` (per-Egrp environment), `#\|` (pipes over qio queues), `#p` (`status`, `ctl`, `ns`, `fd`, `wait`) | done |
 | Namespace: `namec`, `bind` with `MREPL`/`MBEFORE`/`MAFTER`/`MCREATE` unions, `unmount`, `chdir`, lexical `..` | done |
 | Progs: `spawn_prog`, `pctl` (`NEWFD FORKFD NEWNS FORKNS NEWPGRP NODEVS NEWENV FORKENV`), wait messages; `Rendez` and qio checked with loom | done |
 | WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
 | App ABI v0.2: WASI preview1 subset plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)) | done |
 | `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, builtins `cd exit run wait` | done |
+| `#M` mount, `export`, `#s` file2chan, `#d`, `#%`, kernel channels | done |
 | W1 commands: `bind cat cp date echo emuinit env ls mkdir mv pwd rm sleep unmount wc` | done |
+| W2 commands: `cmp diff du fc grep kill md5sum memfs mount ns ps ramfile sed tail tee xd` | done |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |

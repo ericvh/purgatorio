@@ -12,7 +12,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::arch::global_asm;
 
-use purg_platform::sync::Sched;
+use alloc::sync::Arc;
+use purg_platform::sync::{Note, Sched};
 use spin::Mutex;
 
 use crate::hw;
@@ -39,6 +40,7 @@ struct Thread {
     _stack: Option<Vec<u8>>,
     entry: Option<Box<dyn FnOnce() + Send>>,
     pid: u32,
+    note: Option<Arc<Note>>,
     done: bool,
 }
 
@@ -141,6 +143,7 @@ impl Scheduler {
             _stack: None,
             entry: None,
             pid: 0,
+            note: None,
             done: false,
         })));
         t.current = 0;
@@ -160,6 +163,7 @@ impl Scheduler {
             _stack: Some(stack),
             entry: Some(f),
             pid: 0,
+            note: None,
             done: false,
         });
         let mut t = self.threads.lock();
@@ -182,6 +186,16 @@ impl Scheduler {
 
     pub fn set_current_pid(&self, pid: u32) {
         self.threads.lock().current_mut().pid = pid;
+    }
+}
+
+impl Scheduler {
+    fn note(&self) -> Option<Arc<Note>> {
+        self.threads.lock().current_mut().note.clone()
+    }
+
+    fn set_note(&self, note: Option<Arc<Note>>) {
+        self.threads.lock().current_mut().note = note;
     }
 }
 
@@ -220,5 +234,13 @@ impl Sched for Scheduler {
     fn monotonic_ns(&self) -> u64 {
         let hz = hw::counter_hz().max(1);
         (u128::from(hw::counter()) * 1_000_000_000 / u128::from(hz)) as u64
+    }
+
+    fn note(&self) -> Option<Arc<Note>> {
+        Scheduler::note(self)
+    }
+
+    fn set_note(&self, note: Option<Arc<Note>>) {
+        Scheduler::set_note(self, note);
     }
 }

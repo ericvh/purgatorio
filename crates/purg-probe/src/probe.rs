@@ -43,6 +43,7 @@ const SCRIPT: &[(&[&str], Want)] = &[
     (&["cat", "/nonexistent"], Want::Fail),
     (&["/bin/test/abi.wasm"], Want::Ok),
     (&["/bin/test/procs.wasm"], Want::Ok),
+    (&["/bin/test/m3.wasm"], Want::Ok),
 ];
 
 /// The sh scripts run with their output captured and compared with the
@@ -95,15 +96,18 @@ fn boot() -> Result<(Arc<Kernel>, Arc<Pgrp>), Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform::Probe::new());
     let procs = Procs::new(platform.clone());
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
-    devs.extend(purg_core::portable_devices(&platform, &procs));
+    let portable = purg_core::portable_devices(&platform, &procs);
+    devs.extend(portable.devs);
     devs.push(Arc::new(ram_root(procs.user(), &platform)));
     let devtab = DevTab::new(devs);
-    let kernel = Kernel::new(platform, devtab.clone(), procs);
+    let kernel = Kernel::new(platform, devtab.clone(), procs, portable.srv, portable.mnt);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "")?);
     pgrp.bind("#U", "/", MAFTER | MCREATE)?;
     pgrp.bind("#c", "/dev", MBEFORE)?;
     pgrp.bind("#e", "/env", MREPL | MCREATE)?;
     pgrp.bind("#p", "/prog", MREPL)?;
+    pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
+    pgrp.bind("#d", "/fd", MREPL)?;
     Ok((kernel, pgrp))
 }
 

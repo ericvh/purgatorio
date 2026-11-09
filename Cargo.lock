@@ -47,6 +47,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-cmp"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-cp"
 version = "0.1.0"
 dependencies = [
@@ -55,6 +62,20 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-date"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-diff"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-du"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -82,7 +103,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-fc"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-grep"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-kill"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ls"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-md5sum"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-memfs"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -96,7 +152,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-mount"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-mv"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ns"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ps"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -110,7 +187,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-ramfile"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-rm"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-sed"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -131,6 +222,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-tail"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-tee"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-unmount"
 version = "0.1.0"
 dependencies = [
@@ -145,7 +250,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-xd"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-test-abi"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-test-m3"
 version = "0.1.0"
 dependencies = [
  "purgatorio",

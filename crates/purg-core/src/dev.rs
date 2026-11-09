@@ -55,6 +55,26 @@ pub trait Dev: Send + Sync {
     fn wstat(&self, _c: &Chan, _d: &Dir) -> Result<()> {
         Err(Error::new(error::EPERM))
     }
+
+    /// Largest atomic I/O, or 0 when the device does not limit it.
+    fn iounit(&self, _c: &Chan) -> u32 {
+        0
+    }
+
+    /// Attach name of a mounted channel (`#M`), empty otherwise.
+    fn aname(&self, _c: &Chan) -> String {
+        String::new()
+    }
+
+    /// Whether a read (`write == false`) or write would not block.
+    fn ready(&self, _c: &Chan, _write: bool) -> bool {
+        true
+    }
+
+    /// Wakes `w` when [`Dev::ready`] may have changed.
+    fn watch(&self, _c: &Chan, _write: bool, _w: &purg_platform::sync::Rendez) {}
+
+    fn unwatch(&self, _c: &Chan, _w: &purg_platform::sync::Rendez) {}
 }
 
 /// The device table: Inferno's `devtab`.
