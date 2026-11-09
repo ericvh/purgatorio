@@ -191,6 +191,98 @@ fn export_mount_loopback() {
     server.join().unwrap();
 }
 
+#[cfg(feature = "std")]
+fn install_fixture(p: &mut Prog) {
+    p.bind(
+        "#R",
+        "/",
+        purg_abi::mount::MAFTER | purg_abi::mount::MCREATE,
+    )
+    .unwrap();
+    for dir in ["/lib", "/lib/test"] {
+        let fd = p.create(dir, mode::OREAD, purg_styx::DMDIR).unwrap();
+        p.close(fd).unwrap();
+    }
+    let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
+    let public = purg_core::auth::public_key(&seed);
+    for (path, bytes) in [
+        ("/lib/test/auth.key", seed.as_slice()),
+        ("/lib/test/auth.key.pub", public.as_slice()),
+    ] {
+        let fd = p.create(path, mode::OWRITE, 0o644).unwrap();
+        assert_eq!(p.write(fd, bytes).unwrap(), bytes.len());
+        p.close(fd).unwrap();
+    }
+}
+
+#[cfg(feature = "std")]
+fn spawn_export(p: &mut Prog, mock: Arc<Mock>, root: &str) -> (thread::JoinHandle<()>, i32) {
+    let root = String::from(root);
+    let [a, b] = p.pipe().unwrap();
+    let [ready_r, ready_w] = p.pipe().unwrap();
+    let mut child = p.spawn(0, &[(a, 0), (ready_w, 1)]).unwrap();
+    child.started();
+    p.close(a).unwrap();
+    p.close(ready_w).unwrap();
+    let server = thread::spawn(move || {
+        mock.set_current_pid(child.pid);
+        purg_platform::sync::set_current_note(Some(child.proc.note.clone()));
+        child.write(1, b"Z").unwrap();
+        child.export(0, &root, 0).unwrap();
+    });
+    let mut flag = [0u8; 1];
+    assert_eq!(p.read(ready_r, &mut flag).unwrap(), 1);
+    p.close(ready_r).unwrap();
+    (server, b)
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn authenticated_mount_reads_a_file() {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, mock, "#R");
+    p.mount(
+        b,
+        -1,
+        "#R/mnt",
+        purg_abi::mount::MREPL | purg_abi::mount::MCREATE,
+        "",
+    )
+    .unwrap();
+    p.close(b).unwrap();
+    let fd = p.create("#R/mnt/hello", mode::OWRITE, 0o644).unwrap();
+    assert_eq!(p.write(fd, b"hi").unwrap(), 2);
+    p.close(fd).unwrap();
+    let mut buf = [0u8; 8];
+    let fd = p.open("#R/hello", mode::OREAD).unwrap();
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"hi");
+    p.close(fd).unwrap();
+    p.unmount(None, "#R/mnt").unwrap();
+    server.join().unwrap();
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn unauthenticated_mount_is_rejected() {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, mock, "#R");
+    let err = p
+        .mount(
+            b,
+            -1,
+            "#R/mnt",
+            purg_abi::mount::MREPL | purg_abi::mount::MNOAUTH,
+            "",
+        )
+        .unwrap_err();
+    assert_eq!(err.as_str(), purg_core::auth::REQUIRED);
+    p.close(b).unwrap();
+    server.join().unwrap();
+}
+
 /// Hosted only: without the `std` feature the platform has no per-thread
 /// note, so this is the emu's thread-per-prog model (`cargo test -p purg-core
 /// --features std`).

@@ -14,6 +14,7 @@ use purg_platform::{Platform, sync};
 use purg_styx::server::{IOHDRSZ, MAX_MSIZE};
 use purg_styx::{DMDIR, Dir, Fcall, Msg, NOFID, QTDIR, VERSION, dirs};
 
+use crate::auth;
 use crate::chan::Chan;
 use crate::dev::{Dev, Walked};
 use crate::error::{Error, Result};
@@ -125,6 +126,56 @@ impl Session {
         let buf = self.rpc(Fcall::Tclunk { fid })?;
         self.decode(&buf).map(drop)
     }
+
+    /// `Some(afid)` when the server asked for a signature. `None` when it
+    /// does not authenticate.
+    fn authenticate(
+        &self,
+        user: &str,
+        aname: &str,
+        secret: impl Fn() -> Result<[u8; auth::SEED]>,
+    ) -> Result<Option<u32>> {
+        const AFID: u32 = 0xfffe;
+        let buf = self.rpc(Fcall::Tauth {
+            afid: AFID,
+            uname: user,
+            aname,
+        })?;
+        match self.decode(&buf) {
+            Err(e) if e.as_str() == auth::NOT_REQUIRED => return Ok(None),
+            Err(e) => return Err(e),
+            Ok(Fcall::Rauth { .. }) => {}
+            Ok(_) => return Err(Error::new(error::EIO)),
+        }
+        let buf = self.rpc(Fcall::Tread {
+            fid: AFID,
+            offset: 0,
+            count: auth::CHALLENGE as u32,
+        })?;
+        let challenge = match self.decode(&buf)? {
+            Fcall::Rread { data } if data.len() == auth::CHALLENGE => {
+                let mut c = [0u8; auth::CHALLENGE];
+                c.copy_from_slice(data);
+                c
+            }
+            _ => return Err(Error::new(error::EIO)),
+        };
+        let seed = secret()?;
+        let signature = auth::sign(&seed, &challenge);
+        let public = auth::public_key(&seed);
+        let mut proof = [0u8; auth::PROOF];
+        proof[..auth::SIGNATURE].copy_from_slice(&signature);
+        proof[auth::SIGNATURE..].copy_from_slice(&public);
+        let buf = self.rpc(Fcall::Twrite {
+            fid: AFID,
+            offset: 0,
+            data: &proof,
+        })?;
+        match self.decode(&buf)? {
+            Fcall::Rwrite { count } if count as usize == proof.len() => Ok(Some(AFID)),
+            _ => Err(Error::new(error::EIO)),
+        }
+    }
 }
 
 impl Drop for Session {
@@ -157,7 +208,17 @@ impl DevMnt {
     }
 
     /// Version and attach on `fd`, returning the attached root.
-    pub fn mount(self: &Arc<Self>, fd: Arc<Chan>, aname: &str, user: &str) -> Result<Chan> {
+    ///
+    /// `noauth` attaches with `NOFID`. Otherwise the client speaks `Tauth`
+    /// and, when the server asks, signs the challenge with `secret`.
+    pub fn mount(
+        self: &Arc<Self>,
+        fd: Arc<Chan>,
+        aname: &str,
+        user: &str,
+        noauth: bool,
+        secret: impl Fn() -> Result<[u8; auth::SEED]>,
+    ) -> Result<Chan> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let msize = Arc::new(AtomicU32::new(MAX_MSIZE));
         let mux = Arc::new(Mux::new());
@@ -211,9 +272,14 @@ impl DevMnt {
                 }
                 _ => return Err(Error::new("bad 9P version")),
             }
+            let afid = if noauth {
+                NOFID
+            } else {
+                session.authenticate(user, aname, &secret)?.unwrap_or(NOFID)
+            };
             let buf = session.rpc(Fcall::Tattach {
                 fid: 1,
-                afid: NOFID,
+                afid,
                 uname: user,
                 aname,
             })?;

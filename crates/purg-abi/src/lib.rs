@@ -279,6 +279,10 @@ pub mod mount {
     pub const MCREATE: u32 = 0x0004;
     /// Mask selecting the ordering part of the flags.
     pub const MORDER: u32 = 0x0003;
+    /// Skip `Tauth`. The mount and export commands set this for `-A`.
+    /// A server that has a key rejects the attach; one that does not
+    /// accepts it.
+    pub const MNOAUTH: u32 = 0x8000_0000;
 }
 
 /// Error strings, worded exactly as Inferno's.

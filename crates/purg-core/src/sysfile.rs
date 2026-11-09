@@ -207,22 +207,37 @@ impl Prog {
         }
     }
 
-    /// `sys->mount`. `afd >= 0` is rejected until authentication exists.
+    /// `sys->mount`. `afd >= 0` (a separate auth fd) is not used; the
+    /// conversation on `fd` carries `Tauth` unless `MNOAUTH` is set.
     pub fn mount(&self, fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<()> {
         if afd >= 0 {
             return Err(Error::new(error::ENOTIMPL));
         }
+        let noauth = flags & purg_abi::mount::MNOAUTH != 0;
+        let flags = flags & !purg_abi::mount::MNOAUTH;
         let fd = self.fgrp.get(fd)?;
-        let root = self.kernel.mnt.mount(fd, aname, self.kernel.procs.user())?;
+        let pgrp = self.pgrp.clone();
+        let user = String::from(self.kernel.procs.user());
+        let root = self
+            .kernel
+            .mnt
+            .mount(fd, aname, &user, noauth, || client_secret(&pgrp, &user))?;
         let old = absolute(old, &self.dot());
         self.pgrp.bind_chan(root, &old, flags)
     }
 
     /// `sys->export`: serve `dir` on `fd` until the client closes.
-    pub fn export(&self, fd: i32, dir: &str, _flags: u32) -> Result<()> {
+    /// `MNOAUTH` serves the tree even when it contains a public key.
+    pub fn export(&self, fd: i32, dir: &str, flags: u32) -> Result<()> {
         let fd = self.fgrp.get(fd)?;
         let dir = absolute(dir, &self.dot());
-        crate::export::serve(self.pgrp.clone(), &dir, &fd)
+        crate::export::serve(
+            self.pgrp.clone(),
+            &dir,
+            &fd,
+            self.kernel.platform.as_ref(),
+            flags & purg_abi::mount::MNOAUTH != 0,
+        )
     }
 
     /// `sys->file2chan`. When `dir` is not on `#s`, the file is created in
@@ -482,6 +497,21 @@ impl Prog {
         };
         Ok(Some((bytes, handles)))
     }
+}
+
+/// The caller's signing seed: `/usr/$user/key`, then the shared test fixture.
+fn client_secret(pgrp: &crate::pgrp::Pgrp, user: &str) -> Result<[u8; crate::auth::SEED]> {
+    let mut paths = Vec::new();
+    if !user.is_empty() && user != "." && user != ".." && !user.contains('/') {
+        paths.push(alloc::format!("/usr/{user}/key"));
+    }
+    paths.push(String::from("/lib/test/auth.key"));
+    for path in paths {
+        if let Some(key) = crate::export::read_key(pgrp, &path) {
+            return Ok(key);
+        }
+    }
+    Err(Error::new(crate::auth::NO_KEY))
 }
 
 /// Opens an unopened Chan in `omode`.

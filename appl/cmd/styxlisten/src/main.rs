@@ -11,10 +11,12 @@ use purgatorio::{Context, Error};
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, "styxlisten [-A] addr cmd [args...]");
+    let mut noauth = false;
     while let Some(c) = arg.opt() {
         if c != 'A' {
             return Err(arg.usage());
         }
+        noauth = true;
     }
     let rest = arg.argv();
     if rest.len() < 2 {
@@ -24,7 +26,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let here = local(&ann.dir).unwrap_or_default();
     eprintln!("styxlisten: {here}");
     let cmd = rest[1].clone();
-    let argv = rest[1..].to_vec();
+    let mut argv = rest[1..].to_vec();
+    if noauth {
+        argv.insert(1, String::from("-A"));
+    }
     loop {
         let conn = dial::listen(&ann.dir).map_err(|e| Error(format!("styxlisten: {e}")))?;
         let Some(data) = conn.data.as_ref() else {

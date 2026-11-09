@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+pub mod auth;
 pub mod block;
 pub mod chan;
 pub mod dev;
