@@ -5,7 +5,7 @@
 //! A platform with no network prints `ok net_skip` and still succeeds.
 
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 
 use purgatorio::abi::mount::MREPL;
 use purgatorio::abi::pctl::NEWFD;
@@ -16,10 +16,42 @@ const SELF: &str = "/bin/test/net.wasm";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    if args.get(1).map(String::as_str) == Some("--accept") {
-        return accept(args.get(2).map(String::as_str).unwrap_or(""));
+    match args.get(1).map(String::as_str) {
+        Some("--accept") => accept(args.get(2).map(String::as_str).unwrap_or("")),
+        Some("--wasi-dial") => wasi_dial(args.get(2).map(String::as_str).unwrap_or("")),
+        _ => checks(),
     }
-    checks()
+}
+
+#[link(wasm_import_module = "wasi_snapshot_preview1")]
+unsafe extern "C" {
+    fn sock_accept(fd: i32, flags: i32, result: *mut i32) -> i32;
+}
+
+fn wasi_dial(addr: &str) -> Result<(), Error> {
+    let conn = dial::dial(addr)?;
+    let mut data = open_data(&conn.dir)?;
+    data.write_all(b"ping")?;
+    Ok(())
+}
+
+/// Accepts one connection with WASI `sock_accept` on the Inferno listen file.
+fn wasi_accept(ann: &dial::Connection) -> Result<(), Error> {
+    let here = local(&ann.dir)?;
+    purgatorio::spawn(SELF, &[SELF.into(), "--wasi-dial".into(), here], 0, &[])?;
+    let listen = std::fs::File::open(format!("{}/listen", ann.dir))?;
+    let mut got = -1i32;
+    let rc = unsafe { sock_accept(listen.as_raw_fd(), 0, &mut got) };
+    if rc != 0 {
+        return Err(Error(format!("sock_accept errno {rc}")));
+    }
+    let mut data = unsafe { std::fs::File::from_raw_fd(got) };
+    let mut buf = [0u8; 4];
+    data.read_exact(&mut buf)?;
+    if &buf != b"ping" {
+        return Err(Error(format!("sock_accept got {buf:?}")));
+    }
+    Ok(())
 }
 
 fn accept(dir: &str) -> Result<(), Error> {
@@ -56,6 +88,8 @@ fn checks() -> Result<(), Error> {
     };
     echo(&ann)?;
     println!("ok dial");
+    wasi_accept(&ann)?;
+    println!("ok sock_accept");
     export_mount()?;
     println!("ok export");
     Ok(())

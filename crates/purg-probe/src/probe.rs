@@ -45,6 +45,7 @@ const SCRIPT: &[(&[&str], Want)] = &[
     (&["/bin/test/procs.wasm"], Want::Ok),
     (&["/bin/test/m3.wasm"], Want::Ok),
     (&["/bin/test/net.wasm"], Want::Ok),
+    (&["/bin/test/wasi.wasm"], Want::Ok),
 ];
 
 /// The sh scripts run with their output captured and compared with the

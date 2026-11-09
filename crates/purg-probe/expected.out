@@ -40,7 +40,21 @@ probe: run /bin/test/net.wasm
 ok cs
 ok os_skip
 ok dial
+ok sock_accept
 ok export
+probe: ok
+probe: run /bin/test/wasi.wasm
+ok read
+ok readdir
+ok files
+ok allocate
+ok nolink
+ok noreadlink
+ok clock
+ok raise
+ok sock
+ok sleep
+ok args
 probe: ok
 probe: sh /lib/test/sh/bind.sh
 probe: ok

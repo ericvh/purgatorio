@@ -214,6 +214,14 @@ pub mod wasi {
     pub const OFLAGS_TRUNC: u16 = 8;
 
     pub const FDFLAGS_APPEND: u16 = 1;
+    pub const FDFLAGS_DSYNC: u16 = 2;
+    pub const FDFLAGS_NONBLOCK: u16 = 4;
+    pub const FDFLAGS_RSYNC: u16 = 8;
+    pub const FDFLAGS_SYNC: u16 = 16;
+    /// Every `fdflags` bit this host accepts. Non-blocking is recorded as a
+    /// no-op: an Inferno read still waits.
+    pub const FDFLAGS_KNOWN: u16 =
+        FDFLAGS_APPEND | FDFLAGS_DSYNC | FDFLAGS_NONBLOCK | FDFLAGS_RSYNC | FDFLAGS_SYNC;
 
     pub const LOOKUPFLAGS_SYMLINK_FOLLOW: u32 = 1;
 
@@ -252,6 +260,7 @@ pub mod wasi {
         pub const NOSYS: i32 = 52;
         pub const NOTDIR: i32 = 54;
         pub const NOTEMPTY: i32 = 55;
+        pub const NOTSOCK: i32 = 57;
         pub const NOTSUP: i32 = 58;
         pub const PIPE: i32 = 64;
         pub const SPIPE: i32 = 70;
@@ -305,6 +314,7 @@ pub mod error {
     pub const ESHORTSTAT: &str = "stat buffer too small";
     pub const EBADADDR: &str = "bad address";
     pub const ENOTIMPL: &str = "not implemented";
+    pub const ENOTSOCK: &str = "not a socket";
     pub const EBADEXEC: &str = "bad executable";
     pub const ENOTSEEK: &str = "seek on a stream";
     pub const ENOTEMPTY: &str = "directory not empty";
@@ -335,6 +345,7 @@ pub fn errno_for(err: &str) -> i32 {
         EBADARG | EFILENAME | EBADSHARP => errno::INVAL,
         ENOSPACE => errno::NOSPC,
         ENOTIMPL => errno::NOTSUP,
+        ENOTSOCK => errno::NOTSOCK,
         ENOTSEEK => errno::SPIPE,
         ENOTEMPTY => errno::NOTEMPTY,
         EXDEV => errno::XDEV,
