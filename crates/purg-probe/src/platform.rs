@@ -5,9 +5,11 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use purg_platform::net::Net;
 use purg_platform::{Console, Platform, Result};
 
 use crate::hw;
+use crate::netstack::ProbeNet;
 use crate::sched::SCHED;
 
 struct Pl011;
@@ -32,6 +34,7 @@ pub struct Probe {
     hz: u64,
     /// splitmix64 state for [`Platform::entropy`].
     seed: AtomicU64,
+    net: ProbeNet,
 }
 
 impl Probe {
@@ -43,6 +46,7 @@ impl Probe {
             boot_counter,
             hz: hw::counter_hz().max(1),
             seed: AtomicU64::new(boot_counter ^ 0x9e37_79b9_7f4a_7c15),
+            net: ProbeNet::new(),
         }
     }
 }
@@ -95,5 +99,9 @@ impl Platform for Probe {
     fn spawn_kproc(&self, _name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {
         SCHED.spawn(f);
         Ok(())
+    }
+
+    fn net(&self) -> Option<&dyn Net> {
+        Some(&self.net)
     }
 }
