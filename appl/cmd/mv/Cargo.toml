@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-mv"
+description = "mv: move or rename files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mv"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

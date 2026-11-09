@@ -1,0 +1,14 @@
+first
+second
+cat: /nonexistent: file does not exist
+recovered
+
+cat: /nonexistent: file does not exist
+status is fail:errors
+cat: /nonexistent: file does not exist
+negated
+hi
+false
+cat: /nonexistent: file does not exist
+block
+block ok

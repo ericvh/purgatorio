@@ -127,7 +127,7 @@ fn fstat_stdout() -> Result<(), String> {
 }
 
 fn dirread_root() -> Result<(), String> {
-    // fd 3 is the "/" preopen, already open for reading.
+    // PREOPEN_ROOT_FD is the "/" preopen, already open for reading.
     let mut names = Vec::new();
     loop {
         let batch = purgatorio::dirread(abi::PREOPEN_ROOT_FD).map_err(|e| e.0)?;

@@ -1,0 +1,4 @@
+# /lib/sh/profile: run by `sh -l`, which emuinit starts at boot.
+user=`{cat /dev/user}
+sysname=`{cat /dev/sysname}
+home=/

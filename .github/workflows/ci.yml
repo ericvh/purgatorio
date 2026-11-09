@@ -19,10 +19,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - name: clippy (guests, wasm32-wasip1)
-        run: >
-          cargo clippy --target wasm32-wasip1
-          -p purgatorio -p appl-cmd-echo -p appl-cmd-cat -p appl-cmd-emuinit -p appl-test-abi -p appl-test-procs
-          -- -D warnings
+        run: cargo xtask clippy-guests
       - name: root/ is free of case collisions
         run: |
           dups=$(git ls-files root | tr '[:upper:]' '[:lower:]' | sort | uniq -d)

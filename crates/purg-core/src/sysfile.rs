@@ -32,6 +32,14 @@ impl Prog {
 
     /// Creates `path` (truncating an existing file) and opens it.
     pub fn create_chan(&self, path: &str, omode: u8, perm: u32) -> Result<Chan> {
+        // As in Inferno, an existing name is opened and truncated rather than
+        // created, so `>` works on device files such as /dev/null.
+        if let Ok(c) = self.namec(path) {
+            if perm & DMDIR != 0 {
+                return Err(Error::new(error::EEXIST));
+            }
+            return open(c, omode | mode::OTRUNC);
+        }
         let (dir, name) = self.pgrp.create_target(path, &self.dot())?;
         if perm & DMDIR != 0 && omode & mode::ACCESS != mode::OREAD {
             return Err(Error::new(error::EISDIR));

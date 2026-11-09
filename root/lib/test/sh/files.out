@@ -1,0 +1,16 @@
+b
+f
+data
+/tmp/sh-files/c/b
+/tmp/sh-files/c/f
+a
+c
+h
+/tmp/sh-files/a
+b
+f
+/
+rm: /tmp/sh-files/nonexistent: file does not exist
+fail:errors
+
+removed
