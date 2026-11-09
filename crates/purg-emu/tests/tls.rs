@@ -160,7 +160,7 @@ fn tls_client_exchanges_application_data() {
         .to_string();
     for cmd in [
         format!("fd {client}\n"),
-        format!("server purgatorio\n"),
+        "server purgatorio\n".to_string(),
         format!("pubkey {}\n", hex(point)),
         String::from("client\n"),
     ] {
