@@ -1,13 +1,13 @@
 //! Namespace resolution, union directories, fds and the portable devices,
 //! driven through a mock platform.
 
+use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 
-use purg_abi::mount::{MAFTER, MBEFORE, MREPL};
-use purg_abi::{error, mode};
-use purg_core::devcons::DevCons;
+use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
+use purg_abi::{error, mode, pctl};
 use purg_core::devroot::StaticTree;
-use purg_core::{Dev, DevTab, Kernel, Pgrp, Platform, Prog};
+use purg_core::{Dev, DevTab, Kernel, Pgrp, Platform, Procs, Prog};
 use purg_platform::Console;
 
 #[derive(Default)]
@@ -31,10 +31,13 @@ impl Console for MockConsole {
     }
 }
 
+thread_local! {
+    static PID: Cell<u32> = const { Cell::new(0) };
+}
+
 #[derive(Default)]
 struct Mock {
     console: MockConsole,
-    pid: Mutex<u32>,
 }
 
 impl Platform for Mock {
@@ -57,15 +60,22 @@ impl Platform for Mock {
         "purgatorio".into()
     }
     fn current_pid(&self) -> u32 {
-        *self.pid.lock().unwrap()
+        PID.get()
     }
     fn set_current_pid(&self, pid: u32) {
-        *self.pid.lock().unwrap() = pid;
+        PID.set(pid);
+    }
+    fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> purg_platform::Result<()> {
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(f)
+            .map(drop)
+            .map_err(|_| error::ENOPROC.into())
     }
 }
 
-/// A prog whose namespace is `#/` with two static trees available as `#A`
-/// and `#B`, and `#c`.
+/// A prog whose namespace is `#/`, with the portable devices and two static
+/// trees available as `#A` and `#B`. The calling thread runs as that prog.
 fn setup() -> (Prog, Arc<Mock>) {
     let mock = Arc::new(Mock::default());
     let platform: Arc<dyn Platform> = mock.clone();
@@ -76,16 +86,17 @@ fn setup() -> (Prog, Arc<Mock>) {
     let mut b = StaticTree::new('B', "b", "b");
     b.add_file("/x", &b"b's x"[..]);
     b.add_file("/only-b", &b"in b"[..]);
-    let devs: Vec<Arc<dyn Dev>> = vec![
-        Arc::new(StaticTree::root("inferno")),
-        Arc::new(DevCons::new(platform.clone())),
-        Arc::new(a),
-        Arc::new(b),
-    ];
+    let procs = Procs::new(platform.clone());
+    let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root("inferno"))];
+    devs.extend(purg_core::portable_devices(&platform, &procs));
+    devs.push(Arc::new(a));
+    devs.push(Arc::new(b));
     let devtab = DevTab::new(devs);
-    let kernel = Kernel::new(platform, devtab.clone());
+    let kernel = Kernel::new(platform, devtab.clone(), procs);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "").unwrap());
-    (Prog::new(kernel, pgrp), mock)
+    let p = Prog::new(kernel, pgrp);
+    mock.set_current_pid(p.pid);
+    (p, mock)
 }
 
 fn read_all(p: &mut Prog, path: &str) -> Result<String, String> {
@@ -168,7 +179,8 @@ fn dotdot_is_lexical_across_mounts() {
         read_all(&mut p, "/net/sub/../../net/only-a").unwrap(),
         "in a"
     );
-    p.dot = "/net/sub".into();
+    p.chdir("/net/sub").unwrap();
+    assert_eq!(p.dot(), "/net/sub");
     assert_eq!(read_all(&mut p, "deep").unwrap(), "deep");
     assert_eq!(read_all(&mut p, "../x").unwrap(), "a's x");
 }
@@ -227,14 +239,13 @@ fn cons_reads_a_line_at_a_time() {
 
 #[test]
 fn cons_files() {
-    let (mut p, mock) = setup();
-    mock.set_current_pid(p.pid);
+    let (mut p, _) = setup();
     assert_eq!(read_all(&mut p, "#c/pid").unwrap(), p.pid.to_string());
     assert_eq!(read_all(&mut p, "#c/time").unwrap(), "1700000000000000");
     assert_eq!(read_all(&mut p, "#c/null").unwrap(), "");
     assert_eq!(
         read_all(&mut p, "#c/drivers").unwrap(),
-        "#/ root\n#c cons\n#A a\n#B b\n"
+        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#A a\n#B b\n"
     );
 }
 
@@ -266,4 +277,163 @@ fn stat_and_dir_reads() {
         p.dirread(fd, &mut tiny).unwrap_err().as_str(),
         error::ESHORTSTAT
     );
+}
+
+#[test]
+fn unmount_restores_the_previous_binding() {
+    let (mut p, _) = setup();
+    p.bind("#A", "/net", MREPL).unwrap();
+    p.bind("#B", "/net", MBEFORE).unwrap();
+    p.unmount(Some("#B"), "/net").unwrap();
+    assert_eq!(read_all(&mut p, "/net/x").unwrap(), "a's x");
+    assert_eq!(
+        p.unmount(Some("#B"), "/net").unwrap_err().as_str(),
+        error::EUNMOUNT
+    );
+    p.unmount(None, "/net").unwrap();
+    assert_eq!(read_all(&mut p, "/net/x").unwrap_err(), error::ENONEXIST);
+}
+
+#[test]
+fn create_goes_to_the_mcreate_member() {
+    let (mut p, _) = setup();
+    p.bind("#A", "/net", MREPL).unwrap();
+    assert_eq!(
+        p.create("/net/new", mode::OWRITE, 0o666)
+            .unwrap_err()
+            .as_str(),
+        error::ENOCREATE
+    );
+    p.bind("#e", "/net", MAFTER | MCREATE).unwrap();
+    let fd = p.create("/net/new", mode::OWRITE, 0o666).unwrap();
+    p.write(fd, b"made").unwrap();
+    p.close(fd).unwrap();
+    assert_eq!(read_all(&mut p, "#e/new").unwrap(), "made");
+    assert_eq!(read_all(&mut p, "/net/new").unwrap(), "made");
+    p.remove("/net/new").unwrap();
+    assert_eq!(read_all(&mut p, "#e/new").unwrap_err(), error::ENONEXIST);
+}
+
+#[test]
+fn chdir_and_fd2path() {
+    let (mut p, _) = setup();
+    p.bind("#A", "/net", MREPL).unwrap();
+    p.chdir("/net").unwrap();
+    assert!(p.chdir("x").is_err());
+    let fd = p.open("sub/deep", mode::OREAD).unwrap();
+    assert_eq!(p.fd2path(fd).unwrap(), "/net/sub/deep");
+    assert_eq!(p.dup(fd, -1).unwrap(), fd + 1);
+    assert_eq!(p.fd2path(fd + 1).unwrap(), "/net/sub/deep");
+}
+
+#[test]
+fn pipes_carry_data_and_hang_up() {
+    let (mut p, _) = setup();
+    let [r, w] = p.pipe().unwrap();
+    assert_eq!(p.write(w, b"through").unwrap(), 7);
+    let mut buf = [0u8; 16];
+    let n = p.read(r, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"through");
+    // Pipes are bidirectional.
+    p.write(r, b"back").unwrap();
+    let n = p.read(w, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"back");
+    p.close(w).unwrap();
+    assert_eq!(p.read(r, &mut buf).unwrap(), 0);
+    assert!(p.write(r, b"x").is_err());
+}
+
+#[test]
+fn pipe_reader_blocks_until_a_writer_on_another_kproc() {
+    let (mut p, mock) = setup();
+    let [r, w] = p.pipe().unwrap();
+    let child = p.spawn(0, &[(w, 0)]).unwrap();
+    p.close(w).unwrap();
+    let pid = child.pid;
+    mock.spawn_kproc(
+        "writer",
+        Box::new(move || {
+            let mut child = child;
+            child.started();
+            PID.set(child.pid);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            child.write(0, b"late").unwrap();
+            child.status = "done".into();
+        }),
+    )
+    .unwrap();
+    let mut buf = [0u8; 16];
+    let n = p.read(r, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"late");
+    assert_eq!(p.read(r, &mut buf).unwrap(), 0);
+    let wait = format!("#p/{}/wait", p.pid);
+    let fd = p.open(&wait, mode::OREAD).unwrap();
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(
+        std::str::from_utf8(&buf[..n]).unwrap(),
+        format!("{pid} '' done")
+    );
+}
+
+#[test]
+fn unstarted_children_leave_quietly() {
+    let (mut p, _) = setup();
+    let quiet = p.spawn(0, &[]).unwrap();
+    drop(quiet);
+    let mut child = p.spawn(0, &[]).unwrap();
+    child.started();
+    let pid = child.pid;
+    drop(child);
+    let fd = p.open(&format!("#p/{}/wait", p.pid), mode::OREAD).unwrap();
+    let mut buf = [0u8; 64];
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(
+        std::str::from_utf8(&buf[..n]).unwrap(),
+        format!("{pid} '' ''")
+    );
+}
+
+#[test]
+fn env_is_per_group_and_forkable() {
+    let (mut p, _) = setup();
+    let fd = p.create("#e/HOME", mode::OWRITE, 0o666).unwrap();
+    p.write(fd, b"/usr/inferno").unwrap();
+    p.close(fd).unwrap();
+    assert_eq!(p.egrp().environ(), ["HOME=/usr/inferno"]);
+
+    let shared = p.spawn(0, &[]).unwrap();
+    let forked = p.spawn(pctl::FORKENV, &[]).unwrap();
+    let fresh = p.spawn(pctl::NEWENV, &[]).unwrap();
+    p.egrp().set("HOME", b"/tmp");
+    assert_eq!(shared.egrp().get("HOME").unwrap(), b"/tmp");
+    assert_eq!(forked.egrp().get("HOME").unwrap(), b"/usr/inferno");
+    assert!(fresh.egrp().get("HOME").is_none());
+}
+
+#[test]
+fn pctl_namespace_and_fd_groups() {
+    let (mut p, _) = setup();
+    let fd = p.open("#A/x", mode::OREAD).unwrap();
+    let mut shared = p.spawn(0, &[]).unwrap();
+    let mut forked = p.spawn(pctl::FORKNS | pctl::FORKFD, &[]).unwrap();
+    p.bind("#A", "/net", MREPL).unwrap();
+    assert_eq!(read_all(&mut shared, "/net/x").unwrap(), "a's x");
+    assert_eq!(
+        read_all(&mut forked, "/net/x").unwrap_err(),
+        error::ENONEXIST
+    );
+    forked.close(fd).unwrap();
+    assert!(p.fstat(fd).is_ok());
+
+    let mut fresh = p.spawn(pctl::NEWFD, &[(fd, 5)]).unwrap();
+    assert!(fresh.fstat(fd).is_err());
+    assert_eq!(read_all(&mut fresh, "#A/only-a").unwrap(), "in a");
+    assert_eq!(fresh.fstat(5).unwrap().name, "x");
+    fresh.pctl(pctl::NEWFD, &[]).unwrap();
+    assert!(fresh.fstat(5).is_err());
+
+    p.pctl(pctl::NODEVS, &[]).unwrap();
+    assert_eq!(read_all(&mut p, "#A/x").unwrap_err(), error::ENOATTACH);
+    assert_eq!(read_all(&mut p, "#c/user").unwrap_err(), error::ENOATTACH);
+    p.pipe().unwrap();
 }

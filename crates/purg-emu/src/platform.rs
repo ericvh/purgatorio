@@ -4,9 +4,14 @@ use std::cell::Cell;
 use std::io::{Read, Write};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use purg_abi::error;
 use purg_platform::{Console, Platform, Result};
 
 use crate::host;
+
+/// Stack for kproc threads. macOS gives secondary threads only 512 KiB,
+/// and the wasmi interpreter needs more in debug builds.
+pub const KPROC_STACK: usize = 64 << 20;
 
 thread_local! {
     static CURRENT_PID: Cell<u32> = const { Cell::new(0) };
@@ -82,5 +87,14 @@ impl Platform for Emu {
 
     fn set_current_pid(&self, pid: u32) {
         CURRENT_PID.with(|c| c.set(pid));
+    }
+
+    fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {
+        std::thread::Builder::new()
+            .name(name.into())
+            .stack_size(KPROC_STACK)
+            .spawn(f)
+            .map(drop)
+            .map_err(|_| error::ENOPROC.into())
     }
 }

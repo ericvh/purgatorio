@@ -8,10 +8,9 @@ use core::fmt::Write;
 
 use linked_list_allocator::LockedHeap;
 use purg_abi::mount::MBEFORE;
-use purg_core::devcons::DevCons;
 use purg_core::devroot::StaticTree;
-use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Prog};
-use purg_vm::Ctx;
+use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
+use purg_vm::{Ctx, Engine};
 use purg_vm_wasmi::Wasmi;
 
 use crate::{hw, platform};
@@ -77,13 +76,11 @@ fn root_tree(owner: &str) -> StaticTree {
 
 fn boot() -> Result<(Arc<Kernel>, Arc<Pgrp>), Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform::Probe::new());
-    let user = platform.user();
-    let devs: Vec<Arc<dyn Dev>> = vec![
-        Arc::new(root_tree(&user)),
-        Arc::new(DevCons::new(platform.clone())),
-    ];
+    let procs = Procs::new(platform.clone());
+    let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(root_tree(procs.user()))];
+    devs.extend(purg_core::portable_devices(&platform, &procs));
     let devtab = DevTab::new(devs);
-    let kernel = Kernel::new(platform, devtab.clone());
+    let kernel = Kernel::new(platform, devtab.clone(), procs);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "")?);
     pgrp.bind("#c", "/dev", MBEFORE)?;
     Ok((kernel, pgrp))
@@ -91,21 +88,22 @@ fn boot() -> Result<(Arc<Kernel>, Arc<Pgrp>), Error> {
 
 /// Runs one command in a fresh prog sharing the boot namespace.
 fn run(
-    engine: &Wasmi,
+    engine: &Arc<dyn Engine>,
     kernel: &Arc<Kernel>,
     pgrp: &Arc<Pgrp>,
     argv: &[&str],
 ) -> Result<String, Error> {
     let mut prog = Prog::new(kernel.clone(), pgrp.clone());
+    kernel.platform.set_current_pid(prog.pid);
     purg_vm::init_fds(&mut prog)?;
     let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
     let path = purg_vm::command_path(&argv[0]);
-    purg_vm::run_command(engine, Ctx::new(prog, argv), &path).1
+    purg_vm::run_command(Ctx::new(prog, argv, engine.clone()), &path).1
 }
 
 fn script() -> Result<usize, Error> {
     let (kernel, pgrp) = boot()?;
-    let engine = Wasmi::new()?;
+    let engine: Arc<dyn Engine> = Arc::new(Wasmi::new()?);
     let mut failed = 0;
     for (argv, want) in SCRIPT {
         println!("probe: run {}", argv.join(" "));

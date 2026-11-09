@@ -3,9 +3,10 @@
 //! Usage: `emu [-r root] [--vm=wasmtime|wasmi] [cmd [args...]]`
 //!
 //! Boots a namespace like Inferno's emu (`#/` with the host root `#U` unioned
-//! after it, and `#c` before `/dev`), then runs `/bin/<cmd>.wasm` in one prog,
-//! or `/bin/emuinit.wasm` when no command is given. The exit code is 0 when
-//! the prog's exit status is empty and 1 otherwise.
+//! after it and taking creates, `#c` before `/dev`, `#e` on `/env` and `#p`
+//! on `/prog`), then runs `/bin/<cmd>.wasm` as the first prog, or
+//! `/bin/emuinit.wasm` when no command is given. The emu exits when the first
+//! prog does: with 0 when its exit status is empty and 1 otherwise.
 
 mod devfs;
 mod host;
@@ -15,15 +16,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use purg_abi::mount::{MAFTER, MBEFORE};
-use purg_core::devcons::DevCons;
+use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_core::devroot::StaticTree;
-use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Prog};
+use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
 use purg_vm::{Ctx, Engine};
-
-/// Default stack for prog threads. macOS gives secondary threads only
-/// 512 KiB, and the wasmi interpreter needs more in debug builds.
-const PROG_STACK: usize = 64 << 20;
 
 struct Options {
     root: PathBuf,
@@ -67,26 +63,27 @@ fn parse_args() -> Option<Options> {
 /// Builds the boot namespace and the first prog.
 fn boot(root: PathBuf) -> Result<Prog, Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform::Emu::new());
-    let user = platform.user();
-    let devs: Vec<Arc<dyn Dev>> = vec![
-        Arc::new(StaticTree::root(&user)),
-        Arc::new(DevCons::new(platform.clone())),
-        Arc::new(devfs::DevFs::new(root)?),
-    ];
+    let procs = Procs::new(platform.clone());
+    let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
+    devs.extend(purg_core::portable_devices(&platform, &procs));
+    devs.push(Arc::new(devfs::DevFs::new(root)?));
     let devtab = DevTab::new(devs);
-    let kernel = Kernel::new(platform, devtab.clone());
+    let kernel = Kernel::new(platform.clone(), devtab.clone(), procs);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "")?);
-    pgrp.bind("#U", "/", MAFTER)?;
+    pgrp.bind("#U", "/", MAFTER | MCREATE)?;
     pgrp.bind("#c", "/dev", MBEFORE)?;
+    pgrp.bind("#e", "/env", MREPL | MCREATE)?;
+    pgrp.bind("#p", "/prog", MREPL)?;
     let mut prog = Prog::new(kernel, pgrp);
+    platform.set_current_pid(prog.pid);
     purg_vm::init_fds(&mut prog)?;
     Ok(prog)
 }
 
-fn engine(name: &str) -> Result<Box<dyn Engine + Send>, Error> {
+fn engine(name: &str) -> Result<Arc<dyn Engine>, Error> {
     match name {
-        "wasmtime" => Ok(Box::new(purg_vm_wasmtime::Wasmtime::new()?)),
-        "wasmi" => Ok(Box::new(purg_vm_wasmi::Wasmi::new()?)),
+        "wasmtime" => Ok(Arc::new(purg_vm_wasmtime::Wasmtime::new()?)),
+        "wasmi" => Ok(Arc::new(purg_vm_wasmi::Wasmi::new()?)),
         _ => Err(Error::from(format!("unknown vm {name:?}"))),
     }
 }
@@ -110,14 +107,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let ctx = Ctx::new(prog, argv);
-    let runner = {
-        let path = path.clone();
-        std::thread::Builder::new()
-            .name(String::from("prog"))
-            .stack_size(PROG_STACK)
-            .spawn(move || purg_vm::run_command(&*engine, ctx, &path).1)
-    };
+    let ctx = Ctx::new(prog, argv, engine);
+    let runner = std::thread::Builder::new()
+        .name(String::from(purg_vm::module_name(&path)))
+        .stack_size(platform::KPROC_STACK)
+        .spawn(move || purg_vm::run_command(ctx, &path).1);
     let res = match runner.map(|t| t.join()) {
         Ok(Ok(res)) => res,
         Ok(Err(_)) => Err(Error::new("prog thread panicked")),

@@ -16,6 +16,7 @@ members = [
     "appl/cmd/echo",
     "appl/cmd/emuinit",
     "appl/test/abi",
+    "appl/test/procs",
     "xtask",
 ]
 
@@ -37,7 +38,7 @@ purg-vm-wasmi = { path = "crates/purg-vm-wasmi" }
 purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
 
-spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock"] }
+spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }
 libc = "0.2"
 dlmalloc = { version = "0.2", features = ["global"] }
 wasmi = { version = "2", default-features = false, features = ["stable", "validate", "libm"] }
@@ -45,6 +46,7 @@ wasmtime = { version = "50", default-features = false, features = ["cranelift", 
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

@@ -18,6 +18,7 @@
 pub mod sys;
 
 use std::fmt;
+use std::os::fd::{FromRawFd, OwnedFd};
 
 pub use purg_abi as abi;
 pub use purg_styx::{Dir, Qid};
@@ -150,16 +151,205 @@ pub fn dirread(fd: i32) -> Result<Vec<Dir>, Error> {
         .map_err(|e| Error(e.to_string()))
 }
 
-/// Replaces the running command with `cmd` (resolved like a shell command:
-/// `cat` is `/bin/cat.wasm`) in the same prog. Returns only on failure.
-pub fn exec(cmd: &str, argv: &[String]) -> Error {
+fn fd(n: i32) -> Result<OwnedFd, Error> {
+    check(n)?;
+    // SAFETY: the host just allocated fd `n` for this prog, and nothing
+    // else owns it.
+    Ok(unsafe { OwnedFd::from_raw_fd(n) })
+}
+
+/// `sys->open` with an Inferno mode (`abi::mode`). The fd closes on drop;
+/// `std::fs::File::from` turns it into a `File`.
+pub fn open(path: &str, mode: u8) -> Result<OwnedFd, Error> {
+    fd(unsafe { sys::open(path.as_ptr(), path.len(), mode.into()) })
+}
+
+/// `sys->create`: makes `path` with Inferno permission bits `perm`
+/// (`DMDIR` for a directory), truncating an existing file, and opens it in
+/// `mode`.
+pub fn create(path: &str, mode: u8, perm: u32) -> Result<OwnedFd, Error> {
+    fd(unsafe { sys::create(path.as_ptr(), path.len(), mode.into(), perm) })
+}
+
+/// `sys->remove`.
+pub fn remove(path: &str) -> Result<(), Error> {
+    check(unsafe { sys::remove(path.as_ptr(), path.len()) }).map(drop)
+}
+
+/// `sys->wstat`: applies the fields of `d` that are not "don't touch"
+/// (start from [`Dir::null`]).
+pub fn wstat(path: &str, d: &Dir) -> Result<(), Error> {
+    let buf = d.pack().map_err(|e| Error(e.to_string()))?;
+    check(unsafe { sys::wstat(path.as_ptr(), path.len(), buf.as_ptr(), buf.len()) }).map(drop)
+}
+
+/// `sys->fwstat` on a raw fd.
+pub fn fwstat(fd: i32, d: &Dir) -> Result<(), Error> {
+    let buf = d.pack().map_err(|e| Error(e.to_string()))?;
+    check(unsafe { sys::fwstat(fd, buf.as_ptr(), buf.len()) }).map(drop)
+}
+
+/// `sys->fd2path`: the name an fd was opened by.
+pub fn fd2path(fd: i32) -> Result<String, Error> {
+    let mut buf = vec![0u8; 8192];
+    let n = check(unsafe { sys::fd2path(fd, buf.as_mut_ptr(), buf.len()) })?;
+    buf.truncate(n);
+    String::from_utf8(buf).map_err(|e| Error(e.to_string()))
+}
+
+/// The current directory.
+pub fn dot() -> Result<String, Error> {
+    fd2path(abi::PREOPEN_DOT_FD)
+}
+
+/// `sys->chdir`. Also moves the current directory that wasi-libc keeps for
+/// relative names in `std`.
+pub fn chdir(path: &str) -> Result<(), Error> {
+    check(unsafe { sys::chdir(path.as_ptr(), path.len()) })?;
+    sync_cwd();
+    Ok(())
+}
+
+/// wasi-libc resolves relative names against its own copy of the current
+/// directory, which starts as `/`; point it at the prog's dot.
+fn sync_cwd() {
+    if let Ok(d) = dot() {
+        let _ = std::env::set_current_dir(d);
+    }
+}
+
+/// `sys->dup`: copies `old` to `new`, or to the lowest free fd when `new` is
+/// -1. Returns the new fd, which the caller owns.
+pub fn dup(old: i32, new: i32) -> Result<i32, Error> {
+    check(unsafe { sys::dup(old, new) }).map(|n| n as i32)
+}
+
+/// `sys->pipe`: two connected fds; data written on one is read from the
+/// other.
+pub fn pipe() -> Result<[OwnedFd; 2], Error> {
+    let mut fds = [-1i32; 2];
+    check(unsafe { sys::pipe(fds.as_mut_ptr()) })?;
+    Ok([fd(fds[0])?, fd(fds[1])?])
+}
+
+/// `sys->iounit`: the largest atomic I/O on `fd`; 0 means no limit.
+pub fn iounit(fd: i32) -> Result<usize, Error> {
+    check(unsafe { sys::iounit(fd) })
+}
+
+/// `sys->bind` with flags from `abi::mount`.
+pub fn bind(name: &str, old: &str, flags: u32) -> Result<(), Error> {
+    check(unsafe { sys::bind(name.as_ptr(), name.len(), old.as_ptr(), old.len(), flags) }).map(drop)
+}
+
+/// `sys->unmount`: removes `name` from the union at `old`, or everything
+/// mounted there when `name` is `None`.
+pub fn unmount(name: Option<&str>, old: &str) -> Result<(), Error> {
+    let name = name.unwrap_or("");
+    check(unsafe { sys::unmount(name.as_ptr(), name.len(), old.as_ptr(), old.len()) }).map(drop)
+}
+
+/// `sys->pctl` with flags from `abi::pctl`; `movefd` lists the fds `NEWFD`
+/// keeps. Returns the prog's pid.
+pub fn pctl(flags: u32, movefd: &[i32]) -> Result<u32, Error> {
+    let n = check(unsafe { sys::pctl(flags, movefd.as_ptr(), movefd.len()) })?;
+    if flags & (abi::pctl::NEWNS | abi::pctl::FORKNS) != 0 {
+        sync_cwd();
+    }
+    Ok(n as u32)
+}
+
+/// This prog's pid.
+pub fn pid() -> u32 {
+    pctl(0, &[]).unwrap_or(0)
+}
+
+/// Starts `cmd` (resolved like a shell command: `cat` is `/bin/cat.wasm`)
+/// as a new prog with arguments `argv`, and returns its pid. The child
+/// shares this prog's namespace, fds and environment except as `flags`
+/// (from `abi::pctl`) say; `fdmap` pairs give it copies of this prog's fds,
+/// as `(fd here, fd in the child)`, and imply `FORKFD`.
+pub fn spawn(cmd: &str, argv: &[String], flags: u32, fdmap: &[(i32, i32)]) -> Result<u32, Error> {
     let mut packed = Vec::new();
     for a in argv {
         packed.extend_from_slice(a.as_bytes());
         packed.push(0);
     }
-    unsafe { sys::exec(cmd.as_ptr(), cmd.len(), packed.as_ptr(), packed.len()) };
-    Error::last()
+    let map: Vec<i32> = fdmap.iter().flat_map(|&(a, b)| [a, b]).collect();
+    let n = check(unsafe {
+        sys::spawn_prog(
+            cmd.as_ptr(),
+            cmd.len(),
+            packed.as_ptr(),
+            packed.len(),
+            flags,
+            map.as_ptr(),
+            fdmap.len(),
+        )
+    })?;
+    Ok(n as u32)
+}
+
+/// How a child prog ended, from `/prog/<pid>/wait`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Waitmsg {
+    pub pid: u32,
+    pub name: String,
+    /// The exit status: empty for success.
+    pub status: String,
+}
+
+/// Blocks until a child of this prog exits and reports it.
+pub fn wait() -> Result<Waitmsg, Error> {
+    let path = format!("/prog/{}/wait", pid());
+    let f = open(&path, abi::mode::OREAD)?;
+    let mut buf = vec![0u8; 8192];
+    let n = std::io::Read::read(&mut std::fs::File::from(f), &mut buf)?;
+    let msg = String::from_utf8_lossy(&buf[..n]);
+    let fields = unquote_fields(&msg);
+    match fields.as_slice() {
+        [pid, name, status] => Ok(Waitmsg {
+            pid: pid.parse().map_err(|_| Error::from("bad wait message"))?,
+            name: name.clone(),
+            status: status.clone(),
+        }),
+        _ => Err(Error::from("bad wait message")),
+    }
+}
+
+/// Splits `s` at white space, honouring Inferno's `%q` quoting: a field in
+/// `'` quotes may hold white space, and `''` inside quotes is one `'`.
+pub fn unquote_fields(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = s.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        if chars.peek().is_none() {
+            return out;
+        }
+        let mut field = String::new();
+        let mut quoted = false;
+        while let Some(c) = chars.next() {
+            if quoted {
+                if c == '\'' {
+                    if chars.next_if_eq(&'\'').is_some() {
+                        field.push('\'');
+                    } else {
+                        quoted = false;
+                    }
+                } else {
+                    field.push(c);
+                }
+            } else if c == '\'' {
+                quoted = true;
+            } else if c.is_whitespace() {
+                break;
+            } else {
+                field.push(c);
+            }
+        }
+        out.push(field);
+    }
 }
 
 #[doc(hidden)]
@@ -182,11 +372,27 @@ pub mod rt {
             werrstr(&msg);
             exits(&format!("panic: {msg}"));
         }));
+        sync_cwd();
         let args: Vec<String> = std::env::args().collect();
         let argv0 = args.first().cloned().unwrap_or_default();
         if let Err(e) = main(Context, args) {
             eprintln!("{argv0}: {e}");
             exits(&format!("fail:{e}"));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unquote_fields;
+
+    #[test]
+    fn unquote() {
+        assert_eq!(unquote_fields("12 cat ''"), ["12", "cat", ""]);
+        assert_eq!(
+            unquote_fields("  7 'my prog' 'fail:it''s bad'\n"),
+            ["7", "my prog", "fail:it's bad"]
+        );
+        assert!(unquote_fields(" ").is_empty());
     }
 }

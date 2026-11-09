@@ -41,6 +41,20 @@ pub trait Dev: Send + Sync {
     fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize>;
     /// Called when an open Chan is dropped.
     fn close(&self, _c: &Chan) {}
+
+    /// Creates `name` in directory `dir` with Inferno permission bits `perm`
+    /// (`DMDIR` for a directory). An existing file is truncated, as Inferno's
+    /// `create` does. The core opens the result in the requested mode.
+    fn create(&self, _dir: &Chan, _name: &str, _perm: u32) -> Result<Walked> {
+        Err(Error::new(error::EPERM))
+    }
+    fn remove(&self, _c: &Chan) -> Result<()> {
+        Err(Error::new(error::EPERM))
+    }
+    /// Applies the non-null fields of `d` (see [`Dir::null`]).
+    fn wstat(&self, _c: &Chan, _d: &Dir) -> Result<()> {
+        Err(Error::new(error::EPERM))
+    }
 }
 
 /// The device table: Inferno's `devtab`.

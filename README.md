@@ -11,26 +11,31 @@ just as `.dis` files did.
 
 The work is phased:
 
-1. A hosted `emu` on Linux and macOS. **Milestone 1 is in progress.**
+1. A hosted `emu` on Linux and macOS. **Milestone 2 is in progress.**
 2. A native aarch64 kernel under QEMU `virt`.
 3. Graphics (draw, Tk, wm), deliberately last.
 
 Every milestone is validated on aarch64. CI runs natively on Linux aarch64 and
 macOS arm64, and the shared kernel crates build for `aarch64-unknown-none`.
 
-## Status: Milestone 1
+## Status: Milestone 2
 
 `emu` boots a namespace like Inferno's emu. `#/` is the root, the host tree
-`#U` is unioned after it, and `#c` is bound before `/dev`. `emu` then runs a
-WASM command in a prog whose fds 0, 1 and 2 are `/dev/cons`.
+`#U` is unioned after it and takes creates, `#c` is bound before `/dev`, `#e`
+on `/env` and `#p` on `/prog`. `emu` then runs a WASM command as the first
+prog, whose fds 0, 1 and 2 are `/dev/cons`; each prog it spawns runs on its
+own host thread.
 
 | Piece | State |
 |---|---|
-| `#/` root, `#c` (`cons`, `null`, `user`, `sysname`, `time`, `pid`, `drivers`), `#U` (read-only host fs) | done |
-| Namespace: `namec`, `bind` with `MREPL`/`MBEFORE`/`MAFTER` unions, lexical `..` | done |
-| WASM backends: wasmtime (default) and wasmi (`--vm=wasmi`) | done |
-| App ABI: WASI preview1 subset plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)) | done |
-| Apps: `echo`, `cat`, `emuinit`, ABI test | done |
+| `#/` root, `#c` (`cons`, `null`, `user`, `sysname`, `time`, `pid`, `drivers`), `#U` (read/write host fs) | done |
+| `#e` (per-Egrp environment), `#\|` (pipes over qio queues), `#p` (`wait` only until M3) | done |
+| Namespace: `namec`, `bind` with `MREPL`/`MBEFORE`/`MAFTER`/`MCREATE` unions, `unmount`, `chdir`, lexical `..` | done |
+| Progs: `spawn_prog`, `pctl` (`NEWFD FORKFD NEWNS FORKNS NEWPGRP NODEVS NEWENV FORKENV`), wait messages; `Rendez` and qio checked with loom | done |
+| WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
+| App ABI v0.2: WASI preview1 subset plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)) | done |
+| Apps: `echo`, `cat`, `emuinit`, ABI and procs tests | done |
+| `sh` subset and the W1 commands | next |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
 | `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi | done |
 
@@ -41,18 +46,18 @@ crates/
   purg-abi/          no_std  ABI constants shared by host and guest
   purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec
   purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam)
-  purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, #/ and #c
-  purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, exec loop
+  purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio; #/ #c #e #| #p
+  purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, spawn
   purg-vm-wasmi/     no_std  wasmi interpreter backend
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
   purg-emu/          std     the `emu` binary: #U, console, src/host/{unix,linux,macos}.rs
   purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, semihosting)
 sdk/
-  purgatorio/                guest SDK (errstr, Dir, stat, dirread, exits, exec)
+  purgatorio/                guest SDK (errstr, Dir, open/create, bind, pctl, spawn, wait, ...)
   purgatorio-macros/         #[purgatorio::main]
 appl/cmd/{echo,cat,emuinit}/ commands, built to root/bin/<name>.wasm
-appl/test/abi/               ABI conformance guest, built to root/bin/test/abi.wasm
-root/                        the file tree emu serves as #U
+appl/test/{abi,procs}/       conformance guests, built to root/bin/test/<name>.wasm
+root/                        the file tree emu serves as #U (build-root adds root/tmp)
 xtask/                       build tasks
 ```
 
@@ -73,6 +78,7 @@ cargo xtask run-emu -- cat /dev/sysname /dev/user
 echo hi | cargo xtask run-emu -- cat         # hi
 cargo xtask run-emu -- --vm=wasmi cat /lib/probe/hello.txt
 cargo xtask run-emu -- /bin/test/abi.wasm    # ABI conformance checks
+cargo xtask run-emu -- /bin/test/procs.wasm  # spawn, pipes, env, files (writes in /tmp)
 cargo xtask run-emu                          # boots /bin/emuinit.wasm
 ```
 
@@ -88,6 +94,8 @@ cargo test --workspace
 cargo build --target aarch64-unknown-none \
   -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
 cargo xtask probe         # needs qemu-system-aarch64
+RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \
+  cargo test -p purg-core --features std --test loom --release
 ```
 
 `cargo xtask probe` builds `purg-probe`, a bare-metal aarch64 image that
@@ -102,7 +110,7 @@ CI (`.github/workflows/ci.yml`) runs fmt and clippy, then runs the unit and
 acceptance tests on both WASM backends on Linux x86_64, Linux aarch64 and
 macOS arm64. It also builds and lints the shared crates for
 `aarch64-unknown-none`, boots `purg-probe` in QEMU on both Linux runners,
-checks names on a case-sensitive APFS volume, and
+runs the loom models, checks names on a case-sensitive APFS volume, and
 verifies that guest `.wasm` files are byte-identical across all three hosts.
 
 ### Writing an app
