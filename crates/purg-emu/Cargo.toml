@@ -22,3 +22,7 @@ libc.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
