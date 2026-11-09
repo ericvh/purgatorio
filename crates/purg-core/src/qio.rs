@@ -2,10 +2,12 @@
 //! transport under pipes.
 
 use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 
 use purg_abi::error;
 use purg_platform::sync::{Mutex, Rendez};
 
+use crate::block::park;
 use crate::error::{Error, Result};
 
 struct State {
@@ -21,6 +23,8 @@ pub struct Queue {
     state: Mutex<State>,
     readers: Rendez,
     writers: Rendez,
+    /// Rendezvous registered by `purgatorio.wait` for this queue.
+    watchers: Mutex<Vec<Rendez>>,
 }
 
 impl Queue {
@@ -33,19 +37,54 @@ impl Queue {
             }),
             readers: Rendez::new(),
             writers: Rendez::new(),
+            watchers: Mutex::new(Vec::new()),
         }
     }
 
-    /// Reads at least one byte, or returns 0 at end of file.
-    pub fn read(&self, out: &mut [u8]) -> usize {
+    fn notify(&self) {
+        self.readers.wakeup();
+        self.writers.wakeup();
+        for w in self.watchers.lock().iter() {
+            w.wakeup();
+        }
+    }
+
+    /// Wakes `w` when data arrives, the queue drains, or it is hung up.
+    pub fn watch(&self, w: &Rendez) {
+        self.watchers.lock().push(w.clone());
+    }
+
+    pub fn unwatch(&self, w: &Rendez) {
+        self.watchers.lock().retain(|x| !x.same(w));
+    }
+
+    pub fn hungup(&self) -> bool {
+        self.state.lock().hungup
+    }
+
+    /// A writer would not block.
+    pub fn writable(&self) -> bool {
+        let s = self.state.lock();
+        s.hungup || s.buf.len() < s.limit
+    }
+
+    /// A reader would not block.
+    pub fn readable(&self) -> bool {
+        let s = self.state.lock();
+        s.hungup || !s.buf.is_empty()
+    }
+
+    /// Reads at least one byte, or returns 0 at end of file. A killed prog
+    /// gets [`error::EINTR`](purg_abi::error::EINTR) instead of blocking.
+    pub fn read(&self, out: &mut [u8]) -> Result<usize> {
         if out.is_empty() {
-            return 0;
+            return Ok(0);
         }
         loop {
-            self.readers.sleep(|| {
+            park(&self.readers, || {
                 let s = self.state.lock();
                 !s.buf.is_empty() || s.hungup
-            });
+            })?;
             let (n, hungup) = {
                 let mut s = self.state.lock();
                 let n = out.len().min(s.buf.len());
@@ -55,13 +94,13 @@ impl Queue {
                 (n, s.hungup)
             };
             if n > 0 {
-                self.writers.wakeup();
-                return n;
+                self.notify();
+                return Ok(n);
             }
             // Empty: end of file once hung up; otherwise another reader got
             // there first, so wait again.
             if hungup {
-                return 0;
+                return Ok(0);
             }
         }
     }
@@ -70,10 +109,12 @@ impl Queue {
     pub fn write(&self, data: &[u8]) -> Result<usize> {
         let mut done = 0;
         while done < data.len() {
-            self.writers.sleep(|| {
+            if let Err(e) = park(&self.writers, || {
                 let s = self.state.lock();
                 s.buf.len() < s.limit || s.hungup
-            });
+            }) {
+                return if done == 0 { Err(e) } else { Ok(done) };
+            }
             {
                 let mut s = self.state.lock();
                 if s.hungup {
@@ -83,7 +124,7 @@ impl Queue {
                 s.buf.extend(&data[done..done + n]);
                 done += n;
             }
-            self.readers.wakeup();
+            self.notify();
         }
         Ok(done)
     }
@@ -91,8 +132,7 @@ impl Queue {
     /// Marks the queue hung up and wakes everyone.
     pub fn hangup(&self) {
         self.state.lock().hungup = true;
-        self.readers.wakeup();
-        self.writers.wakeup();
+        self.notify();
     }
 
     pub fn len(&self) -> usize {

@@ -19,6 +19,8 @@ pub mod arg;
 pub mod bufio;
 pub mod daytime;
 pub mod env;
+pub mod file2chan;
+pub mod styx;
 pub mod sys;
 pub mod task;
 
@@ -245,6 +247,28 @@ pub fn iounit(fd: i32) -> Result<usize, Error> {
 /// `sys->bind` with flags from `abi::mount`.
 pub fn bind(name: &str, old: &str, flags: u32) -> Result<(), Error> {
     check(unsafe { sys::bind(name.as_ptr(), name.len(), old.as_ptr(), old.len(), flags) }).map(drop)
+}
+
+/// `sys->mount`. `afd` is -1 until authentication exists. `aname` is the
+/// attach name, often empty.
+pub fn mount(fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<(), Error> {
+    check(unsafe {
+        sys::mount(
+            fd,
+            afd,
+            old.as_ptr(),
+            old.len(),
+            flags,
+            aname.as_ptr(),
+            aname.len(),
+        )
+    })
+    .map(drop)
+}
+
+/// `sys->export`: serve `dir` on `fd` until the client closes the connection.
+pub fn export(fd: i32, dir: &str, flags: u32) -> Result<(), Error> {
+    check(unsafe { sys::export(fd, dir.as_ptr(), dir.len(), flags) }).map(drop)
 }
 
 /// `sys->unmount`: removes `name` from the union at `old`, or everything

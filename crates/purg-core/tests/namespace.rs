@@ -89,14 +89,15 @@ fn setup() -> (Prog, Arc<Mock>) {
     b.add_file("/only-b", &b"in b"[..]);
     let procs = Procs::new(platform.clone());
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root("inferno"))];
-    devs.extend(purg_core::portable_devices(&platform, &procs));
+    let portable = purg_core::portable_devices(&platform, &procs);
+    devs.extend(portable.devs);
     devs.push(Arc::new(a));
     devs.push(Arc::new(b));
     let ram = RamTree::new('R', "ram", "inferno", platform.clone());
     ram.add_file("/seed/hello", &b"seeded"[..], 0o644);
     devs.push(Arc::new(ram));
     let devtab = DevTab::new(devs);
-    let kernel = Kernel::new(platform, devtab.clone(), procs);
+    let kernel = Kernel::new(platform, devtab.clone(), procs, portable.srv, portable.mnt);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "").unwrap());
     let p = Prog::new(kernel, pgrp);
     mock.set_current_pid(p.pid);
@@ -249,7 +250,7 @@ fn cons_files() {
     assert_eq!(read_all(&mut p, "#c/null").unwrap(), "");
     assert_eq!(
         read_all(&mut p, "#c/drivers").unwrap(),
-        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#A a\n#B b\n#R ram\n"
+        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#A a\n#B b\n#R ram\n"
     );
 }
 

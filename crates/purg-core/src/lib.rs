@@ -6,20 +6,29 @@
 
 extern crate alloc;
 
+pub mod block;
 pub mod chan;
 pub mod dev;
 pub mod devcons;
+pub mod devdup;
 pub mod devenv;
+pub mod devmem;
+pub mod devmnt;
 pub mod devpipe;
 pub mod devprog;
 pub mod devram;
 pub mod devroot;
+pub mod devsrv;
 pub mod error;
+pub mod export;
 pub mod fgrp;
+pub mod kchan;
+pub mod mux;
 pub mod names;
 pub mod pgrp;
 pub mod prog;
 pub mod qio;
+pub mod rw;
 mod sysfile;
 
 use alloc::sync::Arc;
@@ -28,6 +37,8 @@ use alloc::vec::Vec;
 pub use chan::{Aux, Chan, Member};
 pub use dev::{Dev, DevTab, Walked};
 pub use devenv::Egrp;
+pub use devmnt::DevMnt;
+pub use devsrv::DevSrv;
 pub use error::{Error, Result};
 pub use fgrp::Fgrp;
 pub use pgrp::Pgrp;
@@ -35,13 +46,28 @@ pub use prog::{Kernel, Proc, Procs, Prog};
 pub use purg_platform::Platform;
 pub use purg_styx::{Dir, Qid};
 
-/// The devices every Purgatorio system has, whatever it runs on: `#c`,
-/// `#e`, `#|` and `#p`. Embedders add `#/` and their own devices.
-pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Vec<Arc<dyn Dev>> {
-    alloc::vec![
+/// The devices every Purgatorio system has, plus the `#M` and `#s` instances
+/// the kernel keeps so `mount` and `file2chan` can reach them.
+pub struct Portable {
+    pub devs: Vec<Arc<dyn Dev>>,
+    pub srv: Arc<DevSrv>,
+    pub mnt: Arc<DevMnt>,
+}
+
+/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d` and `#%`. Embedders add `#/` and
+/// their own devices.
+pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Portable {
+    let srv = Arc::new(devsrv::DevSrv::new(procs.user()));
+    let mnt = Arc::new(devmnt::DevMnt::new(platform.clone()));
+    let devs: Vec<Arc<dyn Dev>> = alloc::vec![
         Arc::new(devcons::DevCons::new(platform.clone())),
         Arc::new(devenv::DevEnv::new(procs.clone())),
         Arc::new(devpipe::DevPipe::new(procs.user())),
         Arc::new(devprog::DevProg::new(procs.clone())),
-    ]
+        srv.clone(),
+        mnt.clone(),
+        Arc::new(devdup::DevDup::new(procs.clone())),
+        Arc::new(devmem::DevMem::new(platform.clone())),
+    ];
+    Portable { devs, srv, mnt }
 }

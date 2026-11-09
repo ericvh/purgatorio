@@ -216,7 +216,7 @@ fn devices_are_listed() {
         let o = emu(vm, &["cat", "/dev/drivers"], b"");
         assert_eq!(
             stdout(&o),
-            "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#U fs\n",
+            "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#U fs\n",
             "{vm}"
         );
     }

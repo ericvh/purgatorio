@@ -13,7 +13,7 @@ use purg_platform::sync::{Mutex, RwLock};
 use crate::chan::{Chan, Member};
 use crate::dev::DevTab;
 use crate::error::{Error, Result};
-use crate::names::{cleanname, elements, split_device};
+use crate::names::{cleanname, elements, sh_quote, split_device};
 
 /// Devices a `NODEVS` namespace may still attach (Inferno's list).
 const NODEVS_ALLOWED: &[char] = &['e', 's', '|', 'M'];
@@ -22,6 +22,8 @@ const NODEVS_ALLOWED: &[char] = &['e', 's', '|', 'M'];
 struct Mount {
     /// Identity of the mounted-on Chan.
     key: (char, u32, u64),
+    /// Path the union is mounted on, for `/prog/n/ns`.
+    point: String,
     /// Union members in search order.
     to: Vec<Member>,
 }
@@ -104,6 +106,11 @@ impl Pgrp {
     /// not yet mounted on, the original directory is its other member.
     pub fn bind(&self, new: &str, old: &str, flags: u32) -> Result<()> {
         let to = self.namec_unmounted(new)?;
+        self.bind_chan(to, old, flags)
+    }
+
+    /// Binds an existing Chan at `old`. `mount` uses this for a `#M` root.
+    pub fn bind_chan(&self, to: Chan, old: &str, flags: u32) -> Result<()> {
         let from = self.namec_unmounted(old)?;
         if to.is_dir() != from.is_dir() {
             return Err(Error::new(error::EISMOUNT));
@@ -122,6 +129,7 @@ impl Pgrp {
             None => {
                 mounts.push(Mount {
                     key,
+                    point: from.name.clone(),
                     to: vec![Member {
                         chan: Arc::new(from),
                         flags: 0,
@@ -297,6 +305,39 @@ impl Pgrp {
         Ok(cur)
     }
 
+    /// The namespace as `bind` and `mount` commands, then `cd`, in the order
+    /// the unions were created. The underlying directory of a union is not
+    /// listed. Flags are `-a`, `-b`, `-c` and combinations; replace has none.
+    pub fn namespace(&self) -> String {
+        let mounts = self.mounts.read();
+        let mut out = String::new();
+        for m in mounts.iter() {
+            for member in &m.to {
+                if member.chan.key() == m.key && member.flags == 0 {
+                    continue;
+                }
+                let new = sh_quote(&member.chan.name);
+                let old = sh_quote(&m.point);
+                let fl = flag_text(member.flags);
+                let cmd = if member.chan.dev.dc() == 'M' {
+                    let spec = sh_quote(&member.chan.dev.aname(&member.chan));
+                    if fl.is_empty() {
+                        alloc::format!("mount {new} {old} {spec}\n")
+                    } else {
+                        alloc::format!("mount {fl} {new} {old} {spec}\n")
+                    }
+                } else if fl.is_empty() {
+                    alloc::format!("bind {new} {old}\n")
+                } else {
+                    alloc::format!("bind {fl} {new} {old}\n")
+                };
+                out.push_str(&cmd);
+            }
+        }
+        out.push_str(&alloc::format!("cd {}\n", sh_quote(&self.dot())));
+        out
+    }
+
     /// If `c` is a mount point (and `cross` is set), returns the first union
     /// member carrying the full union; otherwise returns `c`.
     fn domount(&self, c: Chan, cross: bool) -> Chan {
@@ -312,6 +353,23 @@ impl Pgrp {
             }
             None => c,
         }
+    }
+}
+
+fn flag_text(flags: u32) -> String {
+    let mut s = String::new();
+    match flags & mount::MORDER {
+        mount::MAFTER => s.push('a'),
+        mount::MBEFORE => s.push('b'),
+        _ => {}
+    }
+    if flags & mount::MCREATE != 0 {
+        s.push('c');
+    }
+    if s.is_empty() {
+        String::new()
+    } else {
+        alloc::format!("-{s}")
     }
 }
 

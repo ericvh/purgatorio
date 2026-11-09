@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-memfs"
+description = "memfs: an in-memory Styx filesystem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "memfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

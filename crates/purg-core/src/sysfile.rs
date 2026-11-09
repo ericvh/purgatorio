@@ -207,6 +207,93 @@ impl Prog {
         }
     }
 
+    /// `sys->mount`. `afd >= 0` is rejected until authentication exists.
+    pub fn mount(&self, fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<()> {
+        if afd >= 0 {
+            return Err(Error::new(error::ENOTIMPL));
+        }
+        let fd = self.fgrp.get(fd)?;
+        let root = self.kernel.mnt.mount(fd, aname, self.kernel.procs.user())?;
+        let old = absolute(old, &self.dot());
+        self.pgrp.bind_chan(root, &old, flags)
+    }
+
+    /// `sys->export`: serve `dir` on `fd` until the client closes.
+    pub fn export(&self, fd: i32, dir: &str, _flags: u32) -> Result<()> {
+        let fd = self.fgrp.get(fd)?;
+        let dir = absolute(dir, &self.dot());
+        crate::export::serve(self.pgrp.clone(), &dir, &fd)
+    }
+
+    /// `sys->file2chan`. When `dir` is not on `#s`, the file is created in
+    /// `#s` and bound over `dir/name`, creating an empty file there first
+    /// when the name does not exist.
+    pub fn file2chan(&mut self, dir: &str, name: &str) -> Result<(i32, i32)> {
+        if name.is_empty() || name.contains('/') {
+            return Err(Error::new(error::EBADARG));
+        }
+        let dir = absolute(dir, &self.dot());
+        let parent = self.namec(&dir)?;
+        if !parent.is_dir() {
+            return Err(Error::new(error::ENOTDIR));
+        }
+        if parent.dev.dc() == 's' {
+            return self.kernel.srv.add(&self.proc, name);
+        }
+        let walk = self.kernel.srv.fresh_name();
+        let handles = self.kernel.srv.add(&self.proc, &walk)?;
+        let target = if dir == "/" {
+            alloc::format!("/{name}")
+        } else {
+            alloc::format!("{dir}/{name}")
+        };
+        if self.namec(&target).is_err() {
+            let fd = self.create(&target, mode::OWRITE, 0o666)?;
+            self.close(fd)?;
+        }
+        self.bind(
+            &alloc::format!("#s/{walk}"),
+            &target,
+            purg_abi::mount::MREPL,
+        )?;
+        Ok(handles)
+    }
+
+    /// `sys->fversion`: exchange a 9P version on `fd`. Returns the version
+    /// string the server agreed to.
+    pub fn fversion(&self, fd: i32, msize: u32, ver: &str) -> Result<String> {
+        use purg_styx::{Fcall, Msg};
+        let c = self.fgrp.get(fd)?;
+        let bytes = Msg {
+            tag: 0,
+            fcall: Fcall::Tversion {
+                msize,
+                version: ver,
+            },
+        }
+        .encode()
+        .map_err(|_| Error::new(error::EIO))?;
+        crate::rw::write_full(&c, &bytes)?;
+        let buf = crate::rw::read_msg(&c, msize.max(purg_styx::IOHDRSZ))?;
+        match Msg::decode(&buf, msize.max(purg_styx::IOHDRSZ)) {
+            Ok(Msg {
+                fcall: Fcall::Rversion { version, .. },
+                ..
+            }) => Ok(String::from(version)),
+            Ok(Msg {
+                fcall: Fcall::Rerror { ename },
+                ..
+            }) => Err(Error::from(String::from(ename))),
+            _ => Err(Error::new(error::EIO)),
+        }
+    }
+
+    /// `sys->iounit`.
+    pub fn iounit_of(&self, fd: i32) -> Result<u32> {
+        let c = self.fgrp.get(fd)?;
+        Ok(c.dev.iounit(&c))
+    }
+
     /// `sys->pipe`: two fds open on the ends of a new `#|` pipe.
     pub fn pipe(&mut self) -> Result<[i32; 2]> {
         let dir = self.namec("#|")?;
@@ -230,6 +317,170 @@ impl Prog {
                 Err(e)
             }
         }
+    }
+
+    pub fn chan_new(&self, cap: u32) -> Result<i32> {
+        self.proc
+            .kgrp
+            .alloc(Arc::new(crate::kchan::KChan::new(cap as usize)))
+    }
+
+    pub fn chan_close(&self, h: i32) -> Result<()> {
+        let c = self.proc.kgrp.close(h)?;
+        c.close();
+        Ok(())
+    }
+
+    pub fn chan_send(&self, h: i32, bytes: &[u8], handles: &[i32]) -> Result<()> {
+        let mut caps = Vec::new();
+        for &id in handles {
+            caps.push(crate::kchan::Cap::Chan(self.proc.kgrp.get(id)?));
+        }
+        let ch = self.proc.kgrp.get(h)?;
+        ch.send(crate::kchan::KMsg {
+            bytes: bytes.to_vec(),
+            caps,
+        })?;
+        for &id in handles {
+            let _ = self.proc.kgrp.close(id);
+        }
+        Ok(())
+    }
+}
+
+/// The arm that completed, its bytes, and any handles it received.
+pub type AltDone = (usize, Vec<u8>, Vec<i32>);
+
+impl Prog {
+    /// One `alt` arm. On a receive, `got` is filled when that arm completes.
+    pub fn chan_alt(
+        &self,
+        arms: &[(i32, bool, Vec<u8>, Vec<i32>)],
+        block: bool,
+    ) -> Result<Option<AltDone>> {
+        let mut ops = Vec::new();
+        for (handle, send, bytes, caps) in arms {
+            let chan = self.proc.kgrp.get(*handle)?;
+            let send = if *send {
+                let mut moved = Vec::new();
+                for &id in caps {
+                    moved.push(crate::kchan::Cap::Chan(self.proc.kgrp.get(id)?));
+                }
+                Some(crate::kchan::KMsg {
+                    bytes: bytes.clone(),
+                    caps: moved,
+                })
+            } else {
+                None
+            };
+            ops.push(crate::kchan::AltOp {
+                chan,
+                send,
+                got: None,
+            });
+        }
+        let Some(i) = crate::kchan::alt(&mut ops, block)? else {
+            return Ok(None);
+        };
+        if arms[i].1 {
+            for &id in &arms[i].3 {
+                let _ = self.proc.kgrp.close(id);
+            }
+            return Ok(Some((i, Vec::new(), Vec::new())));
+        }
+        let msg = ops[i].got.take().ok_or(Error::new(error::EIO))?;
+        let mut handles = Vec::new();
+        for cap in msg.caps {
+            if let crate::kchan::Cap::Chan(c) = cap {
+                handles.push(self.proc.kgrp.alloc(c)?);
+            }
+        }
+        Ok(Some((i, msg.bytes, handles)))
+    }
+
+    /// `purgatorio.wait`. `ops` is `(kind, id)` with kinds 0 fd-read, 1
+    /// fd-write, 2 chan-recv, 3 chan-send. `timeout_ms < 0` waits forever.
+    pub fn wait_ops(&self, ops: &[(i32, i32)], timeout_ms: i32) -> Result<Option<usize>> {
+        let rendez = purg_platform::sync::Rendez::new();
+        for &(kind, id) in ops {
+            match kind {
+                0 | 1 => {
+                    if let Ok(c) = self.fgrp.get(id) {
+                        c.dev.watch(&c, kind == 1, &rendez);
+                    }
+                }
+                2 | 3 => {
+                    if let Ok(c) = self.proc.kgrp.get(id) {
+                        c.watch(&rendez);
+                    }
+                }
+                _ => return Err(Error::new(error::EBADARG)),
+            }
+        }
+        let ready = || {
+            ops.iter().any(|&(kind, id)| match kind {
+                0 | 1 => self
+                    .fgrp
+                    .get(id)
+                    .map(|c| c.dev.ready(&c, kind == 1))
+                    .unwrap_or(true),
+                2 => self.proc.kgrp.get(id).map(|c| c.can_recv()).unwrap_or(true),
+                3 => self.proc.kgrp.get(id).map(|c| c.can_send()).unwrap_or(true),
+                _ => true,
+            })
+        };
+        let hit = crate::block::park_timeout(&rendez, ready, timeout_ms);
+        for &(kind, id) in ops {
+            match kind {
+                0 | 1 => {
+                    if let Ok(c) = self.fgrp.get(id) {
+                        c.dev.unwatch(&c, &rendez);
+                    }
+                }
+                2 | 3 => {
+                    if let Ok(c) = self.proc.kgrp.get(id) {
+                        c.unwatch(&rendez);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !hit? {
+            return Ok(None);
+        }
+        Ok(ops.iter().position(|&(kind, id)| match kind {
+            0 | 1 => self
+                .fgrp
+                .get(id)
+                .map(|c| c.dev.ready(&c, kind == 1))
+                .unwrap_or(true),
+            2 => self.proc.kgrp.get(id).map(|c| c.can_recv()).unwrap_or(true),
+            3 => self.proc.kgrp.get(id).map(|c| c.can_send()).unwrap_or(true),
+            _ => true,
+        }))
+    }
+
+    /// Receives one message. Returns the bytes and the new handles the
+    /// capabilities were installed as. `Ok(None)` is a closed channel.
+    pub fn chan_recv(&self, h: i32, max: usize) -> Result<Option<(Vec<u8>, Vec<i32>)>> {
+        let ch = self.proc.kgrp.get(h)?;
+        let Some(msg) = ch.recv()? else {
+            return Ok(None);
+        };
+        let mut handles = Vec::new();
+        for cap in msg.caps {
+            let id = match cap {
+                crate::kchan::Cap::Chan(c) => self.proc.kgrp.alloc(c)?,
+                crate::kchan::Cap::Fd(fd) => self.fgrp.alloc(fd)?,
+            };
+            handles.push(id);
+        }
+        let bytes = if msg.bytes.len() > max {
+            msg.bytes[..max].to_vec()
+        } else {
+            msg.bytes
+        };
+        Ok(Some((bytes, handles)))
     }
 }
 
@@ -282,7 +533,7 @@ fn union_dirents(c: &Chan) -> Result<Vec<Dir>> {
 
 /// Serves a directory read at byte `offset` from a snapshot taken when the
 /// read starts at offset 0. Only whole entries are returned.
-fn dir_read(c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
+pub(crate) fn dir_read(c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
     let mut snap = c.dirbuf.lock();
     if offset == 0 {
         snap.clear();

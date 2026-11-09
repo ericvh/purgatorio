@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-sed"
+description = "sed: a small stream editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sed"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

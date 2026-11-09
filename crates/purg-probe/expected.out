@@ -31,6 +31,11 @@ ok files
 ok chdir_relative
 ok bind_and_unmount
 probe: ok
+probe: run /bin/test/m3.wasm
+ok file2chan
+ok export
+ok kill
+probe: ok
 probe: sh /lib/test/sh/bind.sh
 probe: ok
 probe: sh /lib/test/sh/depth.sh
@@ -41,11 +46,15 @@ probe: sh /lib/test/sh/files.sh
 probe: ok
 probe: sh /lib/test/sh/jobs.sh
 probe: ok
+probe: sh /lib/test/sh/m3.sh
+probe: ok
 probe: sh /lib/test/sh/pipes.sh
 probe: ok
 probe: sh /lib/test/sh/redir.sh
 probe: ok
 probe: sh /lib/test/sh/status.sh
+probe: ok
+probe: sh /lib/test/sh/tools.sh
 probe: ok
 probe: sh /lib/test/sh/words.sh
 probe: ok

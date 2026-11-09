@@ -10,10 +10,14 @@ use purg_abi::{error, pctl};
 use purg_platform::Platform;
 use purg_platform::sync::{Mutex, Rendez};
 
+use purg_platform::sync::Note;
+
+use crate::block::park;
 use crate::dev::DevTab;
 use crate::devenv::Egrp;
 use crate::error::{Error, Result};
 use crate::fgrp::Fgrp;
+use crate::kchan::Kgrp;
 use crate::names::quote;
 use crate::pgrp::Pgrp;
 
@@ -30,6 +34,11 @@ pub struct Proc {
     group: AtomicU32,
     name: Mutex<String>,
     egrp: Mutex<Arc<Egrp>>,
+    fgrp: Mutex<Arc<Fgrp>>,
+    pgrp: Mutex<Arc<Pgrp>>,
+    /// Set by `kill` and by `ctl`. Blocking syscalls on this prog watch it.
+    pub note: Arc<Note>,
+    pub kgrp: Arc<Kgrp>,
     waits: Mutex<VecDeque<String>>,
     waitr: Rendez,
 }
@@ -51,6 +60,36 @@ impl Proc {
         self.egrp.lock().clone()
     }
 
+    pub fn fgrp(&self) -> Arc<Fgrp> {
+        self.fgrp.lock().clone()
+    }
+
+    pub fn pgrp(&self) -> Arc<Pgrp> {
+        self.pgrp.lock().clone()
+    }
+
+    pub fn set_fgrp(&self, fgrp: Arc<Fgrp>) {
+        *self.fgrp.lock() = fgrp;
+    }
+
+    pub fn set_pgrp(&self, pgrp: Arc<Pgrp>) {
+        *self.pgrp.lock() = pgrp;
+    }
+
+    /// Interrupts this prog wherever it is blocked.
+    pub fn kill(&self) {
+        self.note.kill();
+    }
+
+    /// `running` until [`Proc::kill`], then `broken`.
+    pub fn state(&self) -> &'static str {
+        if self.note.killed() {
+            "broken"
+        } else {
+            "running"
+        }
+    }
+
     fn post_wait(&self, msg: String) {
         {
             let mut w = self.waits.lock();
@@ -64,11 +103,12 @@ impl Proc {
 
     /// Blocks until a child has exited and returns its exit message:
     /// `pid name status`, with name and status quoted when needed.
-    pub fn wait(&self) -> String {
+    /// A killed prog gets [`error::EINTR`](purg_abi::error::EINTR).
+    pub fn wait(&self) -> Result<String> {
         loop {
-            self.waitr.sleep(|| !self.waits.lock().is_empty());
+            park(&self.waitr, || !self.waits.lock().is_empty())?;
             if let Some(m) = self.waits.lock().pop_front() {
-                return m;
+                return Ok(m);
             }
         }
     }
@@ -96,7 +136,14 @@ impl Procs {
         &self.user
     }
 
-    fn register(&self, ppid: u32, group: Option<u32>, egrp: Arc<Egrp>) -> Arc<Proc> {
+    fn register(
+        &self,
+        ppid: u32,
+        group: Option<u32>,
+        egrp: Arc<Egrp>,
+        fgrp: Arc<Fgrp>,
+        pgrp: Arc<Pgrp>,
+    ) -> Arc<Proc> {
         let pid = self.next_pid.fetch_add(1, Ordering::Relaxed);
         let p = Arc::new(Proc {
             pid,
@@ -104,11 +151,24 @@ impl Procs {
             group: AtomicU32::new(group.unwrap_or(pid)),
             name: Mutex::new(String::new()),
             egrp: Mutex::new(egrp),
+            fgrp: Mutex::new(fgrp),
+            pgrp: Mutex::new(pgrp),
+            note: Arc::new(Note::new()),
+            kgrp: Arc::new(Kgrp::new()),
             waits: Mutex::new(VecDeque::new()),
             waitr: Rendez::new(),
         });
         self.table.lock().insert(pid, p.clone());
         p
+    }
+
+    /// Kills every prog in `group`.
+    pub fn kill_group(&self, group: u32) {
+        for p in self.table.lock().values() {
+            if p.group() == group {
+                p.kill();
+            }
+        }
     }
 
     pub fn get(&self, pid: u32) -> Option<Arc<Proc>> {
@@ -149,14 +209,24 @@ pub struct Kernel {
     pub platform: Arc<dyn Platform>,
     pub devtab: Arc<DevTab>,
     pub procs: Arc<Procs>,
+    pub srv: Arc<crate::devsrv::DevSrv>,
+    pub mnt: Arc<crate::devmnt::DevMnt>,
 }
 
 impl Kernel {
-    pub fn new(platform: Arc<dyn Platform>, devtab: Arc<DevTab>, procs: Arc<Procs>) -> Arc<Kernel> {
+    pub fn new(
+        platform: Arc<dyn Platform>,
+        devtab: Arc<DevTab>,
+        procs: Arc<Procs>,
+        srv: Arc<crate::devsrv::DevSrv>,
+        mnt: Arc<crate::devmnt::DevMnt>,
+    ) -> Arc<Kernel> {
         Arc::new(Kernel {
             platform,
             devtab,
             procs,
+            srv,
+            mnt,
         })
     }
 }
@@ -182,13 +252,17 @@ pub struct Prog {
 impl Prog {
     /// A first prog with a fresh fd table and environment.
     pub fn new(kernel: Arc<Kernel>, pgrp: Arc<Pgrp>) -> Prog {
-        let proc = kernel.procs.register(0, None, Arc::new(Egrp::new()));
+        let fgrp = Arc::new(Fgrp::new());
+        let proc =
+            kernel
+                .procs
+                .register(0, None, Arc::new(Egrp::new()), fgrp.clone(), pgrp.clone());
         Prog {
             pid: proc.pid,
             proc,
             kernel,
             pgrp,
-            fgrp: Arc::new(Fgrp::new()),
+            fgrp,
             errstr: String::new(),
             status: String::new(),
             report: true,
@@ -239,7 +313,13 @@ impl Prog {
         if flags & pctl::NEWPGRP != 0 {
             self.proc.group.store(self.pid, Ordering::Relaxed);
         }
+        self.publish();
         Ok(self.pid)
+    }
+
+    fn publish(&self) {
+        self.proc.set_fgrp(self.fgrp.clone());
+        self.proc.set_pgrp(self.pgrp.clone());
     }
 
     /// A child prog sharing this prog's groups, then changed by `flags` as
@@ -255,10 +335,13 @@ impl Prog {
             .iter()
             .map(|&(from, to)| Ok((to, self.fgrp.get(from)?)))
             .collect::<Result<Vec<_>>>()?;
-        let proc = self
-            .kernel
-            .procs
-            .register(self.pid, Some(self.proc.group()), self.egrp());
+        let proc = self.kernel.procs.register(
+            self.pid,
+            Some(self.proc.group()),
+            self.egrp(),
+            self.fgrp.clone(),
+            self.pgrp.clone(),
+        );
         let mut child = Prog {
             pid: proc.pid,
             proc,
@@ -273,6 +356,7 @@ impl Prog {
         for (to, c) in chans {
             child.fgrp.install(to, c)?;
         }
+        child.publish();
         Ok(child)
     }
 

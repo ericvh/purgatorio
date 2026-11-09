@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.2)
+# Purgatorio application ABI (v0.3)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.2`. The loader rejects a mismatched version. Modules
+section containing `0.3`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -87,7 +87,7 @@ milestones.
 | `load` | `purgatorio.load`, `purgatorio.call` | missing in WASI | M5 |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.2
+## `purgatorio` imports in v0.3
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -110,6 +110,16 @@ bind(name, nlen, old, olen, flags) -> 0
 unmount(name, nlen, old, olen) -> 0     nlen = 0 removes everything at old
 pctl(flags, movefd, n) -> pid     movefd: n i32 fds that NEWFD keeps
 spawn_prog(path, plen, argv, alen, flags, fdmap, n) -> pid
+mount(fd, afd, old, olen, flags, aname, alen) -> 0
+export(fd, dir, dlen, flags) -> 0
+fversion(fd, msize, ver, vlen) -> n
+file2chan(dir, dlen, name, nlen, handles) -> 0
+chan_new(cap) -> h
+chan_close(h) -> 0
+chan_send(h, buf, n, handles, nh) -> 0
+chan_recv(h, buf, blen, handles, maxh) -> n
+alt(ops, nops, block) -> index
+wait(ops, nops, timeout_ms) -> index
 ```
 
 All of these return -1 and set errstr on failure.

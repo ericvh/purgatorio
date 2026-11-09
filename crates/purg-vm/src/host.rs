@@ -903,9 +903,8 @@ pub mod purgatorio {
         })
     }
 
-    /// No device limits I/O sizes yet, so every fd reports 0 ("no limit").
     pub fn iounit(ctx: &mut Ctx, _mem: &mut Mem<'_>, fd: i32) -> HostResult<i32> {
-        call(ctx, |c| c.prog.chan(fd).map(|_| 0))
+        call(ctx, |c| c.prog.iounit_of(fd).map(|n| n as i32))
     }
 
     pub fn bind(
@@ -987,6 +986,206 @@ pub mod purgatorio {
             let engine = c.engine.clone();
             let pid = crate::spawn(&c.prog, &engine, &path, args, flags as u32, &map)?;
             Ok(pid as i32)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn mount(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        afd: i32,
+        old: i32,
+        olen: i32,
+        flags: i32,
+        aname: i32,
+        alen: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            c.prog
+                .mount(
+                    fd,
+                    afd,
+                    mem.str(old, olen)?,
+                    flags as u32,
+                    mem.str(aname, alen)?,
+                )
+                .map(|()| 0)
+        })
+    }
+
+    pub fn export(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        dir: i32,
+        dlen: i32,
+        flags: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            c.prog
+                .export(fd, mem.str(dir, dlen)?, flags as u32)
+                .map(|()| 0)
+        })
+    }
+
+    pub fn fversion(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        msize: i32,
+        ver: i32,
+        vlen: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let version = c.prog.fversion(fd, msize as u32, mem.str(ver, vlen)?)?;
+            put_str(mem, ver, vlen, &version)
+        })
+    }
+
+    pub fn file2chan(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        dir: i32,
+        dlen: i32,
+        name: i32,
+        nlen: i32,
+        handles: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            mem.slice(handles, 8)?;
+            let (r, w) = c
+                .prog
+                .file2chan(mem.str(dir, dlen)?, mem.str(name, nlen)?)?;
+            mem.put_u32(handles, r as u32)?;
+            mem.put_u32(handles.wrapping_add(4), w as u32)?;
+            Ok(0)
+        })
+    }
+
+    pub fn chan_new(ctx: &mut Ctx, _mem: &mut Mem<'_>, cap: i32) -> HostResult<i32> {
+        call(ctx, |c| c.prog.chan_new(cap as u32))
+    }
+
+    pub fn chan_close(ctx: &mut Ctx, _mem: &mut Mem<'_>, h: i32) -> HostResult<i32> {
+        call(ctx, |c| c.prog.chan_close(h).map(|()| 0))
+    }
+
+    pub fn chan_send(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        h: i32,
+        buf: i32,
+        n: i32,
+        handles: i32,
+        nh: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let bytes = mem.slice(buf, n)?.to_vec();
+            let caps = get_i32s(mem, handles, nh)?;
+            c.prog.chan_send(h, &bytes, &caps).map(|()| 0)
+        })
+    }
+
+    pub fn chan_recv(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        h: i32,
+        buf: i32,
+        blen: i32,
+        handles: i32,
+        maxh: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let max = usize::try_from(blen).map_err(|_| Error::new(error::EBADARG))?;
+            let Some((bytes, caps)) = c.prog.chan_recv(h, max)? else {
+                return Err(Error::new(error::EHUNGUP));
+            };
+            mem.write(buf, &bytes)?;
+            let slots = usize::try_from(maxh.max(0)).unwrap_or(0);
+            for i in 0..slots {
+                let id = caps.get(i).copied().unwrap_or(-1);
+                mem.put_u32(handles.wrapping_add(4 * i as i32), id as u32)?;
+            }
+            Ok(bytes.len() as i32)
+        })
+    }
+
+    pub fn alt(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        ops: i32,
+        nops: i32,
+        block: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            if nops < 0 {
+                return Err(Error::new(error::EBADARG));
+            }
+            let mut arms = Vec::new();
+            for i in 0..nops {
+                let at = ops.wrapping_add(24 * i);
+                let handle = mem.u32(at)? as i32;
+                let kind = mem.u32(at.wrapping_add(4))? as i32;
+                let buf = mem.u32(at.wrapping_add(8))? as i32;
+                let len = mem.u32(at.wrapping_add(12))? as i32;
+                let caps = mem.u32(at.wrapping_add(16))? as i32;
+                let ncaps = mem.u32(at.wrapping_add(20))? as i32;
+                let bytes = if kind == 0 {
+                    Vec::new()
+                } else {
+                    mem.slice(buf, len)?.to_vec()
+                };
+                let cap_ids = if kind == 0 {
+                    Vec::new()
+                } else {
+                    get_i32s(mem, caps, ncaps)?
+                };
+                arms.push((handle, kind != 0, bytes, cap_ids, buf, len, caps));
+            }
+            let plain: Vec<_> = arms
+                .iter()
+                .map(|a| (a.0, a.1, a.2.clone(), a.3.clone()))
+                .collect();
+            match c.prog.chan_alt(&plain, block != 0)? {
+                None => Ok(-1),
+                Some((i, bytes, caps)) => {
+                    let arm = &arms[i];
+                    if !arm.1 {
+                        let n = bytes.len().min(arm.5.max(0) as usize);
+                        mem.write(arm.4, &bytes[..n])?;
+                        let at = ops.wrapping_add(24 * i as i32);
+                        mem.put_u32(at.wrapping_add(12), n as u32)?;
+                        for (k, id) in caps.iter().enumerate() {
+                            mem.put_u32(arm.6.wrapping_add(4 * k as i32), *id as u32)?;
+                        }
+                    }
+                    Ok(i as i32)
+                }
+            }
+        })
+    }
+
+    pub fn wait(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        ops: i32,
+        nops: i32,
+        timeout_ms: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            if nops < 0 {
+                return Err(Error::new(error::EBADARG));
+            }
+            let mut list = Vec::new();
+            for i in 0..nops {
+                let at = ops.wrapping_add(8 * i);
+                list.push((mem.u32(at)? as i32, mem.u32(at.wrapping_add(4))? as i32));
+            }
+            Ok(match c.prog.wait_ops(&list, timeout_ms)? {
+                Some(i) => i as i32,
+                None => -1,
+            })
         })
     }
 }

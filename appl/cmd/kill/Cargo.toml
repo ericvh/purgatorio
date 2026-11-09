@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-kill"
+description = "kill: interrupt a prog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kill"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

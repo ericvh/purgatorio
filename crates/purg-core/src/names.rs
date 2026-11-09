@@ -52,6 +52,28 @@ pub fn split_device(path: &str) -> (Option<&str>, &str) {
     }
 }
 
+/// Quotes `s` for a shell command when it is not a plain path. Device names
+/// such as `#c` are quoted, so `ns` output can be read back as commands
+/// without `#` starting a comment.
+pub fn sh_quote(s: &str) -> String {
+    if !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+    {
+        String::from(s)
+    } else {
+        let mut out = String::from("'");
+        for c in s.chars() {
+            if c == '\'' {
+                out.push('\'');
+            }
+            out.push(c);
+        }
+        out.push('\'');
+        out
+    }
+}
+
 /// Quotes `s` as Inferno's `%q` does when it is empty or contains white
 /// space or a quote: wrapped in `'`, with `'` doubled.
 pub fn quote(s: &str) -> String {
