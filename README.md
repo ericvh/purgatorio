@@ -61,9 +61,20 @@ OS-specific code is under `src/host/`.
 
 ## Building and running
 
-You need `rustup`. The toolchain and its targets (`wasm32-wasip1`,
-`aarch64-unknown-none`) are pinned in `rust-toolchain.toml` and install
-automatically.
+Use Rust 1.99.1. The file `rust-toolchain.toml` pins it: channel `1.99.1`,
+profile `minimal`, components `rustfmt` and `clippy`, and targets
+`wasm32-wasip1`, `wasm32-unknown-unknown`, and `aarch64-unknown-none`. The
+host target comes with the toolchain. This covers Linux and macOS, including
+aarch64. Do not use a distro `rustc` package.
+
+Install rustup from [https://rustup.rs](https://rustup.rs):
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Then, in this repo, run `rustup show`. That installs 1.99.1 plus those
+components and targets.
 
 ```sh
 cargo xtask build-root                       # build apps into root/bin/*.wasm
