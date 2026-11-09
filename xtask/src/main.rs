@@ -5,14 +5,19 @@
 //!   tests as `root/bin/test/<name>.wasm`.
 //! - `run-emu [-- emu args]`: `build-root`, build `emu`, and run it on
 //!   `root/` with stdin, stdout and stderr passed through.
+//! - `probe`: `build-root`, build `purg-probe` for `aarch64-unknown-none`,
+//!   boot it in `qemu-system-aarch64` (or `$QEMU`) and check its serial
+//!   output and semihosting exit code.
 //! - `check-wasm <file.wasm>...`: check modules without building.
 
 mod wasm;
 
 use std::env;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
+use std::time::{Duration, Instant};
 
 const GUEST_TARGET: &str = "wasm32-wasip1";
 const GUEST_PROFILE: &str = "wasm";
@@ -159,6 +164,84 @@ fn run_emu(args: &[String]) -> Result<ExitCode> {
     ))
 }
 
+const PROBE_TARGET: &str = "aarch64-unknown-none";
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Builds `purg-probe` over a fresh `root/`, boots it in QEMU and compares
+/// its serial output with `crates/purg-probe/expected.out`.
+fn probe() -> Result<()> {
+    build_root()?;
+    let ws = workspace();
+    run(cargo().current_dir(&ws).args([
+        "build",
+        "-p",
+        "purg-probe",
+        "--target",
+        PROBE_TARGET,
+        "--profile",
+        "probe",
+    ]))?;
+    let image = ws
+        .join("target")
+        .join(PROBE_TARGET)
+        .join("probe/purg-probe");
+    let qemu = env::var("QEMU").unwrap_or_else(|_| String::from("qemu-system-aarch64"));
+    let mut child = Command::new(&qemu)
+        .args([
+            "-M",
+            "virt",
+            "-cpu",
+            "cortex-a72",
+            "-m",
+            "512M",
+            "-nographic",
+            "-semihosting",
+            "-kernel",
+        ])
+        .arg(&image)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{qemu}: {e}"))?;
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        out
+    });
+    let start = Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().map_err(|e| format!("{qemu}: {e}"))? {
+            break s;
+        }
+        if start.elapsed() > PROBE_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            let out = reader.join().unwrap_or_default();
+            eprint!("{}", String::from_utf8_lossy(&out));
+            return Err(format!("probe did not exit within {PROBE_TIMEOUT:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let elapsed = start.elapsed();
+    let out = reader.join().map_err(|_| "reading QEMU output failed")?;
+    let got = String::from_utf8_lossy(&out).replace('\r', "");
+    print!("{got}");
+    let golden = ws.join("crates/purg-probe/expected.out");
+    let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
+    if !status.success() {
+        return Err(format!("probe exited with {status}"));
+    }
+    if got != want {
+        return Err(format!(
+            "probe output differs from {}; expected:\n{want}",
+            golden.display()
+        ));
+    }
+    eprintln!("probe: passed in {:.2}s", elapsed.as_secs_f64());
+    Ok(())
+}
+
 fn check_wasm(files: &[String]) -> Result<()> {
     for f in files {
         let bytes = fs::read(f).map_err(|e| format!("{f}: {e}"))?;
@@ -236,8 +319,9 @@ fn main() -> ExitCode {
             run_emu(&emu_args)
         }
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
+        Some("probe") => probe().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | check-wasm file.wasm...",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe | check-wasm file.wasm...",
         )),
     };
     match res {

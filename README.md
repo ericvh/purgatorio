@@ -32,7 +32,7 @@ WASM command in a prog whose fds 0, 1 and 2 are `/dev/cons`.
 | App ABI: WASI preview1 subset plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)) | done |
 | Apps: `echo`, `cat`, `emuinit`, ABI test | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
-| `purg-probe`: bare-metal aarch64 QEMU image running the portable subset | next PR |
+| `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi | done |
 
 ## Layout
 
@@ -46,6 +46,7 @@ crates/
   purg-vm-wasmi/     no_std  wasmi interpreter backend
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
   purg-emu/          std     the `emu` binary: #U, console, src/host/{unix,linux,macos}.rs
+  purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, semihosting)
 sdk/
   purgatorio/                guest SDK (errstr, Dir, stat, dirread, exits, exec)
   purgatorio-macros/         #[purgatorio::main]
@@ -97,12 +98,22 @@ cargo xtask build-root    # acceptance tests run the built apps
 cargo test --workspace
 cargo build --target aarch64-unknown-none \
   -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
+cargo xtask probe         # needs qemu-system-aarch64
 ```
+
+`cargo xtask probe` builds `purg-probe`, a bare-metal aarch64 image that
+embeds a read-only root (`/bin/{echo,cat}.wasm`, `/bin/test/abi.wasm`,
+`/lib/probe/hello.txt`) and runs the milestone's portable test subset on
+`purg-core` and wasmi, with `#c` on the PL011 UART. It boots the image with
+`qemu-system-aarch64 -M virt -cpu cortex-a72 -nographic -semihosting`,
+requires a semihosting exit code of 0 within 30 s, and compares the serial
+output with `crates/purg-probe/expected.out`.
 
 CI (`.github/workflows/ci.yml`) runs fmt and clippy, then runs the unit and
 acceptance tests on both WASM backends on Linux x86_64, Linux aarch64 and
 macOS arm64. It also builds and lints the shared crates for
-`aarch64-unknown-none`, checks names on a case-sensitive APFS volume, and
+`aarch64-unknown-none`, boots `purg-probe` in QEMU on both Linux runners,
+checks names on a case-sensitive APFS volume, and
 verifies that guest `.wasm` files are byte-identical across all three hosts.
 
 ### Writing an app

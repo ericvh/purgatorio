@@ -96,6 +96,26 @@ jobs:
             echo "== $d"; diff "$first/wasm-sha256.txt" "$d/wasm-sha256.txt"
           done
 
+  probe:
+    name: purg-probe in QEMU aarch64 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: install QEMU
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-arm
+      - name: clippy
+        run: >
+          cargo xtask build-root &&
+          cargo clippy -p purg-probe --target aarch64-unknown-none --profile probe -- -D warnings
+      - name: xtask probe
+        run: cargo xtask probe
+
   no-std:
     name: shared crates on aarch64-unknown-none (${{ matrix.os }})
     strategy:
