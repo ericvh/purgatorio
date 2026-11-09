@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_abi::{error, mode, pctl};
+use purg_core::devram::RamTree;
 use purg_core::devroot::StaticTree;
 use purg_core::{Dev, DevTab, Kernel, Pgrp, Platform, Procs, Prog};
 use purg_platform::Console;
@@ -91,6 +92,9 @@ fn setup() -> (Prog, Arc<Mock>) {
     devs.extend(purg_core::portable_devices(&platform, &procs));
     devs.push(Arc::new(a));
     devs.push(Arc::new(b));
+    let ram = RamTree::new('R', "ram", "inferno", platform.clone());
+    ram.add_file("/seed/hello", &b"seeded"[..], 0o644);
+    devs.push(Arc::new(ram));
     let devtab = DevTab::new(devs);
     let kernel = Kernel::new(platform, devtab.clone(), procs);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "").unwrap());
@@ -245,7 +249,7 @@ fn cons_files() {
     assert_eq!(read_all(&mut p, "#c/null").unwrap(), "");
     assert_eq!(
         read_all(&mut p, "#c/drivers").unwrap(),
-        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#A a\n#B b\n"
+        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#A a\n#B b\n#R ram\n"
     );
 }
 
@@ -436,4 +440,49 @@ fn pctl_namespace_and_fd_groups() {
     assert_eq!(read_all(&mut p, "#A/x").unwrap_err(), error::ENOATTACH);
     assert_eq!(read_all(&mut p, "#c/user").unwrap_err(), error::ENOATTACH);
     p.pipe().unwrap();
+}
+
+#[test]
+fn ram_tree_is_writable() {
+    let (mut p, _) = setup();
+    p.bind("#R", "/chan", MREPL | MCREATE).unwrap();
+    assert_eq!(read_all(&mut p, "/chan/seed/hello").unwrap(), "seeded");
+    let fd = p.create("/chan/f", mode::OWRITE, 0o644).unwrap();
+    p.write(fd, b"hello world").unwrap();
+    p.close(fd).unwrap();
+    assert_eq!(read_all(&mut p, "/chan/f").unwrap(), "hello world");
+    let fd = p.open("/chan/f", mode::OWRITE).unwrap();
+    p.write(fd, b"J").unwrap();
+    p.close(fd).unwrap();
+    assert_eq!(read_all(&mut p, "/chan/f").unwrap(), "Jello world");
+    let fd = p
+        .open("/chan/seed/hello", mode::OWRITE | mode::OTRUNC)
+        .unwrap();
+    p.write(fd, b"new").unwrap();
+    p.close(fd).unwrap();
+    assert_eq!(read_all(&mut p, "/chan/seed/hello").unwrap(), "new");
+
+    let mut d = purg_core::Dir::null();
+    d.name = "g".into();
+    p.wstat("/chan/f", &d).unwrap();
+    assert_eq!(names(&mut p, "/chan"), ["g", "seed"]);
+    let mut d = purg_core::Dir::null();
+    d.length = 5;
+    p.wstat("/chan/g", &d).unwrap();
+    assert_eq!(read_all(&mut p, "/chan/g").unwrap(), "Jello");
+
+    p.create("/chan/d", mode::OREAD, purg_styx::DMDIR | 0o755)
+        .unwrap();
+    let e = p
+        .create("/chan/d", mode::OREAD, purg_styx::DMDIR | 0o755)
+        .unwrap_err();
+    assert_eq!(e.to_string(), error::EEXIST);
+    p.create("/chan/d/inner", mode::OWRITE, 0o644).unwrap();
+    assert_eq!(
+        p.remove("/chan/d").unwrap_err().to_string(),
+        error::ENOTEMPTY
+    );
+    p.remove("/chan/d/inner").unwrap();
+    p.remove("/chan/d").unwrap();
+    assert_eq!(names(&mut p, "/chan"), ["g", "seed"]);
 }

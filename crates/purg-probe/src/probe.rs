@@ -1,4 +1,4 @@
-//! The probe proper: heap, embedded root, boot namespace and the script.
+//! The probe proper: heap, boot namespace and the script.
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -7,13 +7,20 @@ use alloc::{format, vec};
 use core::fmt::Write;
 
 use linked_list_allocator::LockedHeap;
-use purg_abi::mount::MBEFORE;
+use purg_abi::mode;
+use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
+use purg_core::devram::RamTree;
 use purg_core::devroot::StaticTree;
 use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
 use purg_vm::{Ctx, Engine};
 use purg_vm_wasmi::Wasmi;
 
+use crate::sched::SCHED;
 use crate::{hw, platform};
+
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
+}
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -23,25 +30,24 @@ unsafe extern "C" {
     static mut __heap_end: u8;
 }
 
-macro_rules! embed {
-    ($path:literal) => {
-        include_bytes!(concat!(env!("PURG_PROBE_ROOT"), $path)).as_slice()
-    };
-}
-
 /// How a script command must end.
 enum Want {
     Ok,
     Fail,
 }
 
-/// The M1 portable subset.
+/// Commands run with the console as fds 0, 1 and 2.
 const SCRIPT: &[(&[&str], Want)] = &[
     (&["echo", "hello", "world"], Want::Ok),
     (&["cat", "/lib/probe/hello.txt"], Want::Ok),
     (&["cat", "/nonexistent"], Want::Fail),
     (&["/bin/test/abi.wasm"], Want::Ok),
+    (&["/bin/test/procs.wasm"], Want::Ok),
 ];
+
+/// The sh scripts run with their output captured and compared with the
+/// `.out` file beside each.
+const SH_CORPUS: &str = "/lib/test/sh/";
 
 struct Uart;
 
@@ -64,62 +70,146 @@ macro_rules! println {
     };
 }
 
-/// The probe's `#/`: the emu's mount points plus the embedded files.
-fn root_tree(owner: &str) -> StaticTree {
-    let mut t = StaticTree::root(owner);
-    t.add_file("/bin/echo.wasm", embed!("/bin/echo.wasm"));
-    t.add_file("/bin/cat.wasm", embed!("/bin/cat.wasm"));
-    t.add_file("/bin/test/abi.wasm", embed!("/bin/test/abi.wasm"));
-    t.add_file("/lib/probe/hello.txt", embed!("/lib/probe/hello.txt"));
+fn embedded(path: &str) -> Option<&'static [u8]> {
+    embedded::FILES.iter().find(|f| f.0 == path).map(|f| f.1)
+}
+
+/// The probe's `#U`: a RAM tree seeded with the embedded files, standing in
+/// for the emu's host tree so the boot namespace is the same.
+fn ram_root(owner: &str, platform: &Arc<dyn Platform>) -> RamTree {
+    let t = RamTree::new('U', "ramfs", owner, platform.clone());
+    for &(path, data) in embedded::FILES {
+        let perm = if path.ends_with(".wasm") {
+            0o755
+        } else {
+            0o644
+        };
+        t.add_file(path, data, perm);
+    }
+    t.add_dir("/tmp");
     t
 }
 
+/// Builds the emu's boot namespace.
 fn boot() -> Result<(Arc<Kernel>, Arc<Pgrp>), Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform::Probe::new());
     let procs = Procs::new(platform.clone());
-    let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(root_tree(procs.user()))];
+    let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
     devs.extend(purg_core::portable_devices(&platform, &procs));
+    devs.push(Arc::new(ram_root(procs.user(), &platform)));
     let devtab = DevTab::new(devs);
     let kernel = Kernel::new(platform, devtab.clone(), procs);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "")?);
+    pgrp.bind("#U", "/", MAFTER | MCREATE)?;
     pgrp.bind("#c", "/dev", MBEFORE)?;
+    pgrp.bind("#e", "/env", MREPL | MCREATE)?;
+    pgrp.bind("#p", "/prog", MREPL)?;
     Ok((kernel, pgrp))
 }
 
-/// Runs one command in a fresh prog sharing the boot namespace.
-fn run(
-    engine: &Arc<dyn Engine>,
-    kernel: &Arc<Kernel>,
-    pgrp: &Arc<Pgrp>,
-    argv: &[&str],
-) -> Result<String, Error> {
-    let mut prog = Prog::new(kernel.clone(), pgrp.clone());
-    kernel.platform.set_current_pid(prog.pid);
-    purg_vm::init_fds(&mut prog)?;
-    let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
-    let path = purg_vm::command_path(&argv[0]);
-    purg_vm::run_command(Ctx::new(prog, argv, engine.clone()), &path).1
+struct System {
+    engine: Arc<dyn Engine>,
+    kernel: Arc<Kernel>,
+    pgrp: Arc<Pgrp>,
+}
+
+impl System {
+    /// Runs `argv` in a fresh prog on this thread. Its fd 0 is the console,
+    /// and fds 1 and 2 are the console or, given `out`, that file.
+    fn run(&self, argv: &[&str], out: Option<&str>) -> Result<String, Error> {
+        let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
+        self.kernel.platform.set_current_pid(prog.pid);
+        match out {
+            None => purg_vm::init_fds(&mut prog)?,
+            Some(out) => {
+                prog.open("/dev/cons", mode::OREAD)?;
+                prog.create(out, mode::OWRITE, 0o644)?;
+                prog.dup(1, 2)?;
+                purg_vm::init_preopens(&mut prog)?;
+            }
+        }
+        let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
+        let path = purg_vm::command_path(&argv[0]);
+        purg_vm::run_command(Ctx::new(prog, argv, self.engine.clone()), &path).1
+    }
+
+    fn read_file(&self, path: &str) -> Result<Vec<u8>, Error> {
+        let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
+        let fd = prog.open(path, mode::OREAD)?;
+        let mut out = Vec::new();
+        let mut buf = [0u8; 512];
+        loop {
+            let n = prog.read(fd, &mut buf)?;
+            if n == 0 {
+                return Ok(out);
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+    }
+
+    /// Runs one corpus script; `Err` describes how it went wrong.
+    fn sh_script(&self, script: &str, want: &[u8]) -> Result<(), String> {
+        let name = script.trim_start_matches(SH_CORPUS);
+        let out = format!("/tmp/probe-{name}.got");
+        let status = self
+            .run(&["sh", script], Some(&out))
+            .map_err(|e| format!("error: {e}"))?;
+        let got = self.read_file(&out).map_err(|e| format!("{out}: {e}"))?;
+        if got != want {
+            return Err(format!(
+                "output differs\n--- got\n{}--- want\n{}---",
+                String::from_utf8_lossy(&got),
+                String::from_utf8_lossy(want)
+            ));
+        }
+        if !status.is_empty() {
+            return Err(format!("status {status:?}"));
+        }
+        Ok(())
+    }
+}
+
+fn report(failed: &mut usize, verdict: Result<String, String>) {
+    match verdict {
+        Ok(v) => println!("probe: {v}"),
+        Err(v) => {
+            println!("probe: FAIL {v}");
+            *failed += 1;
+        }
+    }
 }
 
 fn script() -> Result<usize, Error> {
     let (kernel, pgrp) = boot()?;
-    let engine: Arc<dyn Engine> = Arc::new(Wasmi::new()?);
+    let sys = System {
+        engine: Arc::new(Wasmi::new()?),
+        kernel,
+        pgrp,
+    };
     let mut failed = 0;
     for (argv, want) in SCRIPT {
         println!("probe: run {}", argv.join(" "));
-        let verdict = match (run(&engine, &kernel, &pgrp, argv), want) {
+        let verdict = match (sys.run(argv, None), want) {
             (Ok(s), Want::Ok) if s.is_empty() => Ok(String::from("ok")),
             (Ok(s), Want::Fail) if !s.is_empty() => Ok(format!("failed as expected: {s}")),
             (Ok(s), _) => Err(format!("status {s:?}")),
             (Err(e), _) => Err(format!("error: {e}")),
         };
-        match verdict {
-            Ok(v) => println!("probe: {v}"),
-            Err(v) => {
-                println!("probe: FAIL {v}");
-                failed += 1;
-            }
-        }
+        report(&mut failed, verdict);
+    }
+    for &(path, _) in embedded::FILES {
+        let Some(base) = path
+            .strip_prefix(SH_CORPUS)
+            .and_then(|p| p.strip_suffix(".sh"))
+        else {
+            continue;
+        };
+        println!("probe: sh {path}");
+        let want = embedded(&format!("{SH_CORPUS}{base}.out")).unwrap_or_default();
+        report(
+            &mut failed,
+            sys.sh_script(path, want).map(|()| String::from("ok")),
+        );
     }
     Ok(failed)
 }
@@ -133,6 +223,7 @@ extern "C" fn probe_main() -> ! {
         let end = &raw mut __heap_end;
         HEAP.lock().init(start, end as usize - start as usize);
     }
+    SCHED.init();
     println!("purg-probe: aarch64 bare metal, wasmi");
     match script() {
         Ok(0) => {

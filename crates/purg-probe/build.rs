@@ -1,17 +1,29 @@
-//! Links the bare-metal image at QEMU virt's RAM base and points the
-//! embedded root at `root/`, whose guest binaries `cargo xtask build-root`
-//! installs.
+//! Links the bare-metal image at QEMU virt's RAM base and embeds `root/bin`
+//! and `root/lib` (whose guest binaries `cargo xtask build-root` installs)
+//! as the files of the probe's root tree.
 
 use std::env;
-use std::path::PathBuf;
+use std::fmt::Write;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-/// Files embedded in the probe's read-only root, relative to `root/`.
-const EMBEDDED: &[&str] = &[
-    "bin/echo.wasm",
-    "bin/cat.wasm",
-    "bin/test/abi.wasm",
-    "lib/probe/hello.txt",
-];
+/// Directories under `root/` embedded in the image.
+const EMBEDDED: &[&str] = &["bin", "lib"];
+
+fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut entries: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|e| e.unwrap().path())
+        .collect();
+    entries.sort();
+    for p in entries {
+        if p.is_dir() {
+            walk(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
 
 fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("none") {
@@ -21,17 +33,28 @@ fn main() {
     let root = dir.join("../../root").canonicalize().unwrap_or_else(|e| {
         panic!("root/: {e}");
     });
-    for f in EMBEDDED {
-        let p = root.join(f);
-        if !p.is_file() {
-            panic!(
-                "{} is missing; run `cargo xtask build-root` first",
-                p.display()
-            );
-        }
-        println!("cargo:rerun-if-changed={}", p.display());
+    if !root.join("bin/sh.wasm").is_file() {
+        panic!("root/bin is missing guest binaries; run `cargo xtask build-root` first");
     }
-    println!("cargo:rustc-env=PURG_PROBE_ROOT={}", root.display());
+    let mut files = Vec::new();
+    for d in EMBEDDED {
+        println!("cargo:rerun-if-changed={}", root.join(d).display());
+        walk(&root.join(d), &mut files);
+    }
+    let mut src = String::from("pub const FILES: &[(&str, &[u8])] = &[\n");
+    for f in &files {
+        let name = f.strip_prefix(&root).unwrap().to_str().unwrap();
+        writeln!(
+            src,
+            "    ({:?}, include_bytes!({:?})),",
+            format!("/{name}"),
+            f.to_str().unwrap()
+        )
+        .unwrap();
+    }
+    src.push_str("];\n");
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("embedded.rs");
+    fs::write(&out, src).unwrap();
     println!("cargo:rerun-if-changed={}", dir.join("link.x").display());
     println!(
         "cargo:rustc-link-arg-bins=-T{}",

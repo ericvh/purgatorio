@@ -180,7 +180,7 @@ fn run_emu(args: &[String]) -> Result<ExitCode> {
 }
 
 const PROBE_TARGET: &str = "aarch64-unknown-none";
-const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Builds `purg-probe` over a fresh `root/`, boots it in QEMU and compares
 /// its serial output with `crates/purg-probe/expected.out`.
