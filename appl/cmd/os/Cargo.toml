@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-os"
+description = "os: run a command on the host through #C"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "os"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

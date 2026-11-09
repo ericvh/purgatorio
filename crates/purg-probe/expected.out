@@ -36,6 +36,11 @@ ok file2chan
 ok export
 ok kill
 probe: ok
+probe: run /bin/test/net.wasm
+ok cs
+ok os_skip
+ok net_skip
+probe: ok
 probe: sh /lib/test/sh/bind.sh
 probe: ok
 probe: sh /lib/test/sh/depth.sh

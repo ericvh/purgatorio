@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-import"
+description = "import: dial a 9P server and mount it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "import"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

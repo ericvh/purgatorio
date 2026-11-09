@@ -44,6 +44,7 @@ const SCRIPT: &[(&[&str], Want)] = &[
     (&["/bin/test/abi.wasm"], Want::Ok),
     (&["/bin/test/procs.wasm"], Want::Ok),
     (&["/bin/test/m3.wasm"], Want::Ok),
+    (&["/bin/test/net.wasm"], Want::Ok),
 ];
 
 /// The sh scripts run with their output captured and compared with the
@@ -108,6 +109,8 @@ fn boot() -> Result<(Arc<Kernel>, Arc<Pgrp>), Error> {
     pgrp.bind("#p", "/prog", MREPL)?;
     pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
     pgrp.bind("#d", "/fd", MREPL)?;
+    pgrp.bind("#I", "/net", MREPL)?;
+    pgrp.bind("#C", "/cmd", MREPL)?;
     Ok((kernel, pgrp))
 }
 
