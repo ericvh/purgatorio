@@ -57,6 +57,7 @@ members = [
     "appl/test/m3",
     "appl/test/net",
     "appl/test/procs",
+    "appl/test/wasi",
     "xtask",
 ]
 

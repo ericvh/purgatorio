@@ -12,7 +12,8 @@ use purg_styx::Dir;
 use crate::mem::Mem;
 use crate::{Ctx, HostResult, Stop};
 
-/// The WASI preview1 subset, implemented over the namespace.
+/// WASI preview1, implemented over the namespace. Calls Inferno cannot
+/// express (`path_link`, `path_symlink`) return `NOTSUP`.
 pub mod wasi {
     use super::*;
     use purg_abi::wasi::{self as w, errno};
@@ -413,7 +414,8 @@ pub mod wasi {
         })
     }
 
-    /// Inferno has no per-fd flags; only clearing them is accepted.
+    /// Append is applied at `path_open`. The other flags, including
+    /// non-blocking, are accepted and ignored.
     pub fn fd_fdstat_set_flags(
         ctx: &mut Ctx,
         _mem: &mut Mem<'_>,
@@ -422,11 +424,66 @@ pub mod wasi {
     ) -> HostResult<i32> {
         call(ctx, |c| {
             c.prog.chan(fd)?;
-            if flags != 0 {
-                return Err(Error::new(error::ENOTIMPL));
+            if flags as u16 & !w::FDFLAGS_KNOWN != 0 {
+                return Err(Error::new(error::EBADARG));
             }
             Ok(())
         })
+    }
+
+    pub fn fd_advise(
+        ctx: &mut Ctx,
+        _mem: &mut Mem<'_>,
+        fd: i32,
+        _offset: i64,
+        _len: i64,
+        advice: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            c.prog.chan(fd)?;
+            if !(0..=5).contains(&advice) {
+                return Err(Error::new(error::EBADARG));
+            }
+            Ok(())
+        })
+    }
+
+    /// Grows the file so it covers `offset + len`. A shorter file is left
+    /// as it is.
+    pub fn fd_allocate(
+        ctx: &mut Ctx,
+        _mem: &mut Mem<'_>,
+        fd: i32,
+        offset: i64,
+        len: i64,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            if offset < 0 || len < 0 {
+                return Err(Error::new(error::EBADARG));
+            }
+            let end = offset.checked_add(len).ok_or(Error::new(error::EBADARG))?;
+            let cur = c.prog.fstat(fd)?;
+            if cur.qid.is_dir() {
+                return Err(Error::new(error::EISDIR));
+            }
+            if cur.length < end as u64 {
+                let mut d = Dir::null();
+                d.length = end as u64;
+                c.prog.fwstat(fd, &d)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Rights are not tracked. The fd only has to be open.
+    pub fn fd_fdstat_set_rights(
+        ctx: &mut Ctx,
+        _mem: &mut Mem<'_>,
+        fd: i32,
+        _base: i64,
+        _inheriting: i64,
+    ) -> HostResult<i32> {
+        call(ctx, |c| c.prog.chan(fd).map(drop))
     }
 
     pub fn fd_filestat_set_size(
@@ -594,6 +651,46 @@ pub mod wasi {
         })
     }
 
+    /// Inferno has no hard links. A missing source is `NOENT`; an existing
+    /// one is `NOTSUP`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn path_link(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        oldfd: i32,
+        _oldflags: i32,
+        old: i32,
+        olen: i32,
+        newfd: i32,
+        new: i32,
+        nlen: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let from = at_path(c, oldfd, mem.str(old, olen)?)?;
+            let _to = at_path(c, newfd, mem.str(new, nlen)?)?;
+            c.prog.namec(&from)?;
+            Err(Error::new(error::ENOTIMPL))
+        })
+    }
+
+    /// Inferno has no symlinks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn path_symlink(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        old: i32,
+        olen: i32,
+        fd: i32,
+        new: i32,
+        nlen: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let _target = mem.str(old, olen)?;
+            let _to = at_path(c, fd, mem.str(new, nlen)?)?;
+            Err(Error::new(error::ENOTIMPL))
+        })
+    }
+
     /// Inferno has no links.
     #[allow(clippy::too_many_arguments)]
     pub fn path_readlink(
@@ -609,8 +706,28 @@ pub mod wasi {
         call(ctx, |_| Err(Error::new(error::ENOTIMPL)))
     }
 
-    /// Sleeps for clock subscriptions; fd subscriptions are reported ready
-    /// at once, since every Inferno read and write may block anyway.
+    /// One `poll_oneoff` subscription. `fd` is meaningful for the fd tags.
+    struct Sub {
+        userdata: u64,
+        tag: u8,
+        fd: i32,
+        /// Nanoseconds until a clock subscription, already made relative.
+        rel: u64,
+    }
+
+    fn sub_ready(prog: &purg_core::Prog, sub: &Sub) -> bool {
+        if sub.tag == w::EVENTTYPE_CLOCK {
+            return false;
+        }
+        match prog.chan(sub.fd) {
+            Ok(ch) => ch.dev.ready(&ch, sub.tag == w::EVENTTYPE_FD_WRITE),
+            Err(_) => true,
+        }
+    }
+
+    /// Waits for the soonest clock, or for an fd whose device is not ready.
+    /// File descriptors that are ready now are reported without sleeping.
+    /// A zero-length poll returns success and no events.
     pub fn poll_oneoff(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
@@ -622,14 +739,21 @@ pub mod wasi {
         call(ctx, |c| {
             const SUB: i32 = 48;
             const EVENT: i32 = 32;
-            let mut ready = Vec::new();
-            let mut sleep_ns: Option<u64> = None;
+            if !(0..=128).contains(&n) {
+                return Err(Error::new(error::EBADARG));
+            }
+            if n == 0 {
+                mem.put_u32(nevents, 0)?;
+                return Ok(());
+            }
+            let mut items = Vec::with_capacity(n as usize);
+            let mut soonest: Option<u64> = None;
             for i in 0..n {
                 let at = subs.wrapping_add(i.wrapping_mul(SUB));
                 let userdata = mem.slice(at, 8)?;
                 let userdata = u64::from_le_bytes(userdata.try_into().expect("8 bytes"));
                 let tag = mem.slice(at.wrapping_add(8), 1)?[0];
-                match tag {
+                let (fd, rel) = match tag {
                     w::EVENTTYPE_CLOCK => {
                         let b = mem.slice(at.wrapping_add(24), 8)?;
                         let timeout = u64::from_le_bytes(b.try_into().expect("8 bytes"));
@@ -640,27 +764,75 @@ pub mod wasi {
                         } else {
                             timeout
                         };
-                        if sleep_ns.is_none_or(|s| rel < s) {
-                            sleep_ns = Some(rel);
-                        }
-                        ready.push((userdata, tag, rel));
+                        soonest = Some(soonest.map_or(rel, |s| s.min(rel)));
+                        (0, rel)
                     }
-                    _ => ready.push((userdata, tag, 0)),
-                }
+                    w::EVENTTYPE_FD_READ | w::EVENTTYPE_FD_WRITE => {
+                        (mem.u32(at.wrapping_add(16))? as i32, 0)
+                    }
+                    _ => return Err(Error::new(error::EBADARG)),
+                };
+                items.push(Sub {
+                    userdata,
+                    tag,
+                    fd,
+                    rel,
+                });
             }
-            let fd_ready = ready.iter().any(|r| r.1 != w::EVENTTYPE_CLOCK);
-            let mut out = 0;
-            if !fd_ready && let Some(ns) = sleep_ns {
+            let any_fd = items.iter().any(|s| s.tag != w::EVENTTYPE_CLOCK);
+            let ready_now = items.iter().any(|s| sub_ready(&c.prog, s));
+            if !ready_now && any_fd {
+                let rendez = purg_platform::sync::Rendez::new();
+                let mut watched = Vec::new();
+                for s in &items {
+                    if s.tag == w::EVENTTYPE_CLOCK {
+                        continue;
+                    }
+                    if let Ok(ch) = c.prog.chan(s.fd) {
+                        ch.dev.watch(&ch, s.tag == w::EVENTTYPE_FD_WRITE, &rendez);
+                        watched.push((ch, s.tag == w::EVENTTYPE_FD_WRITE));
+                    }
+                }
+                let timeout_ms = match soonest {
+                    None => -1,
+                    Some(ns) => {
+                        i32::try_from((ns.saturating_add(999_999)) / 1_000_000).unwrap_or(i32::MAX)
+                    }
+                };
+                let hit = purg_core::block::park_timeout(
+                    &rendez,
+                    || items.iter().any(|s| sub_ready(&c.prog, s)),
+                    timeout_ms,
+                );
+                for (ch, _) in &watched {
+                    ch.dev.unwatch(ch, &rendez);
+                }
+                hit?;
+            } else if !ready_now && let Some(ns) = soonest.filter(|ns| *ns > 0) {
                 purg_platform::sync::Rendez::new().tsleep(|| false, ns);
             }
-            for (userdata, tag, rel) in ready {
-                if tag == w::EVENTTYPE_CLOCK && (fd_ready || Some(rel) != sleep_ns) {
+            let fd_hit = items.iter().any(|s| sub_ready(&c.prog, s));
+            let mut out = 0i32;
+            for s in &items {
+                let fire = if s.tag == w::EVENTTYPE_CLOCK {
+                    if fd_hit {
+                        s.rel == 0
+                    } else {
+                        Some(s.rel) == soonest
+                    }
+                } else {
+                    sub_ready(&c.prog, s)
+                };
+                if !fire {
                     continue;
                 }
                 let at = events.wrapping_add(out * EVENT);
                 mem.write(at, &[0; EVENT as usize])?;
-                mem.write(at, &userdata.to_le_bytes())?;
-                mem.put_u8(at.wrapping_add(10), tag)?;
+                mem.write(at, &s.userdata.to_le_bytes())?;
+                if s.tag != w::EVENTTYPE_CLOCK && c.prog.chan(s.fd).is_err() {
+                    mem.write(at.wrapping_add(8), &(errno::BADF as u16).to_le_bytes())?;
+                }
+                mem.put_u8(at.wrapping_add(10), s.tag)?;
                 out += 1;
             }
             mem.put_u32(nevents, out as u32)?;
@@ -706,6 +878,138 @@ pub mod wasi {
         } else {
             alloc::format!("exit {}", code as u32)
         }))
+    }
+
+    pub fn clock_res_get(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        id: i32,
+        resolution: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |_| {
+            match id as u32 {
+                w::CLOCKID_REALTIME | w::CLOCKID_MONOTONIC => {}
+                _ => return Err(Error::new(error::ENOTIMPL)),
+            }
+            mem.put_u64(resolution, 1)?;
+            Ok(())
+        })
+    }
+
+    /// Delivers a signal by killing the prog's note. The guest keeps running
+    /// until its next blocking call, which then returns `EINTR`.
+    pub fn proc_raise(ctx: &mut Ctx, _mem: &mut Mem<'_>, sig: i32) -> HostResult<i32> {
+        call(ctx, |c| {
+            if !(1..=15).contains(&sig) {
+                return Err(Error::new(error::EBADARG));
+            }
+            c.prog.proc.kill();
+            Ok(())
+        })
+    }
+
+    fn net_sibling(path: &str, file: &str, sibling: &str) -> Result<String, Error> {
+        let Some(dir) = path.strip_suffix(file) else {
+            return Err(Error::new(error::ENOTSOCK));
+        };
+        Ok(alloc::format!("{dir}/{sibling}"))
+    }
+
+    /// `sock_accept` on an Inferno `listen` file: one read yields the new
+    /// conversation, and the returned fd is its `data` file.
+    pub fn sock_accept(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        _flags: i32,
+        result: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let path = c.prog.fd2path(fd)?;
+            if !path.ends_with("/listen") {
+                return Err(Error::new(error::ENOTSOCK));
+            }
+            let mut buf = [0u8; 32];
+            let n = c.prog.read(fd, &mut buf)?;
+            let id = core::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+            if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(Error::new(error::EIO));
+            }
+            let parent = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+            let proto = parent.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+            let data = alloc::format!("{proto}/{id}/data");
+            let newfd = c.prog.open(&data, mode::ORDWR)?;
+            mem.put_u32(result, newfd as u32)?;
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sock_recv(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        iovs: i32,
+        n: i32,
+        _flags: i32,
+        nread: i32,
+        roflags: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let path = c.prog.fd2path(fd)?;
+            if !path.ends_with("/data") {
+                return Err(Error::new(error::ENOTSOCK));
+            }
+            let mut total = 0usize;
+            if let Some(&(buf, len)) = iovecs(mem, iovs, n)?.iter().find(|v| v.1 != 0) {
+                total = c.prog.read(fd, mem.slice_mut(buf, len)?)?;
+            }
+            mem.put_u32(nread, total as u32)?;
+            mem.write(roflags, &0u16.to_le_bytes())?;
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn sock_send(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        iovs: i32,
+        n: i32,
+        _flags: i32,
+        nwritten: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let path = c.prog.fd2path(fd)?;
+            if !path.ends_with("/data") {
+                return Err(Error::new(error::ENOTSOCK));
+            }
+            let mut total = 0usize;
+            for (buf, len) in iovecs(mem, iovs, n)? {
+                let data = mem.slice(buf, len)?;
+                let w = c.prog.write(fd, data)?;
+                total += w;
+                if w < data.len() {
+                    break;
+                }
+            }
+            mem.put_u32(nwritten, total as u32)?;
+            Ok(())
+        })
+    }
+
+    pub fn sock_shutdown(ctx: &mut Ctx, _mem: &mut Mem<'_>, fd: i32, how: i32) -> HostResult<i32> {
+        call(ctx, |c| {
+            if how & !0x3 != 0 || how == 0 {
+                return Err(Error::new(error::EBADARG));
+            }
+            let path = c.prog.fd2path(fd)?;
+            let ctl = net_sibling(&path, "/data", "ctl")?;
+            let w = c.prog.open(&ctl, mode::OWRITE)?;
+            c.prog.write(w, b"hangup")?;
+            c.prog.close(w)
+        })
     }
 }
 

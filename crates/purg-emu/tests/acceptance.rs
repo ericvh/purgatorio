@@ -146,6 +146,22 @@ fn procs_conformance() {
 }
 
 #[test]
+fn stock_wasi_sees_the_namespace() {
+    for vm in VMS {
+        let o = emu(vm, &["/bin/test/wasi.wasm"], b"");
+        let out = stdout(&o);
+        assert!(
+            o.status.success(),
+            "{vm}:\n{out}\n{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(out.contains("ok read"), "{vm}:\n{out}");
+        assert!(out.contains("ok args"), "{vm}:\n{out}");
+        assert!(!out.contains("FAIL"), "{vm}:\n{out}");
+    }
+}
+
+#[test]
 fn tcp_dial_export_and_os() {
     for vm in VMS {
         let o = emu(vm, &["/bin/test/net.wasm"], b"");
@@ -158,6 +174,7 @@ fn tcp_dial_export_and_os() {
         assert!(out.contains("ok cs"), "{vm}:\n{out}");
         assert!(out.contains("ok os\n"), "{vm}:\n{out}");
         assert!(out.contains("ok dial"), "{vm}:\n{out}");
+        assert!(out.contains("ok sock_accept"), "{vm}:\n{out}");
         assert!(out.contains("ok export"), "{vm}:\n{out}");
         assert!(
             !out.contains("net_skip"),
