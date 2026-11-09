@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.2";
+pub const ABI_VERSION: &str = "0.3";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -80,6 +80,99 @@ pub mod sys {
     /// NUL-terminated strings back to back; `fdmap` holds `n` pairs of `i32`
     /// `(parent fd, child fd)` installed in the child after `flags` apply.
     pub const SPAWN_PROG: &str = "spawn_prog";
+    /// `mount(fd, afd, old, olen, flags, aname, alen) -> 0`. `afd < 0` means
+    /// no authentication.
+    pub const MOUNT: &str = "mount";
+    /// `export(fd, dir, dlen, flags) -> 0`. Serves `dir` on `fd` until the
+    /// connection closes.
+    pub const EXPORT: &str = "export";
+    /// `fversion(fd, msize, ver, vlen) -> n`. Writes the negotiated version
+    /// string and returns its length. `msize` is the offered message size.
+    pub const FVERSION: &str = "fversion";
+    /// `file2chan(dir, dlen, name, nlen, handles) -> 0`. Writes two `i32`
+    /// channel handles (read requests, write requests) at `handles`.
+    pub const FILE2CHAN: &str = "file2chan";
+    /// `chan_new(cap) -> h`
+    pub const CHAN_NEW: &str = "chan_new";
+    /// `chan_close(h) -> 0`
+    pub const CHAN_CLOSE: &str = "chan_close";
+    /// `chan_send(h, buf, n, handles, nh) -> 0`. `handles` are `nh` channel
+    /// handles transferred to the receiver.
+    pub const CHAN_SEND: &str = "chan_send";
+    /// `chan_recv(h, buf, blen, handles, maxh) -> n`. `n` is the byte count.
+    /// Received handles are written at `handles`, up to `maxh`, and unused
+    /// slots are set to -1.
+    pub const CHAN_RECV: &str = "chan_recv";
+    /// `alt(ops, nops, block) -> index`. Each op is six `i32`s: handle, kind
+    /// (0 recv, 1 send), buf, len, caps, ncaps. `len` is overwritten with the
+    /// received byte count. Returns the completed index, or -1 when `block`
+    /// is 0 and nothing is ready.
+    pub const ALT: &str = "alt";
+    /// `wait(ops, nops, timeout_ms) -> index`. Each op is two `i32`s: kind
+    /// (0 fd read, 1 fd write, 2 chan recv, 3 chan send) and the fd or handle.
+    /// `timeout_ms < 0` waits without a limit. Returns -1 on timeout.
+    pub const WAIT: &str = "wait";
+}
+
+/// Bytes on a `file2chan` request or reply channel.
+pub mod fio {
+    /// Read request: tag, offset, count, fid, reply handle.
+    pub const READ: u8 = 1;
+    /// Write request: tag, offset, fid, reply handle, then the bytes.
+    pub const WRITE: u8 = 2;
+    /// Successful read reply: tag, then the bytes.
+    pub const OK_READ: u8 = 0;
+    /// Successful write reply: tag, then a `u32` count.
+    pub const OK_WRITE: u8 = 1;
+    /// Error reply: tag, then the errstr.
+    pub const ERR: u8 = 2;
+    /// Truncate, same header as a write with no data. The server clears the file.
+    pub const TRUNC: u8 = 3;
+
+    /// Size of a packed read request.
+    pub const READ_LEN: usize = 21;
+    /// Size of a write request before the data.
+    pub const WRITE_HDR: usize = 17;
+
+    pub fn pack_read(off: u64, count: u32, fid: u32, reply: i32) -> [u8; READ_LEN] {
+        let mut d = [0u8; READ_LEN];
+        d[0] = READ;
+        d[1..9].copy_from_slice(&off.to_le_bytes());
+        d[9..13].copy_from_slice(&count.to_le_bytes());
+        d[13..17].copy_from_slice(&fid.to_le_bytes());
+        d[17..21].copy_from_slice(&reply.to_le_bytes());
+        d
+    }
+
+    pub fn unpack_read(buf: &[u8]) -> Option<(u64, u32, u32, i32)> {
+        if buf.len() < READ_LEN || buf[0] != READ {
+            return None;
+        }
+        let off = u64::from_le_bytes(buf[1..9].try_into().ok()?);
+        let count = u32::from_le_bytes(buf[9..13].try_into().ok()?);
+        let fid = u32::from_le_bytes(buf[13..17].try_into().ok()?);
+        let reply = i32::from_le_bytes(buf[17..21].try_into().ok()?);
+        Some((off, count, fid, reply))
+    }
+
+    pub fn pack_write_hdr(off: u64, fid: u32, reply: i32) -> [u8; WRITE_HDR] {
+        let mut d = [0u8; WRITE_HDR];
+        d[0] = WRITE;
+        d[1..9].copy_from_slice(&off.to_le_bytes());
+        d[9..13].copy_from_slice(&fid.to_le_bytes());
+        d[13..17].copy_from_slice(&reply.to_le_bytes());
+        d
+    }
+
+    pub fn unpack_write(buf: &[u8]) -> Option<(u64, u32, i32, &[u8])> {
+        if buf.len() < WRITE_HDR || buf[0] != WRITE {
+            return None;
+        }
+        let off = u64::from_le_bytes(buf[1..9].try_into().ok()?);
+        let fid = u32::from_le_bytes(buf[9..13].try_into().ok()?);
+        let reply = i32::from_le_bytes(buf[13..17].try_into().ok()?);
+        Some((off, fid, reply, &buf[WRITE_HDR..]))
+    }
 }
 
 /// `pctl` and `spawn_prog` flags (`Sys->NEWFD` ...).

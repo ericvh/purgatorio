@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-tail"
+description = "tail: the end of a file"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tail"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

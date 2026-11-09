@@ -1,0 +1,17 @@
+[package]
+name = "appl-test-m3"
+description = "Styx, file2chan and kill checks run as a guest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "m3"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

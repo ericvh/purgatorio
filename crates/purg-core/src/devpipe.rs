@@ -154,7 +154,7 @@ impl Dev for DevPipe {
 
     fn read(&self, c: &Chan, buf: &mut [u8], _offset: u64) -> Result<usize> {
         let e = end(c).ok_or(Error::new(error::EISDIR))?;
-        Ok(pipe(c)?.q[e].read(buf))
+        pipe(c)?.q[e].read(buf)
     }
 
     fn dirread(&self, c: &Chan) -> Result<Vec<Dir>> {
@@ -165,5 +165,38 @@ impl Dev for DevPipe {
     fn write(&self, c: &Chan, buf: &[u8], _offset: u64) -> Result<usize> {
         let e = end(c).ok_or(Error::new(error::EISDIR))?;
         pipe(c)?.q[1 - e].write(buf)
+    }
+
+    fn ready(&self, c: &Chan, write: bool) -> bool {
+        let Ok(p) = pipe(c) else {
+            return true;
+        };
+        let Some(e) = end(c) else {
+            return true;
+        };
+        let q = if write { &p.q[1 - e] } else { &p.q[e] };
+        if write { q.writable() } else { q.readable() }
+    }
+
+    fn watch(&self, c: &Chan, write: bool, w: &purg_platform::sync::Rendez) {
+        let Ok(p) = pipe(c) else {
+            return;
+        };
+        let Some(e) = end(c) else {
+            return;
+        };
+        let q = if write { &p.q[1 - e] } else { &p.q[e] };
+        q.watch(w);
+    }
+
+    fn unwatch(&self, c: &Chan, w: &purg_platform::sync::Rendez) {
+        let Ok(p) = pipe(c) else {
+            return;
+        };
+        let Some(e) = end(c) else {
+            return;
+        };
+        p.q[e].unwatch(w);
+        p.q[1 - e].unwatch(w);
     }
 }

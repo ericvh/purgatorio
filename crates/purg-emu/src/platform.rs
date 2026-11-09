@@ -21,6 +21,10 @@ thread_local! {
 struct StdConsole;
 
 impl Console for StdConsole {
+    fn set_raw(&self, on: bool) -> Result<()> {
+        host::set_console_raw(on).map_err(std::borrow::Cow::from)
+    }
+
     fn read(&self, buf: &mut [u8]) -> Result<usize> {
         std::io::stdin()
             .read(buf)
@@ -87,6 +91,10 @@ impl Platform for Emu {
 
     fn set_current_pid(&self, pid: u32) {
         CURRENT_PID.with(|c| c.set(pid));
+    }
+
+    fn memory(&self) -> (u64, u64) {
+        host::memory_usage()
     }
 
     fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {

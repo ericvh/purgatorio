@@ -5,6 +5,8 @@
 use loom::sync::Arc;
 use loom::sync::atomic::{AtomicBool, Ordering};
 use loom::thread;
+use purg_core::kchan::{KChan, KMsg};
+use purg_core::mux::Mux;
 use purg_core::qio::Queue;
 use purg_platform::sync::Rendez;
 
@@ -36,7 +38,7 @@ fn queue_write_larger_than_limit() {
         let mut got = Vec::new();
         let mut buf = [0u8; 4];
         while got.len() < 3 {
-            let n = q.read(&mut buf);
+            let n = q.read(&mut buf).unwrap();
             assert!(n > 0);
             got.extend_from_slice(&buf[..n]);
         }
@@ -59,7 +61,7 @@ fn hangup_wakes_a_blocked_reader() {
         let mut buf = [0u8; 4];
         let mut got = Vec::new();
         loop {
-            let n = q.read(&mut buf);
+            let n = q.read(&mut buf).unwrap();
             if n == 0 {
                 break;
             }
@@ -68,5 +70,44 @@ fn hangup_wakes_a_blocked_reader() {
         closer.join().unwrap();
         assert_eq!(got, [9]);
         assert!(q.write(&[1]).is_err());
+    });
+}
+
+#[test]
+fn mux_deliver_or_flush() {
+    loom::model(|| {
+        let mux = Arc::new(Mux::new());
+        let tag = mux.begin().unwrap();
+        let other = mux.clone();
+        let worker = thread::spawn(move || {
+            other.flush(tag);
+            other.deliver(tag, b"x".to_vec())
+        });
+        let got = mux.wait(tag);
+        let delivered = worker.join().unwrap();
+        match got {
+            Ok(msg) => assert!(delivered && msg == b"x"),
+            Err(_) => assert!(!delivered),
+        }
+    });
+}
+
+#[test]
+fn kchan_send_reaches_recv() {
+    loom::model(|| {
+        let ch = Arc::new(KChan::new(1));
+        let sender = {
+            let ch = ch.clone();
+            thread::spawn(move || {
+                ch.send(KMsg {
+                    bytes: vec![7],
+                    caps: Vec::new(),
+                })
+                .unwrap()
+            })
+        };
+        let msg = ch.recv().unwrap().unwrap();
+        sender.join().unwrap();
+        assert_eq!(msg.bytes, vec![7]);
     });
 }

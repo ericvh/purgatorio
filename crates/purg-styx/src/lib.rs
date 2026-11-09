@@ -8,6 +8,7 @@ extern crate alloc;
 
 mod dir;
 mod fcall;
+pub mod server;
 mod wire;
 
 pub use dir::{
@@ -15,6 +16,7 @@ pub use dir::{
     dirs,
 };
 pub use fcall::{Fcall, MAXWELEM, Msg, NOFID, NOTAG, VERSION, kind};
+pub use server::{IOHDRSZ, MAX_MSIZE, StyxFs, dispatch};
 
 /// Codec failures. None of these can be caused by valid 9P2000 traffic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

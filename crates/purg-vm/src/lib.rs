@@ -129,9 +129,11 @@ pub fn module_name(path: &str) -> &str {
 pub fn run_module(ctx: Ctx, wasm: &[u8], path: &str) -> (Ctx, Result<String, Error>) {
     let platform = ctx.prog.kernel.platform.clone();
     platform.set_current_pid(ctx.prog.pid);
+    platform.set_note(Some(ctx.prog.proc.note.clone()));
     ctx.prog.proc.set_name(module_name(path));
     let engine = ctx.engine.clone();
     let (ctx, res) = engine.run(wasm, ctx);
+    platform.set_note(None);
     let res = match res {
         Ok(Stop::Exit(status)) => Ok(status),
         Err(e) => Err(Error::from(alloc::format!("{path}: {e}"))),
@@ -255,6 +257,16 @@ macro_rules! for_each_import {
         $m!($crate::PURGATORIO, "unmount", $crate::purgatorio::unmount, (name: i32, nlen: i32, old: i32, olen: i32) -> i32);
         $m!($crate::PURGATORIO, "pctl", $crate::purgatorio::pctl, (flags: i32, movefd: i32, n: i32) -> i32);
         $m!($crate::PURGATORIO, "spawn_prog", $crate::purgatorio::spawn_prog, (path: i32, plen: i32, argv: i32, alen: i32, flags: i32, fdmap: i32, n: i32) -> i32);
+        $m!($crate::PURGATORIO, "mount", $crate::purgatorio::mount, (fd: i32, afd: i32, old: i32, olen: i32, flags: i32, aname: i32, alen: i32) -> i32);
+        $m!($crate::PURGATORIO, "export", $crate::purgatorio::export, (fd: i32, dir: i32, dlen: i32, flags: i32) -> i32);
+        $m!($crate::PURGATORIO, "fversion", $crate::purgatorio::fversion, (fd: i32, msize: i32, ver: i32, vlen: i32) -> i32);
+        $m!($crate::PURGATORIO, "file2chan", $crate::purgatorio::file2chan, (dir: i32, dlen: i32, name: i32, nlen: i32, handles: i32) -> i32);
+        $m!($crate::PURGATORIO, "chan_new", $crate::purgatorio::chan_new, (cap: i32) -> i32);
+        $m!($crate::PURGATORIO, "chan_close", $crate::purgatorio::chan_close, (h: i32) -> i32);
+        $m!($crate::PURGATORIO, "chan_send", $crate::purgatorio::chan_send, (h: i32, buf: i32, n: i32, handles: i32, nh: i32) -> i32);
+        $m!($crate::PURGATORIO, "chan_recv", $crate::purgatorio::chan_recv, (h: i32, buf: i32, blen: i32, handles: i32, maxh: i32) -> i32);
+        $m!($crate::PURGATORIO, "alt", $crate::purgatorio::alt, (ops: i32, nops: i32, block: i32) -> i32);
+        $m!($crate::PURGATORIO, "wait", $crate::purgatorio::wait, (ops: i32, nops: i32, timeout_ms: i32) -> i32);
     };
 }
 

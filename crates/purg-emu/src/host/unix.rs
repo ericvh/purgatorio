@@ -126,6 +126,36 @@ pub fn host_name() -> String {
     String::from_utf8_lossy(&buf[..end]).into_owned()
 }
 
+/// Puts the terminal on stdin into or out of raw mode. Not a terminal is a
+/// no-op, so pipes and the test harness are unaffected.
+pub fn set_console_raw(on: bool) -> Result<(), String> {
+    let fd = libc::STDIN_FILENO;
+    // SAFETY: isatty only reads the fd.
+    if unsafe { libc::isatty(fd) } == 0 {
+        return Ok(());
+    }
+    static ORIG: Mutex<Option<libc::termios>> = Mutex::new(None);
+    let mut saved = ORIG.lock().unwrap_or_else(|e| e.into_inner());
+    if on {
+        let mut term = unsafe { core::mem::zeroed::<libc::termios>() };
+        // SAFETY: term is a valid termios out-parameter.
+        if unsafe { libc::tcgetattr(fd, &mut term) } != 0 {
+            return Err(error::EIO.into());
+        }
+        if saved.is_none() {
+            *saved = Some(term);
+        }
+        // SAFETY: cfmakeraw only writes the struct.
+        unsafe { libc::cfmakeraw(&mut term) };
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) } != 0 {
+            return Err(error::EIO.into());
+        }
+    } else if let Some(term) = saved.take() {
+        unsafe { libc::tcsetattr(fd, libc::TCSANOW, &term) };
+    }
+    Ok(())
+}
+
 /// Fills `buf` from the OS entropy source.
 pub fn entropy(buf: &mut [u8]) {
     // getentropy is limited to 256 bytes per call on both Linux and macOS.

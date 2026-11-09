@@ -53,6 +53,30 @@ imports! {
         fdmap: *const i32,
         n: usize
     ) -> i32;
+    fn mount(
+        fd: i32,
+        afd: i32,
+        old: *const u8,
+        olen: usize,
+        flags: u32,
+        aname: *const u8,
+        alen: usize
+    ) -> i32;
+    fn export(fd: i32, dir: *const u8, dlen: usize, flags: u32) -> i32;
+    fn fversion(fd: i32, msize: i32, ver: *mut u8, vlen: usize) -> i32;
+    fn file2chan(
+        dir: *const u8,
+        dlen: usize,
+        name: *const u8,
+        nlen: usize,
+        handles: *mut i32
+    ) -> i32;
+    fn chan_new(cap: i32) -> i32;
+    fn chan_close(h: i32) -> i32;
+    fn chan_send(h: i32, buf: *const u8, n: usize, handles: *const i32, nh: usize) -> i32;
+    fn chan_recv(h: i32, buf: *mut u8, blen: usize, handles: *mut i32, maxh: usize) -> i32;
+    fn alt(ops: *mut i32, nops: usize, block: i32) -> i32;
+    fn wait(ops: *const i32, nops: usize, timeout_ms: i32) -> i32;
 }
 
 #[cfg(target_os = "wasi")]

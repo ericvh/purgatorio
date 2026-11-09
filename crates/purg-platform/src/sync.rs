@@ -157,6 +157,12 @@ pub trait Sched: Sync {
     fn yield_now(&self);
     /// Monotonic time in nanoseconds, for [`Rendez::tsleep`].
     fn monotonic_ns(&self) -> u64;
+    /// The [`Note`] of the kernel thread that is running.
+    fn note(&self) -> Option<alloc::sync::Arc<Note>> {
+        None
+    }
+    /// Records the [`Note`] of the kernel thread that is running.
+    fn set_note(&self, _note: Option<alloc::sync::Arc<Note>>) {}
 }
 
 #[cfg(not(feature = "std"))]
@@ -173,26 +179,58 @@ pub fn set_sched(s: &'static dyn Sched) {
 /// The condition is always evaluated with the Rendez's lock held, and
 /// [`Rendez::wakeup`] takes that lock, so a waker that changes the state
 /// the condition reads and then calls `wakeup` can never be missed.
-#[derive(Default)]
+///
+/// Cloning a `Rendez` clones a handle to the same sleepers, which is what
+/// [`Note`] stores so `kill` can wake the prog that is parked here.
 pub struct Rendez {
+    inner: alloc::sync::Arc<RendezInner>,
+}
+
+struct RendezInner {
     #[cfg(feature = "std")]
     lock: imp::Mutex<()>,
     #[cfg(feature = "std")]
     cv: imp::Condvar,
 }
 
+impl Clone for Rendez {
+    fn clone(&self) -> Rendez {
+        Rendez {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl Default for Rendez {
+    fn default() -> Rendez {
+        Rendez::new()
+    }
+}
+
 impl Rendez {
     pub fn new() -> Rendez {
-        Rendez::default()
+        Rendez {
+            inner: alloc::sync::Arc::new(RendezInner {
+                #[cfg(feature = "std")]
+                lock: imp::Mutex::new(()),
+                #[cfg(feature = "std")]
+                cv: imp::Condvar::new(),
+            }),
+        }
+    }
+
+    /// Whether `other` parks the same sleepers.
+    pub fn same(&self, other: &Rendez) -> bool {
+        alloc::sync::Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// Sleeps until `cond` returns true.
     pub fn sleep(&self, mut cond: impl FnMut() -> bool) {
         #[cfg(feature = "std")]
         {
-            let mut g = lockops::lock(&self.lock);
+            let mut g = lockops::lock(&self.inner.lock);
             while !cond() {
-                g = self.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                g = self.inner.cv.wait(g).unwrap_or_else(|e| e.into_inner());
             }
         }
         #[cfg(not(feature = "std"))]
@@ -212,7 +250,7 @@ impl Rendez {
         #[cfg(all(feature = "std", not(loom)))]
         {
             let deadline = std::time::Instant::now() + core::time::Duration::from_nanos(timeout_ns);
-            let mut g = lockops::lock(&self.lock);
+            let mut g = lockops::lock(&self.inner.lock);
             loop {
                 if cond() {
                     return true;
@@ -222,6 +260,7 @@ impl Rendez {
                     return false;
                 }
                 g = self
+                    .inner
                     .cv
                     .wait_timeout(g, deadline - now)
                     .map(|(g, _)| g)
@@ -232,7 +271,7 @@ impl Rendez {
         {
             // loom has no time; a timed sleep is a single check.
             let _ = timeout_ns;
-            let _g = lockops::lock(&self.lock);
+            let _g = lockops::lock(&self.inner.lock);
             cond()
         }
         #[cfg(not(feature = "std"))]
@@ -257,8 +296,123 @@ impl Rendez {
     pub fn wakeup(&self) {
         #[cfg(feature = "std")]
         {
-            drop(lockops::lock(&self.lock));
-            self.cv.notify_all();
+            drop(lockops::lock(&self.inner.lock));
+            self.inner.cv.notify_all();
         }
     }
+}
+
+#[cfg(not(loom))]
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(loom)]
+use loom::sync::atomic::{AtomicBool, Ordering};
+
+/// A prog's kill flag and the [`Rendez`] it is parked on.
+///
+/// `kill` sets the flag and wakes that rendez, so a sleeper whose condition
+/// also watches [`Note::killed`] cannot miss it: the condition is rechecked
+/// under the rendez lock, and `wakeup` takes the same lock.
+pub struct Note {
+    killed: AtomicBool,
+    sleep: Mutex<Option<Rendez>>,
+}
+
+impl Note {
+    pub fn new() -> Note {
+        Note {
+            killed: AtomicBool::new(false),
+            sleep: Mutex::new(None),
+        }
+    }
+
+    pub fn killed(&self) -> bool {
+        self.killed.load(Ordering::Acquire)
+    }
+
+    /// Makes `kill` wake `r`. Paired with [`Note::disarm`] around a timed sleep
+    /// that cannot register itself.
+    pub fn arm(&self, r: &Rendez) {
+        *self.sleep.lock() = Some(r.clone());
+    }
+
+    /// Forgets the rendez [`Note::arm`] recorded.
+    pub fn disarm(&self) {
+        *self.sleep.lock() = None;
+    }
+
+    /// Marks the prog killed and wakes it if it is parked.
+    pub fn kill(&self) {
+        self.killed.store(true, Ordering::Release);
+        if let Some(r) = self.sleep.lock().clone() {
+            r.wakeup();
+        }
+    }
+
+    /// Sleeps on `r` until `cond` is true. Returns whether `cond` became
+    /// true; `false` means the note was killed first. `cond` may run more
+    /// than once and must not sleep.
+    pub fn sleep(&self, r: &Rendez, mut cond: impl FnMut() -> bool) -> bool {
+        if cond() {
+            return true;
+        }
+        if self.killed() {
+            return false;
+        }
+        *self.sleep.lock() = Some(r.clone());
+        r.sleep(|| self.killed() || cond());
+        *self.sleep.lock() = None;
+        cond()
+    }
+}
+
+impl Default for Note {
+    fn default() -> Note {
+        Note::new()
+    }
+}
+
+#[cfg(feature = "std")]
+mod current {
+    use super::Note;
+    use alloc::sync::Arc;
+    use std::cell::RefCell;
+    use std::thread_local;
+
+    thread_local! {
+        static CURRENT: RefCell<Option<Arc<Note>>> = const { RefCell::new(None) };
+    }
+
+    pub fn set(note: Option<Arc<Note>>) {
+        CURRENT.with(|c| *c.borrow_mut() = note);
+    }
+
+    pub fn get() -> Option<Arc<Note>> {
+        CURRENT.with(|c| c.borrow().clone())
+    }
+}
+
+#[cfg(not(feature = "std"))]
+mod current {
+    use super::{Note, SCHED};
+    use alloc::sync::Arc;
+
+    pub fn set(note: Option<Arc<Note>>) {
+        if let Some(s) = SCHED.get() {
+            s.set_note(note);
+        }
+    }
+
+    pub fn get() -> Option<Arc<Note>> {
+        SCHED.get().and_then(|s| s.note())
+    }
+}
+
+/// Records the note of the prog running on this thread (or kernel thread).
+pub fn set_current_note(note: Option<alloc::sync::Arc<Note>>) {
+    current::set(note);
+}
+
+/// The note recorded for this thread, if a prog is running on it.
+pub fn current_note() -> Option<alloc::sync::Arc<Note>> {
+    current::get()
 }
