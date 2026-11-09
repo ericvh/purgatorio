@@ -5,9 +5,10 @@
 //! `{` blocks `}`, redirections (`<`, `>`, `>>`, `>[n]`, `>[n=m]`,
 //! `>[n=]`), `'quoting'`, `^` concatenation, list variables (`x=(a b)`,
 //! `$x`, `$#x`, `$"x`, `$*`, `$1`, `$status`, `$apid`), `` `{command} ``
-//! substitution and comments. Variables are exported through `/env`
-//! unless declared with `:=`. Builtins: `cd`, `exit`, `run`, `wait` and
-//! `load` (not yet implemented).
+//! substitution, `${expr ...}` and comments. Variables are exported through
+//! `/env` unless declared with `:=`. Builtins: `cd`, `exit`, `run`, `wait`,
+//! `load`. `load std` adds `if`, `while`, `for`, `and`, `or`, `not`, `~`,
+//! `fn` and `raise`. `load expr` adds `${expr}`.
 //!
 //! With `-l`, `/lib/sh/profile` runs first. Without `-c` or a file,
 //! commands are read from standard input, with a `; ` prompt if it is the
@@ -29,7 +30,7 @@ const PROFILE: &str = "/lib/sh/profile";
 
 fn finish(sh: &Shell, stop: Option<Stop>) -> ! {
     let status = match stop {
-        Some(Stop::Exit(s)) => s,
+        Some(Stop::Exit(s) | Stop::Raise(s)) => s,
         None => sh.status.clone(),
     };
     purgatorio::exits(&status)
@@ -70,7 +71,10 @@ fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
             _ => {
                 let src = std::mem::take(&mut pending);
                 if let Err(stop) = sh.run_src(&src) {
-                    return Some(stop);
+                    match stop {
+                        Stop::Raise(s) => sh.status = s,
+                        other => return Some(other),
+                    }
                 }
             }
         }

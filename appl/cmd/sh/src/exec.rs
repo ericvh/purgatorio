@@ -81,11 +81,20 @@ pub struct Shell {
     /// Exit messages for progs not yet waited for.
     exited: HashMap<u32, String>,
     pub status: String,
+    /// `load std` has installed the control-flow builtins.
+    std: bool,
+    /// `load expr` has installed `${expr}`.
+    expr: bool,
+    /// Function bodies from `fn name {body}`, including the braces.
+    fns: HashMap<String, String>,
 }
 
 /// Why execution stopped early.
 pub enum Stop {
+    /// `exit`: leave the shell.
     Exit(String),
+    /// `raise`: abandon the current script with this status.
+    Raise(String),
 }
 
 type Flow<T> = Result<T, Stop>;
@@ -104,6 +113,9 @@ impl Shell {
             background: HashSet::new(),
             exited: HashMap::new(),
             status: String::new(),
+            std: false,
+            expr: false,
+            fns: HashMap::new(),
         }
     }
 
@@ -189,7 +201,7 @@ impl Shell {
 
     fn pipeline(&mut self, p: &Pipeline, io: &Io) -> Flow<String> {
         let status = if let [cmd] = p.cmds.as_slice()
-            && runs_here(cmd)
+            && self.runs_here(cmd)
         {
             self.here(cmd, io)?
         } else {
@@ -218,12 +230,14 @@ impl Shell {
 
     fn background_item(&mut self, item: &Item, io: &Io) {
         let a = &item.andor;
-        let started =
-            if a.rest.is_empty() && !a.first.bang && a.first.cmds.iter().all(|c| !runs_here(c)) {
-                self.start_pipeline(&a.first.cmds, io)
-            } else {
-                self.sub_shell(&item.src, io).map(|pid| vec![pid])
-            };
+        let started = if a.rest.is_empty()
+            && !a.first.bang
+            && a.first.cmds.iter().all(|c| !self.runs_here(c))
+        {
+            self.start_pipeline(&a.first.cmds, io)
+        } else {
+            self.sub_shell(&item.src, io).map(|pid| vec![pid])
+        };
         match started {
             Ok(pids) => {
                 self.background.extend(&pids);
@@ -253,7 +267,7 @@ impl Shell {
             } else {
                 None
             };
-            let started = if runs_here(cmd) {
+            let started = if self.runs_here(cmd) {
                 self.sub_shell(&cmd.src, &stage)
             } else {
                 self.spawn_simple(cmd, &stage)
@@ -349,6 +363,15 @@ impl Shell {
                         return Ok(format!("fail:{e}"));
                     }
                 };
+                if argv.is_empty() {
+                    return Ok(String::new());
+                }
+                if let Some(body) = self.fns.get(&argv[0]).cloned() {
+                    return self.call_fn(&body, &argv);
+                }
+                if self.std_name(&argv[0]) {
+                    return self.std_cmd(&argv);
+                }
                 self.builtin(&argv, &io)
             }
         }
@@ -394,9 +417,7 @@ impl Shell {
                 }
                 Ok(())
             }
-            "load" => Err(Error::from(
-                "load: loadable builtins are not implemented yet",
-            )),
+            "load" => self.load(&argv[1..]),
             _ => unreachable!("not a builtin"),
         };
         Ok(match res {
@@ -474,6 +495,7 @@ impl Shell {
                     }
                 }
                 Part::Subst(src) => self.substitute(src)?,
+                Part::Builtin(src) => self.builtin_subst(src)?,
                 Part::List(words) => self.expand_all(words)?,
             };
             acc = Some(match acc {
@@ -497,6 +519,226 @@ impl Shell {
         res?;
         Ok(out.split_whitespace().map(String::from).collect())
     }
+
+    fn runs_here(&self, cmd: &Cmd) -> bool {
+        match &cmd.kind {
+            CmdKind::Simple(words) => words
+                .first()
+                .and_then(Word::bare)
+                .is_some_and(|n| self.runs_name(n)),
+            CmdKind::Assign { .. } | CmdKind::Block(_) => true,
+        }
+    }
+
+    fn runs_name(&self, name: &str) -> bool {
+        is_builtin(name) || self.fns.contains_key(name) || self.std_name(name)
+    }
+
+    fn std_name(&self, name: &str) -> bool {
+        self.std
+            && matches!(
+                name,
+                "if" | "while" | "for" | "and" | "or" | "not" | "~" | "fn" | "raise"
+            )
+    }
+
+    fn load(&mut self, names: &[String]) -> Result<(), Error> {
+        if names.is_empty() {
+            return Err(Error::from("usage: load module ..."));
+        }
+        for name in names {
+            match name.as_str() {
+                "std" => self.std = true,
+                "expr" => self.expr = true,
+                other => return Err(Error(format!("load: {other}: module not found"))),
+            }
+        }
+        Ok(())
+    }
+
+    /// `${...}`: run one loaded builtin and substitute what it prints as words.
+    fn builtin_subst(&mut self, src: &str) -> Result<Vec<String>, Error> {
+        let items = parse::parse(src).map_err(|e| Error(format!("syntax error: {e:?}")))?;
+        let [item] = items.as_slice() else {
+            return Err(Error::from("builtin must be one command"));
+        };
+        let [cmd] = item.andor.first.cmds.as_slice() else {
+            return Err(Error::from("builtin must be one command"));
+        };
+        let CmdKind::Simple(words) = &cmd.kind else {
+            return Err(Error::from("builtin must be one command"));
+        };
+        let argv = self.expand_all(words)?;
+        let Some(name) = argv.first() else {
+            return Err(Error::from("empty builtin"));
+        };
+        if name == "expr" {
+            if !self.expr {
+                return Err(Error::from("expr: module not loaded"));
+            }
+            return Ok(vec![eval_expr(&argv[1..])?]);
+        }
+        Err(Error(format!(
+            "{name}: only expr is a ${{}} builtin; use it as a command"
+        )))
+    }
+
+    fn std_cmd(&mut self, argv: &[String]) -> Flow<String> {
+        match argv[0].as_str() {
+            "if" => self.std_if(argv),
+            "while" => self.std_while(argv),
+            "for" => self.std_for(argv),
+            "and" => self.std_and(argv),
+            "or" => self.std_or(argv),
+            "not" => self.std_not(argv),
+            "~" => self.std_tilde(argv),
+            "fn" => self.std_fn(argv),
+            "raise" => Err(Stop::Raise(if argv.len() == 1 {
+                String::from("raise")
+            } else {
+                argv[1..].join(" ")
+            })),
+            _ => Ok(String::from("fail:unknown builtin")),
+        }
+    }
+
+    fn std_if(&mut self, argv: &[String]) -> Flow<String> {
+        if argv.len() < 3 || argv.len() > 4 {
+            self.status = String::from("usage: if cond then [else]");
+            return Ok(self.status.clone());
+        }
+        self.run_block(&argv[1])?;
+        if self.status.is_empty() {
+            self.run_block(&argv[2])?;
+        } else if argv.len() == 4 {
+            self.run_block(&argv[3])?;
+        } else {
+            self.status.clear();
+        }
+        Ok(self.status.clone())
+    }
+
+    fn std_while(&mut self, argv: &[String]) -> Flow<String> {
+        if argv.len() != 3 {
+            self.status = String::from("usage: while cond body");
+            return Ok(self.status.clone());
+        }
+        loop {
+            self.run_block(&argv[1])?;
+            if !self.status.is_empty() {
+                self.status.clear();
+                break;
+            }
+            self.run_block(&argv[2])?;
+        }
+        Ok(self.status.clone())
+    }
+
+    fn std_for(&mut self, argv: &[String]) -> Flow<String> {
+        if argv.len() < 4 || argv[2] != "in" || !argv.last().is_some_and(|s| s.starts_with('{')) {
+            self.status = String::from("usage: for var in list body");
+            return Ok(self.status.clone());
+        }
+        let var = argv[1].clone();
+        let body = argv.last().unwrap().clone();
+        let values: Vec<String> = argv[3..argv.len() - 1].to_vec();
+        for value in values {
+            self.set_var(&var, vec![value], false);
+            self.run_block(&body)?;
+        }
+        Ok(self.status.clone())
+    }
+
+    fn std_and(&mut self, argv: &[String]) -> Flow<String> {
+        if argv.len() < 3 {
+            self.status = String::from("usage: and cmd ...");
+            return Ok(self.status.clone());
+        }
+        for cmd in &argv[1..] {
+            self.run_block(cmd)?;
+            if !self.status.is_empty() {
+                break;
+            }
+        }
+        Ok(self.status.clone())
+    }
+
+    fn std_or(&mut self, argv: &[String]) -> Flow<String> {
+        if argv.len() < 3 {
+            self.status = String::from("usage: or cmd ...");
+            return Ok(self.status.clone());
+        }
+        for cmd in &argv[1..] {
+            self.run_block(cmd)?;
+            if self.status.is_empty() {
+                break;
+            }
+        }
+        Ok(self.status.clone())
+    }
+
+    fn std_not(&mut self, argv: &[String]) -> Flow<String> {
+        if argv.len() != 2 {
+            self.status = String::from("usage: not cmd");
+            return Ok(self.status.clone());
+        }
+        self.run_block(&argv[1])?;
+        self.status = if self.status.is_empty() {
+            String::from("false")
+        } else {
+            String::new()
+        };
+        Ok(self.status.clone())
+    }
+
+    fn std_tilde(&mut self, argv: &[String]) -> Flow<String> {
+        if argv.len() < 3 {
+            self.status = String::from("usage: ~ word pattern ...");
+            return Ok(self.status.clone());
+        }
+        let ok = argv[2..].iter().any(|pat| glob_match(&argv[1], pat));
+        self.status = if ok {
+            String::new()
+        } else {
+            String::from("no match")
+        };
+        Ok(self.status.clone())
+    }
+
+    fn std_fn(&mut self, argv: &[String]) -> Flow<String> {
+        if argv.len() != 3 || !argv[2].starts_with('{') {
+            self.status = String::from("usage: fn name body");
+            return Ok(self.status.clone());
+        }
+        self.fns.insert(argv[1].clone(), argv[2].clone());
+        self.status.clear();
+        Ok(String::new())
+    }
+
+    fn call_fn(&mut self, body: &str, argv: &[String]) -> Flow<String> {
+        let saved = self.vars.get("*").cloned();
+        self.set_var("*", argv[1..].to_vec(), false);
+        let result = self.run_block(body);
+        match saved {
+            Some(v) => {
+                self.vars.insert(String::from("*"), v);
+            }
+            None => {
+                self.vars.remove("*");
+            }
+        }
+        result?;
+        Ok(self.status.clone())
+    }
+
+    fn run_block(&mut self, src: &str) -> Flow<()> {
+        let inner = src.trim();
+        let inner = inner
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .unwrap_or(inner);
+        self.run_src(inner)
+    }
 }
 
 /// Joins two lists: a one-element list distributes over the other, and
@@ -517,11 +759,44 @@ fn is_builtin(name: &str) -> bool {
     matches!(name, "cd" | "exit" | "run" | "wait" | "load")
 }
 
-/// Whether a command runs inside the shell rather than as a new prog.
-fn runs_here(cmd: &Cmd) -> bool {
-    match &cmd.kind {
-        CmdKind::Simple(words) => words.first().and_then(Word::bare).is_some_and(is_builtin),
-        CmdKind::Assign { .. } | CmdKind::Block(_) => true,
+/// Postfix integer expression: `1 2 +` is 3. `*` `/` `%` `-` `+`.
+fn eval_expr(args: &[String]) -> Result<String, Error> {
+    let mut stack: Vec<i64> = Vec::new();
+    for arg in args {
+        let next = match arg.as_str() {
+            "+" | "-" | "*" | "/" | "%" => {
+                let (Some(y), Some(x)) = (stack.pop(), stack.pop()) else {
+                    return Err(Error::from("expr: stack underflow"));
+                };
+                match *arg.as_bytes().first().unwrap_or(&0) {
+                    b'+' => x.wrapping_add(y),
+                    b'-' => x.wrapping_sub(y),
+                    b'*' => x.wrapping_mul(y),
+                    b'/' if y == 0 => return Err(Error::from("expr: division by zero")),
+                    b'/' => x / y,
+                    b'%' if y == 0 => return Err(Error::from("expr: division by zero")),
+                    b'%' => x % y,
+                    _ => return Err(Error::from("expr: bad operator")),
+                }
+            }
+            n => n
+                .parse::<i64>()
+                .map_err(|_| Error(format!("expr: bad number {n}")))?,
+        };
+        stack.push(next);
+    }
+    match stack.as_slice() {
+        [n] => Ok(n.to_string()),
+        _ => Err(Error::from("expr: leftover stack")),
+    }
+}
+
+fn glob_match(word: &str, pat: &str) -> bool {
+    match pat.split_once('*') {
+        None => word == pat,
+        Some((pre, suf)) => {
+            word.starts_with(pre) && word.ends_with(suf) && word.len() >= pre.len() + suf.len()
+        }
     }
 }
 
@@ -562,6 +837,16 @@ mod tests {
         );
         assert!(concat(v(&["x", "y"]), v(&["1", "2", "3"])).is_err());
         assert!(concat(v(&[]), v(&["1"])).is_err());
+    }
+
+    #[test]
+    fn expr_and_patterns() {
+        assert_eq!(eval_expr(&v(&["1", "2", "+"])).unwrap(), "3");
+        assert_eq!(eval_expr(&v(&["3", "4", "*"])).unwrap(), "12");
+        assert_eq!(eval_expr(&v(&["20", "3", "-"])).unwrap(), "17");
+        assert!(glob_match("hello", "h*o"));
+        assert!(glob_match("yes", "yes"));
+        assert!(!glob_match("ab", "a"));
     }
 
     #[test]
