@@ -1,0 +1,10 @@
+[package]
+name = "purg-abi"
+description = "Purgatorio guest/host ABI: import names, flag constants, error strings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
