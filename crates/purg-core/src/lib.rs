@@ -23,6 +23,7 @@ pub mod devprog;
 pub mod devram;
 pub mod devroot;
 pub mod devsrv;
+pub mod devssl;
 pub mod error;
 pub mod export;
 pub mod fgrp;
@@ -58,7 +59,7 @@ pub struct Portable {
     pub mnt: Arc<DevMnt>,
 }
 
-/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C` and `#¤`.
+/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C`, `#¤` and `#D`.
 /// Embedders add `#/` and their own devices.
 pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Portable {
     let srv = Arc::new(devsrv::DevSrv::new(procs.user()));
@@ -75,6 +76,7 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
         Arc::new(devip::DevIp::new(platform.clone())),
         Arc::new(devcmd::DevCmd::new(platform.clone())),
         Arc::new(devfactotum::DevFactotum::new(platform.clone())),
+        Arc::new(devssl::DevSsl::new(platform.clone(), procs.clone())),
     ];
     Portable { devs, srv, mnt }
 }
