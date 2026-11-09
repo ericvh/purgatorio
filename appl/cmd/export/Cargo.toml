@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-export"
+description = "export: serve a namespace on file descriptor 0"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "export"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

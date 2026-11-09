@@ -83,6 +83,8 @@ fn boot(root: PathBuf) -> Result<Prog, Error> {
     pgrp.bind("#p", "/prog", MREPL)?;
     pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
     pgrp.bind("#d", "/fd", MREPL)?;
+    pgrp.bind("#I", "/net", MREPL)?;
+    pgrp.bind("#C", "/cmd", MREPL)?;
     let mut prog = Prog::new(kernel, pgrp);
     platform.set_current_pid(prog.pid);
     purg_vm::init_fds(&mut prog)?;

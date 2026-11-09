@@ -27,8 +27,12 @@ mod boot;
 #[cfg(target_os = "none")]
 mod hw;
 #[cfg(target_os = "none")]
+mod netstack;
+#[cfg(target_os = "none")]
 mod platform;
 #[cfg(target_os = "none")]
 mod probe;
 #[cfg(target_os = "none")]
 mod sched;
+#[cfg(target_os = "none")]
+mod virtio;

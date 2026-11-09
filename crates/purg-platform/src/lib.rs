@@ -8,6 +8,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+pub mod net;
 pub mod sync;
 
 use alloc::borrow::Cow;
@@ -64,5 +65,15 @@ pub trait Platform: Send + Sync {
     /// the current kernel thread.
     fn set_note(&self, note: Option<alloc::sync::Arc<sync::Note>>) {
         sync::set_current_note(note);
+    }
+    /// The network stack, if this platform has one. `#I` fails with
+    /// `"network unreachable"` when this is `None`.
+    fn net(&self) -> Option<&dyn net::Net> {
+        None
+    }
+    /// Starts a host command for `#C`. Platforms without a host shell fail
+    /// with `"not implemented"`.
+    fn command(&self, _line: &str) -> Result<alloc::sync::Arc<dyn net::Command>> {
+        Err(Cow::Borrowed("not implemented"))
     }
 }

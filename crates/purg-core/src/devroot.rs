@@ -48,7 +48,7 @@ impl StaticTree {
     /// The emu's `#/`: empty mount points for devices bound at boot.
     pub fn root(owner: &str) -> StaticTree {
         let mut t = StaticTree::new('/', "root", owner);
-        for d in ["chan", "dev", "env", "fd", "net", "prog"] {
+        for d in ["chan", "dev", "env", "fd", "net", "prog", "cmd"] {
             t.add_dir(d);
         }
         t
