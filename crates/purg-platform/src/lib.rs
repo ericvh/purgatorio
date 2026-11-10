@@ -48,6 +48,26 @@ pub trait Rtc: Send + Sync {
     fn set_seconds(&self, secs: u64) -> Result<()>;
 }
 
+/// One line of `#c/memory`: an allocation pool, with the fields of
+/// Inferno's `Pool` that the file prints.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemPool {
+    pub name: &'static str,
+    /// Bytes in use.
+    pub cursize: u64,
+    /// The most the pool can hold.
+    pub maxsize: u64,
+    /// The high-water mark of `cursize`.
+    pub hw: u64,
+    /// Allocations and frees so far.
+    pub nalloc: u64,
+    pub nfree: u64,
+    /// Times the pool grew.
+    pub nbrk: u64,
+    /// The largest block that could be allocated now.
+    pub max: u64,
+}
+
 /// Services the portable core needs from its environment. Sleep and wakeup
 /// go through [`sync::Rendez`].
 pub trait Platform: Send + Sync {
@@ -74,6 +94,19 @@ pub trait Platform: Send + Sync {
     /// and `#%`. `(0, 0)` means the platform has no figures.
     fn memory(&self) -> (u64, u64) {
         (0, 0)
+    }
+    /// The pools `#c/memory` lists. Platforms that only have
+    /// [`Platform::memory`]'s figures report them as one `main` pool.
+    fn pools(&self) -> alloc::vec::Vec<MemPool> {
+        let (used, total) = self.memory();
+        alloc::vec![MemPool {
+            name: "main",
+            cursize: used,
+            maxsize: total,
+            hw: used,
+            max: total.saturating_sub(used),
+            ..MemPool::default()
+        }]
     }
     /// Records which prog's [`sync::Note`] `kill` should interrupt on this
     /// thread. The hosted emu keeps it thread-local; bare metal keeps it on

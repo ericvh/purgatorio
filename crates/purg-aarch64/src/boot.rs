@@ -144,10 +144,17 @@ pub fn image_end() -> usize {
 }
 
 /// Builds the image's map for the board from `alloc`: the identity map,
-/// and the high half with per-section permissions.
+/// and the high half with per-section permissions. This is the boot map,
+/// built before the DTB can be read, so it maps [`board`]'s fixed RAM
+/// window whatever RAM the machine has; nothing touches the part that is
+/// not there.
 pub fn kernel_map(alloc: &mut TableAlloc) -> Result<KernelMap, mmu::Error> {
-    let b = board();
-    mmu::build_kernel_map(alloc, &[b.ram], b.devices, &image())
+    kernel_map_for(alloc, board().ram)
+}
+
+/// [`kernel_map`] over `ram`, the RAM the DTB reports.
+pub fn kernel_map_for(alloc: &mut TableAlloc, ram: Region) -> Result<KernelMap, mmu::Error> {
+    mmu::build_kernel_map(alloc, &[ram], board().devices, &image())
 }
 
 /// Runs with the MMU off: builds the boot tables, or reports the error on

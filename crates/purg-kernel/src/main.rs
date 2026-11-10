@@ -16,16 +16,20 @@
 //! `kernel: ok` or `kernel: FAILED ...` line. `cargo xtask kernel` boots it
 //! and compares the serial output with `expected.out`.
 //!
-//! Memory map (QEMU virt, `-m 512M`):
+//! With `memstat` in the bootargs the kernel also reports where its memory
+//! goes ([`memstat`]); `docs/footprint.md` has the numbers.
+//!
+//! Memory map (QEMU virt; RAM size from the DTB):
 //! - physical load address 0x4020_0000 (the DTB is at 0x4000_0000);
 //! - the high half: virtual `KERNEL_VBASE + p` = physical `p`, with
 //!   `KERNEL_VBASE` = 0xffff_0000_0000_0000, so the image runs at
 //!   0xffff_0000_4020_0000;
 //! - device window: physical 0..1 GiB, Device-nGnRnE, never executable;
-//! - RAM 0x4000_0000..0x6000_0000 linear-mapped Normal RW; the image's
+//! - RAM from 0x4000_0000 linear-mapped Normal RW (the boot tables map a
+//!   fixed 512 MiB window, the runtime tables what the DTB reports); the image's
 //!   text RX, rodata R, data/bss RW, an unmapped guard page, then a 256 KiB
 //!   boot stack RW;
-//! - heap: from the end of the image to the end of RAM;
+//! - heap: the largest free stretch of RAM after the image;
 //! - boot page tables: 32 pages in .bss.
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
@@ -44,6 +48,8 @@ mod devices;
 mod irq;
 #[cfg(target_os = "none")]
 mod kernel;
+#[cfg(target_os = "none")]
+mod memstat;
 #[cfg(target_os = "none")]
 mod selftest;
 #[cfg(target_os = "none")]

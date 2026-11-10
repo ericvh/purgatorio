@@ -20,9 +20,16 @@ pub use purg_aarch64::irq::ticks;
 /// Timer interrupts per second.
 pub const TICK_HZ: u64 = 100;
 
-/// Stack for each kernel thread.
-/// wasmi and the host calls it makes need deep stacks, as in the probe.
-const STACK_SIZE: usize = 2 << 20;
+/// Stack for each kernel thread. A prog's thread runs wasmi and the host
+/// calls under it; wasmi keeps the guest's call and value stacks on the
+/// heap, so the thread's own stack stays shallow. The deepest any thread
+/// went in the whole test mode was 22 KiB (`memstat`, docs/footprint.md),
+/// so this leaves more than ten times that.
+const STACK_SIZE: usize = 256 << 10;
+
+/// Stack for the core's service kprocs (the mount readers), which run no
+/// prog: the deepest went 6 KiB.
+pub const KPROC_STACK_SIZE: usize = 64 << 10;
 
 pub static SCHED: Scheduler = Scheduler::new(STACK_SIZE);
 

@@ -35,6 +35,8 @@ use purg_vm::{Ctx, Engine};
 use purg_vm_wasmi::Wasmi;
 
 use crate::irq::SCHED;
+use crate::kernel::HEAP;
+use crate::memstat;
 
 /// The booted system: an engine, the kernel and the boot namespace.
 pub struct System {
@@ -77,8 +79,10 @@ pub fn boot(
     for dc in natives {
         pgrp.bind(&format!("#{dc}"), "/dev", MAFTER)?;
     }
+    let engine = Arc::new(Wasmi::new()?);
+    memstat::report("booted");
     Ok(System {
-        engine: Arc::new(Wasmi::new()?),
+        engine,
         kernel,
         pgrp,
     })
@@ -273,13 +277,16 @@ impl System {
     }
 
     /// One line of heap figures and the number of live kernel threads,
-    /// then the names and pids of the threads that have names.
+    /// then the names and pids of the threads that have names. `run_peak`
+    /// is the most the heap held since the line before; `peak` since boot.
     pub(crate) fn memstat(&self) {
-        let h = crate::kernel::HEAP.stats();
+        let h = HEAP.stats();
+        let (run_peak, peak) = memstat::run_peak();
         self.say(&format!(
-            "kernel: mem used={} peak={} largest={} size={} blocks={} allocs={} threads={}",
+            "kernel: mem used={} run_peak={} peak={} largest={} size={} blocks={} allocs={} threads={}",
             h.used,
-            h.peak,
+            run_peak,
+            peak,
             h.largest_free,
             h.size,
             h.live,
@@ -303,7 +310,7 @@ impl System {
         for _ in 0..2 {
             SCHED.yield_now();
         }
-        (crate::kernel::HEAP.memory().0, SCHED.live())
+        (HEAP.memory().0, SCHED.live())
     }
 
     /// Runs the conformance guests and the sh corpus, then checks that
@@ -367,6 +374,7 @@ impl System {
 
     /// Boots like the emu: `emuinit` runs `sh -l` on the console.
     pub fn interactive(&self) -> Result<String, Error> {
+        memstat::sampler();
         self.run(&["emuinit"], None)
     }
 }
@@ -400,8 +408,9 @@ pub fn start(
     let done = Rendez::new();
     let wake = done.clone();
     SCHED.spawn(Box::new(move || {
-        let platform =
-            MetalPlatform::new(console, &SCHED, "purgatorio", rtc).with_heap(&crate::kernel::HEAP);
+        let platform = MetalPlatform::new(console, &SCHED, "purgatorio", rtc)
+            .with_heap(&HEAP)
+            .with_kproc_stack(crate::irq::KPROC_STACK_SIZE);
         let native = crate::devices::native(console, rtc, &platform.user());
         let p9 = host.and_then(host9p::open);
         let extra: Vec<Arc<dyn Dev>> = p9.iter().map(|d| d.clone() as Arc<dyn Dev>).collect();
@@ -431,6 +440,7 @@ pub fn start(
                 },
             },
         };
+        memstat::report("end");
         DONE.store(result, Ordering::Release);
         wake.wakeup();
     }));
