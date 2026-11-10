@@ -4,8 +4,12 @@
 //!   user name, the user's public key and an expiry.
 //! - [`keys`]: key lists (`lib/keys/signers`, `lib/keys/revoked`) and
 //!   authinfo files.
-//! - [`proof`]: the mount handshake's proofs, version 1 and 2, and the
+//! - [`proof`]: the mount handshake's proofs, versions 1 to 3, and the
 //!   server's check of them.
+//! - [`session`]: the version 3 handshake's ephemeral X25519 exchange and
+//!   the session keys it derives.
+//! - [`record`]: the ChaCha20-Poly1305 records that carry the Styx
+//!   conversation after a version 3 handshake.
 //! - [`login`] (feature `login`): the `pglogin1` password exchange (SPAKE2
 //!   over an Argon2id-hardened password) and password-sealed blobs.
 //!
@@ -23,6 +27,8 @@ pub mod keys;
 pub mod login;
 pub mod modsig;
 pub mod proof;
+pub mod record;
+pub mod session;
 
 pub use purg_abi::auth::{PUBLIC, SEED, SIGNATURE};
 

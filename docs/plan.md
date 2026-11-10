@@ -462,7 +462,7 @@ A failure prints a minimal input. Turn it into a named test next to the fix; no 
 
 **Fuzz smoke test.** `crates/purg-styx/tests/fuzz_smoke.rs` runs under `cargo test` and needs no tools. It mutates the captured fixtures and a `.u` conversation with a fixed-seed generator (a few thousand cases per target) and feeds them to the same checks the fuzzers use, so a failure reproduces on every host.
 
-**Fuzzing.** `fuzz/` is a `cargo-fuzz` project with two targets: `decode` (`Msg::decode`, `Dir::unpack`, `dirs`, `stat_from_u`) and `dotu` (a whole conversation through `dotu::Shim`). It is not a workspace member, so normal builds do not see it. The checks are in `fuzz/src/lib.rs`, which the two tests above include, so they are compiled and run on every `cargo test`. Fuzzing needs a nightly toolchain and `cargo install cargo-fuzz`; it is a manual job, not a CI job. CI only checks that the targets compile.
+**Fuzzing.** `fuzz/` is a `cargo-fuzz` project with three targets: `decode` (`Msg::decode`, `Dir::unpack`, `dirs`, `stat_from_u`), `dotu` (a whole conversation through `dotu::Shim`) and `record` (the mount's record layer, `purg_auth::record`; its checks are in `fuzz/src/record.rs`, which `purg-auth`'s `fuzz_smoke` test includes). It is not a workspace member, so normal builds do not see it. The checks are in `fuzz/src/lib.rs`, which the two tests above include, so they are compiled and run on every `cargo test`. Fuzzing needs a nightly toolchain and `cargo install cargo-fuzz`; it is a manual job, not a CI job. CI only checks that the targets compile.
 
 ```sh
 cd fuzz
@@ -470,6 +470,8 @@ cd fuzz
 cargo +nightly fuzz run decode corpus/decode ../crates/purg-styx/tests/fixtures/9fans -- -max_total_time=300
 # The shim, seeded with a 9P2000 and a 9P2000.u conversation.
 cargo +nightly fuzz run dotu corpus/dotu seeds/dotu -- -max_total_time=300
+# The record layer.
+cargo +nightly fuzz run record corpus/record -- -max_total_time=300
 ```
 
 New inputs go to `fuzz/corpus/` and crashes to `fuzz/artifacts/`; neither is committed. Fix a crash with a named test in `crates/purg-styx/tests/`. The seeds in `fuzz/seeds/dotu` are built by `fuzz_smoke.rs`; after changing them there, run `PURG_BLESS=1 cargo test -p purg-styx --test fuzz_smoke`.

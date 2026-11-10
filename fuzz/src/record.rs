@@ -1,0 +1,70 @@
+//! The body of the `record` fuzz target, for the mount's record layer
+//! (`purg_auth::record`). `cargo test -p purg-auth --test fuzz_smoke`
+//! includes this file too, so the checks run without libFuzzer.
+//!
+//! It panics only when the record layer breaks one of its promises.
+
+use purg_auth::record::{self, Opener, Sealer};
+
+const KEY: [u8; 32] = [7; 32];
+/// The largest plaintext the receiver takes, as an msize would bound it.
+const MAX: usize = 8216;
+
+/// Arbitrary bytes as a stream of records, then as plaintext.
+pub fn record(data: &[u8]) {
+    open_stream(data);
+    round_trip(data);
+}
+
+/// Bytes nobody sealed: whatever `size` accepts is the record's length,
+/// what opens has the right length, and after one failure nothing opens.
+fn open_stream(data: &[u8]) {
+    let mut o = Opener::new(&KEY);
+    let mut rest = data;
+    let mut failed = false;
+    while let Some(hdr) = rest.first_chunk::<{ record::HEADER }>() {
+        let Ok(n) = record::size(*hdr, MAX) else {
+            break;
+        };
+        assert!(n >= record::OVERHEAD && n - record::OVERHEAD <= MAX);
+        let Some(rec) = rest.get(..n) else {
+            break;
+        };
+        let got = o.open(rec.to_vec());
+        if failed {
+            assert!(got.is_err(), "a record opened after a failure");
+        }
+        if let Ok(plain) = &got {
+            assert_eq!(plain.len(), n - record::OVERHEAD);
+        }
+        failed |= got.is_err();
+        rest = &rest[n..];
+    }
+}
+
+/// `data` cut into messages, sealed and opened again, comes back whole;
+/// one changed byte, chosen by the data, makes its record fail.
+fn round_trip(data: &[u8]) {
+    let mut s = Sealer::new(&KEY);
+    let mut o = Opener::new(&KEY);
+    let step = data.first().map_or(1, |b| usize::from(*b) + 1);
+    let msgs: Vec<&[u8]> = data.chunks(step).collect();
+    let recs: Vec<Vec<u8>> = msgs.iter().map(|m| s.seal(m).expect("seal")).collect();
+    for (m, r) in msgs.iter().zip(&recs) {
+        assert_eq!(r.len(), m.len() + record::OVERHEAD);
+        assert_eq!(o.open(r.clone()).expect("a sealed record opens"), *m);
+    }
+    if let (Some(first), Some(&b)) = (recs.first(), data.last()) {
+        let mut bad = first.clone();
+        let i = usize::from(b) % bad.len();
+        bad[i] ^= b | 1;
+        assert!(
+            Opener::new(&KEY).open(bad).is_err(),
+            "a changed record opened"
+        );
+        // Out of order.
+        if let Some(second) = recs.get(1) {
+            assert!(Opener::new(&KEY).open(second.clone()).is_err());
+        }
+    }
+}

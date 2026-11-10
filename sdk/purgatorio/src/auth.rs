@@ -297,7 +297,7 @@ pub fn proof_for(
         let (kind, body) = purg_auth::proof::body(cert.as_ref(), &public);
         let msg = purg_auth::proof::message(challenge, user, aname, kind, &body);
         if let Some(sig) = agent_sign(&msg) {
-            return Ok(purg_auth::proof::assemble(kind, &sig, &body));
+            return Ok(purg_auth::proof::assemble(challenge, kind, &sig, &body));
         }
     }
     if safe_user(user)

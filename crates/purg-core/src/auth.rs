@@ -2,16 +2,18 @@
 //! keyring protocol. Real Inferno clients still mount with `-A`.
 //!
 //! The client writes one proof to the auth fid: version 1, `signature[64]
-//! || public_key[32]` over the raw challenge, or version 2, which signs a
-//! domain-separated message and can carry a signer's certificate. The
-//! formats and the server's check are in `purg_auth`.
+//! || public_key[32]` over the raw challenge, version 2, which signs a
+//! domain-separated message and can carry a signer's certificate, or
+//! version 3, which also agrees a session key that encrypts the rest of
+//! the conversation. The formats and the server's check are in
+//! `purg_auth`.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 pub use purg_abi::auth::{
-    CHALLENGE, EXPIRED, FAILED, NAME_MISMATCH, NO_KEY, NOT_REQUIRED, PROOF, PUBLIC, REQUIRED,
-    REVOKED, SEED, SIGNATURE, UNTRUSTED,
+    CHALLENGE, EXPIRED, FAILED, NAME_MISMATCH, NO_KEY, NO_SESSION, NOT_REQUIRED, OFFER, PROOF,
+    PUBLIC, REQUIRED, REVOKED, SEED, SIGNATURE, SIGNED, UNTRUSTED,
 };
 pub use purg_auth::cert::Cert;
 pub use purg_auth::{public_key, sign, verify};
@@ -75,7 +77,8 @@ enum Signer {
 /// Builds the client's proof for the kernel's own mount (`afd = -1`). The
 /// key comes from `#¤` (with the certificate loaded into it), an authinfo
 /// in `/usr/<user>/keyring/default`, or a seed file: `/usr/<user>/key`,
-/// then the public test key.
+/// then the public test key. `challenge` is what the proof signs: the
+/// [`SIGNED`] bytes of a version 3 exchange.
 pub(crate) fn client_proof(
     pgrp: &Pgrp,
     user: &str,
@@ -99,7 +102,7 @@ pub(crate) fn client_proof(
                 .map_err(|_| crate::error::Error::new(NO_KEY))?
         }
     };
-    Ok(purg_auth::proof::assemble(kind, &sig, &body))
+    Ok(purg_auth::proof::assemble(challenge, kind, &sig, &body))
 }
 
 fn client_key(pgrp: &Pgrp, user: &str) -> crate::error::Result<(Signer, Option<Cert>)> {
