@@ -4,8 +4,8 @@
 //! network is `udp!server!123`. `-d` prints the time received; `-i` only
 //! asks, and sets nothing.
 //!
-//! The clock is set by writing `/dev/time`; on a platform whose clock
-//! cannot be set that fails, and sntp says so.
+//! The clock is set by writing `#r/rtc` (seconds) and `/dev/time`
+//! (microseconds); if neither can be written, sntp says so.
 
 use std::fs::File;
 use std::io::Write;
@@ -84,7 +84,14 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if ask_only {
         return Ok(());
     }
-    std::fs::write("/dev/time", format!("{}", secs * 1_000_000))
-        .map_err(|_| fail(format!("can't set the time: {}", purgatorio::errstr())))?;
+    // The real-time clock, where there is one, and the system's time.
+    let rtc = std::fs::write("#r/rtc", format!("{secs}")).is_ok();
+    let time = std::fs::write("/dev/time", format!("{}", secs * 1_000_000)).is_ok();
+    if !rtc && !time {
+        return Err(fail(format!(
+            "can't set the time: {}",
+            purgatorio::errstr()
+        )));
+    }
     Ok(())
 }
