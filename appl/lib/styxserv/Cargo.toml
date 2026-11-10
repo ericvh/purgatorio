@@ -1,0 +1,20 @@
+[package]
+name = "appl-lib-styxserv"
+description = "styxserv: Styx framing, message text, and the pass-through and read-only file servers the Styx tools share"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "styxserv"
+path = "src/lib.rs"
+
+[dependencies]
+purgatorio.workspace = true
+purg-styx.workspace = true
+
+[lints]
+workspace = true

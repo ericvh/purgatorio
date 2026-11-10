@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-trfs"
+description = "trfs: serve a directory with spaces in names shown as no-break spaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "trfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+
+[lints]
+workspace = true
