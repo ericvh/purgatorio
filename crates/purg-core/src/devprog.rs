@@ -7,6 +7,18 @@
 //! (`docs/debug.md`): the call stack of a traced prog, the trap that broke
 //! it, and its profile. `trace on|off` and `prof on|off` on `ctl` set what
 //! the prog's future children are started with.
+//!
+//! `#pdomain` is a restricted view, for sandboxes (`docs/abi.md`).
+//! Attaching it founds a prog domain for the attaching prog's process
+//! group: every prog in that group joins it, and every prog started from
+//! a member afterwards is a member too, through any number of
+//! generations, whatever its own group. The view shows only the domain's
+//! members. Every other pid does not exist in it, so naming one fails
+//! with `file does not exist`, and `killgrp` kills only the members of
+//! the group. Domains nest: attaching `#pdomain` inside a domain founds
+//! one within it, which the outer view still shows. Under `NODEVS`
+//! nothing can attach `#p` at all, so a sandbox that binds `#pdomain` on
+//! `/prog` and then gives up devices cannot get the full view back.
 
 use alloc::format;
 use alloc::string::String;
@@ -53,9 +65,27 @@ pub struct DevProg {
     procs: Arc<Procs>,
 }
 
+/// A `#pdomain` channel's view: the domain, named by the process group
+/// that founded it.
+struct View(u32);
+
+/// The domain a channel is restricted to, `None` for the whole table.
+fn view(c: &Chan) -> Option<u32> {
+    c.aux::<View>().map(|v| v.0)
+}
+
 impl DevProg {
     pub fn new(procs: Arc<Procs>) -> DevProg {
         DevProg { procs }
+    }
+
+    /// Prog `pid`, when it exists and `c`'s view shows it.
+    fn get(&self, c: &Chan, pid: u32) -> Result<Arc<crate::prog::Proc>> {
+        let p = self.procs.get(pid).ok_or(Error::new(error::ENONEXIST))?;
+        match view(c) {
+            Some(d) if !p.in_domain(d) => Err(Error::new(error::ENONEXIST)),
+            _ => Ok(p),
+        }
     }
 
     fn qid(pid: u32, kind: u64) -> Qid {
@@ -104,10 +134,29 @@ impl Dev for DevProg {
         "prog"
     }
 
-    fn attach(&self, _spec: &str) -> Result<Walked> {
+    fn attach(&self, spec: &str) -> Result<Walked> {
+        let aux: crate::chan::Aux = match spec {
+            "" => None,
+            "domain" => {
+                let g = self.procs.current()?.group();
+                // A prog its group spawns meanwhile may copy its parent's
+                // domains before the parent joins; the progs that bind a
+                // view (sh waiting on `bind`, a sandbox building itself)
+                // start nothing while they do.
+                for pid in self.procs.pids() {
+                    if let Some(p) = self.procs.get(pid)
+                        && p.group() == g
+                    {
+                        p.join_domain(g);
+                    }
+                }
+                Some(Arc::new(View(g)))
+            }
+            _ => return Err(Error::new(error::EBADARG)),
+        };
         Ok(Walked {
             qid: DevProg::qid(0, QROOT),
-            aux: None,
+            aux,
         })
     }
 
@@ -116,7 +165,7 @@ impl Dev for DevProg {
         let qid = match kind {
             QROOT => {
                 let pid: u32 = name.parse().map_err(|_| Error::new(error::ENONEXIST))?;
-                self.procs.get(pid).ok_or(Error::new(error::ENONEXIST))?;
+                self.get(c, pid)?;
                 DevProg::qid(pid, QDIR)
             }
             QDIR => {
@@ -125,7 +174,10 @@ impl Dev for DevProg {
             }
             _ => return Err(Error::new(error::ENOTDIR)),
         };
-        Ok(Walked { qid, aux: None })
+        Ok(Walked {
+            qid,
+            aux: c.aux.clone(),
+        })
     }
 
     fn stat(&self, c: &Chan) -> Result<Dir> {
@@ -147,13 +199,13 @@ impl Dev for DevProg {
         if !ok {
             return Err(Error::new(error::EPERM));
         }
-        self.procs.get(pid).ok_or(Error::new(error::ENONEXIST))?;
+        self.get(c, pid)?;
         Ok(())
     }
 
     fn read(&self, c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
         let (pid, kind) = split(c);
-        let p = self.procs.get(pid).ok_or(Error::new(error::ENONEXIST))?;
+        let p = self.get(c, pid)?;
         if kind == QWAIT {
             let msg = p.wait()?;
             let n = buf.len().min(msg.len());
@@ -220,6 +272,7 @@ impl Dev for DevProg {
                 .procs
                 .pids()
                 .into_iter()
+                .filter(|&p| self.get(c, p).is_ok())
                 .map(|p| self.dir(p, QDIR))
                 .collect(),
             _ => FILES.iter().map(|f| self.dir(pid, f.1)).collect(),
@@ -231,13 +284,25 @@ impl Dev for DevProg {
         if kind != QCTL {
             return Err(Error::new(error::EPERM));
         }
-        let p = self.procs.get(pid).ok_or(Error::new(error::ENONEXIST))?;
+        let p = self.get(c, pid)?;
         let cmd = core::str::from_utf8(buf)
             .map_err(|_| Error::new(error::EBADARG))?
             .trim();
         match cmd {
             "kill" => self.procs.kill(pid),
-            "killgrp" => self.procs.kill_group(p.group()),
+            "killgrp" => match view(c) {
+                None => self.procs.kill_group(p.group()),
+                Some(d) => {
+                    for pid in self.procs.pids() {
+                        if let Some(q) = self.procs.get(pid)
+                            && q.group() == p.group()
+                            && q.in_domain(d)
+                        {
+                            self.procs.kill(pid);
+                        }
+                    }
+                }
+            },
             "trace on" => p.debug.set_trace(true),
             "trace off" => p.debug.set_trace(false),
             "prof on" => p.debug.set_prof(true),

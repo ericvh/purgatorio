@@ -52,6 +52,10 @@ pub struct Proc {
     modules: Mutex<Vec<Module>>,
     /// Tracing, the last call stack and the profile (`docs/debug.md`).
     pub debug: Debug,
+    /// The prog domains this prog is in, outermost first, each named by
+    /// the process group that founded it (`#pdomain`, see `devprog`).
+    /// Inherited from the parent; a prog only ever adds to its own.
+    domains: Mutex<Arc<[u32]>>,
 }
 
 impl Proc {
@@ -102,6 +106,27 @@ impl Proc {
 
     pub(crate) fn add_module(&self, m: Module) {
         self.modules.lock().push(m);
+    }
+
+    /// The prog domains this prog is in, outermost first.
+    pub fn domains(&self) -> Arc<[u32]> {
+        self.domains.lock().clone()
+    }
+
+    /// Whether this prog is in domain `id`.
+    pub fn in_domain(&self, id: u32) -> bool {
+        self.domains.lock().contains(&id)
+    }
+
+    /// Puts this prog in domain `id`, inside the ones it is in, unless
+    /// that is its innermost one already.
+    pub fn join_domain(&self, id: u32) {
+        let mut d = self.domains.lock();
+        if d.last() != Some(&id) {
+            let mut chain = d.to_vec();
+            chain.push(id);
+            *d = Arc::from(chain);
+        }
     }
 
     pub fn group(&self) -> u32 {
@@ -256,6 +281,7 @@ impl Procs {
             modpolicy: Mutex::new(modpolicy),
             modules: Mutex::new(Vec::new()),
             debug: Debug::default(),
+            domains: Mutex::new(Arc::from([])),
         });
         self.table.lock().insert(pid, p.clone());
         p
@@ -495,6 +521,7 @@ impl Prog {
             self.proc.module_policy(),
         );
         proc.debug.inherit(&self.proc.debug);
+        *proc.domains.lock() = self.proc.domains();
         let mut child = Prog {
             pid: proc.pid,
             proc,

@@ -190,6 +190,29 @@ messages. No host call is added and the ABI version is unchanged.
   it gets a second memory, exported as `purgatorio.stack`. A guest cannot
   tell, except that it can nest calls half as deep.
 
+### A restricted `/prog`: `#pdomain`
+
+`#p` with the attach spec `domain` is a view of the prog table limited to
+one prog domain. Inferno has no such view; it is how `mcpd` keeps a
+session from seeing or killing progs that are not its own. No host call
+is added and the ABI version is unchanged.
+
+- Attaching `#pdomain` founds a domain for the attaching prog's process
+  group: every prog then in that group joins it, and every prog started
+  from a member afterwards is a member too, whatever its own process
+  group. A prog never leaves a domain.
+- The view lists only members. Any other pid does not exist in it:
+  walking to it, and so `ls`, `kill` or a write to its `ctl`, fails with
+  `file does not exist`. `killgrp` written to a member's `ctl` kills the
+  members of that group, not the rest of it.
+- Domains nest. A member that attaches `#pdomain` founds a domain inside
+  its own; the outer view still shows its members.
+- `#p` with no spec is the whole table, as before. Any other spec fails
+  with `bad arg in system call`.
+- `NODEVS` forbids `#p` with any spec. A sandbox binds `#pdomain` on
+  `/prog` and then gives up devices, and from then on nothing it runs can
+  get the whole table back.
+
 `load` and `call` (v0.4) are registered by each engine rather than in the
 shared host functions, because they need the engine's store. `load`
 instantiates a reactor module (no `_start`; loadable modules live in
