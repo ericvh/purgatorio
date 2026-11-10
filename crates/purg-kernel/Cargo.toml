@@ -1,0 +1,23 @@
+[package]
+name = "purg-kernel"
+description = "The native aarch64 kernel for QEMU virt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "purg-kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+purg-aarch64.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
+
+[lints]
+workspace = true
