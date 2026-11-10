@@ -18,6 +18,9 @@ use crate::error::{Error, Result};
 struct Slot {
     msg: Option<Vec<u8>>,
     flushed: bool,
+    /// For the tag of a `Tflush` nobody waits for any more: the tag it
+    /// flushed, which is free again when the `Rflush` arrives.
+    frees: Option<u16>,
 }
 
 /// Outstanding Styx tags for one mounted connection.
@@ -63,6 +66,7 @@ impl Mux {
             Slot {
                 msg: None,
                 flushed: false,
+                frees: None,
             },
         );
         Ok(tag)
@@ -100,6 +104,12 @@ impl Mux {
             return false;
         };
         if slot.flushed {
+            // The `Rflush` of an abandoned `Tflush` ends both tags. Any
+            // other flushed tag waits for its own `Rflush`.
+            if let Some(old) = slot.frees {
+                slots.remove(&tag);
+                slots.remove(&old);
+            }
             drop(slots);
             self.wake.wakeup();
             return false;
@@ -123,6 +133,34 @@ impl Mux {
         self.wake.wakeup();
     }
 
+    /// Frees `tag`: its request is over and nobody will [`Mux::wait`] for
+    /// it. For a flushed tag once its `Rflush` has arrived.
+    pub fn forget(&self, tag: u16) {
+        self.slots.lock().remove(&tag);
+    }
+
+    /// The caller sent a `Tflush` with tag `ftag` for `oldtag` and will not
+    /// wait for the `Rflush` (its prog was killed). Both tags stay taken
+    /// until the `Rflush` arrives, then both are freed.
+    pub fn abandon(&self, ftag: u16, oldtag: u16) {
+        let mut slots = self.slots.lock();
+        match slots.get_mut(&ftag) {
+            Some(slot) if slot.msg.is_none() => {
+                slot.flushed = true;
+                slot.frees = Some(oldtag);
+            }
+            _ => {
+                slots.remove(&ftag);
+                slots.remove(&oldtag);
+            }
+        }
+    }
+
+    /// Tags in use.
+    pub fn outstanding(&self) -> usize {
+        self.slots.lock().len()
+    }
+
     /// Fails every outstanding tag, and every later [`Mux::begin`], as when
     /// the connection closes.
     pub fn fail_all(&self) {
@@ -142,5 +180,46 @@ impl Mux {
 impl Default for Mux {
     fn default() -> Mux {
         Mux::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    /// A request that was interrupted and flushed gives its tag back when
+    /// the `Rflush` arrives, whether or not anyone waited for it.
+    #[test]
+    fn a_flush_frees_its_tags() {
+        let mux = Mux::new();
+        // The caller waits for the Rflush.
+        let old = mux.begin().unwrap();
+        mux.flush(old);
+        let ftag = mux.begin().unwrap();
+        assert!(mux.deliver(ftag, vec![1]));
+        assert_eq!(mux.wait(ftag).unwrap(), [1]);
+        mux.forget(old);
+        assert_eq!(mux.outstanding(), 0);
+
+        // The caller does not wait: the tags are held until the Rflush.
+        let old = mux.begin().unwrap();
+        mux.flush(old);
+        let ftag = mux.begin().unwrap();
+        mux.abandon(ftag, old);
+        assert_eq!(mux.outstanding(), 2);
+        // A late reply to the flushed request changes nothing.
+        assert!(!mux.deliver(old, vec![2]));
+        assert_eq!(mux.outstanding(), 2);
+        assert!(!mux.deliver(ftag, vec![3]));
+        assert_eq!(mux.outstanding(), 0);
+
+        // The Rflush came before the caller gave up.
+        let old = mux.begin().unwrap();
+        mux.flush(old);
+        let ftag = mux.begin().unwrap();
+        assert!(mux.deliver(ftag, vec![4]));
+        mux.abandon(ftag, old);
+        assert_eq!(mux.outstanding(), 0);
     }
 }
