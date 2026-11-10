@@ -6,7 +6,9 @@
 //! Code is attributed from the symbol table: each function's size goes to
 //! the first crate its mangled name mentions. For generic code that is
 //! the crate that defines the function or the trait impl, not the one
-//! that instantiated it, so the split is approximate.
+//! that instantiated it, and identical functions the linker folded
+//! together go to whichever name comes first, so the split is
+//! approximate.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -156,17 +158,24 @@ pub fn kernel(path: &Path) -> Result<()> {
         return Ok(());
     };
     let strtab = secs.get(symtab.link).ok_or_else(bad)?.offset;
-    let mut by_crate: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut named = 0;
+    // The linker folds identical functions onto one address under
+    // several names: each address counts once, under its first name.
+    let mut funcs: BTreeMap<u64, (usize, &str)> = BTreeMap::new();
     for i in 0..symtab.size / symtab.entsize.max(1) {
         let e = symtab.offset + i * symtab.entsize;
         let info = *elf.get(e + 4).ok_or_else(bad)?;
+        let addr = u64_at(&elf, e + 8).ok_or_else(bad)?;
         let size = u64_at(&elf, e + 0x10).ok_or_else(bad)? as usize;
         if info & 0xf != STT_FUNC || size == 0 {
             continue;
         }
         let name = u32_at(&elf, e).and_then(|n| cstr(&elf, strtab + n as usize));
         let krate = name.and_then(symbol_crate).map_or("(other)", group);
+        funcs.entry(addr).or_insert((size, krate));
+    }
+    let mut by_crate: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut named = 0;
+    for &(size, krate) in funcs.values() {
         *by_crate.entry(krate).or_default() += size;
         named += size;
     }
@@ -323,6 +332,76 @@ pub fn guests(root: &Path, each: bool) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+fn module(path: &Path) -> Result<Guest> {
+    let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    crate::wasm::check(&bytes, true).map_err(|e| format!("{}: {e}", path.display()))?;
+    guest(&bytes).ok_or_else(|| format!("{}: not a module", path.display()))
+}
+
+/// The commands in `appl/small/multi-std`; the same list as its
+/// `build.rs`.
+const MULTI_STD: &[&str] = &[
+    "basename",
+    "cat",
+    "cleanname",
+    "cmp",
+    "cp",
+    "date",
+    "echo",
+    "ls",
+    "mkdir",
+    "mv",
+    "pwd",
+    "rm",
+    "sleep",
+    "tee",
+    "touch",
+    "wc",
+];
+
+/// Compares the experimental guests built from `appl/small` (in
+/// `no_std_dir` and `std_dir`) with the `std` commands in `root/bin`.
+pub fn small(root: &Path, no_std_dir: &Path, std_dir: &Path) -> Result<()> {
+    let bin = root.join("bin");
+    println!(
+        "  {:<10} {:>10} {:>12} {:>10} {:>12}",
+        "command", "std bytes", "memory KiB", "no_std", "memory KiB"
+    );
+    for name in ["echo", "cat", "sleep"] {
+        let std = module(&bin.join(format!("{name}.wasm")))?;
+        let small = module(&no_std_dir.join(format!("{name}.wasm")))?;
+        println!(
+            "  {:<10} {:>10} {:>12} {:>10} {:>12}",
+            name,
+            std.bytes,
+            std.pages * 64,
+            small.bytes,
+            small.pages * 64
+        );
+    }
+    let multi = module(&no_std_dir.join("multi.wasm"))?;
+    println!(
+        "  no_std multi-call (echo, cat, sleep in one module): {} bytes, memory {} KiB",
+        multi.bytes,
+        multi.pages * 64
+    );
+    let mut separate = 0;
+    for name in MULTI_STD {
+        separate += module(&bin.join(format!("{name}.wasm")))?.bytes;
+    }
+    let multi = module(&std_dir.join("multi-std.wasm"))?;
+    println!(
+        "  std multi-call ({} commands in one module): {} bytes, memory {} KiB; \
+         the same commands as separate modules: {} bytes ({:.1}x)",
+        MULTI_STD.len(),
+        multi.bytes,
+        multi.pages * 64,
+        separate,
+        separate as f64 / multi.bytes.max(1) as f64
+    );
     Ok(())
 }
 

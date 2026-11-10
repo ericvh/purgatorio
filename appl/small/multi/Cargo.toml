@@ -1,0 +1,18 @@
+[package]
+name = "small-multi"
+description = "echo, cat and sleep in one module (experiment)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "multi"
+path = "src/main.rs"
+
+[dependencies]
+small-rt.workspace = true
+
+[lints]
+workspace = true

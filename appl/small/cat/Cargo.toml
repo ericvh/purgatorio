@@ -1,0 +1,18 @@
+[package]
+name = "small-cat"
+description = "cat without std (experiment)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cat"
+path = "src/main.rs"
+
+[dependencies]
+small-rt.workspace = true
+
+[lints]
+workspace = true
