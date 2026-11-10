@@ -12,10 +12,14 @@
 //!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
 //!   `--kvm`, once under KVM), checking each run's exit status and serial
 //!   output against `crates/purg-kernel/expected.out`.
+//! - `initrd`: `build-root`, then pack `root/bin` and `root/lib` into a
+//!   deterministic ustar archive at `target/initrd/root.tar`, the kernel's
+//!   root file system.
 //! - `check-wasm <file.wasm>...`: check modules without building.
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
 //!   `wasm32-wasip1`, denying warnings.
 
+mod tar;
 mod wasm;
 
 use std::env;
@@ -300,6 +304,24 @@ fn run_qemu(
         serial: text(),
         elapsed,
     })
+}
+
+/// Directories under `root/` packed into the initrd.
+const INITRD_DIRS: &[&str] = &["bin", "lib"];
+
+/// Runs `build-root` and writes `target/initrd/root.tar` from `root/bin` and
+/// `root/lib`, returning its path. The archive is byte-identical for the
+/// same `root/`.
+fn initrd() -> Result<PathBuf> {
+    build_root()?;
+    let ws = workspace();
+    let tar = tar::archive(&ws.join("root"), INITRD_DIRS)?;
+    let dir = ws.join("target/initrd");
+    fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join("root.tar");
+    fs::write(&path, &tar).map_err(|e| format!("{}: {e}", path.display()))?;
+    eprintln!("wrote {} ({} bytes)", path.display(), tar.len());
+    Ok(path)
 }
 
 /// Builds `purg-probe` over a fresh `root/`, boots it in QEMU and compares
@@ -665,6 +687,7 @@ fn main() -> ExitCode {
             };
             run_emu(&emu_args)
         }
+        Some("initrd") => initrd().map(|_| ExitCode::SUCCESS),
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
         Some("probe") => probe().map(|()| ExitCode::SUCCESS),
         Some("kernel") => match rest.as_slice() {
@@ -674,7 +697,7 @@ fn main() -> ExitCode {
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe | kernel [--kvm] | clippy-guests | check-wasm file.wasm...",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe | kernel [--kvm] | initrd | clippy-guests | check-wasm file.wasm...",
         )),
     };
     match res {

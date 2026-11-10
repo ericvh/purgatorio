@@ -16,6 +16,7 @@ use crate::Platform;
 use crate::chan::Chan;
 use crate::dev::{Dev, Walked, read_str};
 use crate::error::{Error, Result};
+use crate::initrd::Kind;
 
 const ROOT: u64 = 0;
 
@@ -167,6 +168,55 @@ impl RamTree {
         self.tree
             .lock()
             .add(dir, name, perm & 0o777, data.into(), now);
+    }
+
+    /// Adds every directory and regular file in a ustar archive (see
+    /// [`crate::initrd`]) with its permission bits, and returns how many
+    /// entries it added. File contents borrow `archive` until written, so a
+    /// boot image's initrd is never copied.
+    ///
+    /// The archive is checked in full first: a malformed one adds nothing.
+    /// An entry that replaces an existing file takes its contents and
+    /// permissions; a file in the archive where the tree has a directory, or
+    /// the reverse, fails with `file already exists`, possibly after earlier
+    /// entries were added. Parent directories missing from the archive are
+    /// created with mode 0775, like [`RamTree::add_dir`].
+    pub fn add_tar(&self, archive: &'static [u8]) -> Result<usize> {
+        let entries = crate::initrd::entries(archive)?;
+        let now = self.now();
+        let mut t = self.tree.lock();
+        for e in &entries {
+            let mut cur = ROOT;
+            let mut parts = e.path.split('/').peekable();
+            while let Some(name) = parts.next() {
+                let last = parts.peek().is_none();
+                let kind = if last { e.kind } else { Kind::Dir };
+                let perm = match kind {
+                    Kind::Dir if last => DMDIR | e.perm,
+                    Kind::Dir => DMDIR | 0o775,
+                    Kind::File => e.perm,
+                };
+                cur = match t.child(cur, name) {
+                    None => t.add(cur, name, perm, Cow::Borrowed(e.data), now),
+                    Some(p) => {
+                        let n = t.get_mut(p)?;
+                        if n.is_dir() != (kind == Kind::Dir) {
+                            return Err(Error::new(error::EEXIST));
+                        }
+                        if last {
+                            n.perm = perm;
+                            if kind == Kind::File {
+                                n.data = Cow::Borrowed(e.data);
+                                n.vers += 1;
+                                n.mtime = now;
+                            }
+                        }
+                        p
+                    }
+                };
+            }
+        }
+        Ok(entries.len())
     }
 
     fn dir(&self, path: u64, n: &Node) -> Dir {
