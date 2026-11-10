@@ -5,8 +5,9 @@
 //! with unwinding panics, which a `no_std` crate cannot do.
 #![cfg_attr(target_arch = "wasm32", no_std)]
 
+// Only wasm has this section; Mach-O rejects a section name with no segment.
 #[used]
-#[unsafe(link_section = "purgatorio.abi")]
+#[cfg_attr(target_family = "wasm", unsafe(link_section = "purgatorio.abi"))]
 static ABI: [u8; 3] = *b"0.4";
 
 #[cfg(target_arch = "wasm32")]
