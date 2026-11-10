@@ -2,7 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # main, and next: the integration branch where pull requests land first.
+    branches: [main, next]
   pull_request:
   workflow_dispatch:
 

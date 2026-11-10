@@ -100,6 +100,14 @@ named `<name>`, added to the workspace `members`.
 
 ## Working style
 
+- `next` is the integration branch. Branch from `next` and open pull requests
+  against `next`. They are merged there once CI is green, in order, with
+  conflicts resolved at that point. The owner reviews `next` and promotes it
+  by fast-forwarding `main` to it (`git push origin next:main`), so `main`
+  and `next` share history. Never merge or push to `main` directly, and
+  never force-push `next`. Changes to shared core code (`purg-core`, the
+  ABI, kernel locks and scheduling) are flagged for the owner's review
+  before promotion.
 - Work moves through milestones without waiting for review between them.
   Keep each milestone or sub-feature a separate, reviewable commit or PR.
 - Track work in GitHub issues, not in files: a PR says `Closes #n` in its
