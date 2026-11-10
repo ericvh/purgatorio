@@ -9,5 +9,10 @@ license.workspace = true
 [dependencies]
 purg-abi.workspace = true
 
+[dev-dependencies]
+# Host tests only; the crate itself stays no_std with no dependencies
+# outside the workspace.
+proptest = { version = "1", default-features = false, features = ["std"] }
+
 [lints]
 workspace = true

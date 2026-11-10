@@ -1,0 +1,34 @@
+# cargo-fuzz targets for the Styx codec and the 9P2000.u shim. Not a
+# workspace member: it needs a nightly toolchain and libFuzzer, and normal
+# builds must not. See "Fuzzing" in docs/plan.md Section 9.3.
+[package]
+name = "purg-styx-fuzz"
+description = "Fuzz targets for purg-styx"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+purg-styx = { path = "../crates/purg-styx" }
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dotu"
+path = "fuzz_targets/dotu.rs"
+test = false
+doc = false
+bench = false
+
+# Its own workspace root, so Cargo does not look for one above.
+[workspace]
