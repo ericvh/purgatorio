@@ -736,7 +736,12 @@ pub mod wasi {
         n: i32,
         nevents: i32,
     ) -> HostResult<i32> {
-        call(ctx, |c| {
+        // A prog killed in a plain sleep stops here, with the status the
+        // backends give a prog killed while computing. It could not act
+        // on `INTR`: wasi-libc turns every failure of a sleep into
+        // `ENOTSUP`, which Rust's `thread::sleep` answers with a panic.
+        let mut killed_asleep = false;
+        let errno = call(ctx, |c| {
             const SUB: i32 = 48;
             const EVENT: i32 = 32;
             if !(0..=128).contains(&n) {
@@ -809,7 +814,15 @@ pub mod wasi {
                 }
                 hit?;
             } else if !ready_now && let Some(ns) = soonest.filter(|ns| *ns > 0) {
-                purg_platform::sync::Rendez::new().tsleep(|| false, ns);
+                // Through `park_timeout`, so that a kill ends the sleep.
+                let ms = i32::try_from(ns.saturating_add(999_999) / 1_000_000).unwrap_or(i32::MAX);
+                let slept = purg_core::block::park_timeout(
+                    &purg_platform::sync::Rendez::new(),
+                    || false,
+                    ms,
+                );
+                killed_asleep = slept.is_err();
+                slept?;
             }
             let fd_hit = items.iter().any(|s| sub_ready(&c.prog, s));
             let mut out = 0i32;
@@ -837,7 +850,11 @@ pub mod wasi {
             }
             mem.put_u32(nevents, out as u32)?;
             Ok(())
-        })
+        });
+        if killed_asleep {
+            return Err(Stop::Exit(String::from("killed")));
+        }
+        errno
     }
 
     pub fn sched_yield(_ctx: &mut Ctx, _mem: &mut Mem<'_>) -> HostResult<i32> {
