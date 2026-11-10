@@ -162,6 +162,8 @@ jobs:
 
   kernel:
     name: purg-kernel in QEMU aarch64 (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
