@@ -7,16 +7,17 @@
 //!
 //! The command's namespace is a copy of this one with `/` replaced by the
 //! counting connection, which leads to an export of the old `/`; its
-//! current directory is kept. Requests go through one at a time, so a
-//! command that blocks reading a file blocks its other requests too.
+//! current directory is kept. The devices whose files belong to the prog
+//! that opens them (`/fd`, `/prog`, the console) are bound again directly,
+//! so their traffic is not counted.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::time::Duration;
 
-use purg_styx::{Dir, Fcall, Msg, Qid};
+use purg_styx::{Fcall, Msg};
 use purgatorio::abi::{mode, mount, pctl};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
@@ -70,10 +71,6 @@ struct Stats {
     fids: BTreeMap<u32, String>,
     /// Per-file counts, by path, with the order each path was first opened.
     files: BTreeMap<String, (usize, FileStat)>,
-    /// Fids open on directories.
-    dirs: BTreeSet<u32>,
-    /// The qid paths given to device roots, by name.
-    roots: BTreeMap<String, u64>,
     read: u64,
     write: u64,
     protocol: u64,
@@ -94,81 +91,6 @@ fn join(base: &str, names: &[&str]) -> String {
 }
 
 impl Stats {
-    /// Every device's root has qid path 0, so through the export the
-    /// directories that hold them (`/dev`, `/prog`, ...) would look like one
-    /// file to the kernel, and a bind on one would show on all. Such a
-    /// qid, other than that of `/`, gets a path of its own, by name.
-    fn qid(&mut self, path: &str, q: Qid) -> Qid {
-        if q.path != 0 || !q.is_dir() || path == "/" {
-            return q;
-        }
-        let n = self.roots.len() as u64;
-        let p = *self
-            .roots
-            .entry(String::from(path))
-            .or_insert(0x8000_0000_0000_0000 | (n + 1));
-        Qid { path: p, ..q }
-    }
-
-    fn dir(&mut self, path: &str, mut d: Dir) -> Dir {
-        d.qid = self.qid(path, d.qid);
-        d
-    }
-
-    /// The reply with device roots' qids made distinct, when it needs it.
-    fn fix(&mut self, t: &Msg<'_>, r: &Msg<'_>) -> Option<Vec<u8>> {
-        let path = |s: &Stats, fid: &u32| s.fids.get(fid).cloned().unwrap_or_default();
-        let fcall = match (&t.fcall, &r.fcall) {
-            (Fcall::Twalk { fid, wnames, .. }, Fcall::Rwalk { wqids }) => {
-                let base = path(self, fid);
-                let wqids = wqids
-                    .iter()
-                    .enumerate()
-                    .map(|(i, q)| self.qid(&join(&base, &wnames[..=i]), *q))
-                    .collect();
-                Fcall::Rwalk { wqids }
-            }
-            (Fcall::Topen { fid, .. }, Fcall::Ropen { qid, iounit }) => {
-                if qid.is_dir() {
-                    self.dirs.insert(*fid);
-                }
-                let p = path(self, fid);
-                Fcall::Ropen {
-                    qid: self.qid(&p, *qid),
-                    iounit: *iounit,
-                }
-            }
-            (Fcall::Tstat { fid }, Fcall::Rstat { stat }) => {
-                let (d, _) = Dir::unpack(stat).ok()?;
-                let p = path(self, fid);
-                let packed = self.dir(&p, d).pack().ok()?;
-                return Msg {
-                    tag: r.tag,
-                    fcall: Fcall::Rstat { stat: &packed },
-                }
-                .encode()
-                .ok();
-            }
-            (Fcall::Tread { fid, .. }, Fcall::Rread { data }) if self.dirs.contains(fid) => {
-                let base = path(self, fid);
-                let mut out = Vec::new();
-                for d in purg_styx::dirs(data) {
-                    let d = d.ok()?;
-                    let p = join(&base, &[&d.name]);
-                    self.dir(&p, d).pack_into(&mut out).ok()?;
-                }
-                return Msg {
-                    tag: r.tag,
-                    fcall: Fcall::Rread { data: &out },
-                }
-                .encode()
-                .ok();
-            }
-            _ => return None,
-        };
-        Msg { tag: r.tag, fcall }.encode().ok()
-    }
-
     fn file(&mut self, fid: u32) -> Option<&mut FileStat> {
         let path = self.fids.get(&fid)?.clone();
         let n = self.files.len();
@@ -231,7 +153,6 @@ impl Stats {
             }
             (Fcall::Tclunk { fid } | Fcall::Tremove { fid }, _) => {
                 self.fids.remove(fid);
-                self.dirs.remove(fid);
             }
             _ => {}
         }
@@ -384,9 +305,9 @@ fn run(dot: &str, cmd: &[String]) -> Result<(), Error> {
         .map_err(|e| Error(format!("iostats: can't mount /: {e}")))?;
     // SAFETY: the mount holds its own reference to the connection.
     drop(unsafe { File::from_raw_fd(CONNFD) });
-    // Devices whose reads block (a wait file, the console, a pipe) are
-    // bound again directly: the export serves one request at a time, and
-    // a command waiting for its child there would stop the child too.
+    // Devices whose files are the caller's own (its fds, its console, its
+    // children's wait files) are bound again directly: through the export
+    // they would be the exporter's.
     for (dev, at, flags) in [
         ("#c", "/dev", mount::MBEFORE),
         ("#p", "/prog", mount::MREPL),
@@ -522,10 +443,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             client.write_all(&r)?;
             continue;
         };
-        match stats.fix(&tm, &rm) {
-            Some(fixed) => client.write_all(&fixed)?,
-            None => client.write_all(&r)?,
-        }
+        client.write_all(&r)?;
         if let Some(l) = log.as_mut() {
             let _ = writeln!(l, "->{}", text::msg(&tm));
             let _ = writeln!(l, "<-{}", text::msg(&rm));
