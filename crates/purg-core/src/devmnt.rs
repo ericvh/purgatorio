@@ -468,16 +468,13 @@ impl Dev for DevMnt {
                 return Err(e);
             }
         };
-        let qids = match f.session.decode(&buf) {
-            Ok(Fcall::Rwalk { wqids }) => wqids,
-            Ok(_) => return Err(Error::new(error::EIO)),
-            Err(e) => {
-                let _ = f.session.clunk(newfid);
-                return Err(e);
-            }
+        // A walk that fails, or stops short, does not create `newfid`:
+        // there is nothing to clunk.
+        let qids = match f.session.decode(&buf)? {
+            Fcall::Rwalk { wqids } => wqids,
+            _ => return Err(Error::new(error::EIO)),
         };
         if qids.len() != 1 {
-            let _ = f.session.clunk(newfid);
             return Err(Error::new(error::ENONEXIST));
         }
         Ok(Walked {
@@ -526,10 +523,7 @@ impl Dev for DevMnt {
             newfid,
             wnames: Vec::new(),
         })?;
-        if let Err(e) = f.session.decode(&cloned) {
-            let _ = f.session.clunk(newfid);
-            return Err(e);
-        }
+        f.session.decode(&cloned)?;
         let mode = if perm & DMDIR != 0 {
             purg_abi::mode::OREAD
         } else {

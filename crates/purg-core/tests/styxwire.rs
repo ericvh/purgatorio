@@ -8,7 +8,7 @@ use std::thread;
 
 use common::setup;
 use purg_abi::mount::{MNOAUTH, MREPL};
-use purg_abi::error;
+use purg_abi::{error, mode};
 use purg_core::Prog;
 use purg_core::rw::{read_msg, write_full};
 use purg_styx::{DMDIR, Dir, MAX_MSIZE, Msg, NOTAG, QTDIR, Qid, StyxFs, dispatch};
@@ -140,4 +140,26 @@ fn tversion_is_sent_with_notag() {
     assert!(log[0].text.starts_with("Tversion"), "{}", log[0].text);
     assert_eq!(log[0].tag, NOTAG);
     assert!(log[1..].iter().all(|s| s.tag != NOTAG && !s.failed));
+}
+
+/// A walk that fails does not create its new fid, so there is nothing to
+/// clunk: the only requests the server refuses are the walks.
+#[test]
+fn a_failed_walk_sends_no_clunk() {
+    let (mut p, _) = setup();
+    let log = mount_logged(&mut p);
+    let err = p.open("#R/mnt/missing", mode::OREAD).unwrap_err();
+    assert_eq!(err.as_str(), error::ENONEXIST);
+    // A round trip, so everything the failures sent has been logged.
+    p.stat("#R/mnt/f").unwrap();
+    let log = log.lock().unwrap();
+    let refused: Vec<&str> = log
+        .iter()
+        .filter(|s| s.failed)
+        .map(|s| s.text.as_str())
+        .collect();
+    assert!(!refused.is_empty());
+    for text in refused {
+        assert!(text.starts_with("Twalk"), "refused: {text}");
+    }
 }
