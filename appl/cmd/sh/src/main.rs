@@ -9,17 +9,30 @@
 //! `/env` unless declared with `:=`. Builtins: `cd`, `exit`, `run`, `wait`,
 //! `load`. `load std` adds `if`, `while`, `for`, `and`, `or`, `not`, `~`,
 //! `fn`, `raise` and `${hd}`, `${tl}`, `${index}`, `${quote}` and
-//! `${unquote}`. `load expr` adds `${expr}`. `load string` adds the
-//! sh-string(1) builtins and `load regex` adds `match` and `${re}`.
+//! `${unquote}`. `load expr` and `load mpexpr` add `${expr}` and `ntest`.
+//! `load string` adds the sh-string(1) builtins and `load regex` adds
+//! `match` and `${re}`. `load arg`, `csv`, `echo`, `file2chan`, `mload`,
+//! `sexprs` and `test` add the builtins of their sh-*(1) pages. All of
+//! these are compiled in; any other module name loads a reactor from
+//! `/bin/lib`.
 //!
 //! With `-l`, `/lib/sh/profile` runs first. Without `-c` or a file,
 //! commands are read from standard input, with a `; ` prompt if it is the
-//! console or `-i` is given.
+//! console or `-i` is given. Two options are for sh's own sub-shells: `-P
+//! prelude` runs `prelude` (the parent's `load`s and `fn`s) quietly first,
+//! and `-F file readcmd writecmd [closecmd]` serves a `file2chan` file.
 
+mod csv;
 mod exec;
+mod f2c;
+mod input;
 mod lex;
+mod modules;
+mod num;
 mod parse;
 mod regex;
+mod sexp;
+mod shmods;
 mod string;
 
 use std::io::Read;
@@ -89,21 +102,46 @@ fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, "sh [-il] [-c command | file] [arg ...]");
     let (mut login, mut force_prompt, mut command) = (false, false, None);
+    let (mut prelude, mut serve) = (None, false);
     while let Some(c) = arg.opt() {
         match c {
             'l' => login = true,
             'i' => force_prompt = true,
             'c' => command = Some(arg.earg()?),
+            'P' => prelude = Some(arg.earg()?),
+            'F' => serve = true,
             _ => return Err(arg.usage()),
         }
     }
     let mut rest = arg.argv();
+    if serve {
+        let mut sh = Shell::new("sh", Vec::new());
+        if let Some(src) = prelude {
+            sh.quiet = true;
+            let _ = sh.run_src(&src);
+            sh.quiet = false;
+        }
+        // As in Inferno, a file that cannot be made is reported by the
+        // status of file2chan only.
+        if let Err(e) = sh.serve_file2chan(&rest) {
+            purgatorio::exits(&e.0);
+        }
+        return Ok(());
+    }
     let file = if command.is_none() && !rest.is_empty() {
         Some(rest.remove(0))
     } else {
         None
     };
     let mut sh = Shell::new(file.as_deref().unwrap_or("sh"), rest);
+    if let Some(src) = prelude {
+        sh.quiet = true;
+        let r = sh.run_src(&src);
+        sh.quiet = false;
+        if let Err(stop) = r {
+            finish(&sh, Some(stop));
+        }
+    }
     if login && purgatorio::stat(PROFILE).is_ok() {
         let src = std::fs::read_to_string(PROFILE)?;
         if let Err(stop) = sh.run_src(&src) {

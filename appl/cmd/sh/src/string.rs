@@ -6,30 +6,25 @@
 use purgatorio::Error;
 
 /// The `${}` builtins this module adds.
-pub fn is_subst(name: &str) -> bool {
-    matches!(
-        name,
-        "splitl"
-            | "splitr"
-            | "drop"
-            | "take"
-            | "splitstrl"
-            | "splitstrr"
-            | "tolower"
-            | "toupper"
-            | "len"
-            | "alen"
-            | "slice"
-            | "fields"
-            | "padl"
-            | "padr"
-    )
-}
+pub const SUBSTS: &[&str] = &[
+    "splitl",
+    "splitr",
+    "drop",
+    "take",
+    "splitstrl",
+    "splitstrr",
+    "tolower",
+    "toupper",
+    "len",
+    "alen",
+    "slice",
+    "fields",
+    "padl",
+    "padr",
+];
 
 /// The commands this module adds.
-pub fn is_cmd(name: &str) -> bool {
-    matches!(name, "prefix" | "in")
-}
+pub const CMDS: &[&str] = &["prefix", "in"];
 
 fn usage(form: &str) -> Error {
     Error(format!("usage: {form}"))

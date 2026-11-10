@@ -1,0 +1,37 @@
+1 1 file
+rect 0 10 50 100
+arguments are a b c
+unknown option z
+1 0 file
+rect
+arguments are -bc
+x
+rest - -x
+x
+x
+rest y -x
+option -f requires 1 arguments
+status usage
+unknown option -b
+status usage
+usage: arg [opts {command}]... - args
+a
+after keep
+no newline
+-n
+a b
+echo: write error: bad fd number
+status write error
+a,"b,c","say ""hi""",
+
+one
+3 items: a b c
+2 items: x,y ''
+1 items: ''
+2 items: 'multi
+line' z
+status 
+Test is running standalone
+20cmp failed
+06ok fine
+usage: report INF|WRN|ERR|FTL verbosity message[...]
