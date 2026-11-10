@@ -1,12 +1,15 @@
-//! debug trap|spin|nap: a guest for the `stack` and `prof` tests
+//! debug trap|spin|hot|nap: a guest for the `stack` and `prof` tests
 //! (`docs/debug.md`). Each mode goes through `outer`, `middle` and `inner`,
 //! which are never inlined, so that a stack taken inside names them.
 //!
 //! - `trap` executes an `unreachable` instruction in `inner`;
-//! - `spin` computes in `burn`, called from `inner`, for at least 4
-//!   rounds and 200 ms: enough for a profiler that samples by time
-//!   (wasmtime, every 10 ms) or by instructions (wasmi, every 2^20 units
-//!   of fuel) to see `burn` many times;
+//! - `spin` computes in `burn`, called from `inner`, for [`ROUNDS`]
+//!   rounds;
+//! - `hot` computes in `burn` until its own `/prog/<pid>/prof` holds
+//!   [`SAMPLES`] samples, so that a profile of it does not depend on how
+//!   fast the machine is or how often the VM samples (wasmtime by time,
+//!   wasmi by instructions). It needs profiling on, and fails with
+//!   `fail:no samples` if the samples have not come after [`LIMIT`];
 //! - `nap` sleeps in `inner` until it is killed.
 
 use std::hint::black_box;
@@ -14,10 +17,19 @@ use std::time::{Duration, Instant};
 
 use purgatorio::{Context, Error};
 
+/// The rounds of `spin`.
+const ROUNDS: u32 = 4;
+/// The samples `hot` waits for: enough that `burn`, where nearly all of
+/// its time goes, is the function with the most.
+const SAMPLES: u64 = 8;
+/// How long `hot` waits for them.
+const LIMIT: Duration = Duration::from_secs(120);
+
 #[derive(Clone, Copy)]
 enum Mode {
     Trap,
     Spin,
+    Hot,
     Nap,
 }
 
@@ -42,12 +54,26 @@ fn inner(mode: Mode) -> u64 {
             std::process::abort();
         }
         Mode::Spin => {
+            let mut x = black_box(0x9e37_79b9_7f4a_7c15u64);
+            for _ in 0..ROUNDS {
+                x = burn(black_box(100_000), x);
+            }
+            x
+        }
+        Mode::Hot => {
             let start = Instant::now();
             let mut x = black_box(0x9e37_79b9_7f4a_7c15u64);
-            let mut rounds = 0;
-            while rounds < 4 || start.elapsed() < Duration::from_millis(200) {
-                x = burn(black_box(100_000), x);
-                rounds += 1;
+            // The count is read every 16 rounds: a tick that falls in the
+            // read is taken at the next check point, which is in `inner`,
+            // so reading often would put samples there.
+            while samples() < SAMPLES {
+                if start.elapsed() > LIMIT {
+                    eprintln!("debug: fewer than {SAMPLES} samples after {LIMIT:?}");
+                    purgatorio::exits("fail:no samples");
+                }
+                for _ in 0..16 {
+                    x = burn(black_box(100_000), x);
+                }
             }
             x
         }
@@ -55,6 +81,16 @@ fn inner(mode: Mode) -> u64 {
             std::thread::sleep(Duration::from_secs(3600));
         },
     }
+}
+
+/// The samples in this prog's own profile so far.
+fn samples() -> u64 {
+    let path = format!("/prog/{}/prof", purgatorio::pid());
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split(' ').next()?.parse::<u64>().ok())
+        .sum()
 }
 
 #[inline(never)]
@@ -72,8 +108,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mode = match args.get(1).map(String::as_str) {
         Some("trap") => Mode::Trap,
         Some("spin") => Mode::Spin,
+        Some("hot") => Mode::Hot,
         Some("nap") => Mode::Nap,
-        _ => return Err(Error::from("usage: debug trap|spin|nap")),
+        _ => return Err(Error::from("usage: debug trap|spin|hot|nap")),
     };
     black_box(outer(mode));
     Ok(())
