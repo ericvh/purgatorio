@@ -7,6 +7,9 @@
 //! for `aarch64-unknown-none`.
 #![cfg_attr(not(test), no_std)]
 
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+extern crate alloc;
+
 pub mod dtb;
 
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
@@ -17,6 +20,8 @@ pub mod gic;
 pub mod mmu;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod pl011;
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub mod sched;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod semihost;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]

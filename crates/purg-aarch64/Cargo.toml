@@ -8,6 +8,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+purg-platform.workspace = true
+spin.workspace = true
 
 [lints]
 workspace = true
