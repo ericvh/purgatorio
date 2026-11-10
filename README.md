@@ -50,6 +50,7 @@ a `; ` prompt.
 | W2 commands: `cmp diff du fc grep kill md5sum memfs mount ns ps ramfile sed tail tee xd` | done |
 | W3 commands: `cs dial export import listen netstat os styxlisten` | done |
 | W4 archive commands: `gettar gunzip gzip lstar puttar tar` (ustar and gzip code in `appl/archive`) | done |
+| Admin commands: `cron logfile mntgen ndb/query`; `mount {command}` | done |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
