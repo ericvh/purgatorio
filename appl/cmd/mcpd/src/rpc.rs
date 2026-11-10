@@ -1,6 +1,7 @@
-//! The JSON-RPC 2.0 and MCP layer: one request line in, at most one
-//! response line out. Nothing here touches files or progs, so it is tested
-//! on the build host.
+//! The JSON-RPC 2.0 and MCP layer. A line from the client becomes a reply
+//! at once or a [`Call`] for the session, whose reply is made when the
+//! session answers; calls can therefore finish out of order. Nothing here
+//! touches files or progs, so it is tested on the build host.
 //!
 //! Specification followed: Model Context Protocol revision 2026-07-28, the
 //! stdio transport. That revision has no handshake: every request carries
@@ -27,23 +28,59 @@ const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
 const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
 
-/// How long a client may cache `server/discover` and `tools/list`: they
-/// change only with the binary.
+/// How long a client may cache `server/discover`, `tools/list` and
+/// `resources/templates/list`: they change only with the binary.
 const TTL_MS: i64 = 3_600_000;
 
 pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
+pub const INTERNAL_ERROR: i64 = -32603;
 pub const UNSUPPORTED_VERSION: i64 = -32022;
+/// "Resource not found" before 2026-07-28, which uses -32602.
+pub const RESOURCE_NOT_FOUND: i64 = -32002;
 
-/// Runs tools. The front end of mcpd passes calls to the session prog; the
-/// tests use a fake.
+/// Runs calls at once, for the tests of this layer. The front end of mcpd
+/// uses [`Server::begin`] and [`Call::finish`] instead.
+#[cfg(test)]
 pub trait Host {
     /// Calls tool `name` with arguments already checked against its schema.
     /// `Ok` is the structured result; `Err` is the text of a failure the
     /// model can act on.
     fn call(&mut self, name: &str, args: &Value) -> Result<Value, String>;
+}
+
+/// What a line from the client comes to.
+pub enum Step {
+    /// Nothing is due: a notification, a response, or a blank line.
+    Quiet,
+    /// The reply, ready to send.
+    Reply(String),
+    /// Work for the session. Its reply is [`Call::finish`] of the outcome.
+    Call(Call),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum What {
+    Tool,
+    ListResources,
+    ReadResource,
+}
+
+/// A request the session answers: a tool call or a resource request.
+pub struct Call {
+    id: Value,
+    modern: bool,
+    pub what: What,
+    /// The tool, or `resources/list` or `resources/read`.
+    pub name: String,
+    /// The tool's arguments, or `{"path": ...}` for a resource read.
+    pub args: Value,
+    uri: String,
+    /// Why the arguments were refused, for a tool call that failed its
+    /// schema. Such a call is finished without running.
+    pub rejected: Option<String>,
 }
 
 #[derive(Default)]
@@ -114,40 +151,230 @@ fn server_info() -> Value {
     ])
 }
 
+/// Caching hints of a 2026-07-28 result.
+#[derive(Clone, Copy)]
+enum Cache {
+    /// None given: a tool result.
+    None,
+    /// Changes only with the binary.
+    Public,
+    /// Depends on the session, and is stale at once.
+    Private,
+}
+
 /// Adds the members every 2026-07-28 result carries.
-fn complete(result: Value, modern: bool, cacheable: bool) -> Value {
+fn complete(result: Value, modern: bool, cache: Cache) -> Value {
     let Value::Object(mut m) = result else {
         return result;
     };
     if modern {
         m.insert(0, (String::from("resultType"), Value::from("complete")));
-        if cacheable {
-            m.push((String::from("ttlMs"), Value::Int(TTL_MS)));
-            m.push((String::from("cacheScope"), Value::from("public")));
-        }
+        let (ttl, scope) = match cache {
+            Cache::None => return Value::Object(m),
+            Cache::Public => (TTL_MS, "public"),
+            Cache::Private => (0, "private"),
+        };
+        m.push((String::from("ttlMs"), Value::Int(ttl)));
+        m.push((String::from("cacheScope"), Value::from(scope)));
     }
     Value::Object(m)
 }
 
+/// The URI of a file: `purg://` and its absolute name, with every byte
+/// outside RFC 3986's unreserved and sub-delimiter sets (and `/`, `:`
+/// and `@`) percent-encoded.
+pub fn uri_of(path: &str) -> String {
+    let mut out = String::from("purg://");
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~/!$&'()*+,;=:@".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// The absolute file name a `purg:///name` URI stands for.
+pub fn path_of(uri: &str) -> Result<String, String> {
+    let rest = uri
+        .strip_prefix("purg:///")
+        .ok_or_else(|| format!("not a purg:/// URI: {uri}"))?;
+    let raw = rest.as_bytes();
+    let mut bytes = vec![b'/'];
+    let mut i = 0;
+    while i < raw.len() {
+        match raw[i] {
+            b'%' => {
+                let byte = raw
+                    .get(i + 1..i + 3)
+                    .and_then(|h| std::str::from_utf8(h).ok())
+                    .and_then(|h| u8::from_str_radix(h, 16).ok())
+                    .ok_or_else(|| format!("bad percent escape in {uri}"))?;
+                bytes.push(byte);
+                i += 3;
+            }
+            b'?' | b'#' => return Err(format!("a query or fragment in {uri}")),
+            b => {
+                bytes.push(b);
+                i += 1;
+            }
+        }
+    }
+    match String::from_utf8(bytes) {
+        Ok(p) if !p.contains('\0') => Ok(p),
+        _ => Err(format!("not a file name: {uri}")),
+    }
+}
+
+/// The one resource template: any file, by name.
+fn templates() -> Value {
+    Value::Array(vec![obj([
+        ("uriTemplate", "purg:///{+path}".into()),
+        ("name", "file".into()),
+        ("title", "A file in the session".into()),
+        (
+            "description",
+            "Any file in the session's namespace, by its absolute name without the leading \
+             slash: purg:///tmp/notes.txt, purg:///prog/1/status. A directory reads as its \
+             names, one per line, with / after each directory."
+                .into(),
+        ),
+    ])])
+}
+
+fn capabilities(handshake: bool) -> Value {
+    if handshake {
+        obj([
+            ("tools", obj([("listChanged", false.into())])),
+            (
+                "resources",
+                obj([("subscribe", false.into()), ("listChanged", false.into())]),
+            ),
+        ])
+    } else {
+        obj([
+            ("tools", Value::Object(Vec::new())),
+            ("resources", Value::Object(Vec::new())),
+        ])
+    }
+}
+
+/// A `tools/call` result: the structured value and the same JSON as text,
+/// or a failure as text with `isError`.
+fn tool_result(outcome: Result<Value, String>) -> Value {
+    let (text, structured) = match outcome {
+        Ok(v) => (v.encode(), Some(v)),
+        Err(text) => (text, None),
+    };
+    let mut m = vec![(
+        String::from("content"),
+        Value::Array(vec![obj([("type", "text".into()), ("text", text.into())])]),
+    )];
+    let failed = structured.is_none();
+    if let Some(v) = structured {
+        m.push((String::from("structuredContent"), v));
+    }
+    m.push((String::from("isError"), failed.into()));
+    Value::Object(m)
+}
+
+impl Call {
+    /// `tool` or `resource`, for the log.
+    pub fn kind(&self) -> &'static str {
+        match self.what {
+            What::Tool => "tool",
+            What::ListResources | What::ReadResource => "resource",
+        }
+    }
+
+    /// The response to send, given what the session made of the call.
+    pub fn finish(&self, outcome: Result<Value, String>) -> String {
+        let (id, modern) = (self.id.clone(), self.modern);
+        let body = match self.what {
+            What::Tool => Ok(complete(tool_result(outcome), modern, Cache::None)),
+            What::ListResources => outcome
+                .map(|v| complete(v, modern, Cache::Private))
+                .map_err(|e| RpcError::new(INTERNAL_ERROR, e)),
+            What::ReadResource => match outcome {
+                Ok(v) => {
+                    let mut item = vec![(String::from("uri"), Value::from(self.uri.as_str()))];
+                    if let Value::Object(m) = v {
+                        item.extend(m);
+                    }
+                    Ok(complete(
+                        obj([("contents", Value::Array(vec![Value::Object(item)]))]),
+                        modern,
+                        Cache::Private,
+                    ))
+                }
+                Err(e) if e.ends_with("file does not exist") => Err(RpcError {
+                    code: if modern {
+                        INVALID_PARAMS
+                    } else {
+                        RESOURCE_NOT_FOUND
+                    },
+                    message: String::from("Resource not found"),
+                    data: Some(obj([
+                        ("uri", self.uri.as_str().into()),
+                        ("reason", e.into()),
+                    ])),
+                }),
+                Err(e) => Err(RpcError::new(INTERNAL_ERROR, e)),
+            },
+        };
+        response(id, body)
+    }
+}
+
+/// What a request comes to: a result now, or work for the session.
+enum Answer {
+    Now(Value),
+    Later {
+        what: What,
+        name: String,
+        args: Value,
+        uri: String,
+        rejected: Option<String>,
+        modern: bool,
+    },
+}
+
 impl Server {
-    /// Handles one line from the client. `None` means no reply is due: the
-    /// line was a notification, a response, or blank.
+    /// Handles one line from the client and runs any call at once. `None`
+    /// means no reply is due.
+    #[cfg(test)]
     pub fn handle(&mut self, line: &str, host: &mut dyn Host) -> Option<String> {
+        match self.begin(line) {
+            Step::Quiet => None,
+            Step::Reply(r) => Some(r),
+            Step::Call(c) => {
+                let outcome = match &c.rejected {
+                    Some(why) => Err(why.clone()),
+                    None => host.call(&c.name, &c.args),
+                };
+                Some(c.finish(outcome))
+            }
+        }
+    }
+
+    /// Reads one line from the client.
+    pub fn begin(&mut self, line: &str) -> Step {
         let line = line.trim();
         if line.is_empty() {
-            return None;
+            return Step::Quiet;
         }
         let msg = match json::parse(line) {
             Ok(v) => v,
             Err(e) => {
-                return Some(response(
+                return Step::Reply(response(
                     Value::Null,
                     Err(RpcError::new(PARSE_ERROR, format!("Parse error: {e}"))),
                 ));
             }
         };
         if matches!(msg, Value::Array(_)) {
-            return Some(response(
+            return Step::Reply(response(
                 Value::Null,
                 Err(RpcError::new(
                     INVALID_REQUEST,
@@ -156,7 +383,7 @@ impl Server {
             ));
         }
         if !msg.is_object() {
-            return Some(response(
+            return Step::Reply(response(
                 Value::Null,
                 Err(RpcError::new(
                     INVALID_REQUEST,
@@ -169,21 +396,22 @@ impl Server {
             // A response to a request. This server sends none, so there is
             // nothing to match it with; a message with neither is broken.
             if msg.get("result").is_some() || msg.get("error").is_some() {
-                return None;
+                return Step::Quiet;
             }
-            return Some(response(
+            return Step::Reply(response(
                 id.cloned().unwrap_or(Value::Null),
                 Err(RpcError::new(INVALID_REQUEST, "Invalid Request: no method")),
             ));
         };
         let Some(id) = id else {
             // A notification is never answered, whatever it says.
-            return None;
+            return Step::Quiet;
         };
         let id_ok = matches!(id, Value::Str(_) | Value::Int(_) | Value::Float(_));
         let reply_id = if id_ok { id.clone() } else { Value::Null };
-        let fail =
-            |code, text: &str| Some(response(reply_id.clone(), Err(RpcError::new(code, text))));
+        let fail = |code, text: &str| {
+            Step::Reply(response(reply_id.clone(), Err(RpcError::new(code, text))))
+        };
         if !id_ok {
             return fail(
                 INVALID_REQUEST,
@@ -202,10 +430,26 @@ impl Server {
             Some(p) if p.is_object() => p,
             Some(_) => return fail(INVALID_PARAMS, "Invalid params: params must be an object"),
         };
-        Some(response(
-            reply_id.clone(),
-            self.request(method, params, host),
-        ))
+        match self.request(method, params) {
+            Ok(Answer::Now(v)) => Step::Reply(response(reply_id, Ok(v))),
+            Err(e) => Step::Reply(response(reply_id, Err(e))),
+            Ok(Answer::Later {
+                what,
+                name,
+                args,
+                uri,
+                rejected,
+                modern,
+            }) => Step::Call(Call {
+                id: reply_id,
+                modern,
+                what,
+                name,
+                args,
+                uri,
+                rejected,
+            }),
+        }
     }
 
     /// Decides which revision governs a request. `Ok(true)` is 2026-07-28;
@@ -255,12 +499,18 @@ impl Server {
         }
     }
 
-    fn request(
-        &mut self,
-        method: &str,
-        params: &Value,
-        host: &mut dyn Host,
-    ) -> Result<Value, RpcError> {
+    fn request(&mut self, method: &str, params: &Value) -> Result<Answer, RpcError> {
+        // Every list here fits one page, so any cursor is a bad one.
+        let no_cursor = || {
+            if params.get("cursor").is_some_and(|c| *c != Value::Null) {
+                Err(RpcError::new(
+                    INVALID_PARAMS,
+                    "Invalid params: unknown cursor",
+                ))
+            } else {
+                Ok(())
+            }
+        };
         match method {
             "initialize" => {
                 let requested = params
@@ -280,22 +530,23 @@ impl Server {
                     LEGACY[0]
                 };
                 self.legacy = Some(String::from(version));
-                Ok(obj([
+                Ok(Answer::Now(obj([
                     ("protocolVersion", version.into()),
-                    (
-                        "capabilities",
-                        obj([("tools", obj([("listChanged", false.into())]))]),
-                    ),
+                    ("capabilities", capabilities(true)),
                     ("serverInfo", server_info()),
                     ("instructions", crate::primer::PRIMER.into()),
-                ]))
+                ])))
             }
             // Removed in 2026-07-28, but harmless to answer for anyone.
             "ping" => {
                 let modern = params
                     .get("_meta")
                     .is_some_and(|m| m.get(META_VERSION).is_some());
-                Ok(complete(Value::Object(Vec::new()), modern, false))
+                Ok(Answer::Now(complete(
+                    Value::Object(Vec::new()),
+                    modern,
+                    Cache::None,
+                )))
             }
             "server/discover" => {
                 if !self.era(params)? {
@@ -304,31 +555,25 @@ impl Server {
                         "Method not found: server/discover (not in the negotiated revision)",
                     ));
                 }
-                Ok(complete(
+                Ok(Answer::Now(complete(
                     obj([
                         ("supportedVersions", supported()),
-                        ("capabilities", obj([("tools", Value::Object(Vec::new()))])),
+                        ("capabilities", capabilities(false)),
                         ("instructions", crate::primer::PRIMER.into()),
                         ("_meta", obj([(META_SERVER_INFO, server_info())])),
                     ]),
                     true,
-                    true,
-                ))
+                    Cache::Public,
+                )))
             }
             "tools/list" => {
                 let modern = self.era(params)?;
-                // Everything fits one page, so any cursor is a bad one.
-                if params.get("cursor").is_some_and(|c| *c != Value::Null) {
-                    return Err(RpcError::new(
-                        INVALID_PARAMS,
-                        "Invalid params: unknown cursor",
-                    ));
-                }
-                Ok(complete(
+                no_cursor()?;
+                Ok(Answer::Now(complete(
                     obj([("tools", Value::Array(tooldefs::tools()))]),
                     modern,
-                    true,
-                ))
+                    Cache::Public,
+                )))
             }
             "tools/call" => {
                 let modern = self.era(params)?;
@@ -344,47 +589,63 @@ impl Server {
                         format!("Unknown tool: {name}"),
                     ));
                 };
-                let empty = Value::Object(Vec::new());
                 let args = match params.get("arguments") {
-                    None | Some(Value::Null) => &empty,
-                    Some(a) => a,
+                    None | Some(Value::Null) => Value::Object(Vec::new()),
+                    Some(a) => a.clone(),
                 };
                 // Bad arguments are reported as a tool failure, not a
                 // protocol error, so that the model sees them and can
                 // correct the call.
-                let outcome = tool
-                    .get("inputSchema")
-                    .map_or(Ok(()), |schema| {
-                        tooldefs::validate(args, schema, "arguments")
-                    })
-                    .and_then(|()| host.call(name, args));
-                Ok(complete(
-                    match outcome {
-                        Ok(structured) => obj([
-                            (
-                                "content",
-                                Value::Array(vec![obj([
-                                    ("type", "text".into()),
-                                    ("text", structured.encode().into()),
-                                ])]),
-                            ),
-                            ("structuredContent", structured),
-                            ("isError", false.into()),
-                        ]),
-                        Err(text) => obj([
-                            (
-                                "content",
-                                Value::Array(vec![obj([
-                                    ("type", "text".into()),
-                                    ("text", text.into()),
-                                ])]),
-                            ),
-                            ("isError", true.into()),
-                        ]),
-                    },
+                let rejected = tool.get("inputSchema").and_then(|schema| {
+                    tooldefs::validate(&args, schema, "arguments")
+                        .and_then(|()| tooldefs::check(name, &args))
+                        .err()
+                });
+                Ok(Answer::Later {
+                    what: What::Tool,
+                    name: String::from(name),
+                    args,
+                    uri: String::new(),
+                    rejected,
                     modern,
-                    false,
-                ))
+                })
+            }
+            "resources/list" => {
+                let modern = self.era(params)?;
+                no_cursor()?;
+                Ok(Answer::Later {
+                    what: What::ListResources,
+                    name: String::from(method),
+                    args: Value::Object(Vec::new()),
+                    uri: String::new(),
+                    rejected: None,
+                    modern,
+                })
+            }
+            "resources/templates/list" => {
+                let modern = self.era(params)?;
+                no_cursor()?;
+                Ok(Answer::Now(complete(
+                    obj([("resourceTemplates", templates())]),
+                    modern,
+                    Cache::Public,
+                )))
+            }
+            "resources/read" => {
+                let modern = self.era(params)?;
+                let uri = params.get("uri").and_then(Value::as_str).ok_or_else(|| {
+                    RpcError::new(INVALID_PARAMS, "Invalid params: uri must be a string")
+                })?;
+                let path = path_of(uri)
+                    .map_err(|e| RpcError::new(INVALID_PARAMS, format!("Invalid params: {e}")))?;
+                Ok(Answer::Later {
+                    what: What::ReadResource,
+                    name: String::from(method),
+                    args: obj([("path", path.into())]),
+                    uri: String::from(uri),
+                    rejected: None,
+                    modern,
+                })
             }
             _ => Err(RpcError::new(
                 METHOD_NOT_FOUND,
@@ -409,6 +670,22 @@ mod tests {
             self.calls.push((String::from(name), args.encode()));
             match name {
                 "remove" => Err(String::from("/x: file does not exist")),
+                "resources/list" => Ok(obj([(
+                    "resources",
+                    Value::Array(vec![obj([
+                        ("uri", "purg:///tmp/f".into()),
+                        ("name", "/tmp/f".into()),
+                    ])]),
+                )])),
+                "resources/read" => match args.get("path").and_then(Value::as_str) {
+                    Some("/tmp/f") => Ok(obj([
+                        ("mimeType", "text/plain".into()),
+                        ("text", "hi".into()),
+                    ])),
+                    Some("/locked") => Err(String::from("/locked: permission denied")),
+                    Some(p) => Err(format!("{p}: file does not exist")),
+                    None => Err(String::from("no path")),
+                },
                 _ => Ok(obj([("echo", args.clone())])),
             }
         }
@@ -510,7 +787,13 @@ mod tests {
     #[test]
     fn unknown_method() {
         let (mut s, mut h) = (Server::default(), Fake::default());
-        for m in ["resources/list", "prompts/list", "nope", "tools/nope", ""] {
+        for m in [
+            "prompts/list",
+            "resources/subscribe",
+            "nope",
+            "tools/nope",
+            "",
+        ] {
             let v = ask(
                 &mut s,
                 &mut h,
@@ -536,7 +819,7 @@ mod tests {
             assert_eq!(r.get("protocolVersion").unwrap().as_str(), Some(got));
             assert_eq!(
                 r.get("capabilities").unwrap().encode(),
-                r#"{"tools":{"listChanged":false}}"#
+                r#"{"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false}}"#
             );
             let info = r.get("serverInfo").unwrap();
             assert_eq!(info.get("name").unwrap().as_str(), Some("mcpd"));
@@ -595,6 +878,15 @@ mod tests {
                 "list_dir",
                 "stat",
                 "remove",
+                "job_start",
+                "job_read",
+                "job_write",
+                "job_kill",
+                "job_list",
+                "ns",
+                "bind",
+                "mount",
+                "unmount",
                 "reset"
             ]
         );
@@ -644,7 +936,10 @@ mod tests {
             r.get("supportedVersions").unwrap().encode(),
             r#"["2026-07-28","2025-11-25","2025-06-18","2025-03-26","2024-11-05"]"#
         );
-        assert_eq!(r.get("capabilities").unwrap().encode(), r#"{"tools":{}}"#);
+        assert_eq!(
+            r.get("capabilities").unwrap().encode(),
+            r#"{"tools":{},"resources":{}}"#
+        );
         assert!(
             r.get("instructions")
                 .unwrap()
@@ -783,5 +1078,121 @@ mod tests {
         assert_eq!(r.get("isError"), Some(&Value::Bool(true)));
         assert!(r.encode().contains("/x: file does not exist"));
         assert_eq!(h.calls.len(), 1);
+    }
+
+    #[test]
+    fn uris_name_files() {
+        assert_eq!(uri_of("/tmp/a b%.txt"), "purg:///tmp/a%20b%25.txt");
+        assert_eq!(uri_of("/prog/1/status"), "purg:///prog/1/status");
+        assert_eq!(
+            path_of("purg:///tmp/a%20b%25.txt").unwrap(),
+            "/tmp/a b%.txt"
+        );
+        assert_eq!(path_of("purg:///").unwrap(), "/");
+        assert_eq!(path_of(&uri_of("/tmp/é")).unwrap(), "/tmp/é");
+        for bad in [
+            "file:///tmp/x",
+            "purg://host/x",
+            "purg:///x%2",
+            "purg:///x?y",
+            "purg:///%00",
+        ] {
+            assert!(path_of(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn resources() {
+        for modern in [false, true] {
+            let (mut s, mut h) = (Server::default(), Fake::default());
+            let meta = if modern {
+                format!(",{META}")
+            } else {
+                init(&mut s, &mut h, "2025-11-25");
+                String::new()
+            };
+            let call = |s: &mut Server, h: &mut Fake, method: &str, params: &str| {
+                let sep = if params.is_empty() {
+                    &meta[1.min(meta.len())..]
+                } else {
+                    &meta
+                };
+                ask(
+                    s,
+                    h,
+                    &format!(
+                        r#"{{"jsonrpc":"2.0","id":5,"method":"{method}","params":{{{params}{sep}}}}}"#
+                    ),
+                )
+            };
+            let v = call(&mut s, &mut h, "resources/read", r#""uri":"purg:///tmp/f""#);
+            let r = v.get("result").unwrap();
+            assert_eq!(
+                r.get("contents").unwrap().encode(),
+                r#"[{"uri":"purg:///tmp/f","mimeType":"text/plain","text":"hi"}]"#
+            );
+            assert_eq!(r.get("resultType").is_some(), modern);
+            if modern {
+                assert_eq!(r.get("cacheScope").unwrap().as_str(), Some("private"));
+                assert_eq!(r.get("ttlMs").unwrap().as_i64(), Some(0));
+            }
+            let v = call(
+                &mut s,
+                &mut h,
+                "resources/read",
+                r#""uri":"purg:///missing""#,
+            );
+            let want = if modern {
+                INVALID_PARAMS
+            } else {
+                RESOURCE_NOT_FOUND
+            };
+            assert_eq!(code(&v), want);
+            let data = v.get("error").unwrap().get("data").unwrap();
+            assert_eq!(data.get("uri").unwrap().as_str(), Some("purg:///missing"));
+            let v = call(
+                &mut s,
+                &mut h,
+                "resources/read",
+                r#""uri":"purg:///locked""#,
+            );
+            assert_eq!(code(&v), INTERNAL_ERROR);
+            let v = call(&mut s, &mut h, "resources/read", r#""uri":"http://x/""#);
+            assert_eq!(code(&v), INVALID_PARAMS);
+            let v = call(&mut s, &mut h, "resources/list", "");
+            assert_eq!(
+                v.get("result").unwrap().get("resources").unwrap().encode(),
+                r#"[{"uri":"purg:///tmp/f","name":"/tmp/f"}]"#
+            );
+            let v = call(&mut s, &mut h, "resources/list", r#""cursor":"x""#);
+            assert_eq!(code(&v), INVALID_PARAMS);
+            let v = call(&mut s, &mut h, "resources/templates/list", "");
+            let t = v.get("result").unwrap().get("resourceTemplates").unwrap();
+            assert!(t.encode().contains(r#""uriTemplate":"purg:///{+path}""#));
+        }
+    }
+
+    #[test]
+    fn job_start_needs_one_program() {
+        let (mut s, mut h) = (Server::default(), Fake::default());
+        init(&mut s, &mut h, "2025-11-25");
+        for (args, ok) in [
+            (r#"{"command":"cat"}"#, true),
+            (r#"{"argv":["cat"]}"#, true),
+            (r#"{}"#, false),
+            (r#"{"argv":[]}"#, false),
+            (r#"{"argv":[1]}"#, false),
+            (r#"{"command":"cat","argv":["cat"]}"#, false),
+        ] {
+            let v = ask(
+                &mut s,
+                &mut h,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"job_start","arguments":{args}}}}}"#
+                ),
+            );
+            let r = v.get("result").unwrap();
+            assert_eq!(r.get("isError"), Some(&Value::Bool(!ok)), "{args}");
+        }
     }
 }
