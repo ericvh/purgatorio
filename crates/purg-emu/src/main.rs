@@ -1,12 +1,17 @@
 //! `emu`: Purgatorio hosted on Linux or macOS.
 //!
-//! Usage: `emu [-r root] [--vm=wasmtime|wasmi] [cmd [args...]]`
+//! Usage: `emu [-r root] [--vm=wasmtime|wasmi] [--modules=none|warn|require]
+//! [cmd [args...]]`
 //!
 //! Boots a namespace like Inferno's emu (`#/` with the host root `#U` unioned
 //! after it and taking creates, `#c` before `/dev`, `#e` on `/env` and `#p`
 //! on `/prog`), then runs `/bin/<cmd>.wasm` as the first prog, or
 //! `/bin/emuinit.wasm` when no command is given. The emu exits when the first
 //! prog does: with 0 when its exit status is empty and 1 otherwise.
+//!
+//! `--modules` sets the system's module policy (`docs/signing.md`) before
+//! the first prog is loaded, with the trust lists read in the boot
+//! namespace.
 
 mod devfs;
 mod host;
@@ -18,17 +23,21 @@ use std::sync::Arc;
 
 use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_core::devroot::StaticTree;
+use purg_core::modsig::Level;
 use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
 use purg_vm::{Ctx, Engine};
 
 struct Options {
     root: PathBuf,
     vm: String,
+    modules: Level,
     argv: Vec<String>,
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: emu [-r root] [--vm=wasmtime|wasmi] [cmd [args...]]");
+    eprintln!(
+        "usage: emu [-r root] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
+    );
     ExitCode::from(2)
 }
 
@@ -39,6 +48,7 @@ fn parse_args() -> Option<Options> {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("root")),
         vm: String::from("wasmtime"),
+        modules: Level::None,
         argv: Vec::new(),
     };
     while let Some(a) = args.next() {
@@ -48,6 +58,8 @@ fn parse_args() -> Option<Options> {
             opts.root = PathBuf::from(r);
         } else if let Some(vm) = a.strip_prefix("--vm=") {
             opts.vm = String::from(vm);
+        } else if let Some(level) = a.strip_prefix("--modules=") {
+            opts.modules = Level::parse(level)?;
         } else if a == "--" {
             opts.argv.extend(args.by_ref());
         } else if a.starts_with('-') && a.len() > 1 {
@@ -61,7 +73,7 @@ fn parse_args() -> Option<Options> {
 }
 
 /// Builds the boot namespace and the first prog.
-fn boot(root: PathBuf) -> Result<Prog, Error> {
+fn boot(root: PathBuf, modules: Level) -> Result<Prog, Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform::Emu::new());
     let procs = Procs::new(platform.clone());
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
@@ -85,6 +97,7 @@ fn boot(root: PathBuf) -> Result<Prog, Error> {
     pgrp.bind("#d", "/fd", MREPL)?;
     pgrp.bind("#I", "/net", MREPL)?;
     pgrp.bind("#C", "/cmd", MREPL)?;
+    kernel.procs.set_module_policy(modules, &pgrp);
     let mut prog = Prog::new(kernel, pgrp);
     platform.set_current_pid(prog.pid);
     purg_vm::init_fds(&mut prog)?;
@@ -110,7 +123,7 @@ fn main() -> ExitCode {
             vec![String::from("emuinit")],
         ),
     };
-    let setup = engine(&opts.vm).and_then(|e| Ok((e, boot(opts.root.clone())?)));
+    let setup = engine(&opts.vm).and_then(|e| Ok((e, boot(opts.root.clone(), opts.modules)?)));
     let (engine, prog) = match setup {
         Ok(v) => v,
         Err(e) => {

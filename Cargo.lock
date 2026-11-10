@@ -162,6 +162,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-auth-modpolicy"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-auth-passwd"
 version = "0.1.0"
 dependencies = [
@@ -171,6 +179,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-secstore"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-sign"
 version = "0.1.0"
 dependencies = [
  "appl-authlib",
@@ -2391,6 +2407,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "purg-abi",
+ "purg-auth",
  "purg-core",
  "purg-platform",
  "purg-styx",
@@ -2449,6 +2466,7 @@ name = "purg-vm"
 version = "0.1.0"
 dependencies = [
  "purg-abi",
+ "purg-auth",
  "purg-core",
  "purg-platform",
  "purg-styx",
@@ -3457,6 +3475,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "purg-abi",
+ "purg-auth",
  "purg-core",
  "purg-vm",
 ]

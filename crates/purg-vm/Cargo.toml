@@ -12,5 +12,8 @@ purg-core.workspace = true
 purg-platform.workspace = true
 purg-styx.workspace = true
 
+[dev-dependencies]
+purg-auth.workspace = true
+
 [lints]
 workspace = true

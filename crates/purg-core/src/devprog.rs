@@ -1,6 +1,7 @@
 //! `#p`: one directory per prog. `wait` collects children's exit messages.
-//! `status`, `ns` and `fd` describe the prog; writing `kill` or `killgrp`
-//! to `ctl` interrupts it.
+//! `status`, `ns`, `fd` and `module` describe the prog; writing `kill` or
+//! `killgrp` to `ctl` interrupts it, and `modules warn` or `modules
+//! require` tightens its module policy (`docs/signing.md`).
 
 use alloc::format;
 use alloc::string::String;
@@ -22,11 +23,13 @@ const QSTATUS: u64 = 3;
 const QCTL: u64 = 4;
 const QNS: u64 = 5;
 const QFD: u64 = 6;
+const QMODULE: u64 = 7;
 
 /// `(name, kind, perm)` of the files in each prog directory.
 const FILES: &[(&str, u64, u32)] = &[
     ("ctl", QCTL, 0o222),
     ("fd", QFD, 0o444),
+    ("module", QMODULE, 0o444),
     ("ns", QNS, 0o444),
     ("status", QSTATUS, 0o444),
     ("wait", QWAIT, 0o444),
@@ -155,6 +158,7 @@ impl Dev for DevProg {
             ),
             QNS => p.pgrp().namespace(),
             QFD => fd_text(&p),
+            QMODULE => module_text(&p),
             _ => return Err(Error::new(error::EPERM)),
         };
         Ok(crate::dev::read_str(text.as_bytes(), buf, offset))
@@ -214,7 +218,13 @@ impl Dev for DevProg {
         match cmd {
             "kill" => p.kill(),
             "killgrp" => self.procs.kill_group(p.group()),
-            _ => return Err(Error::new(error::EBADARG)),
+            _ => {
+                let level = cmd
+                    .strip_prefix("modules ")
+                    .and_then(|l| crate::modsig::Level::parse(l.trim()))
+                    .ok_or(Error::new(error::EBADARG))?;
+                p.tighten_module_policy(level)?;
+            }
         }
         Ok(buf.len())
     }
@@ -233,6 +243,27 @@ fn fd_text(p: &crate::prog::Proc) -> String {
             _ => "r",
         };
         out.push_str(&format!("{fd} {acc} {}\n", c.name));
+    }
+    out
+}
+
+/// `policy <level>`, then a line per loaded module: `module <digest>
+/// <signers> <path>`, with `-` when no signer was verified.
+fn module_text(p: &crate::prog::Proc) -> String {
+    use purg_auth::hex;
+    let mut out = format!("policy {}\n", p.module_policy().level.as_str());
+    for m in p.modules() {
+        let signers = if m.signers.is_empty() {
+            String::from("-")
+        } else {
+            let keys: Vec<String> = m.signers.iter().map(|k| hex::encode(k)).collect();
+            keys.join(",")
+        };
+        out.push_str(&format!(
+            "module {} {signers} {}\n",
+            hex::encode(&m.digest),
+            crate::names::quote(&m.path)
+        ));
     }
     out
 }
