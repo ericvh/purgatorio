@@ -1,0 +1,27 @@
+sh: m/a: permission denied
+sh: m/a: permission denied
+sh: m/new: mounted directory forbids creation
+after export
+sh: m/a: permission denied
+sh: m/a: permission denied
+sh: m/a: permission denied
+0
+hello
+sh: t/src/a: permission denied
+sh: t/src/new: permission denied
+sh: t/src/nope: file does not exist
+after tarfs
+sh: m/no/such: file does not exist
+sh: m: file is a directory
+sh: m/no/such: file does not exist
+m/f
+ok
+sh: m/no/such: file does not exist
+sh: m/nope: file does not exist
+one
+two
+three
+sh: /no/such/file: file does not exist
+sh: /no/such/file: file does not exist
+0
+done
