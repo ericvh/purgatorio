@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-comm"
+description = "comm: select or reject lines common to two sorted files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "comm"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

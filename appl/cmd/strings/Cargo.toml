@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-strings"
+description = "strings: extract printable strings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "strings"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

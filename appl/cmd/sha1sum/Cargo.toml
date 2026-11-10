@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-sha1sum"
+description = "sha1sum: SHA1 checksums"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sha1sum"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

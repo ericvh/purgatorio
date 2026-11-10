@@ -1,0 +1,72 @@
+apple
+apple
+banana
+fig
+pear
+pear
+fig
+banana
+apple
+apple
+-3
+x
+2
++7
+007
+10
+10
+2
+1
+sort: /tmp/sh-text/nonexistent: file does not exist
+fail:/tmp/sh-text/nonexistent: file does not exist
+sort: usage: sort [-nr] [file]
+apple
+banana
+fig
+pear
+2	apple
+1	banana
+1	fig
+1	pear
+apple
+banana
+fig
+pear
+uniq: cannot open /tmp/sh-text/nonexistent: file does not exist
+a
+		b
+	c
+		d
+b
+d
+a
+	c
+comm: usage: comm [-123] file1 file2
+fail:usage: comm [-123] file1 file2
+HELLO WORLD
+heo
+a bbb
+one
+two
+three
+xxc
+Bbc
+a_b
+  indented
+one two three four
+five six seven eight
+nine ten eleven
+twelve
+
+next paragraph
+    a b
+    c d
+x
+
+y
+       3: printable string
+a9993e364706816aba3e25717850c26c9cd0d89d
+d73bae1a37aeaf9cd79b9366d3c56d73d2ad1d17	/tmp/sh-text/one
+sha1sum: cannot open /tmp/sh-text/nonexistent: file does not exist
+fail:errors
+87a16d5c      6 /tmp/sh-text/one
