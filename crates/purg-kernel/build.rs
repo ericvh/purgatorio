@@ -38,12 +38,14 @@ fn main() {
 
     let root = dir.join("../../root");
     println!("cargo:rerun-if-changed=../../xtask/src/tar.rs");
+    println!("cargo:rerun-if-env-changed={}", tar::NAMES_ENV);
     for d in ROOT_DIRS {
         println!("cargo:rerun-if-changed={}", root.join(d).display());
     }
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("root.tar");
     let archive = if root.join("bin/sh.wasm").is_file() {
-        tar::archive(&root, ROOT_DIRS).unwrap_or_else(|e| panic!("root.tar: {e}"))
+        tar::archive(&root, ROOT_DIRS, tar::names_wanted())
+            .unwrap_or_else(|e| panic!("root.tar: {e}"))
     } else {
         println!(
             "cargo:warning=root/bin has no guests: the kernel has no compiled-in root \

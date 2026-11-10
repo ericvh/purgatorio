@@ -6,11 +6,11 @@
 //!   beside it in `<name>.names` (`docs/debug.md`).
 //! - `run-emu [-- emu args]`: `build-root`, build `emu`, and run it on
 //!   `root/` with stdin, stdout and stderr passed through.
-//! - `probe [--kvm]`: `build-root`, build `purg-probe` for
+//! - `probe [--kvm] [--names]`: `build-root`, build `purg-probe` for
 //!   `aarch64-unknown-none`, boot it in `qemu-system-aarch64` (or `$QEMU`)
 //!   under TCG (or, with `--kvm`, under KVM) and check its serial output
 //!   and exit status.
-//! - `kernel [--kvm]`: build `purg-kernel` for `aarch64-unknown-none` and
+//! - `kernel [--kvm] [--names]`: build `purg-kernel` for `aarch64-unknown-none` and
 //!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
 //!   `--kvm`, once under KVM), checking each run's exit status and serial
 //!   output against `crates/purg-kernel/expected.out`. Each run types
@@ -22,9 +22,13 @@
 //!   also shares a fresh directory under `target/kernel-9p/` over
 //!   virtio-9p, which the kernel mounts on `/n/host` and works on, and
 //!   whose final contents are checked here.
-//! - `initrd`: `build-root`, then pack `root/bin` and `root/lib` into a
-//!   deterministic ustar archive at `target/initrd/root.tar`, the kernel's
-//!   root file system.
+//! - `initrd [--names]`: `build-root`, then pack `root/bin` and `root/lib`
+//!   into a deterministic ustar archive at `target/initrd/root.tar`, the
+//!   kernel's root file system.
+//!
+//! The probe's and the kernel's images leave out the guests' `.names`
+//! files, except the test guests'; `--names` puts them all in, so that
+//! `stack` and `prof` name functions on bare metal (`docs/debug.md`).
 //! - `check-wasm <file.wasm>...`: check modules without building.
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
 //!   `wasm32-wasip1`, denying warnings.
@@ -438,7 +442,7 @@ const INITRD_DIRS: &[&str] = &["bin", "lib"];
 fn initrd() -> Result<PathBuf> {
     build_root()?;
     let ws = workspace();
-    let tar = tar::archive(&ws.join("root"), INITRD_DIRS)?;
+    let tar = tar::archive(&ws.join("root"), INITRD_DIRS, tar::names_wanted())?;
     let dir = ws.join("target/initrd");
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join("root.tar");
@@ -1123,6 +1127,32 @@ fn sign(args: &[String]) -> Result<()> {
 /// Set when xtask runs as cargo's `RUSTC_WRAPPER` for guest builds.
 const WRAPPER_ENV: &str = "PURG_XTASK_RUSTC_WRAPPER";
 
+/// Parses the flags of `probe`, `kernel` and `initrd`: `--kvm` (where
+/// `kvm_ok`) and `--names`, in any order. `--names` sets
+/// [`tar::NAMES_ENV`] for this process and the builds it starts, whose
+/// build scripts read it, and is otherwise cleared so that an image never
+/// carries the names by accident. Returns whether `--kvm` was given, or
+/// `None` for anything else.
+fn image_flags(args: &[String], kvm_ok: bool) -> Option<bool> {
+    let (mut kvm, mut names) = (false, false);
+    for a in args {
+        match a.as_str() {
+            "--kvm" if kvm_ok && !kvm => kvm = true,
+            "--names" if !names => names = true,
+            _ => return None,
+        }
+    }
+    // SAFETY: called from `main` before any thread is started.
+    unsafe {
+        if names {
+            env::set_var(tar::NAMES_ENV, "1");
+        } else {
+            env::remove_var(tar::NAMES_ENV);
+        }
+    }
+    Some(kvm)
+}
+
 /// Runs rustc, for crates built for the guest target, with every
 /// `-C metadata=<hash>` replaced by one derived from the crate's name and
 /// version alone. On stable, Cargo's hash covers `rustc -vV`, including
@@ -1203,22 +1233,23 @@ fn main() -> ExitCode {
             };
             run_emu(&emu_args)
         }
-        Some("initrd") => initrd().map(|_| ExitCode::SUCCESS),
+        Some("initrd") => match image_flags(&rest, false) {
+            Some(_) => initrd().map(|_| ExitCode::SUCCESS),
+            None => Err(String::from("usage: cargo xtask initrd [--names]")),
+        },
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
         Some("sign") => sign(&rest).map(|()| ExitCode::SUCCESS),
-        Some("probe") => match rest.as_slice() {
-            [] => probe(false).map(|()| ExitCode::SUCCESS),
-            [f] if f == "--kvm" => probe(true).map(|()| ExitCode::SUCCESS),
-            _ => Err(String::from("usage: cargo xtask probe [--kvm]")),
+        Some("probe") => match image_flags(&rest, true) {
+            Some(kvm) => probe(kvm).map(|()| ExitCode::SUCCESS),
+            None => Err(String::from("usage: cargo xtask probe [--kvm] [--names]")),
         },
-        Some("kernel") => match rest.as_slice() {
-            [] => kernel(false).map(|()| ExitCode::SUCCESS),
-            [f] if f == "--kvm" => kernel(true).map(|()| ExitCode::SUCCESS),
-            _ => Err(String::from("usage: cargo xtask kernel [--kvm]")),
+        Some("kernel") => match image_flags(&rest, true) {
+            Some(kvm) => kernel(kvm).map(|()| ExitCode::SUCCESS),
+            None => Err(String::from("usage: cargo xtask kernel [--kvm] [--names]")),
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] | kernel [--kvm] | initrd | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] [--names] | kernel [--kvm] [--names] | initrd [--names] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
