@@ -289,7 +289,8 @@ impl Prog {
     }
 
     /// `sys->export`: serve `dir` on `fd` until the client closes.
-    /// `MNOAUTH` serves the tree even when it contains a public key.
+    /// `MNOAUTH` serves the tree even when it contains a public key;
+    /// `export::RDONLY` refuses every change to it.
     pub fn export(&self, fd: i32, dir: &str, flags: u32) -> Result<()> {
         let fd = self.fgrp.get(fd)?;
         let dir = absolute(dir, &self.dot());
@@ -299,6 +300,7 @@ impl Prog {
             &fd,
             self.kernel.platform.as_ref(),
             flags & purg_abi::mount::MNOAUTH != 0,
+            flags & purg_abi::export::RDONLY != 0,
         )
     }
 

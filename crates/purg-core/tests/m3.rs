@@ -237,6 +237,16 @@ fn install_fixture(p: &mut Prog) {
 
 #[cfg(feature = "std")]
 fn spawn_export(p: &mut Prog, mock: Arc<Mock>, root: &str) -> (thread::JoinHandle<()>, i32) {
+    spawn_export_flags(p, mock, root, 0)
+}
+
+#[cfg(feature = "std")]
+fn spawn_export_flags(
+    p: &mut Prog,
+    mock: Arc<Mock>,
+    root: &str,
+    flags: u32,
+) -> (thread::JoinHandle<()>, i32) {
     let root = String::from(root);
     let [a, b] = p.pipe().unwrap();
     let [ready_r, ready_w] = p.pipe().unwrap();
@@ -248,7 +258,7 @@ fn spawn_export(p: &mut Prog, mock: Arc<Mock>, root: &str) -> (thread::JoinHandl
         mock.set_current_pid(child.pid);
         purg_platform::sync::set_current_note(Some(child.proc.note.clone()));
         child.write(1, b"Z").unwrap();
-        child.export(0, &root, 0).unwrap();
+        child.export(0, &root, flags).unwrap();
     });
     let mut flag = [0u8; 1];
     assert_eq!(p.read(ready_r, &mut flag).unwrap(), 1);
@@ -470,4 +480,76 @@ fn kill_interrupts_a_blocked_stream() {
     assert_eq!(failed.unwrap().as_str(), purg_abi::error::EINTR);
     assert_eq!(&buf[..4], b"full");
     let _ = w;
+}
+
+/// A read-only export serves reads and refuses every change.
+#[cfg(feature = "std")]
+#[test]
+fn readonly_export_refuses_changes() {
+    let (mut p, mock) = setup();
+    let fd = p.create("#R/box/f", mode::OWRITE, 0o666).unwrap();
+    p.write(fd, b"data").unwrap();
+    p.close(fd).unwrap();
+    let flags = purg_abi::mount::MNOAUTH | purg_abi::export::RDONLY;
+    let (server, b) = spawn_export_flags(&mut p, mock, "#R/box", flags);
+    p.mount(
+        b,
+        -1,
+        "#R/mnt",
+        purg_abi::mount::MREPL | purg_abi::mount::MCREATE | purg_abi::mount::MNOAUTH,
+        "",
+    )
+    .unwrap();
+    p.close(b).unwrap();
+    let fd = p.open("#R/mnt/f", mode::OREAD).unwrap();
+    let mut buf = [0u8; 8];
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"data");
+    p.close(fd).unwrap();
+    let denied = purg_abi::error::EPERM;
+    for m in [
+        mode::OWRITE,
+        mode::ORDWR,
+        mode::OREAD | mode::OTRUNC,
+        mode::OREAD | mode::ORCLOSE,
+    ] {
+        let e = p.open("#R/mnt/f", m).unwrap_err();
+        assert_eq!(e.as_str(), denied, "open mode {m:#x}");
+    }
+    let e = p.create("#R/mnt/new", mode::OWRITE, 0o666).unwrap_err();
+    assert_eq!(e.as_str(), denied);
+    let e = p.create("#R/mnt/f", mode::OWRITE, 0o666).unwrap_err();
+    assert_eq!(e.as_str(), denied);
+    assert_eq!(p.remove("#R/mnt/f").unwrap_err().as_str(), denied);
+    let mut d = purg_core::Dir::null();
+    d.name = String::from("g");
+    assert_eq!(p.wstat("#R/mnt/f", &d).unwrap_err().as_str(), denied);
+    let fd = p.open("#R/box/f", mode::OREAD).unwrap();
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"data", "the file is unchanged");
+    p.close(fd).unwrap();
+    p.unmount(None, "#R/mnt").unwrap();
+    server.join().unwrap();
+}
+
+/// `purgatorio.wait` can watch `/prog/n/wait`: it is ready only when an
+/// exit message is waiting.
+#[cfg(feature = "std")]
+#[test]
+fn wait_file_is_pollable() {
+    let (mut p, _mock) = setup();
+    let fd = p.open(&format!("#p/{}/wait", p.pid), mode::OREAD).unwrap();
+    assert_eq!(p.wait_ops(&[(0, fd)], 0).unwrap(), None);
+    let mut child = p.spawn(0, &[]).unwrap();
+    child.started();
+    let t = thread::spawn(move || {
+        thread::sleep(std::time::Duration::from_millis(50));
+        drop(child);
+    });
+    assert_eq!(p.wait_ops(&[(0, fd)], 10_000).unwrap(), Some(0));
+    let mut buf = [0u8; 64];
+    let n = p.read(fd, &mut buf).unwrap();
+    assert!(n > 0);
+    assert_eq!(p.wait_ops(&[(0, fd)], 0).unwrap(), None);
+    t.join().unwrap();
 }
