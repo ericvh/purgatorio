@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ip-sntp"
+description = "ip/sntp: get the time from an SNTP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sntp"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-webgrab"
+description = "webgrab: fetch a web page over HTTP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "webgrab"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
