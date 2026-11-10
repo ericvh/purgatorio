@@ -6,8 +6,10 @@
 //! The namespace is the emu's: `#/` is the root, `#U` (here a RAM tree
 //! seeded from the initrd) is unioned after it and takes creates, `#c` is
 //! before `/dev`, and `#e`, `#p`, `#s`, `#d` are on `/env`, `/prog`,
-//! `/chan` and `/fd`. There is no host file system, no host commands and no
-//! network yet (K3).
+//! `/chan` and `/fd`, and `#I` (smoltcp over virtio-net, see [`net`]) is on
+//! `/net`. There is no host file system and no host commands.
+
+pub mod net;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -17,6 +19,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+use purg_aarch64::net::NetStack;
 use purg_aarch64::platform::MetalPlatform;
 use purg_abi::mode;
 use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
@@ -59,6 +62,7 @@ pub fn boot(
     pgrp.bind("#p", "/prog", MREPL)?;
     pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
     pgrp.bind("#d", "/fd", MREPL)?;
+    pgrp.bind("#I", "/net", MREPL)?;
     Ok(System {
         engine: Arc::new(Wasmi::new()?),
         kernel,
@@ -149,7 +153,7 @@ impl System {
 }
 
 /// Commands run with the console as fds 0, 1 and 2, and whether each must
-/// succeed. The probe runs the same list plus the network check (K3).
+/// succeed. The probe runs the same list.
 const SCRIPT: &[(&[&str], bool)] = &[
     (&["echo", "hello", "world"], true),
     (&["cat", "/lib/probe/hello.txt"], true),
@@ -157,6 +161,7 @@ const SCRIPT: &[(&[&str], bool)] = &[
     (&["/bin/test/abi.wasm"], true),
     (&["/bin/test/procs.wasm"], true),
     (&["/bin/test/m3.wasm"], true),
+    (&["/bin/test/net.wasm"], true),
     (&["/bin/test/wasi.wasm"], true),
 ];
 
@@ -236,6 +241,7 @@ pub fn start(
     initrd: &'static [u8],
     console: &'static dyn Console,
     rtc: Option<usize>,
+    (stack, checks): (NetStack, net::Checks),
     mode: Mode,
 ) -> usize {
     use core::sync::atomic::AtomicUsize;
@@ -243,12 +249,12 @@ pub fn start(
     static DONE: AtomicUsize = AtomicUsize::new(usize::MAX);
     SCHED.spawn(Box::new(move || {
         let result = match boot(
-            MetalPlatform::new(console, &SCHED, "purgatorio", rtc),
+            MetalPlatform::new(console, &SCHED, "purgatorio", rtc).with_net(Box::new(stack)),
             |root| root.add_tar(initrd).map(|_| ()),
         ) {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
             Ok(sys) => match mode {
-                Mode::Test => sys.run_tests(),
+                Mode::Test => sys.run_tests() + sys.net_tests(&checks),
                 Mode::Interactive => match sys.interactive() {
                     Ok(s) if s.is_empty() => 0,
                     Ok(s) => {

@@ -70,6 +70,13 @@ pub fn has_bootarg(info: &BootInfo<'_>, word: &str) -> bool {
         .is_some_and(|a| a.split_ascii_whitespace().any(|w| w == word))
 }
 
+/// The value of the first `key=value` word in `/chosen/bootargs`.
+pub fn bootarg<'a>(info: &BootInfo<'a>, key: &str) -> Option<&'a str> {
+    info.bootargs?
+        .split_ascii_whitespace()
+        .find_map(|w| w.strip_prefix(key).and_then(|rest| rest.strip_prefix('=')))
+}
+
 /// Chooses the exit method from the DTB: PSCI if `/chosen/bootargs`
 /// contains `exit=psci` (`-append exit=psci`; KVM has no semihosting),
 /// with the conduit from the `/psci` node's `method` (`hvc` unless it says
@@ -143,6 +150,8 @@ mod tests {
         let info = BootInfo::from_fdt(&fdt).unwrap();
         assert!(has_bootarg(&info, "x=y"));
         assert!(!has_bootarg(&info, "x"));
+        assert_eq!(bootarg(&info, "x"), Some("y"));
+        assert_eq!(bootarg(&info, "y"), None);
         assert_eq!(exit_method(&fdt, &info), ExitMethod::Semihosting);
     }
 

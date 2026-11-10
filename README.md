@@ -112,12 +112,21 @@ arm64 Linux `Image`, so QEMU and boot loaders can pass it an initrd. It boots
 to `sh -l` on the serial console. With `test` in the boot arguments it runs
 the conformance guests and the sh corpus instead.
 
+K3 networking: `#I` is on `/net`, over smoltcp on a virtio-net card
+(`purg_aarch64::net`), with TCP and UDP. In test mode under `xtask kernel`
+the kernel also mounts a hosted emu's `styxlisten` export from the host
+(10.0.2.2 in QEMU user networking) and lists it, checks a UDP echo server on
+the host, and exports its own `/` on `tcp!*!6666`, which the host mounts
+through a QEMU `hostfwd`.
+
 ```sh
 cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on cortex-a72 and max
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
 cargo xtask initrd          # target/initrd/root.tar, the same archive the kernel compiles in
 # an interactive shell on the kernel (^D at the start of a line ends it):
 qemu-system-aarch64 -accel kvm -cpu host -M virt,gic-version=3 -m 512M -nographic \
+  -netdev user,id=net0 -global virtio-mmio.force-legacy=off \
+  -device virtio-net-device,netdev=net0 \
   -append exit=psci -kernel target/aarch64-unknown-none/kernel/purg-kernel.img
 ```
 

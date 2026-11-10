@@ -288,7 +288,8 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
     );
     let mode = if test { Mode::Test } else { Mode::Interactive };
     println!("kernel: root {from}");
-    let failed = system::start(archive, cons, info.rtc.map(|r| r.base as usize), mode);
+    let net = system::net::open(&fdt, &info);
+    let failed = system::start(archive, cons, info.rtc.map(|r| r.base as usize), net, mode);
     if failed != 0 {
         fail(format_args!("{failed} failed"));
     }
