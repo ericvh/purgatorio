@@ -51,6 +51,8 @@ a `; ` prompt.
 | W3 commands: `cs dial export import listen netstat os styxlisten` | done |
 | W4 archive commands: `gettar gunzip gzip lstar puttar tar` (ustar and gzip code in `appl/archive`) | done |
 | Admin commands: `cron logfile mntgen ndb/query`; `mount {command}` | done |
+| Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
+| File and script tools: `basename cleanname touch chmod chgrp dd newer read test time xargs` | done |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
