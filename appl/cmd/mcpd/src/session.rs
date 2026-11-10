@@ -70,7 +70,7 @@ fn null(m: u8) -> Result<OwnedFd, String> {
 
 /// `purgatorio.wait` on fds that would read without blocking. `Ok(None)`
 /// is a timeout.
-fn wait_readable(fds: &[i32], timeout_ms: i32) -> Result<Option<usize>, Error> {
+pub fn wait_readable(fds: &[i32], timeout_ms: i32) -> Result<Option<usize>, Error> {
     let ops: Vec<i32> = fds.iter().flat_map(|&fd| [0, fd]).collect();
     let before = Instant::now();
     // SAFETY: `ops` holds `fds.len()` pairs of i32, as the call expects.

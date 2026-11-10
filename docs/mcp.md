@@ -82,6 +82,9 @@ input ends.
   failures of a tool are results with `isError: true`, so the model sees
   them. Their text is Inferno's error string, such as
   `/tmp/x: file does not exist`.
+- A file tool that gets no answer within 60 seconds (a read of a file
+  that blocks, such as a pipe nobody writes) fails, and the session is
+  replaced as by `reset`.
 - One request is served at a time. `notifications/cancelled` is accepted
   and ignored; use `timeout_ms`.
 - Resources, prompts, and server-to-client requests are not implemented.
