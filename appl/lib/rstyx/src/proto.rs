@@ -2,11 +2,13 @@
 //! kind, a u32 little-endian length and that many bytes.
 //!
 //! ```text
-//! C -> S  HELLO   "pgrstyx1 <user>"
-//! S -> C  CHAL    challenge[32], or empty when no proof is wanted
-//! C -> S  PROOF   a mount proof (docs/auth.md) for attach name "rstyx",
-//!                 or empty
+//! C -> S  HELLO   "pgrstyx2 <user>"
+//! S -> C  CHAL    the offer challenge[32] || S[32], or empty when no
+//!                 proof is wanted
+//! C -> S  PROOF   a version 3 mount proof (docs/auth.md) for attach name
+//!                 "rstyx" over the offer, or empty
 //! S -> C  OK | ERR <reason>
+//!         after a proof, every later frame is sealed (crate::link)
 //! C -> S  EXEC    flags u8, then the command line for `sh -c`
 //! then, in both directions and in any order:
 //!         STYX    bytes of the 9P conversation in which the client
@@ -22,8 +24,9 @@
 //! receiver has passed the bytes on. A stalled reader of one stream then
 //! never holds up the 9P conversation that shares the connection.
 
-/// The protocol name and version, the first word of HELLO.
-pub const MAGIC: &str = "pgrstyx1";
+/// The protocol name and version, the first word of HELLO. Version 2
+/// encrypts the connection after the proof.
+pub const MAGIC: &str = "pgrstyx2";
 /// The attach name the proof is made for, so that a proof for a mount is
 /// not a proof for a command.
 pub const ANAME: &str = "rstyx";
@@ -74,9 +77,14 @@ pub fn frame(kind: u8, data: &[u8]) -> Vec<u8> {
 
 /// A WIN frame.
 pub fn window(stream: u8, n: usize) -> Vec<u8> {
+    frame(kind::WIN, &win_data(stream, n))
+}
+
+/// The data of a WIN frame.
+pub fn win_data(stream: u8, n: usize) -> Vec<u8> {
     let mut d = vec![stream];
     d.extend_from_slice(&(n as u32).to_le_bytes());
-    frame(kind::WIN, &d)
+    d
 }
 
 /// The stream and count of a WIN frame's data.

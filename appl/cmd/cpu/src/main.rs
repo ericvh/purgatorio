@@ -6,8 +6,9 @@
 //! caller's, and then runs the command. Standard input, output and error
 //! and the exit status are carried as `rcmd` carries them.
 //!
-//! `-A` and `-k` are as for `rcmd`. `-C` names an algorithm for the
-//! connection; the only one here is `none`.
+//! `-A` and `-k` are as for `rcmd`, and the connection is encrypted as
+//! `rcmd`'s is. `-C` names the algorithm: `chacha20poly1305`, or `none`
+//! with `-A`.
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
@@ -27,18 +28,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         module: "/bin/cpu.wasm",
         ..Opts::default()
     };
+    let mut alg = None;
     while let Some(c) = arg.opt() {
         match c {
             'A' => o.noauth = true,
             'k' | 'f' => o.keyfile = Some(arg.earg()?),
-            'C' => {
-                let alg = arg.earg()?;
-                if alg != "none" && alg != "clear" {
-                    return Err(Error(format!("unknown algorithm {alg}")));
-                }
-            }
+            'C' => alg = Some(arg.earg()?),
             _ => return Err(arg.usage()),
         }
+    }
+    if let Some(alg) = alg {
+        client::check_alg(&alg, o.noauth)?;
     }
     let rest = arg.argv();
     let Some((host, cmd)) = rest.split_first() else {

@@ -1,0 +1,9 @@
+rcmd: no session key offered
+status fail:no session key offered
+clear
+clear again
+sealed
+client mounted
+rcmd: an authenticated connection is always encrypted; use -A for none
+cpu: an authenticated connection is always encrypted; use -A for none
+sealed too

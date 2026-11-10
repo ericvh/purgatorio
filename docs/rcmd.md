@@ -27,12 +27,14 @@ auxi/cpuslave [command [arg...]]
   are quoted on the way, so they arrive as given.
 - `rcmd -x dir` exports `dir` instead of `/`, so `/n/client` there is
   `dir` here.
-- `-A` skips authentication in both directions. `-k` names the authinfo
-  to prove with (`-f` is accepted, as Inferno spells it).
-- `-e` and `-C` name an algorithm for the connection. Only `none` (or
-  `clear`) is accepted: the connection is authenticated when it opens but
-  is not encrypted or integrity-protected after that. Run it over a
-  trusted network until there is a TLS server.
+- `-A` skips authentication in both directions and leaves the connection
+  in the clear. `-k` names the authinfo to prove with (`-f` is accepted,
+  as Inferno spells it).
+- Without `-A` the connection is encrypted after the proof (see
+  "Encryption"). `-e` and `-C` name the algorithm: `chacha20poly1305`,
+  the only one and the default, or `none` (or `clear`), which is accepted
+  only with `-A`. `rcmd -e none` without `-A` fails with `an
+  authenticated connection is always encrypted; use -A for none`.
 - `auxi/rstyxd` serves one client on fd 0. Start it from `listen` or
   `styxlisten` with its module path:
 
@@ -56,20 +58,58 @@ Both directions use the mount proof of `docs/auth.md`.
 - **Client to server.** The server reads the same files an `export` in
   its namespace would: `/usr/<user>/key.pub`, `/lib/test/auth.key.pub`,
   `/lib/keys/signers`, `/lib/keys/revoked`. If it trusts any key or
-  signer it sends a 32-byte challenge. The client answers with a
-  version 2 proof for its user name and the attach name `rstyx`, made
-  from `-k keyfile` or the default sources (factotum, `#¤`, the default
-  authinfo, the user's seed). The attach name keeps a proof for a mount
-  from being used here and the other way round. A client with no proof
-  gets `authentication required`; a bad one gets the error a mount would
-  (`untrusted signer`, `certificate expired`, ...).
+  signer it sends an offer: a 32-byte challenge and an ephemeral X25519
+  key. The client answers with a version 3 proof for its user name and
+  the attach name `rstyx`, made from `-k keyfile` or the default sources
+  (factotum, `#¤`, the default authinfo, the user's seed). The attach
+  name keeps a proof for a mount from being used here and the other way
+  round. A client with no proof gets `authentication required`; a bad
+  one gets the error a mount would (`untrusted signer`, `certificate
+  expired`, ...). A version 1 or 2 proof is refused with `no session key
+  offered`, since it carries no key to encrypt with.
 - **Server to client.** The client serves its namespace with the
   kernel's `export`, which asks whoever mounts it for a proof when the
   client's namespace trusts anything. The server answers from `-k
   keyfile` on `rstyxd`, or else from its user's default keys.
 
 `rstyxd -A` asks for no proof. `rcmd -A` gives none and exports without
-asking for one.
+asking for one. Without `-A`, `rcmd` refuses a server that asks for no
+proof, or that sends a bare 32-byte challenge, with `no session key
+offered`: it does not go on in the clear unless told to.
+
+## Encryption
+
+The keys come from the version 3 mount handshake (`docs/auth.md`,
+"Mount handshake, version 3"), carried in CHAL and PROOF: the server's
+offer is `challenge[32] || S[32]`, the client's proof carries `C` and
+signs both, and each end derives `c2s` and `s2c` from the X25519 secret
+and the signed message. The ephemeral secrets are dropped with the
+exchange, so a recorded connection stays unreadable even to someone who
+later gets a long-term key.
+
+PROOF and the server's OK or ERR are the last frames in the clear. Every
+frame after them, both ways, is one record of `purg_auth::record`:
+
+```
+record = size[4] || ChaCha20-Poly1305(kind u8 || length u32 || data) || tag[16]
+```
+
+with its own key and sequence number per direction, as in the mount's
+record layer. A record that is changed, replayed, reordered or dropped
+fails to open, and the end that sees it stops with `bad record mac`.
+`rcmd` prints it and exits; `rstyxd` closes the connection.
+
+The 9P conversation inside STYX frames runs its own handshake, so the
+client's export to the server is a version 3 mount over the encrypted
+connection and is sealed twice. That costs a second cipher pass on
+`/n/client` traffic and nothing else.
+
+What is not done: the server does not prove itself to the client. An
+attacker who can answer for the server's address can pose as the server
+(the client's proof is for that attacker's key, so it cannot be replayed
+to the real one). The client's export still asks the server for a proof
+before serving `/n/client` when the client's namespace trusts any key, as
+it does with the stock test key.
 
 The stock root holds the public test key pair, so an unchanged system
 authenticates with it in both directions. Deployments remove it.
@@ -81,9 +121,9 @@ data`, with at most 64 KiB of data.
 
 | kind | name | direction | data |
 |---|---|---|---|
-| 1 | HELLO | C to S | `pgrstyx1 <user>` |
-| 2 | CHAL | S to C | `challenge[32]`, or empty when no proof is wanted |
-| 3 | PROOF | C to S | the proof, or empty |
+| 1 | HELLO | C to S | `pgrstyx2 <user>` |
+| 2 | CHAL | S to C | `challenge[32] || S[32]`, or empty when no proof is wanted |
+| 3 | PROOF | C to S | a version 3 proof, or empty |
 | 4 | OK | S to C | empty |
 | 5 | ERR | S to C | the reason the client is refused |
 | 6 | EXEC | C to S | `flags u8`, then the command line |
@@ -94,8 +134,10 @@ data`, with at most 64 KiB of data.
 | 11 | WIN | both | `stream u8, n u32 LE`: `n` more bytes of `stream` may be sent |
 | 12 | STATUS | S to C | the exit status; the last frame |
 
-The opening is HELLO, CHAL, PROOF, OK (or ERR), EXEC. EXEC flag 1 says
-the client's export does not authenticate. After EXEC, frames 7 to 11
+The opening is HELLO, CHAL, PROOF, OK (or ERR), EXEC. From EXEC on,
+frames are sealed unless there was no proof. EXEC flag 1 says the
+client's export does not authenticate. Version 1 (`pgrstyx1`, before
+encryption) is not spoken. After EXEC, frames 7 to 11
 flow in any order until STATUS. The client closes the connection when it
 has the status.
 
@@ -125,7 +167,7 @@ in its own prog on the client.
 
 ## Limits
 
-- No encryption after the handshake (above).
+- The server does not authenticate itself (above).
 - The remote command runs as the server's user.
 - The client's namespace is served by the kernel's `export`, which
   serves requests concurrently, so a remote read that blocks (of
