@@ -11,18 +11,19 @@ just as `.dis` files did.
 
 The work is phased:
 
-1. A hosted `emu` on Linux and macOS. **Milestone 3 is in progress.**
-2. A native aarch64 kernel under QEMU `virt`.
+1. A hosted `emu` on Linux and macOS. **Done through Milestone 5.**
+2. A native aarch64 kernel under QEMU `virt`. **Next.**
 3. Graphics (draw, Tk, wm), deliberately last.
 
 Every milestone is validated on aarch64. CI runs natively on Linux aarch64 and
 macOS arm64, and the shared kernel crates build for `aarch64-unknown-none`.
 
-## Status: Milestone 3
+## Status: Milestone 5
 
 `emu` boots a namespace like Inferno's emu. `#/` is the root, the host tree
-`#U` is unioned after it and takes creates, `#c` is bound before `/dev`, `#e`
-on `/env` and `#p` on `/prog`. `emu` then runs a WASM command as the first
+`#U` is unioned after it and takes creates, `#c` is bound before `/dev`, and
+`#e`, `#p`, `#s`, `#d`, `#I` and `#C` are bound on `/env`, `/prog`, `/chan`,
+`/fd`, `/net` and `/cmd`. `emu` then runs a WASM command as the first
 prog, whose fds 0, 1 and 2 are `/dev/cons`; each prog it spawns runs on its
 own host thread. With no command it runs `emuinit`, which starts `sh -l`:
 the shell runs `/lib/sh/profile`, then reads commands from the console with
@@ -35,15 +36,21 @@ a `; ` prompt.
 | Namespace: `namec`, `bind` with `MREPL`/`MBEFORE`/`MAFTER`/`MCREATE` unions, `unmount`, `chdir`, lexical `..` | done |
 | Progs: `spawn_prog`, `pctl` (`NEWFD FORKFD NEWNS FORKNS NEWPGRP NODEVS NEWENV FORKENV`), wait messages; `Rendez` and qio checked with loom | done |
 | WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
-| App ABI v0.2: WASI preview1 subset plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)) | done |
-| `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, builtins `cd exit run wait` | done |
+| App ABI v0.4: all of WASI preview 1 plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)). Stock Rust `std` programs with no SDK run and see the namespace | done |
+| `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, builtins `cd exit run wait load` | done |
+| `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`. `load expr`: postfix `${expr}` | done |
+| `load` and `call` of reactor modules from `/bin/lib` (the shell's `load add` gives `${add 20 22}`) | done |
 | `#M` mount, `export`, `#s` file2chan, `#d`, `#%`, kernel channels | done |
+| `#I` (`/net/tcp`, `/net/udp`, `/net/cs`) on host sockets, `#C` host commands; `dial`, `announce` and `listen` are file operations in the SDK | done |
+| Authenticated mount: the server checks an Ed25519 signature over a challenge before `Tattach`; `-A` skips it. `#¤` signs for the client so its seed need not be readable | done |
+| `#D`: TLS 1.3 client with a pinned P-256 server key | done |
 | W1 commands: `bind cat cp date echo emuinit env ls mkdir mv pwd rm sleep unmount wc` | done |
 | W2 commands: `cmp diff du fc grep kill md5sum memfs mount ns ps ramfile sed tail tee xd` | done |
+| W3 commands: `cs dial export import listen netstat os styxlisten` | done |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
-| `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi: cooperative kernel threads, a writable RAM root, and the `sh` corpus | done |
+| `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi: cooperative kernel threads, a writable RAM root, the `sh` corpus, `load`/`call`, the WASI test program, and `/net` over virtio-net and smoltcp, exported to and mounted from the host | done |
 
 ## Layout
 
@@ -52,21 +59,24 @@ crates/
   purg-abi/          no_std  ABI constants shared by host and guest
   purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec
   purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam)
-  purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree; #/ #c #e #| #p
+  purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree, Styx mount/export;
+                             #/ #c #e #| #p #s #d #% #M #I #C #D #¤
   purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, spawn
   purg-vm-wasmi/     no_std  wasmi interpreter backend
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
-  purg-emu/          std     the `emu` binary: #U, console, src/host/{unix,linux,macos}.rs
-  purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, kernel threads)
+  purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/
+  purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, kernel threads, virtio-net)
 sdk/
   purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
   purgatorio-macros/         #[purgatorio::main]
 appl/cmd/<name>/             commands (sh, ls, ...), built to root/bin/<name>.wasm
-appl/test/{abi,procs}/       conformance guests, built to root/bin/test/<name>.wasm
+appl/lib/<name>/             loadable reactor modules, built to root/bin/lib/<name>.wasm
+appl/test/{abi,procs,m3,net,wasi}/  conformance guests, built to root/bin/test/<name>.wasm
 root/                        the file tree emu serves as #U (build-root adds root/tmp)
   lib/sh/profile             run by sh -l at boot
   lib/test/sh/               sh scripts and their expected output
 xtask/                       build tasks
+docs/                        design plan, roadmap, ABI
 ```
 
 The `no_std` crates are the code the aarch64 kernel will share unchanged.
