@@ -2,6 +2,11 @@
 //! `status`, `ns`, `fd` and `module` describe the prog; writing `kill` or
 //! `killgrp` to `ctl` interrupts it, and `modules warn` or `modules
 //! require` tightens its module policy (`docs/signing.md`).
+//!
+//! `stack`, `exception` and `prof` are the debugging files
+//! (`docs/debug.md`): the call stack of a traced prog, the trap that broke
+//! it, and its profile. `trace on|off` and `prof on|off` on `ctl` set what
+//! the prog's future children are started with.
 
 use alloc::format;
 use alloc::string::String;
@@ -24,13 +29,22 @@ const QCTL: u64 = 4;
 const QNS: u64 = 5;
 const QFD: u64 = 6;
 const QMODULE: u64 = 7;
+const QSTACK: u64 = 8;
+const QEXCEPTION: u64 = 9;
+const QPROF: u64 = 10;
+
+/// The error of reading the `stack` of a prog started without tracing.
+pub const ENOTTRACED: &str = "prog is not traced";
 
 /// `(name, kind, perm)` of the files in each prog directory.
 const FILES: &[(&str, u64, u32)] = &[
     ("ctl", QCTL, 0o222),
+    ("exception", QEXCEPTION, 0o444),
     ("fd", QFD, 0o444),
     ("module", QMODULE, 0o444),
     ("ns", QNS, 0o444),
+    ("prof", QPROF, 0o444),
+    ("stack", QSTACK, 0o444),
     ("status", QSTATUS, 0o444),
     ("wait", QWAIT, 0o444),
 ];
@@ -159,6 +173,12 @@ impl Dev for DevProg {
             QNS => p.pgrp().namespace(),
             QFD => fd_text(&p),
             QMODULE => module_text(&p),
+            QSTACK => stack_text(&p)?,
+            QEXCEPTION => match p.debug.exception() {
+                e if e.is_empty() => e,
+                e => format!("{e}\n"),
+            },
+            QPROF => prof_text(&p),
             _ => return Err(Error::new(error::EPERM)),
         };
         Ok(crate::dev::read_str(text.as_bytes(), buf, offset))
@@ -216,8 +236,12 @@ impl Dev for DevProg {
             .map_err(|_| Error::new(error::EBADARG))?
             .trim();
         match cmd {
-            "kill" => p.kill(),
+            "kill" => self.procs.kill(pid),
             "killgrp" => self.procs.kill_group(p.group()),
+            "trace on" => p.debug.set_trace(true),
+            "trace off" => p.debug.set_trace(false),
+            "prof on" => p.debug.set_prof(true),
+            "prof off" => p.debug.set_prof(false),
             _ => {
                 let level = cmd
                     .strip_prefix("modules ")
@@ -264,6 +288,38 @@ fn module_text(p: &crate::prog::Proc) -> String {
             hex::encode(&m.digest),
             crate::names::quote(&m.path)
         ));
+    }
+    out
+}
+
+/// A line per frame, the innermost first: `<function index> <path>`, the
+/// path being the prog's command module, quoted as `ns` quotes names.
+/// When the prog had more frames than a snapshot keeps, a last line
+/// `... <n>` counts the outer frames left out.
+fn stack_text(p: &crate::prog::Proc) -> Result<String> {
+    if !p.debug.traced() {
+        return Err(Error::new(ENOTTRACED));
+    }
+    let stack = p.debug.stack();
+    let path = crate::names::quote(&p.module_path());
+    let mut out = String::new();
+    for f in &stack.frames {
+        out.push_str(&format!("{f} {path}\n"));
+    }
+    let more = (stack.depth as usize).saturating_sub(stack.frames.len());
+    if more > 0 {
+        out.push_str(&format!("... {more}\n"));
+    }
+    Ok(out)
+}
+
+/// A line per sampled function: `<samples> <function index> <path>`, for
+/// the prog and for its children that have exited, ordered by path and
+/// index.
+fn prof_text(p: &crate::prog::Proc) -> String {
+    let mut out = String::new();
+    for ((path, func), n) in p.profile() {
+        out.push_str(&format!("{n} {func} {}\n", crate::names::quote(&path)));
     }
     out
 }

@@ -12,6 +12,7 @@ extern crate alloc;
 mod host;
 mod loader;
 mod mem;
+pub mod trace;
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -159,7 +160,10 @@ pub fn exit(ctx: Ctx) {
 /// Loads the command at `path` through the prog's namespace and runs it.
 pub fn run_command(mut ctx: Ctx, path: &str) -> (Ctx, Result<String, Error>) {
     match load_module(&mut ctx.prog, path) {
-        Ok(wasm) => run_module(ctx, &wasm, path),
+        Ok(wasm) => {
+            let wasm = trace::prepare(&ctx.prog.proc, wasm);
+            run_module(ctx, &wasm, path)
+        }
         Err(e) => (ctx, Err(Error::from(alloc::format!("{path}: {e}")))),
     }
 }
@@ -186,6 +190,8 @@ pub fn spawn(
     let mut child = parent.spawn(flags, fdmap)?;
     let wasm =
         load_module(&mut child, path).map_err(|e| Error::from(alloc::format!("{path}: {e}")))?;
+    // A child started under tracing runs a module that keeps a call stack.
+    let wasm = trace::prepare(&child.proc, wasm);
     init_preopens(&mut child)?;
     let pid = child.pid;
     let platform = child.kernel.platform.clone();

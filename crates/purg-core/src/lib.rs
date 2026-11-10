@@ -9,6 +9,7 @@ extern crate alloc;
 pub mod auth;
 pub mod block;
 pub mod chan;
+pub mod debug;
 pub mod dev;
 pub mod devcmd;
 pub mod devcons;
