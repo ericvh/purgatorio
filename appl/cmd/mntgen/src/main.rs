@@ -1,9 +1,10 @@
 //! mntgen: serve, on fd 0, a directory in which every name exists. Walking
 //! to a name makes an empty directory of that name, which lasts while some
 //! fid refers to it, so `mount {mntgen} /n` gives a mount point for any
-//! `/n/name`. Reading the directory lists the names some fid refers to; a
-//! name that is only mounted on is not listed, since the kernel's mount
-//! table holds no fid on it.
+//! `/n/name`. Reading the directory lists the names some fid refers to,
+//! which includes the names mounted on: the kernel's mount table holds a
+//! fid on each. A name no fid refers to is forgotten, and a later walk to it
+//! gets a new qid.
 
 use std::collections::BTreeMap;
 use std::os::fd::FromRawFd;
@@ -68,9 +69,8 @@ impl Mntgen {
             .map_or(ROOT, |n| n.path)
     }
 
-    /// The entry for `name`, made on first use. Its qid path never changes,
-    /// because the kernel's mount table knows a mount point by qid and
-    /// keeps no fid on it.
+    /// The entry for `name`, made when there is none. A new entry gets a
+    /// qid path never used before.
     fn name(&mut self, name: &str) -> &mut Name {
         let next = &mut self.next;
         self.names.entry(String::from(name)).or_insert_with(|| {
@@ -84,6 +84,9 @@ impl Mntgen {
         let Some(name) = name else { return };
         if let Some(n) = self.names.get_mut(name) {
             n.refs -= 1;
+            if n.refs == 0 {
+                self.names.remove(name);
+            }
         }
     }
 
@@ -107,7 +110,7 @@ impl Mntgen {
 
     fn listing(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        for (name, n) in self.names.iter().filter(|(_, n)| n.refs > 0) {
+        for (name, n) in &self.names {
             let _ = Mntgen::dir(name, n.path).pack_into(&mut out);
         }
         out
@@ -146,6 +149,7 @@ impl StyxFs for Mntgen {
                 (Some(_), "..") => None,
                 // A made directory is empty.
                 (Some(_), _) => {
+                    self.names.retain(|_, n| n.refs > 0);
                     if qids.is_empty() {
                         return Err(String::from(error::ENONEXIST));
                     }
@@ -161,6 +165,8 @@ impl StyxFs for Mntgen {
         if let Some(n) = &at {
             self.name(n).refs += 1;
         }
+        // A name only walked through belongs to no fid.
+        self.names.retain(|_, n| n.refs > 0);
         self.set(
             newfid,
             Fid {

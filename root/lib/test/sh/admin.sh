@@ -5,6 +5,7 @@ rm -rf $d
 mkdir -p $d/n
 
 # mntgen: any name walked to is a directory, listed while it is in use.
+# A name mounted on is in use until it is unmounted.
 mount {mntgen} $d/n
 ls $d/n
 sleep 2 < $d/n/held &
