@@ -224,6 +224,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-broke"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-bytes"
 version = "0.1.0"
 dependencies = [
@@ -778,6 +785,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-prof"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-wasmobj",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ps"
 version = "0.1.0"
 dependencies = [
@@ -862,6 +877,14 @@ dependencies = [
 name = "appl-cmd-sort"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-stack"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-wasmobj",
  "purgatorio",
 ]
 
@@ -993,6 +1016,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-tr"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-trace"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -1164,6 +1194,13 @@ version = "0.1.0"
 
 [[package]]
 name = "appl-test-abi"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-test-debug"
 version = "0.1.0"
 dependencies = [
  "purgatorio",

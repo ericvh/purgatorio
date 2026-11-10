@@ -60,6 +60,7 @@ a `; ` prompt.
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session (`run` and file tools) in its own namespace. See [docs/mcp.md](docs/mcp.md) | stage 1 |
 | Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
 | File and script tools: `basename cleanname touch chmod chgrp dd newer read test time xargs` | done |
+| Module and debugging tools: `wasmdump wasmdep` (Inferno's `disdump`, `disdep`), `trace stack broke prof`: call stacks and function profiles of traced progs through `/prog/<pid>/{stack,exception,prof}`, the same on both backends; function names in `/bin/<cmd>.names`. See [docs/debug.md](docs/debug.md) | done; `asm`, `mdb`, `mprof`, `cprof` open |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |

@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-trace"
+description = "trace: run a command with call stacks kept, for stack"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "trace"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

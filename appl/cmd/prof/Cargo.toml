@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-prof"
+description = "prof: profile a command by function"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "prof"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+wasmobj.workspace = true
+
+[lints]
+workspace = true

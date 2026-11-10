@@ -1,0 +1,38 @@
+untraced
+prog is not traced
+trap: unreachable
+broken 0
+trapped
+trace: PID "debug": broken: trap: unreachable
+broken 1
+exception trap: unreachable
+debug::inner
+debug::middle
+debug::outer
+debug::main
+debug::inner N /bin/test/debug.wasm
+1
+trap: unreachable
+PID PPID PGRP USER broken debug
+PID
+broken 0
+running
+debug::inner
+debug::middle
+debug::outer
+debug::main
+broken 0
+real commands run traced
+/bin/echo.wasm
+3
+42
+traced under a module policy
+profile
+module /bin/test/debug.wasm samples N
+debug::burn
+module /bin/test/debug.wasm samples N
+debug::burn
+prof: PID "test/debug": broken: trap: unreachable
+broken 0
+prof: usage: prof [-n lines] command [arg ...]
+done
