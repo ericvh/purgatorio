@@ -35,6 +35,7 @@ purg-core = { path = "crates/purg-core" }
 purg-vm = { path = "crates/purg-vm" }
 purg-vm-wasmtime = { path = "crates/purg-vm-wasmtime" }
 purg-vm-wasmi = { path = "crates/purg-vm-wasmi" }
+purg-aarch64 = { path = "crates/purg-aarch64" }
 purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
 appl-archive = { path = "appl/archive" }
