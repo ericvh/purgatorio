@@ -1,0 +1,89 @@
+dump
+module /lib/test/tiny.wasm
+size 269
+digest 24872b5117f47ecfa3afd8eba42b5e8c110f9c459b8f44250d9e44375ffd9afe
+abi 0.6
+sections 14
+	type offset 8 size 10
+	import offset 20 size 65
+	function offset 87 size 3
+	table offset 92 size 5
+	memory offset 99 size 3
+	global offset 104 size 14
+	export offset 120 size 25
+	start offset 147 size 1
+	element offset 150 size 7
+	datacount offset 159 size 1
+	code offset 162 size 12
+	data offset 176 size 41
+	custom offset 219 size 18 purgatorio.abi
+	custom offset 239 size 28 name
+imports 3
+	wasi_snapshot_preview1
+		func 0 fd_close (i32 i32) -> i32
+	purgatorio
+		func 1 load (i32 i32) -> i32
+	env
+		global 0 base i32
+exports 3
+	memory 0 memory
+	func 2 _start ()
+	func 3 add (i32 i32) -> i32
+functions 2 imported 2
+table 0 funcref min 1 max 4
+memory 0 min 17 max -
+global 1 mut i32 1048576
+global 2 i64 -1
+start 2
+elements 1
+data 1
+custom purgatorio.abi 0.6
+custom name functions 2
+functions
+module /lib/test/tiny.wasm
+func 0 import (i32 i32) -> i32 wasi_snapshot_preview1.fd_close
+func 1 import (i32 i32) -> i32 purgatorio.load
+func 2 2 () _start
+func 3 7 (i32 i32) -> i32 add
+parts
+module /lib/test/tiny.wasm
+imports 3
+exports 3
+module /lib/test/tiny.wasm
+imports 3
+exports 3
+built modules
+module /bin/lib/add.wasm
+exports 2
+	memory 0 memory
+	func N add (i32 i32) -> i32
+module /bin/lib/add.wasm
+size ok
+digest ok
+abi ok
+func N N (i32 i32) -> i32 add
+dep
+abi 0.6
+import wasi_snapshot_preview1 fd_close
+import purgatorio load
+import env base global
+refers /bin/lib/add.wasm
+abi ok
+import purgatorio exits
+import wasi_snapshot_preview1 fd_write
+module /lib/test/tiny.wasm
+module /bin/lib/add.wasm
+signed
+module /tmp/sh-wasmtools/key.wasm
+custom purgatorio.sig signatures 1
+	signer 2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12
+	signer KEY builder
+same digest
+errors
+wasmdump: /tmp/sh-wasmtools/text: not a wasm module at offset 0
+wasmdep: /tmp/sh-wasmtools/text: not a wasm module at offset 0
+status error
+wasmdump: /tmp/sh-wasmtools/cut.wasm: truncated module at offset 178
+module /lib/test/tiny.wasm
+wasmdump: /tmp/sh-wasmtools/missing.wasm: file does not exist
+wasmdump: usage: wasmdump [-hsiemcf] file ...

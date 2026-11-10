@@ -125,3 +125,37 @@ pub fn check(wasm: &[u8], require_abi: bool) -> Result<(), String> {
         ))
     }
 }
+
+/// Custom sections the linker writes that the installed module does not
+/// carry. `strip = "symbols"` would leave them out too, but then the
+/// function names would be lost.
+const STRIPPED: &[&str] = &["name", "producers", "target_features"];
+
+/// Splits a linked guest into the module to install and its function
+/// names: `(module, names)`, where `module` is `wasm` without the
+/// [`STRIPPED`] sections and `names` is the text of its `.names` file
+/// (`wasmobj::Names`): one `index name` line per function, demangled.
+///
+/// The names stay out of the module because the `name` section also
+/// holds the output file's name, which carries a Cargo hash of the build
+/// host. The demangled function names carry no hash.
+pub fn split(wasm: &[u8]) -> Result<(Vec<u8>, String), String> {
+    let sections = wasmobj::sections(wasm).map_err(|e| e.to_string())?;
+    let mut module = wasmobj::HEADER.to_vec();
+    let mut names = wasmobj::Names::default();
+    for (i, s) in sections.iter().enumerate() {
+        if s.id == 0 && s.name == Some("name") {
+            names =
+                wasmobj::Names::from_section(s.data).map_err(|e| format!("name section: {e}"))?;
+        }
+        if s.id == 0 && s.name.is_some_and(|n| STRIPPED.contains(&n)) {
+            continue;
+        }
+        let end = sections.get(i + 1).map_or(wasm.len(), |n| n.offset);
+        module.extend_from_slice(&wasm[s.offset..end]);
+    }
+    // `{:#}` leaves out the hash a legacy name ends with and the crate
+    // disambiguators of a v0 name.
+    names.map(|n| format!("{:#}", rustc_demangle::demangle(n)));
+    Ok((module, names.to_text()))
+}
