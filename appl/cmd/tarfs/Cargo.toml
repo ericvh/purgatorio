@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-tarfs"
+description = "tarfs: serve a tar archive as a read-only file tree"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tarfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+appl-archive.workspace = true
+
+[lints]
+workspace = true
