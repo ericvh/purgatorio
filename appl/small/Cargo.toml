@@ -1,0 +1,31 @@
+# An experiment, not part of the system: `no_std` guests for
+# `wasm32-unknown-unknown` (plan Section 6.4's minimal target), to measure
+# what a command costs without Rust `std`. See docs/footprint.md.
+#
+# This is its own workspace, outside the main one, so the host builds,
+# clippy and `xtask build-root` do not see it. Build and measure with
+# `cargo xtask small`.
+[workspace]
+resolver = "3"
+members = ["rt", "echo", "cat", "sleep", "multi", "multi-std"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+small-rt = { path = "rt" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+# The same settings as the main workspace's `wasm` profile.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
