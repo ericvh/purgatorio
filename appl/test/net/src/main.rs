@@ -1,7 +1,8 @@
 //! net: dial, announce, an export mounted over TCP, and `#C`.
 //!
 //! `net --accept dir` accepts one connection and serves `/` on it, then
-//! waits for another that never comes. With no arguments the checks run.
+//! waits for another that never comes. `net --udp addr` checks a UDP echo
+//! server. With no arguments the checks run.
 //! A platform with no network prints `ok net_skip` and still succeeds.
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -19,6 +20,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     match args.get(1).map(String::as_str) {
         Some("--accept") => accept(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--wasi-dial") => wasi_dial(args.get(2).map(String::as_str).unwrap_or("")),
+        Some("--udp") => udp_echo(args.get(2).map(String::as_str).unwrap_or("")),
         _ => checks(),
     }
 }
@@ -88,6 +90,8 @@ fn checks() -> Result<(), Error> {
     };
     echo(&ann)?;
     println!("ok dial");
+    udp()?;
+    println!("ok udp");
     wasi_accept(&ann)?;
     println!("ok sock_accept");
     export_mount()?;
@@ -109,6 +113,59 @@ fn echo(ann: &dial::Connection) -> Result<(), Error> {
         return Err(Error::from("echo mismatch"));
     }
     Ok(())
+}
+
+/// UDP over loopback: the first datagram from a new remote starts a
+/// conversation on the announced port, and each read or write is one
+/// datagram.
+fn udp() -> Result<(), Error> {
+    let ann = dial::announce("udp!127.0.0.1!0").map_err(|e| Error(format!("udp: {e}")))?;
+    let here = local(&ann.dir)?;
+    let port = here.rsplit('!').next().unwrap_or("0");
+    let client = dial::dial(&format!("udp!127.0.0.1!{port}"))?;
+    let mut out = open_data(&client.dir)?;
+    out.write_all(b"ping")?;
+    out.write_all(b"again")?;
+    let server = dial::listen(&ann.dir)?;
+    if local(&client.dir)? != remote(&server.dir)? {
+        return Err(Error::from(
+            "udp: the conversation's remote is not the dialer",
+        ));
+    }
+    let mut data = open_data(&server.dir)?;
+    let mut buf = [0u8; 64];
+    for want in [&b"ping"[..], b"again"] {
+        let n = data.read(&mut buf)?;
+        if &buf[..n] != want {
+            return Err(Error(format!("udp: got {:?}", &buf[..n])));
+        }
+    }
+    data.write_all(b"pong")?;
+    let n = out.read(&mut buf)?;
+    if &buf[..n] != b"pong" {
+        return Err(Error(format!("udp: reply {:?}", &buf[..n])));
+    }
+    Ok(())
+}
+
+/// `net --udp addr`: sends `ping` to a UDP echo server and checks the echo.
+fn udp_echo(addr: &str) -> Result<(), Error> {
+    let conn = dial::dial(addr).map_err(|e| Error(format!("udp: {e}")))?;
+    let mut data = open_data(&conn.dir)?;
+    data.write_all(b"ping")?;
+    let mut buf = [0u8; 64];
+    let n = data.read(&mut buf)?;
+    if &buf[..n] != b"ping" {
+        return Err(Error(format!("udp: echo {:?}", &buf[..n])));
+    }
+    println!("ok udp_echo");
+    Ok(())
+}
+
+fn remote(dir: &str) -> Result<String, Error> {
+    Ok(std::fs::read_to_string(format!("{dir}/remote"))?
+        .trim()
+        .to_string())
 }
 
 fn export_mount() -> Result<(), Error> {

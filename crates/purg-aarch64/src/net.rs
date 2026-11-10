@@ -16,23 +16,28 @@
 //! ends with `interrupted`, as with `purg_core::block::park`.
 //!
 //! The interface has one IPv4 address and a default route ([`Ipv4Config`]);
-//! there is no DHCP, ARP for the gateway is smoltcp's, and UDP is not
-//! implemented yet.
+//! there is no DHCP, and ARP for the gateway is smoltcp's.
+//!
+//! UDP follows Inferno: a dialed conversation reads and writes datagrams
+//! with one remote, and an announced port starts a conversation for each
+//! new remote, which `listen` returns ([`UdpDemux`]). There is no IP
+//! fragmentation, so a datagram is at most [`UDP_MAX`] bytes.
 
 use alloc::borrow::Cow;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 use purg_platform::Result;
-use purg_platform::net::{Conn, Listener, Net};
+use purg_platform::net::{Conn, Listener, Net, UdpDemux};
 use purg_platform::sync::{Mutex, MutexGuard, Rendez, current_note};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp::{self, State};
+use smoltcp::socket::udp;
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address};
 use spin::Once;
@@ -49,6 +54,11 @@ pub const MAX_WAIT_MS: u64 = 10;
 const SOCKETS: usize = 6;
 const SOCKET_BUF: usize = 8192;
 const FIRST_EPHEMERAL: u16 = 49152;
+/// Datagrams each UDP socket buffers each way.
+const UDP_PACKETS: usize = 16;
+/// The largest UDP payload: the 1500-byte IP MTU less the IP and UDP
+/// headers. Larger writes fail.
+pub const UDP_MAX: usize = 1472;
 
 /// The interface's static IPv4 configuration.
 #[derive(Clone, Copy, Debug)]
@@ -189,12 +199,22 @@ impl Net for NetStack {
         self.stack()?.listen(port)
     }
 
-    fn dial_udp(&self, _host: &str, _port: u16) -> Result<Arc<dyn Conn>> {
-        Err(Cow::Borrowed("not implemented"))
+    fn dial_udp(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
+        if is_loopback(host) {
+            return self.loopback.dial_udp(port);
+        }
+        let ip = parse_v4(host).ok_or(Cow::Borrowed("no translation"))?;
+        self.stack()?.dial_udp(Ipv4Address::from(ip), port)
     }
 
-    fn announce_udp(&self, _host: &str, _port: u16) -> Result<Arc<dyn Conn>> {
-        Err(Cow::Borrowed("not implemented"))
+    fn announce_udp(&self, host: &str, port: u16) -> Result<Arc<dyn Listener>> {
+        if is_loopback(host) {
+            return self.loopback.announce_udp(port);
+        }
+        if !(host.is_empty() || host == "*" || host == "0.0.0.0" || parse_v4(host).is_some()) {
+            return Err(Cow::Borrowed("no translation"));
+        }
+        self.stack()?.announce_udp(port)
     }
 
     fn resolve(&self, host: &str, _port: u16) -> Result<String> {
@@ -298,6 +318,16 @@ impl Stack {
         }
         self.sockets.add(new_socket())
     }
+}
+
+fn new_udp_socket() -> udp::Socket<'static> {
+    let buf = || {
+        udp::PacketBuffer::new(
+            vec![udp::PacketMetadata::EMPTY; UDP_PACKETS],
+            vec![0; UDP_PACKETS * UDP_MAX],
+        )
+    };
+    udp::Socket::new(buf(), buf())
 }
 
 fn new_socket() -> tcp::Socket<'static> {
@@ -406,6 +436,171 @@ impl Smol {
             port,
             local: format!("{}!{port}", self.local),
         }))
+    }
+}
+
+impl Smol {
+    /// Opens a UDP socket on `port` (0: an ephemeral one).
+    fn udp_port(self: &Arc<Self>, port: u16, announced: bool) -> Result<Arc<SmolUdp>> {
+        let mut stack = self.lock();
+        let port = if port == 0 { stack.ephemeral() } else { port };
+        let mut socket = new_udp_socket();
+        if socket.bind(port).is_err() {
+            return Err(Cow::Borrowed("address in use"));
+        }
+        let handle = stack.sockets.add(socket);
+        Ok(Arc::new(SmolUdp {
+            smol: Arc::clone(self),
+            handle,
+            demux: Mutex::new(UdpDemux::new(announced)),
+            local: format!("{}!{port}", self.local),
+            open: AtomicBool::new(true),
+        }))
+    }
+
+    fn dial_udp(self: &Arc<Self>, ip: Ipv4Address, port: u16) -> Result<Arc<dyn Conn>> {
+        let sock = self.udp_port(0, false)?;
+        let remote = IpEndpoint::new(IpAddress::Ipv4(ip), port);
+        let id = sock.demux.lock().connect(remote);
+        Ok(Arc::new(SmolUdpConn::new(sock, id, remote, true)))
+    }
+
+    fn announce_udp(self: &Arc<Self>, port: u16) -> Result<Arc<dyn Listener>> {
+        Ok(Arc::new(SmolUdpListen {
+            sock: self.udp_port(port, true)?,
+        }))
+    }
+}
+
+/// One smoltcp UDP socket and the conversations on it.
+struct SmolUdp {
+    smol: Arc<Smol>,
+    handle: SocketHandle,
+    demux: Mutex<UdpDemux<IpEndpoint>>,
+    local: String,
+    /// Whether `handle` is still in the socket set.
+    open: AtomicBool,
+}
+
+impl SmolUdp {
+    /// Moves the datagrams the socket has received to their conversations.
+    fn pump(&self, stack: &mut Stack) {
+        if !self.open.load(Ordering::Acquire) {
+            return;
+        }
+        let socket = stack.sockets.get_mut::<udp::Socket>(self.handle);
+        let mut demux = self.demux.lock();
+        while let Ok((data, meta)) = socket.recv() {
+            demux.deliver(meta.endpoint, data.to_vec());
+        }
+    }
+
+    fn close(&self, stack: &mut Stack) {
+        if self.open.swap(false, Ordering::AcqRel) {
+            stack.sockets.remove(self.handle);
+        }
+    }
+}
+
+impl Drop for SmolUdp {
+    fn drop(&mut self) {
+        let smol = Arc::clone(&self.smol);
+        self.close(&mut smol.lock());
+    }
+}
+
+struct SmolUdpListen {
+    sock: Arc<SmolUdp>,
+}
+
+impl Listener for SmolUdpListen {
+    fn accept(&self) -> Result<Arc<dyn Conn>> {
+        let (id, remote) = self.sock.smol.run(|stack| {
+            self.sock.pump(stack);
+            self.sock.demux.lock().accept().map(Ok)
+        })?;
+        Ok(Arc::new(SmolUdpConn::new(
+            Arc::clone(&self.sock),
+            id,
+            remote,
+            false,
+        )))
+    }
+
+    fn local(&self) -> String {
+        self.sock.local.clone()
+    }
+}
+
+/// A UDP conversation: a dialed socket, or one remote of an announced one.
+struct SmolUdpConn {
+    sock: Arc<SmolUdp>,
+    id: u64,
+    remote: IpEndpoint,
+    /// The socket is this conversation's alone, so hangup closes it.
+    dialed: bool,
+    closed: AtomicBool,
+}
+
+impl SmolUdpConn {
+    fn new(sock: Arc<SmolUdp>, id: u64, remote: IpEndpoint, dialed: bool) -> SmolUdpConn {
+        SmolUdpConn {
+            sock,
+            id,
+            remote,
+            dialed,
+            closed: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Conn for SmolUdpConn {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        self.sock.smol.run(|stack| {
+            if self.closed.load(Ordering::Acquire) {
+                return Some(Ok(0));
+            }
+            self.sock.pump(stack);
+            self.sock.demux.lock().recv(self.id, buf).map(Ok)
+        })
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        if buf.len() > UDP_MAX {
+            return Err(Cow::Borrowed("message too long"));
+        }
+        self.sock.smol.run(|stack| {
+            if self.closed.load(Ordering::Acquire) || !self.sock.open.load(Ordering::Acquire) {
+                return Some(Err(Cow::Borrowed("connection closed")));
+            }
+            let socket = stack.sockets.get_mut::<udp::Socket>(self.sock.handle);
+            match socket.send_slice(buf, self.remote) {
+                Ok(()) => {
+                    // Send now rather than at the next poll.
+                    stack.poll();
+                    Some(Ok(buf.len()))
+                }
+                Err(udp::SendError::BufferFull) => None,
+                Err(udp::SendError::Unaddressable) => Some(Err(Cow::Borrowed("no route"))),
+            }
+        })
+    }
+
+    fn local(&self) -> String {
+        self.sock.local.clone()
+    }
+
+    fn remote(&self) -> String {
+        endpoint(Some(self.remote))
+    }
+
+    fn hangup(&self) {
+        self.closed.store(true, Ordering::Release);
+        let mut stack = self.sock.smol.lock();
+        self.sock.demux.lock().forget(self.id);
+        if self.dialed {
+            self.sock.close(&mut stack);
+        }
     }
 }
 
@@ -518,9 +713,13 @@ impl Listener for SmolListen {
     }
 }
 
+/// The loopback UDP ports in use, by number.
+type LoopUdpPorts = Mutex<Vec<(u16, Weak<LoopUdp>)>>;
+
 /// In-process connections for `127.0.0.1`. The guest tests dial themselves.
 struct Loopback {
     listeners: Mutex<Vec<(u16, Arc<LoopListen>)>>,
+    udp: Arc<LoopUdpPorts>,
     next: AtomicU16,
 }
 
@@ -528,8 +727,53 @@ impl Loopback {
     fn new() -> Loopback {
         Loopback {
             listeners: Mutex::new(Vec::new()),
+            udp: Arc::new(Mutex::new(Vec::new())),
             next: AtomicU16::new(1),
         }
+    }
+
+    /// Opens loopback UDP port `port` (0: a fresh one).
+    fn udp_port(&self, port: u16, announced: bool) -> Result<Arc<LoopUdp>> {
+        let mut ports = self.udp.lock();
+        ports.retain(|(_, w)| w.strong_count() > 0);
+        let port = if port == 0 {
+            loop {
+                let p = self.port();
+                if ports.iter().all(|(q, _)| *q != p) {
+                    break p;
+                }
+            }
+        } else if ports.iter().any(|(q, _)| *q == port) {
+            return Err(Cow::Borrowed("address in use"));
+        } else {
+            port
+        };
+        let sock = Arc::new(LoopUdp {
+            port,
+            demux: Mutex::new(UdpDemux::new(announced)),
+            ready: Rendez::new(),
+        });
+        ports.push((port, Arc::downgrade(&sock)));
+        Ok(sock)
+    }
+
+    fn dial_udp(&self, port: u16) -> Result<Arc<dyn Conn>> {
+        let sock = self.udp_port(0, false)?;
+        let id = sock.demux.lock().connect(port);
+        Ok(Arc::new(LoopUdpConn {
+            ports: Arc::clone(&self.udp),
+            sock,
+            id,
+            remote: port,
+            closed: AtomicBool::new(false),
+        }))
+    }
+
+    fn announce_udp(&self, port: u16) -> Result<Arc<dyn Listener>> {
+        Ok(Arc::new(LoopUdpListen {
+            ports: Arc::clone(&self.udp),
+            sock: self.udp_port(port, true)?,
+        }))
     }
 
     fn port(&self) -> u16 {
@@ -670,5 +914,101 @@ impl Conn for LoopConn {
         self.mine.closed.store(true, Ordering::Release);
         // The other end reads `peer` and watches `mine.closed`.
         self.peer.ready.wakeup();
+    }
+}
+
+/// A loopback UDP port and the conversations on it.
+struct LoopUdp {
+    port: u16,
+    demux: Mutex<UdpDemux<u16>>,
+    /// Woken when a datagram arrives or a conversation hangs up.
+    ready: Rendez,
+}
+
+struct LoopUdpListen {
+    ports: Arc<LoopUdpPorts>,
+    sock: Arc<LoopUdp>,
+}
+
+impl Listener for LoopUdpListen {
+    fn accept(&self) -> Result<Arc<dyn Conn>> {
+        loop {
+            if let Some((id, remote)) = self.sock.demux.lock().accept() {
+                return Ok(Arc::new(LoopUdpConn {
+                    ports: Arc::clone(&self.ports),
+                    sock: Arc::clone(&self.sock),
+                    id,
+                    remote,
+                    closed: AtomicBool::new(false),
+                }));
+            }
+            sleep(&self.sock.ready, || self.sock.demux.lock().pending(), None)?;
+        }
+    }
+
+    fn local(&self) -> String {
+        format!("127.0.0.1!{}", self.sock.port)
+    }
+}
+
+struct LoopUdpConn {
+    ports: Arc<LoopUdpPorts>,
+    sock: Arc<LoopUdp>,
+    id: u64,
+    remote: u16,
+    closed: AtomicBool,
+}
+
+impl Conn for LoopUdpConn {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        loop {
+            if self.closed.load(Ordering::Acquire) {
+                return Ok(0);
+            }
+            if let Some(n) = self.sock.demux.lock().recv(self.id, buf) {
+                return Ok(n);
+            }
+            sleep(
+                &self.sock.ready,
+                || self.closed.load(Ordering::Acquire) || self.sock.demux.lock().ready(self.id),
+                None,
+            )?;
+        }
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Cow::Borrowed("connection closed"));
+        }
+        if buf.len() > UDP_MAX {
+            return Err(Cow::Borrowed("message too long"));
+        }
+        let peer = self
+            .ports
+            .lock()
+            .iter()
+            .find(|(p, _)| *p == self.remote)
+            .and_then(|(_, w)| w.upgrade());
+        // A datagram nobody is listening for is lost, as on a wire.
+        if let Some(peer) = peer
+            && peer.demux.lock().deliver(self.sock.port, buf.to_vec())
+        {
+            peer.ready.wakeup();
+        }
+        Ok(buf.len())
+    }
+
+    fn local(&self) -> String {
+        format!("127.0.0.1!{}", self.sock.port)
+    }
+
+    fn remote(&self) -> String {
+        format!("127.0.0.1!{}", self.remote)
+    }
+
+    fn hangup(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.sock.demux.lock().forget(self.id);
+        self.sock.ready.wakeup();
     }
 }

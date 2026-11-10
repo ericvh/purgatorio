@@ -192,6 +192,7 @@ fn tcp_dial_export_and_os() {
         assert!(out.contains("ok cs"), "{vm}:\n{out}");
         assert!(out.contains("ok os\n"), "{vm}:\n{out}");
         assert!(out.contains("ok dial"), "{vm}:\n{out}");
+        assert!(out.contains("ok udp\n"), "{vm}:\n{out}");
         assert!(out.contains("ok sock_accept"), "{vm}:\n{out}");
         assert!(out.contains("ok export"), "{vm}:\n{out}");
         assert!(

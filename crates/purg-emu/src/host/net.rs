@@ -1,7 +1,9 @@
 //! Host sockets and processes for `#I` and `#C`.
 
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{
+    Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
+};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,7 +11,7 @@ use std::time::Duration;
 
 use purg_abi::error::EINTR;
 use purg_platform::Result;
-use purg_platform::net::{self, Conn, Listener};
+use purg_platform::net::{self, Conn, Listener, UdpDemux};
 use purg_platform::sync::current_note;
 
 pub struct HostNet;
@@ -52,7 +54,7 @@ impl net::Net for HostNet {
         }))
     }
 
-    fn announce_udp(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
+    fn announce_udp(&self, host: &str, port: u16) -> Result<Arc<dyn Listener>> {
         let sock = if host.is_empty() || host == "*" {
             UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).map_err(io_err)?
         } else {
@@ -60,10 +62,12 @@ impl net::Net for HostNet {
         };
         sock.set_nonblocking(true).map_err(io_err)?;
         let local = endpoint(sock.local_addr().map_err(io_err)?);
-        Ok(Arc::new(UdpConn {
-            sock: Mutex::new(sock),
+        Ok(Arc::new(UdpListen {
+            port: Arc::new(UdpPort {
+                sock,
+                demux: Mutex::new(UdpDemux::new(true)),
+            }),
             local,
-            remote: String::new(),
         }))
     }
 
@@ -263,6 +267,111 @@ impl Conn for UdpConn {
     }
 
     fn hangup(&self) {}
+}
+
+/// An announced UDP socket, whose datagrams [`UdpDemux`] sorts into one
+/// conversation per remote.
+struct UdpPort {
+    sock: UdpSocket,
+    demux: Mutex<UdpDemux<SocketAddr>>,
+}
+
+impl UdpPort {
+    /// Moves the datagrams waiting on the socket to their conversations.
+    fn pump(&self, demux: &mut UdpDemux<SocketAddr>) -> Result<()> {
+        let mut buf = vec![0u8; 65536];
+        loop {
+            match self.sock.recv_from(&mut buf) {
+                Ok((n, from)) => {
+                    demux.deliver(from, buf[..n].to_vec());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                // A port-unreachable from an earlier send; nothing to file.
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {}
+                Err(e) => return Err(io_err(e)),
+            }
+        }
+    }
+
+    /// Pumps and runs `f` on the demux until it returns `Some`.
+    fn wait<T>(&self, mut f: impl FnMut(&mut UdpDemux<SocketAddr>) -> Option<T>) -> Result<T> {
+        loop {
+            interrupted()?;
+            {
+                let mut demux = self.demux.lock().map_err(|_| poison())?;
+                self.pump(&mut demux)?;
+                if let Some(v) = f(&mut demux) {
+                    return Ok(v);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+struct UdpListen {
+    port: Arc<UdpPort>,
+    local: String,
+}
+
+impl Listener for UdpListen {
+    fn accept(&self) -> Result<Arc<dyn Conn>> {
+        let (id, remote) = self.port.wait(|d| d.accept())?;
+        Ok(Arc::new(UdpChild {
+            port: Arc::clone(&self.port),
+            id,
+            remote,
+            local: self.local.clone(),
+            closed: AtomicBool::new(false),
+        }))
+    }
+
+    fn local(&self) -> String {
+        self.local.clone()
+    }
+}
+
+/// One remote's conversation on an announced UDP port.
+struct UdpChild {
+    port: Arc<UdpPort>,
+    id: u64,
+    remote: SocketAddr,
+    local: String,
+    closed: AtomicBool,
+}
+
+impl Conn for UdpChild {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        self.port.wait(|d| {
+            if self.closed.load(Ordering::Acquire) {
+                Some(0)
+            } else {
+                d.recv(self.id, buf)
+            }
+        })
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(std::borrow::Cow::Borrowed("connection closed"));
+        }
+        self.port.sock.send_to(buf, self.remote).map_err(io_err)
+    }
+
+    fn local(&self) -> String {
+        self.local.clone()
+    }
+
+    fn remote(&self) -> String {
+        endpoint(self.remote)
+    }
+
+    fn hangup(&self) {
+        self.closed.store(true, Ordering::Release);
+        if let Ok(mut d) = self.port.demux.lock() {
+            d.forget(self.id);
+        }
+    }
 }
 
 /// A host process behind `#C`.
