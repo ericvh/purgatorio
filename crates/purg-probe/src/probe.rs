@@ -42,7 +42,8 @@ static HEAP: Heap = Heap::empty();
 /// and the deepest a thread went there was 22 KiB.
 const STACK_SIZE: usize = 256 << 10;
 
-/// Stack for the core's service kprocs (the mount readers).
+/// Stack for the core's service kprocs (the mount readers and export
+/// workers), sized as in the kernel.
 const KPROC_STACK_SIZE: usize = 64 << 10;
 
 static SCHED: Scheduler = Scheduler::new(STACK_SIZE);
