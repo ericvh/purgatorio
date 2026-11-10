@@ -22,6 +22,8 @@ cargo xtask build-root           # build guests into root/bin (tests need this f
 cargo test --workspace           # unit + acceptance tests, wasmtime and wasmi
 cargo xtask run-emu -- sh -c 'ls /bin | wc -l'
 cargo xtask probe                # bare-metal aarch64 image in QEMU (qemu-system-aarch64)
+cargo xtask kernel               # purg-kernel under QEMU TCG: GICv2, GICv3, EL2 boot
+cargo xtask kernel --kvm         # the same under KVM (aarch64 host, GICv3 only, PSCI exit)
 cargo xtask clippy-guests        # lint the SDK and every guest for wasm32-wasip1
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -39,7 +41,7 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 
 ## Rules
 
-- **Shared crates are `no_std` + `alloc`:** `purg-abi`, `purg-styx`,
+- **Shared crates are `no_std` + `alloc`:** `purg-abi`, `purg-styx`, `purg-aarch64`,
   `purg-platform`, `purg-core`, `purg-vm`, `purg-vm-wasmi`. They must build for
   `aarch64-unknown-none` unchanged; the kernel reuses them. Only `purg-emu`
   and `purg-vm-wasmtime` use `std`.
@@ -78,9 +80,12 @@ crates/purg-{abi,styx,platform,core,vm,vm-wasmi}   no_std shared core
 crates/purg-vm-wasmtime                            wasmtime backend (std)
 crates/purg-emu                                    the emu binary; host code in src/host/
 crates/purg-probe                                  bare-metal aarch64 QEMU image; expected.out
+crates/purg-aarch64                                DTB, GIC, timer, vectors, MMU, PL011, scheduler
+crates/purg-kernel                                 the native kernel (Phase K); expected.out
 sdk/purgatorio, sdk/purgatorio-macros              guest SDK, #[purgatorio::main]
 appl/cmd/<name>/                                   commands -> root/bin/<name>.wasm
-appl/lib/<name>/                                   loadable reactors -> root/bin/lib/<name>.wasm
+appl/lib/<name>/                                   cdylib crates are loadable reactors -> root/bin/lib/<name>.wasm;
+                                                   others (regexp) are ordinary libraries
 appl/test/{abi,procs,m3,net,wasi}/                 conformance guests -> root/bin/test/
 root/                                              the tree emu serves as #U
 root/lib/test/sh/                                  sh script corpus with .out goldens

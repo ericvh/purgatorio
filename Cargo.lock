@@ -1559,6 +1559,8 @@ version = "0.1.0"
 dependencies = [
  "linked_list_allocator",
  "purg-aarch64",
+ "purg-platform",
+ "spin 0.10.1",
 ]
 
 [[package]]
