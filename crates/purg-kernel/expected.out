@@ -30,6 +30,7 @@ ok stat_dir
 ok fstat_stdout
 ok dirread_root
 ok werrstr_roundtrip
+ok fauth_stream_errors
 kernel: ok
 kernel: run /bin/test/procs.wasm
 ok spawn_echo
@@ -47,6 +48,15 @@ kernel: run /bin/test/m3.wasm
 ok file2chan
 ok export
 ok kill
+ok fauth
+ok fauth_bad_proof
+ok fauth_not_required
+ok noauth_rejected
+ok amount
+ok stream_pipe_file
+ok stream_file_pipe
+ok stream_short_write
+ok stream_kill
 kernel: ok
 kernel: run /bin/test/wasi.wasm
 ok read
@@ -61,28 +71,5 @@ ok sock
 ok sleep
 ok args
 kernel: ok
-kernel: sh /lib/test/sh/bind.sh
-kernel: ok
-kernel: sh /lib/test/sh/depth.sh
-kernel: ok
-kernel: sh /lib/test/sh/env.sh
-kernel: ok
-kernel: sh /lib/test/sh/files.sh
-kernel: ok
-kernel: sh /lib/test/sh/jobs.sh
-kernel: ok
-kernel: sh /lib/test/sh/m3.sh
-kernel: ok
-kernel: sh /lib/test/sh/m5.sh
-kernel: ok
-kernel: sh /lib/test/sh/pipes.sh
-kernel: ok
-kernel: sh /lib/test/sh/redir.sh
-kernel: ok
-kernel: sh /lib/test/sh/status.sh
-kernel: ok
-kernel: sh /lib/test/sh/tools.sh
-kernel: ok
-kernel: sh /lib/test/sh/words.sh
-kernel: ok
+@sh-corpus
 kernel: ok
