@@ -36,8 +36,8 @@ at `e56c3b6`, and say so.
 | RAM for one `echo` (thread, memory, module) | about 3.3 MiB | about 0.8 MiB |
 | Smallest `-m`: boots to `sh` and runs pipelines | 512M (required) | 25M |
 | Smallest `-m`: the full test mode passes | 512M (required) | 52M |
-| `cargo xtask kernel`: a TCG run / the KVM run | 71 s / 17.9 s | 71 s / 17.3 to 19.5 s |
-| `cargo xtask probe` on TCG | 85 s | 85 to 90 s |
+| `cargo xtask kernel`: a TCG run / the KVM run (at `ee4f1b5`, alternated) | 85 to 92 s / 19.6 to 20.7 s | 96 to 110 s / 19.8 to 23.3 s |
+| `cargo xtask probe` on TCG | 85 s | 85 to 95 s |
 
 The idle, pipeline and per-test figures for "before" are from this branch
 with 2 MiB kernel stacks and 1 MiB guest stacks, since `next` prints no
@@ -54,7 +54,8 @@ What changed, in order of effect:
    the RAM on both sides of the DTB and the initrd (Section 5).
 4. **The kernel is built for size except for the interpreter**
    (`opt-level = "z"`, fat LTO, wasmi at 3): a quarter less code at the
-   same guest speed and the same test times. A `kernel-small` profile
+   same guest speed, for about a tenth more time in a TCG test run. A
+   `kernel-small` profile
    builds the interpreter for size too (Section 2).
 5. **`tls`, `net` and `p9` are cargo features** of the kernel, on by
    default; a build without them is 144 KiB smaller (Section 2).
@@ -160,13 +161,32 @@ as long (more scripts, and each test's progs are reaped):
 |---|---|---|---|---|---|
 | `opt-level = 3` (as on `next`) | 1,952 | 68 to 78 s | 17.9 s | 2.29 s | 23 KiB |
 | **adopted** | 1,473 | 67 to 82 s | 17.3 to 19.5 s | 2.35 s | 21 KiB |
+
+Those first runs could not tell the two profiles apart. Later, on `next`
+at `ee4f1b5` (after the concurrent export, #97), the profiles were run
+alternately, two rounds each, to separate them from the load on the
+machine. Each figure is one TCG run of the four configurations:
+
+| Build | TCG runs |
+|---|---|
+| `next` | 85 to 92 s, 85 to 86 s |
+| this branch with `next`'s `opt-level = 3` profile | 83 to 124 s (one outlier; the others 83 to 93 s), 83 to 90 s |
+| this branch as it is (adopted profile) | 96 to 101 s, 96 to 110 s |
+
+So the branch's other changes cost nothing in test time, and the adopted
+profile costs about a tenth of a TCG run (roughly 10 s of 90). The
+corpus now runs more code in the kernel itself (the mount
+authentication's Ed25519 and SHA-2 in `purg-auth`, the export workers),
+and that code is built for size. A guest computing under KVM is as fast
+as before (2.35 s against 2.29 s).
 | **`kernel-small`**, every feature | 958 | 243 to 251 s | 21.8 s | 3.48 s | 22 KiB |
 
 What the tables show:
 
 - **Size and speed pull apart only in the interpreter.** Building
-  everything but wasmi for size costs nothing a guest can measure, and on
-  `next` nothing the test times can show either. Building wasmi for size
+  everything but wasmi for size costs nothing a guest can measure; it
+  costs about a tenth of a TCG test run, where the kernel's own code is
+  emulated. Building wasmi for size
   too halves the code again but a CPU-bound guest takes 1.5 times as long
   (3.1 times without LTO).
 - **`kernel-small` is not a profile to test with.** On `next` its TCG run
@@ -186,8 +206,11 @@ What the tables show:
 **Adopted for `[profile.kernel]`:** `opt-level = "z"`, `lto = "fat"`,
 `codegen-units = 1`, with the four wasmi crates at `opt-level = 3`. The
 kernel's text goes from 1,948 KiB to 1,473 KiB with the same guest
-speed, and every test passes on TCG and KVM in the same time as before.
-The kernel takes longer to link.
+speed, and every test passes on TCG and KVM; a TCG test run takes about
+a tenth longer, and the kernel takes longer to link. If the TCG time
+matters more than the 475 KiB, the crates that run in the kernel's hot
+paths (`purg-auth`, `sha2`, `curve25519-dalek`) can be put at
+`opt-level = 3` beside wasmi; that was not measured.
 
 **`[profile.kernel-small]`** is the same with wasmi at `"z"`: 958 KiB with
 every feature, 815 KiB without them, for a board where code size matters
