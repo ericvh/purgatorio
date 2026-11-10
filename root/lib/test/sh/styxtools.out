@@ -31,10 +31,10 @@
 ?next tag is 13
 -> Tmsg.Clunk(20,2)
 <- Rmsg.Clunk(20)
-<- Tmsg.Version(0,8216,"9P2000")
--> Rmsg.Version(0,8192,"9P2000")
-<- Tmsg.Attach(1,1,4294967295,"user","")
--> Rmsg.Attach(1,Qid(16r5,0,16r80))
+<- Tmsg.Version(65535,8216,"9P2000")
+-> Rmsg.Version(65535,8192,"9P2000")
+<- Tmsg.Attach(0,1,4294967295,"user","")
+-> Rmsg.Attach(0,Qid(16r5,0,16r80))
 -> Tmsg.Version(65535,8192,"9P2000")
 Tmsg.Version(65535,8192,"9P2000")
 Rmsg.Version(65535,8192,"9P2000")
@@ -58,7 +58,7 @@ Rmsg.Clunk(4)
 <- Rmsg.Clunk(4)
 hi
 1
-Rmsg.Read(13,array[3] of byte)
+Rmsg.Read(11,array[3] of byte)
 hello
     1        2        6        0        0 /tmp/sh-styxtools/f
 1
