@@ -199,10 +199,36 @@ impl System {
         }
     }
 
+    /// One line of heap figures and the number of live kernel threads,
+    /// then the names and pids of the threads that have names.
+    pub(crate) fn memstat(&self) {
+        let h = crate::kernel::HEAP.stats();
+        self.say(&format!(
+            "kernel: mem used={} peak={} largest={} size={} blocks={} allocs={} threads={}",
+            h.used,
+            h.peak,
+            h.largest_free,
+            h.size,
+            h.live,
+            h.allocs,
+            SCHED.live()
+        ));
+        let threads: Vec<String> = SCHED
+            .threads()
+            .iter()
+            .filter(|(name, _)| !name.is_empty())
+            .map(|(name, pid)| format!("{name}:{pid}"))
+            .collect();
+        self.say(&format!("kernel: mem threads {}", threads.join(" ")));
+    }
+
     /// Runs the conformance guests and the sh corpus; returns the number
-    /// that failed.
-    pub fn run_tests(&self) -> usize {
+    /// that failed. With `memstat`, prints [`System::memstat`] after each.
+    pub fn run_tests(&self, memstat: bool) -> usize {
         let mut failed = 0;
+        if memstat {
+            self.memstat();
+        }
         for &(argv, ok) in SCRIPT {
             self.say(&format!("kernel: run {}", argv.join(" ")));
             let v = match (self.run(argv, None), ok) {
@@ -212,6 +238,9 @@ impl System {
                 (Err(e), _) => Err(format!("error: {e}")),
             };
             self.verdict(&mut failed, v);
+            if memstat {
+                self.memstat();
+            }
         }
         failed += self.device_tests();
         let names = match self.list(SH_CORPUS) {
@@ -229,6 +258,9 @@ impl System {
                 .unwrap_or_default();
             let v = self.sh_script(&script, &want).map(|()| String::from("ok"));
             self.verdict(&mut failed, v);
+            if memstat {
+                self.memstat();
+            }
         }
         failed
     }
@@ -243,7 +275,9 @@ impl System {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Run the conformance guests and the sh corpus (`bootargs` has `test`).
-    Test,
+    /// `memstat` (`bootargs` has `memstat` too) prints a line of heap
+    /// figures after each.
+    Test { memstat: bool },
     /// `sh -l` on the console.
     Interactive,
 }
@@ -266,7 +300,8 @@ pub fn start(
     let done = Rendez::new();
     let wake = done.clone();
     SCHED.spawn(Box::new(move || {
-        let platform = MetalPlatform::new(console, &SCHED, "purgatorio", rtc);
+        let platform =
+            MetalPlatform::new(console, &SCHED, "purgatorio", rtc).with_heap(&crate::kernel::HEAP);
         let native = crate::devices::native(console, rtc, &platform.user());
         let p9 = host.and_then(host9p::open);
         let extra: Vec<Arc<dyn Dev>> = p9.iter().map(|d| d.clone() as Arc<dyn Dev>).collect();
@@ -275,8 +310,13 @@ pub fn start(
         }) {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
             Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref())) {
-                (Mode::Test, host) => {
-                    sys.run_tests() + sys.host9p_tests(host) + sys.net_tests(&checks)
+                (Mode::Test { memstat }, host) => {
+                    let failed =
+                        sys.run_tests(memstat) + sys.host9p_tests(host) + sys.net_tests(&checks);
+                    if memstat {
+                        sys.memstat();
+                    }
+                    failed
                 }
                 (Mode::Interactive, _) => match sys.interactive() {
                     Ok(s) if s.is_empty() => 0,

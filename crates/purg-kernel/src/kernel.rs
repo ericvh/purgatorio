@@ -23,7 +23,7 @@ use crate::{irq, selftest};
 static ROOT_TAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/root.tar"));
 
 #[global_allocator]
-static HEAP: Heap = Heap::empty();
+pub(crate) static HEAP: Heap = Heap::empty();
 
 /// Prints a line through the console lock (see [`console::print`]).
 macro_rules! println {
@@ -286,7 +286,12 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         archive.iter().any(|&b| b != 0),
         "no root: build the guests (cargo xtask build-root) or boot with -initrd"
     );
-    let mode = if test { Mode::Test } else { Mode::Interactive };
+    let mode = match test {
+        true => Mode::Test {
+            memstat: has_bootarg(&info, "memstat"),
+        },
+        false => Mode::Interactive,
+    };
     println!("kernel: root {from}");
     let net = system::net::open(&fdt, &info);
     let host = system::host9p::find(&fdt);

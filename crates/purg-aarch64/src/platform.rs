@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use purg_platform::net::Net;
 use purg_platform::{Console, Platform, Result, Rtc};
 
+use crate::heap::Heap;
 use crate::pl031::Pl031;
 use crate::sched::Scheduler;
 use crate::timer;
@@ -18,6 +19,7 @@ pub struct MetalPlatform {
     sched: &'static Scheduler,
     sysname: &'static str,
     net: Option<Box<dyn Net>>,
+    heap: Option<&'static Heap>,
     boot_epoch_ns: u64,
     boot_counter: u64,
     /// splitmix64 state for [`Platform::entropy`].
@@ -50,6 +52,7 @@ impl MetalPlatform {
             sched,
             sysname,
             net: None,
+            heap: None,
             boot_epoch_ns: secs * 1_000_000_000,
             boot_counter,
             seed: AtomicU64::new(boot_counter ^ 0x9e37_79b9_7f4a_7c15),
@@ -59,6 +62,12 @@ impl MetalPlatform {
     /// Serves `#I` from `net`.
     pub fn with_net(mut self, net: Box<dyn Net>) -> MetalPlatform {
         self.net = Some(net);
+        self
+    }
+
+    /// Reports `heap` through [`Platform::memory`].
+    pub fn with_heap(mut self, heap: &'static Heap) -> MetalPlatform {
+        self.heap = Some(heap);
         self
     }
 }
@@ -106,9 +115,13 @@ impl Platform for MetalPlatform {
         self.sched.set_current_pid(pid);
     }
 
-    fn spawn_kproc(&self, _name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {
-        self.sched.spawn(f);
+    fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {
+        self.sched.spawn_named(name, f);
         Ok(())
+    }
+
+    fn memory(&self) -> (u64, u64) {
+        self.heap.map_or((0, 0), Heap::memory)
     }
 
     fn net(&self) -> Option<&dyn Net> {

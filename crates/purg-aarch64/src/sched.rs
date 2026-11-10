@@ -31,6 +31,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -62,6 +63,8 @@ struct Thread {
     /// Owns the stack; `None` for the boot thread.
     _stack: Option<Vec<u8>>,
     entry: Option<Box<dyn FnOnce() + Send>>,
+    /// What the thread is for, for reports.
+    name: String,
     pid: u32,
     note: Option<Arc<Note>>,
     /// The thread's preemption-disable count while it is switched out.
@@ -75,6 +78,7 @@ impl Thread {
             ctx,
             _stack: stack,
             entry,
+            name: String::new(),
             pid: 0,
             note: None,
             preempt: 0,
@@ -221,13 +225,19 @@ impl Scheduler {
 
     /// Starts a thread running `f`. It first runs at the next switch.
     pub fn spawn(&'static self, f: Box<dyn FnOnce() + Send>) {
+        self.spawn_named("", f);
+    }
+
+    /// [`Scheduler::spawn`], with a name for [`Scheduler::threads`].
+    pub fn spawn_named(&'static self, name: &str, f: Box<dyn FnOnce() + Send>) {
         let mut stack = vec![0u8; self.stack_size];
         let top = (stack.as_mut_ptr() as usize + self.stack_size) & !15;
         let mut ctx = Context::default();
         ctx.x[0] = self as *const Scheduler as u64;
         ctx.x[11] = purg_aarch64_thread_start as *const () as u64;
         ctx.sp = top as u64;
-        let th = Box::new(Thread::new(ctx, Some(stack), Some(f)));
+        let mut th = Box::new(Thread::new(ctx, Some(stack), Some(f)));
+        th.name = String::from(name);
         let _g = IrqGuard::new();
         let mut t = self.threads.lock();
         let id = match t.all.iter().position(Option::is_none) {
@@ -335,6 +345,18 @@ impl Scheduler {
         let _g = IrqGuard::new();
         let t = self.threads.lock();
         t.all.iter().flatten().filter(|th| !th.done).count()
+    }
+
+    /// The name and pid of each thread that has not finished.
+    pub fn threads(&self) -> Vec<(String, u32)> {
+        let _g = IrqGuard::new();
+        let t = self.threads.lock();
+        t.all
+            .iter()
+            .flatten()
+            .filter(|th| !th.done)
+            .map(|th| (th.name.clone(), th.pid))
+            .collect()
     }
 
     pub fn current_pid(&self) -> u32 {
