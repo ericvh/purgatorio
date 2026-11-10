@@ -171,6 +171,11 @@ pub fn read_line() -> Option<String> {
     String::from_utf8(line).ok()
 }
 
+/// Whether a guest factotum is mounted at [`FACTOTUM`].
+pub fn have_factotum() -> bool {
+    crate::stat(&format!("{FACTOTUM}/rpc")).is_ok()
+}
+
 /// Asks the guest factotum for a v2 proof. `None` when it is not mounted
 /// or has no key.
 fn factotum(challenge: &[u8], user: &str, aname: &str) -> Option<Vec<u8>> {

@@ -63,8 +63,15 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         rest[0].parse().map_err(|_| Error::from("bad fd"))?
     };
     let flags = order | create | noauth;
-    purgatorio::auth::amount_key(fd, &rest[1], flags, spec, keyfile.as_deref())
-        .map_err(|e| Error(format!("mount: {e}")))?;
+    // The kernel authenticates a plain mount itself, in one conversation.
+    // A keyfile or a guest factotum means the proof is built here, with
+    // fauth first.
+    if keyfile.is_some() || purgatorio::auth::have_factotum() {
+        purgatorio::auth::amount_key(fd, &rest[1], flags, spec, keyfile.as_deref())
+    } else {
+        purgatorio::mount(fd, -1, &rest[1], flags, spec)
+    }
+    .map_err(|e| Error(format!("mount: {e}")))?;
     // The mount's session holds the conversation. Dropping `conn` closes this
     // prog's descriptor and leaves the session's reference in place.
     drop(conn);
