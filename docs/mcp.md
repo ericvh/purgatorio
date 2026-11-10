@@ -4,7 +4,7 @@
 Model Context Protocol (MCP). It is an ordinary guest command
 (`/bin/mcpd.wasm`). It speaks MCP on its standard input and output, so an
 MCP client starts it by starting `emu`. The plan and its later stages are
-in issue #70. This page describes stage 1.
+in issue #70. This page describes stages 1 and 2.
 
 ## Running it
 
@@ -40,13 +40,13 @@ Use absolute paths: the client chooses the working directory. Add
 
 Options, after `mcpd`:
 
-- `-l logfile` appends a line per session start and tool call to
-  `logfile`, a name in the emu's own namespace (`-l /tmp/mcpd.log` is
-  `root/tmp/mcpd.log` on the host). Without it nothing is logged. `mcpd`
-  writes no diagnostics to its standard error, because on emu a guest's
-  fd 2 is the console, which is the emu's standard output: the protocol
-  stream.
-- `-n nsfile` grants the session more than the default. See below.
+- `-l logfile` appends the audit log to `logfile`, a name in the emu's
+  own namespace (`-l /tmp/mcpd.log` is `root/tmp/mcpd.log` on the host).
+  Without it nothing is logged. `mcpd` writes nothing else to its
+  standard error, because on emu a guest's fd 2 is the console, which is
+  the emu's standard output: the protocol stream. See "The audit log".
+- `-n nsfile` grants the session more than the default, with a
+  namespace(6) file. See below.
 
 You can try it by hand:
 
@@ -66,8 +66,8 @@ input ends.
 - 2026-07-28 has no handshake. Each request carries
   `io.modelcontextprotocol/protocolVersion` and
   `io.modelcontextprotocol/clientCapabilities` in `params._meta`. `mcpd`
-  answers `server/discover`, `tools/list` and `tools/call`, and every
-  result has `resultType`. A request without the metadata gets `-32602`;
+  answers `server/discover`, `tools/list`, `tools/call` and the three
+  resource methods, and every result has `resultType`. A request without the metadata gets `-32602`;
   another version gets `-32022` with the supported list.
 - A client of 2025-11-25, 2025-06-18, 2025-03-26 or 2024-11-05 sends
   `initialize` first. `mcpd` answers with the client's version if it is
@@ -85,9 +85,16 @@ input ends.
 - A file tool that gets no answer within 60 seconds (a read of a file
   that blocks, such as a pipe nobody writes) fails, and the session is
   replaced as by `reset`.
-- One request is served at a time. `notifications/cancelled` is accepted
-  and ignored; use `timeout_ms`.
-- Resources, prompts, and server-to-client requests are not implemented.
+- A client may send requests without waiting for answers. The session
+  begins them in order, one at a time: a `run` or `mount` holds up the
+  calls after it until it ends. The one exception is a `job_read` with
+  `wait_ms`: it waits on its own, and the calls after it go ahead. Replies
+  are sent in the order of the requests, again except a waiting
+  `job_read`, which is answered as soon as it can be. A `reset` waits for
+  the calls before it, except waiting `job_read`s, which it ends.
+- `notifications/cancelled` is accepted and ignored; use `timeout_ms`.
+- Prompts, resource subscriptions and server-to-client requests are not
+  implemented.
 
 ## Tools
 
@@ -104,6 +111,15 @@ relative to `/tmp`.
 | `list_dir` | `path` | `entries` (each `name`, `type`, `size`, `mode`, `append_only`, `mtime`), `truncated` |
 | `stat` | `path` | the same fields, and `path`, `atime`, `uid`, `gid`, `muid` |
 | `remove` | `path`, optional `recursive` | `removed` |
+| `job_start` | `command` (an sh line) or `argv` (a program and its arguments, without sh), optional `stdin`, `cwd` | `id`, `pid` |
+| `job_read` | `id`, optional `offset`, `stderr_offset`, `wait_ms` (default 0, at most 600000), `max_bytes` (default 65536 for each stream, at most 1 MiB) | `stdout`, `stderr`, `offset`, `next_offset`, `stderr_offset`, `next_stderr_offset`, `lost`, `stderr_lost`, `running`, `status`, `ok` |
+| `job_write` | `id`, optional `data`, `encoding` (`utf8` or `base64`), `eof` | `queued`, `eof` |
+| `job_kill` | `id` | `killed` |
+| `job_list` | none | `jobs` (each `id`, `pid`, `command`, `running`, `status`, `stdout_bytes`, `stderr_bytes`) |
+| `ns` | none | `ns`: the namespace as `ns` prints it |
+| `bind` | `from`, `to`, optional `order` (`replace`, `before`, `after`), `create` | `ok` |
+| `mount` | `source` (a dial string or a `{command}` block), `to`, optional `spec`, `order`, `create`, `authenticate` (default true), `timeout_ms` (default 30000) | `ok` |
+| `unmount` | `to`, optional `from` | `ok` |
 | `reset` | none | `reset` |
 
 Notes on `run`:
@@ -120,17 +136,123 @@ Notes on `run`:
   `read_file`.
 - A background program (`cmd &`) does not hold the call open. It keeps
   running until `reset` or the end of the session, but its output pipes
-  close when the call returns. Stage 2 adds job tools for such programs.
+  close when the call returns. Use a job for such programs.
 
 `read_file` returns text when the bytes are valid UTF-8 and base64
 otherwise. A read that would end inside a character stops before it, so
 reading a text file in pieces never splits one.
 
+### Jobs
+
+A job is a program the session keeps running between calls: a server, a
+long build, an interactive program.
+
+- `job_start` starts `sh -c command`, or `argv` directly (its first word
+  is found as sh finds a command), in a new process group, in the
+  session's namespace and environment, with pipes for its three standard
+  files. It returns at once. At most 32 jobs run at a time.
+- The session reads each job's stdout and stderr as they come, so a job
+  never waits on output nobody has read. It keeps the last 1 MiB of each
+  stream. Older output is dropped; a read that asks for it starts at the
+  oldest byte kept and says how many bytes it missed in `lost` (or
+  `stderr_lost`).
+- Offsets count bytes from the start of a stream. Without `offset`, a
+  `job_read` starts where the previous one ended, so repeated reads give
+  new output only. A character cut at the end of what has come so far is
+  left for the next read. Bytes that are not UTF-8 become U+FFFD.
+- With `wait_ms`, `job_read` waits until there is output past the
+  offsets, the job has exited, or the time is up. Other calls are
+  answered meanwhile.
+- `running` is true until the job has exited and its pipes are drained
+  (programs it started may hold them open; the session stops reading 200
+  ms after the exit). Then `status` is Inferno's exit status and `ok`
+  says whether it is empty.
+- `job_write` queues data for the job's input and returns at once; a
+  helper prog writes it as the job reads, in order. `eof` closes the
+  input after the data. Writing to a job that has exited, or after `eof`,
+  fails.
+- `job_kill` kills the job's process group. A killed sh reports an
+  interrupted wait as its status (`fail:lost`) rather than `killed`.
+- Exited jobs stay in `job_list` and can be read until more than 32 have
+  exited; the oldest go first. `reset` and the end of the session kill
+  every job.
+
+### Namespace tools
+
+`ns`, `bind`, `mount` and `unmount` change the session's namespace as the
+commands of the same names do, with the same error messages, and the
+change lasts until `reset`. `ns` reads the session prog's
+`/prog/n/ns`, which is what `ns` run by `run` prints. `bind` and
+`unmount` are done by the session prog itself. `mount` runs `/bin/mount`
+with the flags the arguments give, so a `{command}` source (such as
+`{memfs --serve}`) and authentication work as they do from sh.
+
+The session gave up the right to attach devices before it served its
+first call, so `bind '#C' /cmd` or `bind '#U' /n` fails with
+`mount/attach disallowed`, whichever tool or command asks. A policy file
+is the only way to grant a device.
+
+### Resources
+
+Files are also resources, with `purg://` URIs: `purg:///tmp/notes.txt` is
+`/tmp/notes.txt` in the session's namespace. Bytes outside RFC 3986's
+unreserved and sub-delimiter sets are percent-encoded. A URI always names
+a file from the root, so it cannot name a device.
+
+- `resources/list` lists the files under `/tmp`, at most 1000, in one
+  page, with `name` (the file name) and `size`.
+- `resources/templates/list` gives one template, `purg:///{+path}`, for
+  any other file, such as `purg:///prog/1/status`.
+- `resources/read` returns the whole file as `text` (`text/plain`) when it
+  is valid UTF-8 and as a base64 `blob` (`application/octet-stream`)
+  otherwise. A directory reads as its names, one per line, with `/` after
+  each directory (`inode/directory`). A file longer than 1 MiB is refused
+  with `-32603`; read it with `read_file`. A file that does not exist is
+  `-32602` under 2026-07-28 and `-32002` under the earlier revisions,
+  with the URI in `data`.
+- Under 2026-07-28, list and read results carry `ttlMs: 0` and
+  `cacheScope: "private"`; the template list is cacheable like
+  `tools/list`.
+- There are no subscriptions or change notifications.
+
+### The audit log
+
+With `-l logfile`, the front end appends one line per event:
+
+```
+1794334357 session start 3
+1794334357 tool run ok 650ms {"command":"echo hi"}
+1794334357 tool read_file error 1ms {"path":"/tmp/nope"}
+1794334357 tool run invalid 0ms {"command":"x","timeout_ms":0}
+1794334357 tool write_file ok 3ms {"path":"f","content":"yyyyyyyy...(5000 bytes)"}
+1794334357 resource resources/read ok 8ms {"path":"/tmp/f"}
+1794334357 session reset
+1794334357 session end
+```
+
+The first field is seconds since 1970. A call's line is `tool` or
+`resource`, its name, its result (`ok`; `error` when the tool failed or
+the request got an error; `invalid` when the arguments did not fit the
+schema), the time from receipt to reply, and the arguments as JSON with
+every string longer than 64 characters cut to 48 and its length, and the
+whole cut at 400 characters. Session lines are `session start <pid>`,
+`session failed <why>`, `session reset` and `session end`.
+
+The log is opened by the front end in the emu's namespace. The session
+prog's own fd 2 is `/dev/null`, so the session cannot write to the log
+through `/fd/2`, and the log's name is not in its namespace unless a
+policy file binds it there.
+
 ## The sandbox
 
-`mcpd` is two progs. The front end speaks the protocol and touches no file
-a tool names. It starts a session prog with a copy of the namespace and
-the environment and a new process group. The session prog builds the
+`mcpd` is three progs. The front end speaks the protocol, writes the log
+and touches no file a tool names. A relay copies the client's input to a
+pipe, because the front end must wait on the client and the session at
+once and the console cannot be waited on. The front end starts a session
+prog with a copy of the namespace and the environment and a new process
+group. The front end writes to the session only as much as the session
+has acknowledged reading, so neither can block the other with a large
+request and a large reply at once. The session prog builds the
 namespace below, gives up the right to attach devices, and only then
 serves tool calls. Every tool runs in that prog, so no tool can name
 anything outside the session's namespace.
@@ -187,22 +309,37 @@ Limits of this stage, stated plainly:
 
 ## Granting more: `-n nsfile`
 
-`mcpd -n nsfile` reads `nsfile` (a name in the emu's namespace) and, for
-every session, runs each line as an sh command in the new namespace after
-it is built and before `NODEVS`. Blank lines and lines starting with `#`
-are skipped. At that point devices can still be attached, and the root is
-writable, so a line can make a mount point and bind something there.
-`bind`, `mount`, `mkdir` and `unmount` are the usual lines; the namespace(6)
-verbs `fork`, `new` and `nodev` are not needed, because `mcpd` does them.
-If a line fails, no session is built and every tool call reports the
+`mcpd -n nsfile` reads `nsfile` (a name in the emu's namespace), a
+namespace file in the format of namespace(6), and for every session has
+`nsbuild` apply it to the new namespace after it is built and before
+`NODEVS`. At that point devices can still be attached. If the file cannot
+be applied, no session is built and every tool call reports nsbuild's
 error.
+
+- The verbs are nsbuild's: `bind`, `mount`, `import`, `unmount`, `cd` and
+  `.`, with their flags (`-a`, `-b`, `-c`, `-r`, `-i`, and `-A` for
+  `mount`). Lines starting with `#` are comments. `$user`, `$sysname` and
+  `$home` (`/tmp`) are set in the session's environment and expand in
+  words.
+- nsbuild runs in the session's namespace and reads the file from its
+  standard input, so names in the file, including a `.` include, are
+  names in the session's namespace, where `#U` is still the host tree.
+- namespace(6) cannot make a directory, and the session's root holds only
+  a few. So `mcpd` first makes every missing mount point named as the
+  target of a `bind`, `mount` or `import` line in the file (not in
+  included files, and not when the target names a variable).
+- `fork`, `new`, `nodev` and `clear` change only nsbuild's own namespace
+  and have no effect on the session; `mcpd` does the equivalent itself.
+
+Stage 1 ran each line as an sh command. Such a file still works if its
+lines are binds and mounts; drop any `mkdir` line, which nsbuild rejects
+and which is no longer needed.
 
 A workspace from the host. On emu, `#U` is the directory given to `-r`, so
 the workspace must be inside it (here `root/usr/work`):
 
 ```
 # root/lib/mcp/work.ns: used as  emu -r root mcpd -n /lib/mcp/work.ns
-mkdir /n/work
 bind -c '#U/usr/work' /n/work
 ```
 
@@ -218,24 +355,31 @@ and host commands (`os`), which removes the sandbox for all practical
 purposes:
 
 ```
-mkdir /cmd
 bind '#C' /cmd
 ```
 
-One known gap: `bind` of a mount point takes the directory underneath, not
-what is mounted on it, so `bind /lib /n/lib` shows an empty directory.
-Bind a directory inside the mount, or a device name.
+A mount point can be bound whole: `bind /lib /n/lib` shows the read-only
+`/lib`, since #97.
 
 ## Later stages
 
 From issue #70:
 
-2. Jobs (`job_start`, `job_read`, `job_write`, `job_kill`), the namespace
-   tools (`ns`, `bind`, `mount`, `unmount`), policy files with `nsbuild`,
-   resources (`purg:///path`), and the audit log through `logfile`.
 3. Remote sessions: `mcpd` behind `listen` on `/net` with the mount
    authentication, a host bridge from stdio to that connection, and the
-   kernel over virtio-net.
+   kernel over virtio-net. Per-session `/prog` filtering belongs here.
 4. `cpu`/`rcmd` as the transport, and `mcpfs`, which mounts other MCP
    servers' tools as files.
 5. Fuel and memory limits per session.
+
+Notes for stage 3 from stage 2:
+
+- The session prog's own fds are visible to its file tools through
+  `/fd`: `/fd/0` and `/fd/1` are its pipes to the front end. A tool that
+  writes `/fd/1` can forge lines the front end reads. The front end only
+  matches them to calls it made, so a session can confuse its own
+  answers, but nothing outside it. A remote front end serving several
+  sessions should still not trust them, or the session prog should keep
+  its pipes out of `/fd`.
+- 2026-07-28 requires `io.modelcontextprotocol/clientInfo` in every
+  request's `_meta`; `mcpd` does not check for it.
