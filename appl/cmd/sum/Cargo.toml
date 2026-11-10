@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-sum"
+description = "sum: CRC checksums"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sum"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
