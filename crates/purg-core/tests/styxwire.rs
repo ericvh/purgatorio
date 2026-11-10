@@ -163,3 +163,35 @@ fn a_failed_walk_sends_no_clunk() {
         assert!(text.starts_with("Twalk"), "refused: {text}");
     }
 }
+
+/// A server that goes away with a request outstanding fails that request
+/// and every later one; nothing waits for a reply that cannot come.
+#[test]
+fn a_server_that_hangs_up_fails_requests() {
+    let (mut p, _) = setup();
+    let [srv, cli] = p.pipe().unwrap();
+    let fd = p.fgrp.get(srv).unwrap();
+    p.close(srv).unwrap();
+    thread::spawn(move || {
+        let mut fs = One {
+            fids: Default::default(),
+        };
+        let mut msize = MAX_MSIZE;
+        while let Ok(buf) = read_msg(&fd, msize) {
+            let msg = Msg::decode(&buf, msize).unwrap();
+            if matches!(msg.fcall, purg_styx::Fcall::Tstat { .. }) {
+                break;
+            }
+            let reply = dispatch(&mut fs, &msg, &mut msize);
+            if write_full(&fd, &reply).is_err() {
+                break;
+            }
+        }
+    });
+    p.mount(cli, -1, "#R/mnt", MREPL | MNOAUTH, "").unwrap();
+    p.close(cli).unwrap();
+    let err = p.stat("#R/mnt/f").unwrap_err();
+    assert_eq!(err.as_str(), error::EHUNGUP);
+    let err = p.stat("#R/mnt/f").unwrap_err();
+    assert_eq!(err.as_str(), error::EHUNGUP);
+}
