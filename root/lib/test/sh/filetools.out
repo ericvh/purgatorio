@@ -1,0 +1,85 @@
+c.b
+c
+c.b
+/a/b
+.
+/a/b/d
+..
+#c/cons
+.
+/usr/x
+/abs
+created
+newer
+fail:older
+fail:new:file does not exist
+touch: /tmp/sh-filetools/missing: cannot change time: file does not exist
+fail:touch
+not created
+--rw-r--r--
+--rwxr-xr-x
+executable
+--rwx------
+--r--r--r--
+--rw-r-----
+chmod: bad mode: q
+chmod: cannot stat /tmp/sh-filetools/nonexistent: file does not exist
+fail:errors
+chgrp ok
+dir
+not dir
+nonempty
+empty
+readable
+eq
+ne
+empty string
+zero
+arith
+or-not
+paren
+false string
+true string
+older
+newer
+old file
+test: bad syntax: unknown operator -foo
+fail:bad syntax
+test: bad syntax: argument expected
+fail:bad syntax
+fail:usage
+hel
+ll
+lo
+fail:eof
+x a b
+x c
+x d
+data
+cat: /tmp/sh-filetools/nonexistent: file does not exist
+fail:errors
+xargs: can't load nonexistent: file does not exist
+timed
+fail:nonexistent: file does not exist
+2+0 records in
+2+0 records out
+hello wo
+0+1 records in
+0+1 records out
+EHLLO
+2+0 records in
+0+1 records out
+cdef
+1+1 records in
+0+1 records out
+00000000  61 62 63 00                                      abc.
+0+1 records in
+0+1 records out
+1 truncated records
+ab  cdef
+ab
+cdef
+0+1 records in
+0+1 records out
+dd: bad arg: foo
+fail:bad arg: foo

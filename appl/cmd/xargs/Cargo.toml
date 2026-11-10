@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-xargs"
+description = "xargs: run a command on arguments from standard input"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "xargs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

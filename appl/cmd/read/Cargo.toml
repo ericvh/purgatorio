@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-read"
+description = "read: read from standard input with optional seek"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "read"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

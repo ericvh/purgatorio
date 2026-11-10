@@ -82,7 +82,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-basename"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-bind"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-bytes"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-cal"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -96,7 +117,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-chgrp"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-chmod"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-cleanname"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-cmp"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-comm"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -125,6 +174,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-date"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-dd"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -181,6 +237,20 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-fc"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-fmt"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-freq"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -247,6 +317,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-look"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ls"
 version = "0.1.0"
 dependencies = [
@@ -258,6 +335,13 @@ name = "appl-cmd-lstar"
 version = "0.1.0"
 dependencies = [
  "appl-archive",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-mc"
+version = "0.1.0"
+dependencies = [
  "purgatorio",
 ]
 
@@ -318,6 +402,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-newer"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ns"
 version = "0.1.0"
 dependencies = [
@@ -326,6 +417,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-os"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-p"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -361,6 +459,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-randpass"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-read"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-rm"
 version = "0.1.0"
 dependencies = [
@@ -384,6 +496,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-sha1sum"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-sleep"
 version = "0.1.0"
 dependencies = [
@@ -391,7 +510,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-sort"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-strings"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-styxlisten"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-sum"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -420,7 +560,77 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-test"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-time"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-tokenize"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-touch"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-tr"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-tsort"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-unicode"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-uniq"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-unmount"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-uudecode"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-uuencode"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -434,7 +644,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-xargs"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-xd"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-zeros"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
