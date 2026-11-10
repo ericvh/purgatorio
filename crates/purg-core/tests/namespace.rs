@@ -6,8 +6,10 @@ use std::sync::{Arc, Mutex};
 
 use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_abi::{error, mode, pctl};
+use purg_core::deveia::DevEia;
 use purg_core::devram::RamTree;
 use purg_core::devroot::StaticTree;
+use purg_core::devrtc::DevRtc;
 use purg_core::{Dev, DevTab, Kernel, Pgrp, Platform, Procs, Prog};
 use purg_platform::Console;
 
@@ -37,8 +39,27 @@ thread_local! {
 }
 
 #[derive(Default)]
+struct MockRtc {
+    secs: Mutex<u64>,
+}
+
+impl purg_platform::Rtc for MockRtc {
+    fn seconds(&self) -> u64 {
+        *self.secs.lock().unwrap()
+    }
+    fn set_seconds(&self, secs: u64) -> purg_platform::Result<()> {
+        *self.secs.lock().unwrap() = secs;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 struct Mock {
     console: MockConsole,
+    /// `#t/eia0`.
+    serial: Arc<MockConsole>,
+    /// `#r/rtc`.
+    rtc: Arc<MockRtc>,
 }
 
 impl Platform for Mock {
@@ -96,6 +117,11 @@ fn setup() -> (Prog, Arc<Mock>) {
     let ram = RamTree::new('R', "ram", "inferno", platform.clone());
     ram.add_file("/seed/hello", &b"seeded"[..], 0o644);
     devs.push(Arc::new(ram));
+    devs.push(Arc::new(DevRtc::new(mock.rtc.clone(), "inferno".into())));
+    devs.push(Arc::new(DevEia::new(
+        vec![mock.serial.clone() as Arc<dyn Console>],
+        "inferno".into(),
+    )));
     let devtab = DevTab::new(devs);
     let kernel = Kernel::new(platform, devtab.clone(), procs, portable.srv, portable.mnt);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "").unwrap());
@@ -250,7 +276,7 @@ fn cons_files() {
     assert_eq!(read_all(&mut p, "#c/null").unwrap(), "");
     assert_eq!(
         read_all(&mut p, "#c/drivers").unwrap(),
-        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#I ip\n#C cmd\n#¤ factotum\n#D ssl\n#A a\n#B b\n#R ram\n"
+        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#I ip\n#C cmd\n#¤ factotum\n#D ssl\n#A a\n#B b\n#R ram\n#r rtc\n#t eia\n"
     );
 }
 
@@ -486,4 +512,52 @@ fn ram_tree_is_writable() {
     p.remove("/chan/d/inner").unwrap();
     p.remove("/chan/d").unwrap();
     assert_eq!(names(&mut p, "/chan"), ["g", "seed"]);
+}
+
+#[test]
+fn rtc_reads_and_sets_the_clock() {
+    let (mut p, mock) = setup();
+    *mock.rtc.secs.lock().unwrap() = 1_700_000_000;
+    assert_eq!(names(&mut p, "#r"), ["rtc"]);
+    assert_eq!(read_all(&mut p, "#r/rtc").unwrap(), " 1700000000 ");
+    let fd = p.open("#r/rtc", mode::OWRITE).unwrap();
+    p.write(fd, b"1800000000\n").unwrap();
+    assert_eq!(*mock.rtc.secs.lock().unwrap(), 1_800_000_000);
+    assert_eq!(p.write(fd, b"soon").unwrap_err().as_str(), error::EBADARG);
+    p.close(fd).unwrap();
+    assert_eq!(read_all(&mut p, "#r/rtc").unwrap(), " 1800000000 ");
+    p.bind("#r", "/dev", MAFTER).unwrap();
+    assert_eq!(read_all(&mut p, "/dev/rtc").unwrap(), " 1800000000 ");
+}
+
+#[test]
+fn eia_data_ctl_and_status() {
+    let (mut p, mock) = setup();
+    assert_eq!(names(&mut p, "#t"), ["eia0", "eia0ctl", "eia0status"]);
+    assert_eq!(
+        read_all(&mut p, "#t/eia0status").unwrap(),
+        "b115200 c0 d0 e0 l8 m0 pn r1 s1 i1\n dtr rts\n"
+    );
+    let fd = p.open("#t/eia0", mode::ORDWR).unwrap();
+    p.write(fd, b"out").unwrap();
+    assert_eq!(&*mock.serial.output.lock().unwrap(), b"out");
+    mock.serial.input.lock().unwrap().extend_from_slice(b"in");
+    let mut buf = [0u8; 8];
+    assert_eq!(p.read(fd, &mut buf).unwrap(), 2);
+    assert_eq!(&buf[..2], b"in");
+    p.close(fd).unwrap();
+    let ctl = p.open("#t/eia0ctl", mode::OWRITE).unwrap();
+    p.write(ctl, b"b9600 l7 pe s2 r0 f").unwrap();
+    assert_eq!(p.write(ctl, b"l9").unwrap_err().as_str(), error::EBADARG);
+    assert_eq!(
+        p.write(ctl, b"b1200 z").unwrap_err().as_str(),
+        error::EBADARG
+    );
+    p.close(ctl).unwrap();
+    assert_eq!(
+        read_all(&mut p, "#t/eia0status").unwrap(),
+        "b9600 c0 d0 e0 l7 m0 pe r0 s2 i1\n dtr\n"
+    );
+    assert!(p.open("#t/eia0status", mode::OWRITE).is_err());
+    assert_eq!(read_all(&mut p, "#t/eia1").unwrap_err(), error::ENONEXIST);
 }

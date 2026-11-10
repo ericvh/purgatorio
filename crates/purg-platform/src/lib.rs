@@ -33,6 +33,15 @@ pub trait Console: Send + Sync {
     }
 }
 
+/// A battery-backed real-time clock, served as `#r/rtc`.
+pub trait Rtc: Send + Sync {
+    /// The clock's time in seconds since the Unix epoch.
+    fn seconds(&self) -> u64;
+    /// Sets the clock. Clocks that cannot be set fail with
+    /// `"permission denied"`.
+    fn set_seconds(&self, secs: u64) -> Result<()>;
+}
+
 /// Services the portable core needs from its environment. Sleep and wakeup
 /// go through [`sync::Rendez`].
 pub trait Platform: Send + Sync {

@@ -9,7 +9,7 @@
 //! kernel threads ([`irq`]). K2 adds locks that are never held across a
 //! preemption, an idle CPU when every thread is blocked, and an
 //! interrupt-driven console (`purg_aarch64::console`), with self-tests in
-//! [`selftest`]. `purg_main`
+//! [`selftest`]. K3 adds `#r` and `#t` ([`devices`]). `purg_main`
 //! prints a banner and self-tests, then exits QEMU: through semihosting
 //! (exit code 0 or 1) or, with `-append exit=psci` (for KVM, where
 //! semihosting does not work), through PSCI `SYSTEM_OFF` after a final
@@ -38,6 +38,8 @@ fn main() {
 #[cfg(target_os = "none")]
 extern crate alloc;
 
+#[cfg(target_os = "none")]
+mod devices;
 #[cfg(target_os = "none")]
 mod irq;
 #[cfg(target_os = "none")]
