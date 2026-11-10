@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-wasmdep"
+description = "wasmdep: print what a WebAssembly module needs from the system"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wasmdep"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+wasmobj.workspace = true
+
+[lints]
+workspace = true

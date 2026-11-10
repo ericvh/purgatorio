@@ -1,0 +1,16 @@
+[package]
+name = "appl-lib-wasmobj"
+description = "wasmobj: a small reader for WebAssembly module sections, for wasmdump, wasmdep, stack and prof"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "wasmobj"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

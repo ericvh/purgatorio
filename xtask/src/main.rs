@@ -2,7 +2,8 @@
 //!
 //! - `build-root`: build every guest crate under `appl/` for `wasm32-wasip1`,
 //!   check each module, and install commands as `root/bin/<name>.wasm` and
-//!   tests as `root/bin/test/<name>.wasm`.
+//!   tests as `root/bin/test/<name>.wasm`, each with its function names
+//!   beside it in `<name>.names` (`docs/debug.md`).
 //! - `run-emu [-- emu args]`: `build-root`, build `emu`, and run it on
 //!   `root/` with stdin, stdout and stderr passed through.
 //! - `probe [--kvm]`: `build-root`, build `purg-probe` for
@@ -210,12 +211,17 @@ fn build_root() -> Result<()> {
     let out_dir = ws.join("target").join(GUEST_TARGET).join(GUEST_PROFILE);
     for g in &guests {
         let src = out_dir.join(format!("{}.wasm", g.bin));
-        let bytes = fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+        let linked = fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
+        // The linker keeps the function names (`strip = "debuginfo"`);
+        // they are installed beside the module, which is stripped here.
+        let (bytes, names) = wasm::split(&linked).map_err(|e| format!("{}: {e}", src.display()))?;
         wasm::check(&bytes, true).map_err(|e| format!("{}: {e}", src.display()))?;
         let dest_dir = ws.join("root").join(&g.dir);
         fs::create_dir_all(&dest_dir).map_err(|e| format!("{}: {e}", dest_dir.display()))?;
         let dest = dest_dir.join(format!("{}.wasm", g.installed()));
         fs::write(&dest, &bytes).map_err(|e| format!("{}: {e}", dest.display()))?;
+        let dest = dest.with_extension("names");
+        fs::write(&dest, &names).map_err(|e| format!("{}: {e}", dest.display()))?;
         eprintln!(
             "installed /{}/{}.wasm ({} bytes)",
             g.dir,
