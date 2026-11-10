@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-styxmon"
+description = "styxmon: print the 9P messages between a client and a server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "styxmon"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+purg-styx.workspace = true
+
+[lints]
+workspace = true

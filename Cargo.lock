@@ -82,6 +82,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-archfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-basename"
 version = "0.1.0"
 dependencies = [
@@ -274,6 +282,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-fcp"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-fmt"
 version = "0.1.0"
 dependencies = [
@@ -351,6 +366,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-iostats"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "purg-styx",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-kill"
 version = "0.1.0"
 dependencies = [
@@ -361,6 +385,15 @@ dependencies = [
 name = "appl-cmd-listen"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-lockfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "purg-styx",
  "purgatorio",
 ]
 
@@ -481,6 +514,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ns"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-nsbuild"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -626,9 +666,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-styxchat"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "purg-styx",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-styxlisten"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-styxmon"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "purg-styx",
  "purgatorio",
 ]
 
@@ -651,6 +709,15 @@ name = "appl-cmd-tar"
 version = "0.1.0"
 dependencies = [
  "appl-archive",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-tarfs"
+version = "0.1.0"
+dependencies = [
+ "appl-archive",
+ "appl-lib-styxserv",
  "purgatorio",
 ]
 
@@ -707,6 +774,14 @@ dependencies = [
 name = "appl-cmd-tr"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-trfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
  "purgatorio",
 ]
 
@@ -809,6 +884,14 @@ dependencies = [
 [[package]]
 name = "appl-lib-regexp"
 version = "0.1.0"
+
+[[package]]
+name = "appl-lib-styxserv"
+version = "0.1.0"
+dependencies = [
+ "purg-styx",
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-test-abi"

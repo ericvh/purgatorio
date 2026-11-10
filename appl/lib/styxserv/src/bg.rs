@@ -20,10 +20,11 @@ pub fn flag(c: char, flags: &mut u32) -> Option<()> {
     Some(())
 }
 
-/// Starts `module` with `argv`, a pipe as its fd 0 and this prog's fd 2 as
-/// its fd 2 and a copy of this namespace (so a server of a directory
-/// it then covers still sees what was there), then mounts the other end of the pipe on `mtpt` with `flags`.
-/// The child serves the conversation with [`serve`].
+/// Starts `module` with `argv`, a pipe as its fd 0, this prog's fd 2 as
+/// its fd 2 and a copy of this namespace (so a server of a directory it
+/// then covers still sees what was there), then mounts the other end of
+/// the pipe on `mtpt` with `flags`. The child serves the conversation with
+/// [`serve`].
 pub fn mount(module: &str, argv: &[String], mtpt: &str, flags: u32) -> Result<(), Error> {
     let [a, b] = purgatorio::pipe()?;
     purgatorio::spawn(
