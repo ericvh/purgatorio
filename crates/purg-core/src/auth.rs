@@ -7,18 +7,9 @@
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 
-pub const SEED: usize = 32;
-pub const SIGNATURE: usize = 64;
-pub const PUBLIC: usize = 32;
-/// What the client writes to the auth fid.
-pub const PROOF: usize = SIGNATURE + PUBLIC;
-/// Bytes the server asks the client to sign.
-pub const CHALLENGE: usize = 32;
-
-pub const NOT_REQUIRED: &str = "authentication not required";
-pub const REQUIRED: &str = "authentication required";
-pub const FAILED: &str = "authentication failed";
-pub const NO_KEY: &str = "no key";
+pub use purg_abi::auth::{
+    CHALLENGE, FAILED, NO_KEY, NOT_REQUIRED, PROOF, PUBLIC, REQUIRED, SEED, SIGNATURE,
+};
 
 /// `root/lib/test/auth.key` is this repeated byte. It is a public test
 /// fixture, shared by the emu and the probe, not a secret to deploy.

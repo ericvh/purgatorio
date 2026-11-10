@@ -145,6 +145,24 @@ fn procs_conformance() {
     }
 }
 
+/// file2chan, export/mount, kill, fauth and stream.
+#[test]
+fn m3_conformance() {
+    for vm in VMS {
+        let o = emu(vm, &["/bin/test/m3.wasm"], b"");
+        let out = stdout(&o);
+        assert!(
+            o.status.success(),
+            "{vm}:\n{out}\n{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(!out.contains("FAIL"), "{vm}:\n{out}");
+        for check in ["fauth", "fauth_not_required", "amount", "stream_kill"] {
+            assert!(out.contains(&format!("ok {check}\n")), "{vm}:\n{out}");
+        }
+    }
+}
+
 #[test]
 fn stock_wasi_sees_the_namespace() {
     for vm in VMS {

@@ -12,7 +12,7 @@ use purg_abi::mode::ORDWR;
 use purg_platform::sync::{Mutex, Note};
 use purg_platform::{Platform, sync};
 use purg_styx::server::{IOHDRSZ, MAX_MSIZE};
-use purg_styx::{DMDIR, Dir, Fcall, Msg, NOFID, QTDIR, VERSION, dirs};
+use purg_styx::{DMDIR, Dir, Fcall, Msg, NOFID, NOTAG, QTAUTH, QTDIR, VERSION, dirs};
 
 use crate::auth;
 use crate::chan::Chan;
@@ -22,6 +22,8 @@ use crate::mux::Mux;
 use crate::rw::{read_msg, write_full};
 
 struct Session {
+    /// The mount id: `Chan::devno` of every file on this session.
+    id: u32,
     fd: Arc<Chan>,
     mux: Arc<Mux>,
     note: Arc<Note>,
@@ -135,7 +137,7 @@ impl Session {
         aname: &str,
         secret: impl Fn(&[u8]) -> Result<[u8; auth::PROOF]>,
     ) -> Result<Option<u32>> {
-        const AFID: u32 = 0xfffe;
+        const AFID: u32 = AUTH_FID;
         let buf = self.rpc(Fcall::Tauth {
             afid: AFID,
             uname: user,
@@ -202,32 +204,22 @@ impl DevMnt {
         }
     }
 
-    /// Version and attach on `fd`, returning the attached root.
-    ///
-    /// `noauth` attaches with `NOFID`. Otherwise the client speaks `Tauth`
-    /// and, when the server asks, signs the challenge with `secret`.
-    pub fn mount(
-        self: &Arc<Self>,
-        fd: Arc<Chan>,
-        aname: &str,
-        user: &str,
-        noauth: bool,
-        secret: impl Fn(&[u8]) -> Result<[u8; auth::PROOF]>,
-    ) -> Result<Chan> {
+    /// Starts the reader kproc for a new session on `fd`.
+    fn start(&self, fd: Arc<Chan>, msize: u32) -> Result<Arc<Session>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let msize = Arc::new(AtomicU32::new(MAX_MSIZE));
         let mux = Arc::new(Mux::new());
         let note = Arc::new(Note::new());
         let session = Arc::new(Session {
+            id,
             fd: fd.clone(),
             mux: mux.clone(),
             note: note.clone(),
-            msize: msize.clone(),
-            iounit: AtomicU32::new(MAX_MSIZE - IOHDRSZ),
+            msize: Arc::new(AtomicU32::new(msize)),
+            iounit: AtomicU32::new(msize.saturating_sub(IOHDRSZ)),
             write: Mutex::new(()),
-            next_fid: AtomicU32::new(2),
+            next_fid: AtomicU32::new(1),
         });
-        let dev: Arc<dyn Dev> = self.clone();
+        let msize = session.msize.clone();
         self.platform.spawn_kproc(
             "mnt",
             Box::new(move || {
@@ -253,6 +245,57 @@ impl DevMnt {
                 sync::set_current_note(None);
             }),
         )?;
+        Ok(session)
+    }
+
+    /// `Tattach` on `session`, returning the root Chan.
+    fn attach(
+        self: &Arc<Self>,
+        session: &Arc<Session>,
+        afid: u32,
+        user: &str,
+        aname: &str,
+    ) -> Result<Chan> {
+        let fid = session.alloc_fid();
+        let buf = session.rpc(Fcall::Tattach {
+            fid,
+            afid,
+            uname: user,
+            aname,
+        })?;
+        let qid = match session.decode(&buf)? {
+            Fcall::Rattach { qid } => qid,
+            _ => return Err(Error::new(error::EIO)),
+        };
+        let aux = Arc::new(MntFile {
+            session: session.clone(),
+            fid,
+            live: AtomicBool::new(true),
+            spec: String::from(aname),
+            fresh: AtomicBool::new(false),
+        });
+        let dev: Arc<dyn Dev> = self.clone();
+        let id = session.id;
+        let mut c = Chan::new(dev, id, qid, alloc::format!("#M{id}"), Some(aux));
+        if qid.is_dir() {
+            c.qid.qtype |= QTDIR;
+        }
+        Ok(c)
+    }
+
+    /// Version and attach on `fd`, returning the attached root.
+    ///
+    /// `noauth` attaches with `NOFID`. Otherwise the client speaks `Tauth`
+    /// and, when the server asks, signs the challenge with `secret`.
+    pub fn mount(
+        self: &Arc<Self>,
+        fd: Arc<Chan>,
+        aname: &str,
+        user: &str,
+        noauth: bool,
+        secret: impl Fn(&[u8]) -> Result<[u8; auth::PROOF]>,
+    ) -> Result<Chan> {
+        let session = self.start(fd, MAX_MSIZE)?;
         let established = (|| {
             let buf = session.rpc(Fcall::Tversion {
                 msize: MAX_MSIZE,
@@ -265,41 +308,124 @@ impl DevMnt {
                         .iounit
                         .store(m.saturating_sub(IOHDRSZ), Ordering::Release);
                 }
-                _ => return Err(Error::new("bad 9P version")),
+                _ => return Err(Error::new(BAD_VERSION)),
             }
             let afid = if noauth {
                 NOFID
             } else {
                 session.authenticate(user, aname, &secret)?.unwrap_or(NOFID)
             };
-            let buf = session.rpc(Fcall::Tattach {
-                fid: 1,
-                afid,
-                uname: user,
-                aname,
-            })?;
-            let qid = match session.decode(&buf)? {
-                Fcall::Rattach { qid } => qid,
-                _ => return Err(Error::new(error::EIO)),
-            };
-            let aux = Arc::new(MntFile {
-                session: session.clone(),
-                fid: 1,
-                live: AtomicBool::new(true),
-                spec: String::from(aname),
-                fresh: AtomicBool::new(false),
-            });
-            let mut c = Chan::new(dev, id, qid, alloc::format!("#M{id}"), Some(aux));
-            if qid.is_dir() {
-                c.qid.qtype |= QTDIR;
-            }
-            Ok(c)
+            self.attach(&session, afid, user, aname)
         })();
         if established.is_err() {
             session.note.kill();
             session.mux.fail_all();
         }
         established
+    }
+
+    /// `sys->fauth`: versions the conversation on `fd` and sends `Tauth`.
+    /// Returns an open Chan on the auth fid: reading it gives the server's
+    /// challenge, and writing it sends the proof.
+    ///
+    /// The exchange up to `Rauth` runs on the caller's thread. A server that
+    /// does not authenticate therefore leaves no session (and no reader)
+    /// behind, and the fd can still be mounted with `afd = -1`.
+    pub fn auth(self: &Arc<Self>, fd: Arc<Chan>, aname: &str, user: &str) -> Result<Chan> {
+        let msize = sync_rpc(
+            &fd,
+            MAX_MSIZE,
+            Fcall::Tversion {
+                msize: MAX_MSIZE,
+                version: VERSION,
+            },
+            |f| match f {
+                Fcall::Rversion { msize, version } if version == VERSION => {
+                    Ok(msize.clamp(IOHDRSZ, MAX_MSIZE))
+                }
+                _ => Err(Error::new(BAD_VERSION)),
+            },
+        )?;
+        let aqid = sync_rpc(
+            &fd,
+            msize,
+            Fcall::Tauth {
+                afid: AUTH_FID,
+                uname: user,
+                aname,
+            },
+            |f| match f {
+                Fcall::Rauth { aqid } => Ok(aqid),
+                _ => Err(Error::new(error::EIO)),
+            },
+        )?;
+        let session = self.start(fd, msize)?;
+        let aux = Arc::new(MntFile {
+            session: session.clone(),
+            fid: AUTH_FID,
+            live: AtomicBool::new(true),
+            spec: String::from(aname),
+            fresh: AtomicBool::new(false),
+        });
+        let dev: Arc<dyn Dev> = self.clone();
+        let id = session.id;
+        let mut c = Chan::new(dev, id, aqid, alloc::format!("#M{id}"), Some(aux));
+        c.qid.qtype |= QTAUTH;
+        c.mode = ORDWR;
+        c.open = true;
+        Ok(c)
+    }
+
+    /// `sys->mount` with an auth fd from [`DevMnt::auth`]: attaches on the
+    /// session `afd` belongs to. `fd` must be that session's conversation.
+    pub fn mount_auth(
+        self: &Arc<Self>,
+        fd: &Arc<Chan>,
+        afd: &Chan,
+        aname: &str,
+        user: &str,
+    ) -> Result<Chan> {
+        let f = match afd.aux::<MntFile>() {
+            Some(f) if afd.dev.dc() == 'M' && afd.qid.qtype & QTAUTH != 0 => f,
+            _ => return Err(Error::new(error::EBADUSEFD)),
+        };
+        if !Arc::ptr_eq(&f.session.fd, fd) {
+            return Err(Error::new(error::EBADUSEFD));
+        }
+        self.attach(&f.session, f.fid, user, aname)
+    }
+}
+
+const BAD_VERSION: &str = "bad 9P version";
+
+/// The fid `Tauth` uses. Session fids count up from 1 and do not reach it.
+const AUTH_FID: u32 = NOFID - 1;
+
+/// Sends one message on `fd` and reads the reply on this thread, before a
+/// session's reader exists.
+fn sync_rpc<T>(
+    fd: &Chan,
+    msize: u32,
+    fcall: Fcall<'_>,
+    reply: impl FnOnce(Fcall<'_>) -> Result<T>,
+) -> Result<T> {
+    let tag = if matches!(fcall, Fcall::Tversion { .. }) {
+        NOTAG
+    } else {
+        0
+    };
+    let bytes = Msg { tag, fcall }
+        .encode()
+        .map_err(|_| Error::new(error::EIO))?;
+    write_full(fd, &bytes)?;
+    let buf = read_msg(fd, msize)?;
+    let msg = Msg::decode(&buf, msize).map_err(|_| Error::new(error::EIO))?;
+    if msg.tag != tag {
+        return Err(Error::new(error::EIO));
+    }
+    match msg.fcall {
+        Fcall::Rerror { ename } => Err(Error::from(String::from(ename))),
+        other => reply(other),
     }
 }
 

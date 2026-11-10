@@ -1318,6 +1318,34 @@ pub mod purgatorio {
         })
     }
 
+    pub fn fauth(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        aname: i32,
+        alen: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| c.prog.fauth(fd, mem.str(aname, alen)?))
+    }
+
+    /// Returns the byte count even when the copy stopped on an error or a
+    /// kill; the errstr then says why, as Inferno's `kread` would set it.
+    pub fn stream(
+        ctx: &mut Ctx,
+        _mem: &mut Mem<'_>,
+        src: i32,
+        dst: i32,
+        bufsiz: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let (n, failed) = c.prog.stream(src, dst, bufsiz)?;
+            if let Some(e) = failed {
+                c.prog.set_error(&e);
+            }
+            Ok(i32::try_from(n).unwrap_or(i32::MAX))
+        })
+    }
+
     pub fn export(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,

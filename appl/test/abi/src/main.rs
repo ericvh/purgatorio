@@ -149,6 +149,29 @@ fn werrstr_roundtrip() -> Result<(), String> {
     expect_errstr("custom error")
 }
 
+/// fauth and stream on fds that are not open fail with -1 and Inferno's
+/// error string; fauth's aname pointer is bounds-checked.
+fn fauth_stream_errors() -> Result<(), String> {
+    match purgatorio::fauth(99, "") {
+        Ok(_) => return Err("fauth on fd 99 succeeded".into()),
+        Err(_) => expect_errstr(abi::error::EBADFD)?,
+    }
+    let n = unsafe { purgatorio::sys::fauth(0, BAD_PTR as *const u8, 8) };
+    if n != -1 {
+        return Err(format!("fauth with a bad aname returned {n}"));
+    }
+    expect_errstr(abi::error::EBADADDR)?;
+    match purgatorio::stream(99, 1, 512) {
+        Ok(n) => return Err(format!("stream from fd 99 returned {n}")),
+        Err(_) => expect_errstr(abi::error::EBADFD)?,
+    }
+    let n = unsafe { purgatorio::sys::stream(0, 1, -1) };
+    if n != -1 {
+        return Err(format!("stream with bufsiz -1 returned {n}"));
+    }
+    expect_errstr(abi::error::EBADARG)
+}
+
 #[purgatorio::main]
 fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
     let checks: &[(&str, Check)] = &[
@@ -161,6 +184,7 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
         ("fstat_stdout", fstat_stdout),
         ("dirread_root", dirread_root),
         ("werrstr_roundtrip", werrstr_roundtrip),
+        ("fauth_stream_errors", fauth_stream_errors),
     ];
     let mut failed = false;
     for (name, check) in checks {

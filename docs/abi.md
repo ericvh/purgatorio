@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.4)
+# Purgatorio application ABI (v0.5)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.4`. The loader rejects a mismatched version. Modules
+section containing `0.5`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -78,7 +78,8 @@ Each row is marked with the milestone that implemented it.
 | `fd2path`, `dup`, `pipe`, `iounit` | `purgatorio.*` (M2) | missing or mismatched in WASI | `fd_renumber` (M2) moves an fd rather than duplicating it. `iounit` is 0 (no limit) until a device sets one. |
 | `bind`, `unmount`, `pctl` | `purgatorio.*` (M2) | missing in WASI | |
 | `mount`, `export`, `fversion`, `file2chan` | `purgatorio.*` (M3) | missing in WASI | `mount` and `export` authenticate (M5); see below. |
-| `fauth`, `stream` | not yet | missing in WASI | Authentication runs inside `mount`, so there is no separate `fauth` call. `stream` is a loop in the SDK. |
+| `fauth` | `purgatorio.fauth` (v0.5) | missing in WASI | Returns the auth fd that `mount` then takes as `afd`. With `afd = -1`, `mount` still authenticates by itself. |
+| `stream` | `purgatorio.stream` (v0.5) | missing in WASI | The copy loop runs in the kernel. |
 | `werrstr`, `%r` | `purgatorio.errstr`, `purgatorio.werrstr` (M1) | WASI errnos are lossy | |
 | exit status | `purgatorio.exits(status)` (M1) | WASI `proc_exit(i32)` is numeric | `proc_exit(0)` means `""` and `proc_exit(n)` means `"exit n"` (M1). |
 | `spawn` (of a command) | `purgatorio.spawn_prog` (M2) | missing in WASI | Exit messages are read from `/prog/<pid>/wait`. |
@@ -87,7 +88,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.4
+## `purgatorio` imports in v0.5
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -110,9 +111,11 @@ bind(name, nlen, old, olen, flags) -> 0
 unmount(name, nlen, old, olen) -> 0     nlen = 0 removes everything at old
 pctl(flags, movefd, n) -> pid     movefd: n i32 fds that NEWFD keeps
 spawn_prog(path, plen, argv, alen, flags, fdmap, n) -> pid
-mount(fd, afd, old, olen, flags, aname, alen) -> 0
+mount(fd, afd, old, olen, flags, aname, alen) -> 0     afd = -1: mount authenticates
 export(fd, dir, dlen, flags) -> 0
 fversion(fd, msize, ver, vlen) -> n
+fauth(fd, aname, alen) -> afd     Tauth on fd's conversation (v0.5)
+stream(src, dst, bufsiz) -> n     copy src to dst in the kernel (v0.5)
 file2chan(dir, dlen, name, nlen, handles) -> 0
 chan_new(cap) -> h
 chan_close(h) -> 0
@@ -169,6 +172,52 @@ Inferno peers mount with `-A`.
   auth fid.
 - `MNOAUTH` (`0x8000_0000`, the `-A` flag) skips `Tauth`. A server that has
   a key then rejects the attach.
+- With `afd = -1`, `mount` does all of this itself. A guest can instead run
+  the exchange with `fauth` (below) and pass the auth fd to `mount`.
+  `MNOAUTH` is ignored when an `afd` is given.
+
+### `fauth` (v0.5)
+
+`fauth(fd, aname, alen)` versions the 9P conversation on `fd` and sends
+`Tauth` for the caller's user and `aname`. It returns a new fd on the auth
+file. Reading it gives the server's 32-byte challenge. Writing
+`signature[64] || public_key[32]` to it completes the exchange. A wrong
+proof fails that write with `authentication failed`. The caller then calls
+`mount(fd, afd, ...)` with the same `aname`, which attaches with the auth
+fid. An `afd` that did not authenticate makes the attach fail with
+`authentication required`. An `afd` that is not an auth fd, or that belongs
+to a different conversation, fails with `inappropriate use of fd`.
+
+As in Inferno, a server that does not authenticate makes `fauth` fail with
+`authentication not required`. Then mount with `afd = -1`. That `fauth`
+leaves nothing running on `fd`. Only one `fauth` may be outstanding on a
+conversation. After a successful `fauth`, mount that conversation with the
+`afd` and not with `afd = -1`.
+
+The SDK has `purgatorio::fauth`, plus `purgatorio::auth::{proof,
+authenticate, amount}`. `proof` signs through `#¤/rpc`, or else with the
+seed in `/usr/<user>/key` or `/lib/test/auth.key`. `amount` is Inferno's
+`auth->amount`: fauth, authenticate, then mount, falling back to a plain
+mount when the server does not authenticate. `import` uses it.
+
+### `stream` (v0.5)
+
+`stream(src, dst, bufsiz)` reads `src` into a buffer of `bufsiz` bytes
+(clamped to 1 MiB). It writes the buffer to `dst` each time it fills, and
+once more with whatever is left at the end. It stops at end of file, at a
+failed read or write, or when the prog is killed. It returns the number of
+bytes written to `dst`. This follows Inferno's `stream`:
+
+- An error or a kill is not an error of the call. The count is still
+  returned, and the errstr is set to the read or write error, or to
+  `interrupted`.
+- A write of a full buffer that fails or is short ends the copy. That
+  buffer is not counted. (Inferno counts the final partial buffer even if
+  its write fails. Here only what `dst` accepted is counted.)
+- A prog blocked reading in `stream` is interrupted by a kill, as a blocked
+  `read` is.
+- `bufsiz = 0` copies nothing and returns 0. A negative `bufsiz` or a bad
+  fd returns -1.
 
 ## WASI p1 functions implemented
 

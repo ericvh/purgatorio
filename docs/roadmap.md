@@ -170,6 +170,11 @@ Phase K, but they belong to the hosted milestones' acceptance criteria.
 - [ ] **PG-32** macOS details from plan Section 10.1 to confirm on a real Mac:
   explicit prog thread stack sizes, a clean `no free procs` error at the thread
   limit, `.DS_Store`/`._*` hidden in `#U`, dual-stack `announce tcp!*!port`.
+- [ ] ABI gaps left against plan Section 6.2: `export` ignores Inferno's
+  `EXPWAIT`/`EXPASYNC` flags (it always serves until hangup); `poll_oneoff`
+  reports fd subscriptions ready at once instead of waiting; `mount` returns
+  0 rather than a mount id; the plan's preopen numbers (fd 3 `/`, fd 4 `.`)
+  and its list of `ENOTSUP` WASI calls are stale against `docs/abi.md`.
 
 ## Later
 
@@ -203,3 +208,5 @@ Phase K, but they belong to the hosted milestones' acceptance criteria.
 - [x] **PG-22** Land the stack tip onto `main` (#9).
 - [x] **PG-19** Document the Rust toolchain in the README.
 - [x] **PG-20** Record the wasm64 decision ([wasm64.md](wasm64.md)).
+- [x] ABI 0.5: `fauth` and `stream` as `purgatorio` imports, the SDK's
+  `auth::amount`, and `import -A`.
