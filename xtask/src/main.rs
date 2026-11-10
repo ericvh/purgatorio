@@ -253,7 +253,9 @@ fn run_emu(args: &[String]) -> Result<ExitCode> {
 }
 
 const PROBE_TARGET: &str = "aarch64-unknown-none";
-const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+/// A limit against hangs, not a performance target: a run takes about 80 s
+/// under TCG on a busy machine, and it grows with the sh corpus.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The port the probe and the kernel export `/` on; QEMU forwards a free
 /// host port to it.
 const GUEST_EXPORT_PORT: u16 = 6666;
@@ -532,7 +534,8 @@ fn expand_golden(text: &str, prefix: &str, ws: &Path) -> Result<String> {
 
 /// Running the conformance guests and the sh corpus under wasmi in TCG
 /// takes about as long as the probe.
-const KERNEL_TIMEOUT: Duration = Duration::from_secs(120);
+/// As `PROBE_TIMEOUT`: generous, so a slow runner does not fail a good run.
+const KERNEL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// One QEMU configuration `xtask kernel` boots: a name, the machine
 /// arguments before `-kernel`, and the exception level the kernel must

@@ -209,7 +209,7 @@ files, so it boots the emu's namespace (`#U` after `#/`, `#c`, `#e`, `#p`).
 It runs the ABI and procs conformance guests, then every script in the `sh`
 corpus with its output captured and compared with the `.out` file. It boots the image with
 `qemu-system-aarch64 -M virt -cpu cortex-a72 -nographic -semihosting`,
-requires a semihosting exit code of 0 within 120 s, and compares the serial
+requires a semihosting exit code of 0 within 300 s, and compares the serial
 output with `crates/purg-probe/expected.out`. `--kvm` boots it with
 `-accel kvm -cpu host -M virt,gic-version=3 -append exit=psci` instead: KVM
 has no semihosting, so the probe exits through PSCI `SYSTEM_OFF` and the
