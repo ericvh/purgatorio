@@ -102,8 +102,15 @@ fn bad<T>(msg: impl Into<String>) -> Result<T> {
     Err(SyntaxError::Bad(msg.into()))
 }
 
+/// The characters that separate words: space, tab, carriage return and
+/// newline. Any other white space Unicode has, such as U+00A0, is an
+/// ordinary character of a word.
+pub fn is_blank(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\r' | '\n')
+}
+
 fn is_break(c: char) -> bool {
-    c.is_whitespace() || ";&|{}()<>".contains(c)
+    is_blank(c) || ";&|{}()<>".contains(c)
 }
 
 fn is_ordinary(c: char) -> bool {
@@ -457,6 +464,29 @@ mod tests {
                 Tok::Newline
             ]
         );
+    }
+
+    #[test]
+    fn only_ascii_blanks_separate_words() {
+        let t = toks("echo a\u{a0}b \u{a0} \u{3000}x\u{2028}'q'\u{85}\n");
+        let word = |s: &str| {
+            Tok::Word(Word {
+                parts: vec![lit(s, false)],
+            })
+        };
+        assert_eq!(t[1], word("a\u{a0}b"));
+        assert_eq!(t[2], word("\u{a0}"));
+        assert_eq!(
+            t[3],
+            Tok::Word(Word {
+                parts: vec![
+                    lit("\u{3000}x\u{2028}", false),
+                    lit("q", true),
+                    lit("\u{85}", false)
+                ]
+            })
+        );
+        assert_eq!(t[4..], [Tok::Newline]);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use purgatorio::abi::{mode, pctl};
 use purgatorio::{Error, Waitmsg};
 
-use crate::lex::{Part, RedirKind, VarKind, Word};
+use crate::lex::{Part, RedirKind, VarKind, Word, is_blank};
 use crate::modules::{Loaded, Module};
 use crate::parse::{self, AndOr, Cmd, CmdKind, Item, Pipeline, Redir};
 use crate::shmods::Fail;
@@ -74,7 +74,7 @@ pub fn quote(s: &str) -> String {
     if !s.is_empty()
         && !s
             .chars()
-            .any(|c| c.is_whitespace() || "'#;&|{}()<>$`^=".contains(c))
+            .any(|c| is_blank(c) || "'#;&|{}()<>$`^=".contains(c))
     {
         return String::from(s);
     }
@@ -591,7 +591,7 @@ impl Shell {
         let res = File::from(r).read_to_string(&mut out);
         self.status = self.wait_for(&[pid]).pop().unwrap_or_default();
         res?;
-        Ok(out.split_whitespace().map(String::from).collect())
+        Ok(fields(&out))
     }
 
     fn runs_here(&self, cmd: &Cmd) -> bool {
@@ -713,7 +713,7 @@ impl Shell {
                 let out = purgatorio::call(*handle, name, args.as_bytes())
                     .map_err(|e| Fail::plain(&format!("{name}: {e}")))?;
                 let text = String::from_utf8_lossy(&out);
-                return Ok(text.split_whitespace().map(String::from).collect());
+                return Ok(fields(&text));
             }
         };
         match m {
@@ -986,18 +986,27 @@ fn std_subst(argv: &[String]) -> Result<Vec<String>, Error> {
     })
 }
 
-/// Splits `s` into words at white space, honouring `'quotes'` as `quote`
+/// The words of a command's output: it is split at blanks only, so a word
+/// may hold other white space such as U+00A0.
+fn fields(s: &str) -> Vec<String> {
+    s.split(is_blank)
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// Splits `s` into words at blanks, honouring `'quotes'` as `quote`
 /// writes them.
 fn unquote(s: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut c = s.chars().peekable();
     loop {
-        while c.next_if(|c| c.is_whitespace()).is_some() {}
+        while c.next_if(|&c| is_blank(c)).is_some() {}
         if c.peek().is_none() {
             return words;
         }
         let mut w = String::new();
-        while let Some(ch) = c.next_if(|c| !c.is_whitespace()) {
+        while let Some(ch) = c.next_if(|&c| !is_blank(c)) {
             if ch != '\'' {
                 w.push(ch);
                 continue;
@@ -1106,6 +1115,9 @@ mod tests {
         assert_eq!(quote(""), "''");
         assert_eq!(quote("it's here"), "'it''s here'");
         assert_eq!(unquote("a 'b c' '' 'it''s'x"), ["a", "b c", "", "it'sx"]);
+        assert_eq!(quote("a\u{a0}b"), "a\u{a0}b");
+        assert_eq!(unquote("a\u{a0}b\tc"), ["a\u{a0}b", "c"]);
+        assert_eq!(fields(" a\u{a0}b\r\n\tc\n"), ["a\u{a0}b", "c"]);
         assert_eq!(
             std_subst(&v(&["index", "2", "a", "b", "c"])).unwrap(),
             ["b"]
