@@ -17,6 +17,8 @@ members = [
     "appl/cmd/ndb/dns",
     "appl/cmd/ndb/dnsquery",
     "appl/cmd/ndb/query",
+    "appl/cmd/ndb/registry",
+    "appl/cmd/ndb/regquery",
     "appl/cmd/install/ckproto",
     "appl/cmd/install/mkproto",
     "appl/cmd/install/proto2list",
