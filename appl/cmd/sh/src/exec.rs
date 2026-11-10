@@ -392,11 +392,14 @@ impl Shell {
     }
 
     /// Runs a builtin, assignment or block in this prog.
-    fn here(&mut self, cmd: &Cmd, io: &Io) -> Flow<String> {
-        let mut io = io.clone();
+    fn here(&mut self, cmd: &Cmd, outer: &Io) -> Flow<String> {
+        let mut io = outer.clone();
         let _files = match self.redirect(&cmd.redirs, &mut io) {
             Ok(f) => f,
-            Err(e) => return self.cmd_err(e, &io),
+            // The files a failed list of redirections had opened are
+            // closed again, so `io` may name fds that are gone: the error
+            // goes where the shell's errors went before the command.
+            Err(e) => return self.cmd_err(e, outer),
         };
         match &cmd.kind {
             CmdKind::Assign { name, local, value } => match self.expand_all(value) {
