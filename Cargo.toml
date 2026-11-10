@@ -26,6 +26,8 @@ members = [
     "appl/cmd/disk/mkfs",
     "appl/cmd/ip/sntp",
     "appl/cmd/ip/tftpd",
+    "appl/cmd/auxi/cpuslave",
+    "appl/cmd/auxi/rstyxd",
     "appl/cmd/auth/changelogin",
     "appl/cmd/auth/countersigner",
     "appl/cmd/auth/createsignerkey",
@@ -46,7 +48,7 @@ members = [
     "xtask",
 ]
 # Matched by appl/cmd/* but hold crates, with no Cargo.toml of their own.
-exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/ip", "appl/cmd/auth"]
+exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/ip", "appl/cmd/auth", "appl/cmd/auxi"]
 
 [workspace.package]
 version = "0.1.0"

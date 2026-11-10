@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-rcmd"
+description = "rcmd: run a command on a remote system with this namespace exported to it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rcmd"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+rstyx = { package = "appl-lib-rstyx", path = "../../lib/rstyx" }
+
+[lints]
+workspace = true

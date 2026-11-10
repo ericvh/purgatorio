@@ -210,6 +210,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-auxi-cpuslave"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auxi-rstyxd"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-rstyx",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-basename"
 version = "0.1.0"
 dependencies = [
@@ -290,6 +305,14 @@ dependencies = [
 name = "appl-cmd-cp"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-cpu"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-rstyx",
  "purgatorio",
 ]
 
@@ -814,6 +837,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-rcmd"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-rstyx",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-read"
 version = "0.1.0"
 dependencies = [
@@ -1133,6 +1164,13 @@ dependencies = [
 [[package]]
 name = "appl-lib-regexp"
 version = "0.1.0"
+
+[[package]]
+name = "appl-lib-rstyx"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-lib-styxserv"
