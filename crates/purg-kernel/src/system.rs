@@ -12,7 +12,15 @@
 //! [`host9p`]) is mounted on `/n/host` when QEMU has one. There are no
 //! host commands.
 
+#[cfg(feature = "p9")]
 pub mod host9p;
+#[cfg(not(feature = "p9"))]
+#[path = "system/nohost9p.rs"]
+pub mod host9p;
+#[cfg(feature = "net")]
+pub mod net;
+#[cfg(not(feature = "net"))]
+#[path = "system/nonet.rs"]
 pub mod net;
 
 use alloc::boxed::Box;
@@ -23,7 +31,6 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use purg_aarch64::net::NetStack;
 use purg_aarch64::platform::MetalPlatform;
 use purg_abi::mode;
 use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
@@ -398,8 +405,8 @@ pub fn start(
     initrd: &'static [u8],
     console: &'static dyn Console,
     rtc: Option<usize>,
-    (stack, checks): (NetStack, net::Checks),
-    host: Option<purg_aarch64::p9::Host9p>,
+    (stack, checks): (net::Stack, net::Checks),
+    host: Option<host9p::Host>,
     mode: Mode,
 ) -> usize {
     use core::sync::atomic::AtomicUsize;
@@ -413,8 +420,8 @@ pub fn start(
             .with_kproc_stack(crate::irq::KPROC_STACK_SIZE);
         let native = crate::devices::native(console, rtc, &platform.user());
         let p9 = host.and_then(host9p::open);
-        let extra: Vec<Arc<dyn Dev>> = p9.iter().map(|d| d.clone() as Arc<dyn Dev>).collect();
-        let result = match boot(platform.with_net(Box::new(stack)), native, extra, |root| {
+        let extra = host9p::devs(p9.as_ref());
+        let result = match boot(net::attach(platform, stack), native, extra, |root| {
             root.add_tar(initrd).map(|_| ())
         }) {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),

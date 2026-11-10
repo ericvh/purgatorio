@@ -25,8 +25,7 @@ use spin::Once;
 
 use crate::dtb::Fdt;
 use crate::irq::{self, After};
-use crate::net::sleep;
-use crate::virtio::{self, Mmio, Virtio9p};
+use crate::virtio::{self, Mmio, Virtio9p, sleep};
 
 /// How long a wait sleeps before looking at the rings again without an
 /// interrupt.
