@@ -913,10 +913,11 @@ fn glob_match(word: &str, pat: &str) -> bool {
     }
 }
 
-/// The module a command name runs: `/bin/name.wasm` for a plain name; a
-/// name containing `/` is used as given, or with `.wasm` added.
+/// The module a command name runs. A name starting with `/`, `./` or `../`
+/// is used as given, or with `.wasm` added; any other name, such as `ls` or
+/// `ndb/query`, is looked up under `/bin` with `.wasm` added.
 fn resolve(name: &str) -> Result<String, Error> {
-    let candidates = if name.contains('/') {
+    let candidates = if name.starts_with('/') || name.starts_with("./") || name.starts_with("../") {
         vec![String::from(name), format!("{name}.wasm")]
     } else {
         vec![format!("/bin/{name}.wasm")]
