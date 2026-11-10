@@ -307,3 +307,52 @@ fn devices_are_listed() {
         );
     }
 }
+
+/// A kill ends a prog that is asleep; it does not sleep on, broken.
+#[test]
+fn kill_interrupts_a_sleeping_prog() {
+    for vm in VMS {
+        let start = std::time::Instant::now();
+        let script = "sleep 40 & sleep 1; kill $apid; wait; echo waited; ps";
+        let o = emu(vm, &["sh", "-c", script], b"");
+        let out = stdout(&o);
+        assert!(out.contains("waited\n"), "{vm}: {out}");
+        assert!(!out.contains("sleep"), "{vm}: {out}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(20),
+            "{vm}: the killed sleep ran to its end"
+        );
+    }
+}
+
+/// Everything a prog wrote before it exited reaches the host, whatever its
+/// exit status (issue #69).
+#[test]
+fn output_survives_a_failing_exit() {
+    for vm in VMS {
+        let want = stdout(&emu(vm, &["sh", "-c", "ls -l /bin"], b""));
+        assert!(want.lines().count() > 50, "{vm}");
+        for script in [
+            "ls -l /bin; exit 1",
+            "ls -l /bin | cat; exit oops",
+            "{ls -l /bin; exit 1} | cat | cat",
+            "ls -l /bin | {cat; exit 1}",
+            "ls -l /bin; cat /nonexistent >[2] /dev/null",
+            "ls -l /bin & wait; exit 1",
+        ] {
+            let o = emu(vm, &["sh", "-c", script], b"");
+            assert!(!o.status.success(), "{vm}: {script}");
+            assert_eq!(stdout(&o), want, "{vm}: {script}");
+        }
+        // The same without a shell in between, and with an unfinished line.
+        let o = emu(vm, &["cat", "/lib/probe/hello.txt", "/nonexistent"], b"");
+        assert!(!o.status.success(), "{vm}");
+        assert_eq!(
+            stdout(&o),
+            "hello from the probe root\ncat: /nonexistent: file does not exist\n",
+            "{vm}"
+        );
+        let o = emu(vm, &["sh", "-c", "echo -n partial; exit 1"], b"");
+        assert_eq!(stdout(&o), "partial", "{vm}");
+    }
+}
