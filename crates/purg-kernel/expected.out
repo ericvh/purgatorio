@@ -48,6 +48,7 @@ kernel: run /bin/test/m3.wasm
 ok file2chan
 ok export
 ok kill
+ok kill_spin
 ok fauth
 ok fauth_bad_proof
 ok fauth_not_required

@@ -157,7 +157,13 @@ fn m3_conformance() {
             String::from_utf8_lossy(&o.stderr)
         );
         assert!(!out.contains("FAIL"), "{vm}:\n{out}");
-        for check in ["fauth", "fauth_not_required", "amount", "stream_kill"] {
+        for check in [
+            "kill_spin",
+            "fauth",
+            "fauth_not_required",
+            "amount",
+            "stream_kill",
+        ] {
             assert!(out.contains(&format!("ok {check}\n")), "{vm}:\n{out}");
         }
     }
