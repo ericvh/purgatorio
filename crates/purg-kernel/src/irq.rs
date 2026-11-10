@@ -21,7 +21,8 @@ use crate::kernel::fail;
 pub const TICK_HZ: u64 = 100;
 
 /// Stack for each kernel thread.
-const STACK_SIZE: usize = 64 << 10;
+/// wasmi and the host calls it makes need deep stacks, as in the probe.
+const STACK_SIZE: usize = 2 << 20;
 
 pub static SCHED: Scheduler = Scheduler::new(STACK_SIZE);
 
