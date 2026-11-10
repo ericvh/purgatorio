@@ -18,6 +18,7 @@ use crate::devenv::Egrp;
 use crate::error::{Error, Result};
 use crate::fgrp::Fgrp;
 use crate::kchan::Kgrp;
+use crate::modsig::{ModPolicy, Module};
 use crate::names::quote;
 use crate::pgrp::Pgrp;
 
@@ -44,9 +45,48 @@ pub struct Proc {
     /// Rendezvous registered by `purgatorio.wait` on this prog's `wait`
     /// file.
     wait_watchers: Mutex<Vec<Rendez>>,
+    /// The module policy (`docs/signing.md`).
+    modpolicy: Mutex<ModPolicy>,
+    /// The modules loaded into this prog: its command, then its reactors.
+    modules: Mutex<Vec<Module>>,
 }
 
 impl Proc {
+    pub fn module_policy(&self) -> ModPolicy {
+        self.modpolicy.lock().clone()
+    }
+
+    /// Tightens the module policy to `level`. The first move off `none`
+    /// pins a copy of this prog's namespace for the trust lists. Lowering
+    /// the level is [`error::EPERM`].
+    pub fn tighten_module_policy(&self, level: crate::modsig::Level) -> Result<()> {
+        let pin = {
+            let p = self.modpolicy.lock();
+            if level < p.level {
+                return Err(Error::new(error::EPERM));
+            }
+            level > p.level && p.trust.is_none()
+        };
+        // Fork outside the policy lock: it takes the namespace's own.
+        let pinned = pin.then(|| Arc::new(self.pgrp().fork()));
+        let mut p = self.modpolicy.lock();
+        if level > p.level {
+            p.level = level;
+            if p.trust.is_none() {
+                p.trust = pinned;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn modules(&self) -> Vec<Module> {
+        self.modules.lock().clone()
+    }
+
+    pub(crate) fn add_module(&self, m: Module) {
+        self.modules.lock().push(m);
+    }
+
     pub fn group(&self) -> u32 {
         self.group.load(Ordering::Relaxed)
     }
@@ -145,6 +185,8 @@ pub struct Procs {
     user: String,
     next_pid: AtomicU32,
     table: Mutex<BTreeMap<u32, Arc<Proc>>>,
+    /// The module policy of progs with no parent.
+    modpolicy: Mutex<ModPolicy>,
 }
 
 impl Procs {
@@ -154,7 +196,16 @@ impl Procs {
             platform,
             next_pid: AtomicU32::new(1),
             table: Mutex::new(BTreeMap::new()),
+            modpolicy: Mutex::new(ModPolicy::default()),
         })
+    }
+
+    /// Sets the system default module policy: that of every prog made
+    /// with [`Prog::new`] from now on. `pgrp` is the namespace its trust
+    /// lists are read in; a copy is kept.
+    pub fn set_module_policy(&self, level: crate::modsig::Level, pgrp: &Pgrp) {
+        let trust = (level != crate::modsig::Level::None).then(|| Arc::new(pgrp.fork()));
+        *self.modpolicy.lock() = ModPolicy { level, trust };
     }
 
     pub fn user(&self) -> &str {
@@ -168,6 +219,7 @@ impl Procs {
         egrp: Arc<Egrp>,
         fgrp: Arc<Fgrp>,
         pgrp: Arc<Pgrp>,
+        modpolicy: ModPolicy,
     ) -> Arc<Proc> {
         let pid = self.next_pid.fetch_add(1, Ordering::Relaxed);
         let p = Arc::new(Proc {
@@ -183,6 +235,8 @@ impl Procs {
             waits: Mutex::new(VecDeque::new()),
             waitr: Rendez::new(),
             wait_watchers: Mutex::new(Vec::new()),
+            modpolicy: Mutex::new(modpolicy),
+            modules: Mutex::new(Vec::new()),
         });
         self.table.lock().insert(pid, p.clone());
         p
@@ -279,10 +333,15 @@ impl Prog {
     /// A first prog with a fresh fd table and environment.
     pub fn new(kernel: Arc<Kernel>, pgrp: Arc<Pgrp>) -> Prog {
         let fgrp = Arc::new(Fgrp::new());
-        let proc =
-            kernel
-                .procs
-                .register(0, None, Arc::new(Egrp::new()), fgrp.clone(), pgrp.clone());
+        let modpolicy = kernel.procs.modpolicy.lock().clone();
+        let proc = kernel.procs.register(
+            0,
+            None,
+            Arc::new(Egrp::new()),
+            fgrp.clone(),
+            pgrp.clone(),
+            modpolicy,
+        );
         Prog {
             pid: proc.pid,
             proc,
@@ -367,6 +426,7 @@ impl Prog {
             self.egrp(),
             self.fgrp.clone(),
             self.pgrp.clone(),
+            self.proc.module_policy(),
         );
         let mut child = Prog {
             pid: proc.pid,

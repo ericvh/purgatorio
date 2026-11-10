@@ -21,6 +21,7 @@ pub mod hex;
 pub mod keys;
 #[cfg(feature = "login")]
 pub mod login;
+pub mod modsig;
 pub mod proof;
 
 pub use purg_abi::auth::{PUBLIC, SEED, SIGNATURE};

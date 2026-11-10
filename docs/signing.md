@@ -40,7 +40,7 @@ section removed, wherever it sits. Exactly:
 So the digest is the hash of the file with some byte ranges cut out.
 Nothing is re-encoded: a size written with redundant LEB128 bytes is hashed
 as written. A file that breaks rule 1, 2 or 3 has no digest and is not a
-module (`exec format error`). The names of other custom sections and the
+module (`bad executable`). The names of other custom sections and the
 contents of all sections are not interpreted.
 
 The digest of a signed module equals the digest of the module it was made

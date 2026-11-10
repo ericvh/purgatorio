@@ -6,6 +6,8 @@ use purg_core::{Error, Prog};
 /// Reads a module through the prog's namespace and checks it is a WASM
 /// binary whose `purgatorio.abi` section, if present, matches this host.
 /// Modules without the section (third-party WASI programs) are accepted.
+/// The module is then checked against the prog's module policy and
+/// recorded in the prog with its digest.
 pub fn load_module(prog: &mut Prog, path: &str) -> Result<Vec<u8>, Error> {
     let fd = prog.open(path, mode::OREAD)?;
     let mut wasm = Vec::new();
@@ -26,8 +28,12 @@ pub fn load_module(prog: &mut Prog, path: &str) -> Result<Vec<u8>, Error> {
             error::EBADEXEC,
             alloc::string::String::from_utf8_lossy(v)
         ))),
-        Ok(_) => Ok(wasm),
-    }
+        Ok(_) => Ok(()),
+    }?;
+    // The prog's module policy (`docs/signing.md`): the digest is taken
+    // from these bytes, which are the ones the engine then runs.
+    prog.check_module(path, &wasm)?;
+    Ok(wasm)
 }
 
 /// A byte string that is not a well-formed WASM module.

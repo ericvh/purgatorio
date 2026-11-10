@@ -32,6 +32,7 @@ pub mod fgrp;
 pub mod initrd;
 pub mod kchan;
 pub mod linedisc;
+pub mod modsig;
 pub mod mux;
 pub mod names;
 pub mod pgrp;
