@@ -176,6 +176,22 @@ Phase K, but they belong to the hosted milestones' acceptance criteria.
   0 rather than a mount id; the plan's preopen numbers (fd 3 `/`, fd 4 `.`)
   and its list of `ENOTSUP` WASI calls are stale against `docs/abi.md`.
 
+## Self-hosting
+
+- [ ] **PG-43 Self-hosting the guest toolchain** ([selfhost.md](selfhost.md)):
+  rustc as WebAssembly, run in Purgatorio, building guests byte-identical to
+  the host builds. Stages: (A) wasm tools (`wasmparser`, `wat`) as guest
+  commands; (B) spike with an existing rustc.wasm under the hosted emu,
+  driven without cargo, after raising `max_wasm_stack`, a copy fallback for
+  cross-directory WASI renames (rustc's rlib and rmeta writes hit `EXDEV`
+  today) and a persistent module cache; (C) sysroot in `/lib/rust` and a
+  build file from `cargo build -v` for `mk` or sh, with
+  `#[purgatorio::main]` turned into a `macro_rules!` macro; (D) our own
+  single-threaded rustc 1.99.1 for `wasm32-wasip1` with in-process LLD, or
+  wasi-threads on wasmtime only if D4 allows; (E) the byte-identical check
+  as a CI job. Kernel use waits for AOT (D6); wasm64 only for crates that
+  outgrow 4 GiB.
+
 ## Later
 
 - wasm64 guests as a separate `wasm64-purgatorio` ABI, binaries in `/bin/32`
