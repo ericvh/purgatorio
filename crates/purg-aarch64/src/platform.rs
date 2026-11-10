@@ -7,9 +7,9 @@ use alloc::string::String;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use purg_platform::net::Net;
-use purg_platform::{Console, Platform, Result};
+use purg_platform::{Console, Platform, Result, Rtc};
 
-use crate::mmu;
+use crate::pl031::Pl031;
 use crate::sched::Scheduler;
 use crate::timer;
 
@@ -29,8 +29,8 @@ pub struct MetalPlatform {
 /// # Safety
 /// `pa` must be a PL031 in the device window the high half maps.
 pub unsafe fn pl031_seconds(pa: usize) -> u64 {
-    // SAFETY: the caller guarantees a mapped PL031; RTCDR is at offset 0.
-    u64::from(unsafe { core::ptr::read_volatile(mmu::phys_to_virt(pa) as *const u32) })
+    // SAFETY: the caller guarantees a mapped PL031.
+    unsafe { Pl031::new(pa) }.seconds()
 }
 
 impl MetalPlatform {

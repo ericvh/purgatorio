@@ -119,6 +119,13 @@ the kernel also mounts a hosted emu's `styxlisten` export from the host
 the host, and exports its own `/` on `tcp!*!6666`, which the host mounts
 through a QEMU `hostfwd`.
 
+K3 adds the kernel's own devices, bound after `/dev` as in Inferno's native
+kernels: `#r` serves the PL031 clock as `/dev/rtc` (read the time, write
+seconds to set it), and `#t` serves the console UART as `/dev/eia0`, with
+`eia0ctl` and `eia0status`. A guest that computes without making host calls
+is still killed: wasmi runs guests on fuel and checks the prog's note between
+slices, as the emu's wasmtime backend does with epoch interruption.
+
 ```sh
 cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on cortex-a72 and max
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm

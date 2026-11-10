@@ -6,8 +6,9 @@
 //! The namespace is the emu's: `#/` is the root, `#U` (here a RAM tree
 //! seeded from the initrd) is unioned after it and takes creates, `#c` is
 //! before `/dev`, and `#e`, `#p`, `#s`, `#d` are on `/env`, `/prog`,
-//! `/chan` and `/fd`, and `#I` (smoltcp over virtio-net, see [`net`]) is on
-//! `/net`. There is no host file system and no host commands.
+//! `/chan` and `/fd`, `#I` (smoltcp over virtio-net, see [`net`]) is on
+//! `/net`, and the kernel's devices (`#r`, `#t`; see [`crate::devices`])
+//! are after `/dev`. There is no host file system and no host commands.
 
 pub mod net;
 
@@ -39,9 +40,11 @@ pub struct System {
     pgrp: Arc<Pgrp>,
 }
 
-/// Builds the emu's boot namespace over a RAM root that `seed` fills.
+/// Builds the emu's boot namespace over a RAM root that `seed` fills,
+/// with the kernel's `native` devices.
 pub fn boot(
     platform: MetalPlatform,
+    native: Vec<Arc<dyn Dev>>,
     seed: impl FnOnce(&RamTree) -> Result<(), Error>,
 ) -> Result<System, Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform);
@@ -53,6 +56,8 @@ pub fn boot(
     seed(&root)?;
     root.add_dir("/tmp");
     devs.push(Arc::new(root));
+    let natives: Vec<char> = native.iter().map(|d| d.dc()).collect();
+    devs.extend(native);
     let devtab = DevTab::new(devs);
     let kernel = Kernel::new(platform, devtab.clone(), procs, portable.srv, portable.mnt);
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "")?);
@@ -63,6 +68,9 @@ pub fn boot(
     pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
     pgrp.bind("#d", "/fd", MREPL)?;
     pgrp.bind("#I", "/net", MREPL)?;
+    for dc in natives {
+        pgrp.bind(&format!("#{dc}"), "/dev", MAFTER)?;
+    }
     Ok(System {
         engine: Arc::new(Wasmi::new()?),
         kernel,
@@ -169,13 +177,13 @@ const SCRIPT: &[(&[&str], bool)] = &[
 const SH_CORPUS: &str = "/lib/test/sh";
 
 impl System {
-    fn say(&self, s: &str) {
+    pub(crate) fn say(&self, s: &str) {
         let c = self.kernel.platform.console();
         let _ = c.write(s.as_bytes());
         let _ = c.write(b"\n");
     }
 
-    fn verdict(&self, failed: &mut usize, v: core::result::Result<String, String>) {
+    pub(crate) fn verdict(&self, failed: &mut usize, v: core::result::Result<String, String>) {
         match v {
             Ok(v) => self.say(&format!("kernel: {v}")),
             Err(v) => {
@@ -199,6 +207,7 @@ impl System {
             };
             self.verdict(&mut failed, v);
         }
+        failed += self.device_tests();
         let names = match self.list(SH_CORPUS) {
             Ok(n) => n,
             Err(e) => {
@@ -250,10 +259,11 @@ pub fn start(
     let done = Rendez::new();
     let wake = done.clone();
     SCHED.spawn(Box::new(move || {
-        let result = match boot(
-            MetalPlatform::new(console, &SCHED, "purgatorio", rtc).with_net(Box::new(stack)),
-            |root| root.add_tar(initrd).map(|_| ()),
-        ) {
+        let platform = MetalPlatform::new(console, &SCHED, "purgatorio", rtc);
+        let native = crate::devices::native(console, rtc, &platform.user());
+        let result = match boot(platform.with_net(Box::new(stack)), native, |root| {
+            root.add_tar(initrd).map(|_| ())
+        }) {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
             Ok(sys) => match mode {
                 Mode::Test => sys.run_tests() + sys.net_tests(&checks),

@@ -80,6 +80,9 @@ ok sock
 ok sleep
 ok args
 kernel: ok
+kernel: rtc: read, set and put back
+eia0: this line went to /dev/eia0
+kernel: eia0: ctl, status and data ok
 @sh-corpus
 kernel: mount the hosted emu's export on /n/host
 /n/host/lib/probe/hello.txt
