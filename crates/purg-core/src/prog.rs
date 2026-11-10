@@ -73,7 +73,10 @@ impl Proc {
     }
 
     pub fn set_pgrp(&self, pgrp: Arc<Pgrp>) {
-        *self.pgrp.lock() = pgrp;
+        // The old namespace may be the last reference to its mounts, whose
+        // Chans clunk fids on drop; drop it after the lock.
+        let old = core::mem::replace(&mut *self.pgrp.lock(), pgrp);
+        drop(old);
     }
 
     /// Interrupts this prog wherever it is blocked.

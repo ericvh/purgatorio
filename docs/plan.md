@@ -122,7 +122,7 @@ Rules:
 
 - **`Chan`**: an open reference to a file. It holds the device type, device number, `Qid`, offset, mode, a mount-point back-reference for unions, a device-private `aux`, and the path name used for `fd2path`. It is reference-counted (`Arc<Chan>`) and closed via `Dev::close` when the last reference drops.
 - **`Dev` trait**: `dc` (the device char), `attach`, `walk`, `stat`, `open`, `create`, `read`, `write`, `bread`/`bwrite` (optional), `remove`, `wstat`, `close`. This mirrors Inferno's `Dev` struct. `devgen` helpers produce static directory trees.
-- **`Pgrp`**: the namespace. It is a mount table keyed by the mounted-on `Chan`'s (type, dev, qid.path) and stores ordered `Mount` lists for union directories, plus `nodevs`. Shared via `Arc<RwLock<…>>`. Forked on `FORKNS`.
+- **`Pgrp`**: the namespace. It is a mount table and `nodevs`. Each entry holds the mounted-on `Chan` and an ordered `Mount` list for union directories. Holding the Chan keeps the file referenced (for a `#M` file, its fid) while the mount lasts, so a file server cannot forget the name or give its qid to another file. A Chan matches an entry when its (type, dev, qid.path) equals the held Chan's, as in Inferno's `findmount`. Shared via `Arc<RwLock<…>>`. Forked on `FORKNS`.
 - **`Fgrp`**: the file descriptor table. Shared or forked via `FORKFD`/`NEWFD`.
 - **`Egrp`**: environment variables. `#e` serves them. Shared or forked via `FORKENV`/`NEWENV`.
 - **`Prog`**: the schedulable unit. It holds a pid, group id (`NEWPGRP`), the three groups, user, errstr, kill/exception state, a reference to its WASM instance, and status for `#p` (`status`, `ctl`, `ns`, `fd`, `wait`). `pctl` operates on it.
