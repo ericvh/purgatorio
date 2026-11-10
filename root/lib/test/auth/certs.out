@@ -1,0 +1,21 @@
+      2
+     65
+verified
+auth/verify: certificate expired
+1
+auth/verify: certificate name mismatch
+auth/verify: untrusted signer
+hello
+mount: mount: certificate expired
+mount: mount: untrusted signer
+countersigned
+mount: mount: authentication required
+mount: mount: authentication failed
+mount: mount: certificate revoked
+mount: mount: certificate revoked
+hello
+1
+factotum
+1
+0
+mount: mount: authentication failed

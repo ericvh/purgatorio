@@ -82,10 +82,114 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-authlib"
+version = "0.1.0"
+dependencies = [
+ "purg-styx",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-archfs"
 version = "0.1.0"
 dependencies = [
  "appl-lib-styxserv",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-changelogin"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-countersigner"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-createsignerkey"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-factotum"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-getpk"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-keyfs"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-keysrv"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-mkauthinfo"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-passwd"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-secstore"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-signer"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-auth-verify"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
  "purgatorio",
 ]
 
@@ -177,6 +281,14 @@ dependencies = [
 name = "appl-cmd-cron"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-crypt"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
  "purgatorio",
 ]
 
@@ -299,6 +411,14 @@ dependencies = [
 name = "appl-cmd-freq"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-getauthinfo"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
  "purgatorio",
 ]
 
@@ -563,6 +683,14 @@ name = "appl-cmd-ndb-regquery"
 version = "0.1.0"
 dependencies = [
  "appl-lib-ndb",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-netkey"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
  "purgatorio",
 ]
 
