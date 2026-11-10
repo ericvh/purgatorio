@@ -253,7 +253,8 @@ file to cover the range. `fd_fdstat_set_rights` accepts any open fd, since
 rights are not tracked. `path_link` and `path_symlink` return `NOTSUP`
 (Inferno has no links). `clock_res_get` reports the clock resolution.
 `proc_raise` kills the prog's note, so its next blocking call returns
-`EINTR`. A killed prog that keeps computing without a host call is stopped
+`EINTR`. A prog killed while `poll_oneoff` only sleeps (no fd
+subscriptions) ends there with status `killed`. A killed prog that keeps computing without a host call is stopped
 with status `killed`. Both VMs check the note periodically, every 10 ms
 under wasmtime (epoch interruption) and every 2^20 units of fuel under
 wasmi, and stop the prog at the check after the one that first sees it

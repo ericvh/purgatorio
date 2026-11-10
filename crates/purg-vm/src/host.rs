@@ -736,7 +736,10 @@ pub mod wasi {
         n: i32,
         nevents: i32,
     ) -> HostResult<i32> {
-        call(ctx, |c| {
+        // Set when a kill interrupts a plain sleep.
+        let mut killed = false;
+        let killed_flag = &mut killed;
+        let r = call(ctx, |c| {
             const SUB: i32 = 48;
             const EVENT: i32 = 32;
             if !(0..=128).contains(&n) {
@@ -809,7 +812,17 @@ pub mod wasi {
                 }
                 hit?;
             } else if !ready_now && let Some(ns) = soonest.filter(|ns| *ns > 0) {
-                purg_platform::sync::Rendez::new().tsleep(|| false, ns);
+                // A sleep. It must end early when the prog is killed.
+                let rendez = purg_platform::sync::Rendez::new();
+                let mut left = ns;
+                while left > 0 {
+                    let ms = i32::try_from(left.div_ceil(1_000_000)).unwrap_or(i32::MAX);
+                    if let Err(e) = purg_core::block::park_timeout(&rendez, || false, ms) {
+                        *killed_flag = true;
+                        return Err(e);
+                    }
+                    left = left.saturating_sub(u64::from(ms.unsigned_abs()) * 1_000_000);
+                }
             }
             let fd_hit = items.iter().any(|s| sub_ready(&c.prog, s));
             let mut out = 0i32;
@@ -837,7 +850,14 @@ pub mod wasi {
             }
             mem.put_u32(nevents, out as u32)?;
             Ok(())
-        })
+        });
+        if killed {
+            // The prog asked only to sleep, so there is nothing for it to
+            // clean up: it ends here, as a killed Inferno thread does. (An
+            // `EINTR` from a sleep makes Rust's `thread::sleep` panic.)
+            return Err(Stop::Exit(String::from("killed")));
+        }
+        r
     }
 
     pub fn sched_yield(_ctx: &mut Ctx, _mem: &mut Mem<'_>) -> HostResult<i32> {
