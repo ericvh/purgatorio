@@ -2445,6 +2445,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "purg-abi",
+ "purg-core",
  "purg-vm",
 ]
 

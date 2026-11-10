@@ -27,6 +27,7 @@ pub mod devssl;
 pub mod error;
 pub mod export;
 pub mod fgrp;
+pub mod initrd;
 pub mod kchan;
 pub mod mux;
 pub mod names;
