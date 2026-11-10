@@ -377,17 +377,17 @@ impl DevIp {
             host
         };
         let net = self.net()?;
-        if conv.proto == PROTO_UDP {
-            let conn = net.announce_udp(&host, port).map_err(Error::from)?;
-            *conv.local.lock() = conn.local();
-            *conv.status.lock() = String::from("Listen");
-            *conv.conn.lock() = Some(conn);
+        // An announced UDP port is listened on like TCP: each new remote is
+        // a new conversation.
+        let listener = if conv.proto == PROTO_UDP {
+            net.announce_udp(&host, port)
         } else {
-            let listener = net.announce_tcp(&host, port).map_err(Error::from)?;
-            *conv.local.lock() = listener.local();
-            *conv.status.lock() = String::from("Listen");
-            *conv.listener.lock() = Some(listener);
+            net.announce_tcp(&host, port)
         }
+        .map_err(Error::from)?;
+        *conv.local.lock() = listener.local();
+        *conv.status.lock() = String::from("Listen");
+        *conv.listener.lock() = Some(listener);
         Ok(())
     }
 
