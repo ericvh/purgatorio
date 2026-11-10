@@ -344,3 +344,109 @@ fn the_connection_is_encrypted() {
         assert!(!out.contains("never"), "{vm}: {out}");
     }
 }
+
+/// Kills a child process on drop.
+struct Reaper(std::process::Child);
+
+impl Drop for Reaper {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The host bridge of docs/mcp.md: an MCP client starts
+/// `emu rcmd tcp!host!port mcpd` and speaks MCP on its standard input and
+/// output, to a session on another system (here a second emu), over an
+/// encrypted connection. Revision 2026-07-28, with its per-request
+/// metadata.
+#[test]
+fn an_mcp_client_reaches_another_system() {
+    for vm in VMS {
+        let mut server = Reaper(
+            Command::new(env!("CARGO_BIN_EXE_emu"))
+                .arg("-r")
+                .arg(root())
+                .arg(format!("--vm={vm}"))
+                .args(["styxlisten", "tcp!127.0.0.1!0", "/bin/auxi/rstyxd.wasm"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn the server emu"),
+        );
+        let mut first = String::new();
+        BufReader::new(server.0.stdout.take().unwrap())
+            .read_line(&mut first)
+            .unwrap();
+        let addr = first
+            .trim()
+            .strip_prefix("styxlisten: ")
+            .unwrap_or_else(|| panic!("{vm}: {first:?}"));
+        let mut client = Reaper(
+            Command::new(env!("CARGO_BIN_EXE_emu"))
+                .arg("-r")
+                .arg(root())
+                .arg(format!("--vm={vm}"))
+                .args(["rcmd", &format!("tcp!{addr}"), "mcpd"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn the client emu"),
+        );
+        let mut stdin = client.0.stdin.take().unwrap();
+        let stdout = client.0.stdout.take().unwrap();
+        let (tx, lines) = channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                if tx.send(line.expect("utf-8")).is_err() {
+                    break;
+                }
+            }
+        });
+        let meta = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"bridge","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}"#;
+        let mut send = |line: String| {
+            stdin.write_all(line.as_bytes()).unwrap();
+            stdin.write_all(b"\n").unwrap();
+            stdin.flush().unwrap();
+        };
+        send(format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{{{meta}}}}}"#
+        ));
+        let v = recv(vm, &lines);
+        assert_eq!(v.get("id"), Some(&Value::Int(1)), "{vm}: {}", v.encode());
+        assert!(
+            v.encode().contains(r#""name":"mcpd""#),
+            "{vm}: {}",
+            v.encode()
+        );
+        send(format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"run","arguments":{{"command":"echo far; ls /n"}},{meta}}}}}"#
+        ));
+        let v = recv(vm, &lines);
+        let s = v
+            .get("result")
+            .and_then(|r| r.get("structuredContent"))
+            .unwrap_or_else(|| panic!("{vm}: {}", v.encode()));
+        // The caller's namespace is on /n/client in rstyxd's namespace,
+        // not in the session's.
+        assert_eq!(
+            s.get("stdout").and_then(Value::as_str),
+            Some("far\n"),
+            "{vm}"
+        );
+        drop(send);
+        drop(stdin);
+        let start = Instant::now();
+        let status = loop {
+            if let Some(st) = client.0.try_wait().unwrap() {
+                break st;
+            }
+            assert!(start.elapsed() < REPLY, "{vm}: rcmd did not exit");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success(), "{vm}: {status}");
+        assert!(lines.recv_timeout(Duration::from_secs(2)).is_err(), "{vm}");
+    }
+}

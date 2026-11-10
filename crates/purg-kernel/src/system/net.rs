@@ -10,6 +10,10 @@
 //!   `udp!10.0.2.2!PORT` and check the echo.
 //! - `netexport`: announce `tcp!*!6666` and export `/` to the first
 //!   connection, which the host mounts through a QEMU `hostfwd`.
+//! - `rstyx`: announce `tcp!*!6668` and run `auxi/rstyxd` on the first
+//!   connection, as `listen` would. The host connects through a second
+//!   `hostfwd` with `rcmd ... mcpd` and drives an MCP session on the
+//!   kernel (`docs/mcp.md`).
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -31,12 +35,16 @@ const HOST: &str = "10.0.2.2";
 /// The port the kernel exports `/` on.
 pub const EXPORT_PORT: u16 = 6666;
 
+/// The port `auxi/rstyxd` is served on: `rstyx` in `/lib/ndb/common`.
+pub const RSTYX_PORT: u16 = 6668;
+
 /// The network checks the bootargs ask for.
 #[derive(Clone, Copy, Default)]
 pub struct Checks {
     host_export: Option<u16>,
     udp_echo: Option<u16>,
     export: bool,
+    rstyx: bool,
 }
 
 /// The network stack `open` returns.
@@ -59,6 +67,7 @@ pub fn open(fdt: &Fdt<'_>, info: &BootInfo<'_>) -> (NetStack, Checks) {
         host_export: port("hostexport"),
         udp_echo: port("udpecho"),
         export: has_bootarg(info, "netexport"),
+        rstyx: has_bootarg(info, "rstyx"),
     };
     (stack, checks)
 }
@@ -86,7 +95,36 @@ impl System {
             let v = self.serve_export().map(|()| String::from("net served"));
             self.verdict(&mut failed, v.map_err(|e| format!("net: {e}")));
         }
+        if checks.rstyx && failed == 0 {
+            let v = match self.serve_rstyx() {
+                Ok(s) if s.is_empty() => Ok(String::from("rstyx served")),
+                Ok(s) => Err(format!("rstyx: status {s:?}")),
+                Err(e) => Err(format!("rstyx: {e}")),
+            };
+            self.verdict(&mut failed, v);
+        }
         failed
+    }
+
+    /// Announces `tcp!*!6668` and runs `auxi/rstyxd` on the first
+    /// connection, in a copy of the boot namespace; returns its status
+    /// when the client is done.
+    fn serve_rstyx(&self) -> Result<String, Error> {
+        let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
+        self.kernel.platform.set_current_pid(prog.pid);
+        let ctl = prog.open("/net/tcp/clone", mode::ORDWR)?;
+        let mut buf = [0u8; 32];
+        let n = prog.read(ctl, &mut buf)?;
+        let id = String::from(core::str::from_utf8(&buf[..n]).unwrap_or("").trim());
+        prog.write(ctl, format!("announce *!{RSTYX_PORT}").as_bytes())?;
+        self.say("kernel: rstyx ready");
+        let listen = prog.open(&format!("/net/tcp/{id}/listen"), mode::OREAD)?;
+        let n = prog.read(listen, &mut buf)?;
+        let new_id = core::str::from_utf8(&buf[..n]).unwrap_or("").trim();
+        let data = format!("/net/tcp/{new_id}/data");
+        let status = self.run_test_on(&["/bin/auxi/rstyxd.wasm"], &data);
+        drop(prog);
+        status
     }
 
     /// Mounts `tcp!10.0.2.2!port` on `/n/remote` and lists it: the host's

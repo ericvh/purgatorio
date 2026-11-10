@@ -18,7 +18,8 @@
 //!   self-test, checks the echo, and
 //!   has a virtio-net card on QEMU user networking: the kernel mounts a
 //!   hosted emu's `styxlisten` export and pings a UDP echo server on this
-//!   host, and this host mounts the kernel's `tcp!*!6666` export. Each run
+//!   host, and this host mounts the kernel's `tcp!*!6666` export and runs
+//!   an MCP session on the kernel with `rcmd tcp!...!6668 mcpd`. Each run
 //!   also shares a fresh directory under `target/kernel-9p/` over
 //!   virtio-9p, which the kernel mounts on `/n/host` and works on, and
 //!   whose final contents are checked here.
@@ -342,6 +343,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(300);
 /// The port the probe and the kernel export `/` on; QEMU forwards a free
 /// host port to it.
 const GUEST_EXPORT_PORT: u16 = 6666;
+/// The port the kernel serves `auxi/rstyxd` on in test mode.
+const GUEST_RSTYX_PORT: u16 = 6668;
 /// The MAC address of the virtio-net card.
 const GUEST_MAC: &str = "52:54:00:12:34:56";
 
@@ -356,11 +359,16 @@ fn free_port() -> Result<u16> {
 }
 
 /// QEMU arguments for a virtio-net card on user networking, with host port
-/// `fwd` forwarded to the guest's export port.
-fn net_args(fwd: u16) -> Vec<String> {
+/// `fwd` forwarded to the guest's export port, and `rstyx`, when given, to
+/// its rstyx port.
+fn net_args(fwd: u16, rstyx: Option<u16>) -> Vec<String> {
+    let mut netdev = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{fwd}-:{GUEST_EXPORT_PORT}");
+    if let Some(r) = rstyx {
+        netdev.push_str(&format!(",hostfwd=tcp:127.0.0.1:{r}-:{GUEST_RSTYX_PORT}"));
+    }
     [
         "-netdev",
-        &format!("user,id=net0,hostfwd=tcp:127.0.0.1:{fwd}-:{GUEST_EXPORT_PORT}"),
+        &netdev,
         "-global",
         "virtio-mmio.force-legacy=off",
         "-device",
@@ -552,7 +560,7 @@ fn probe(kvm: bool) -> Result<()> {
     let image = elf.with_extension("img");
     fs::write(&image, elf_to_image(&bytes)?).map_err(|e| format!("{}: {e}", image.display()))?;
     let fwd = free_port()?;
-    let net = net_args(fwd);
+    let net = net_args(fwd, None);
     let mut args: Vec<&str> = if kvm {
         vec!["-accel", "kvm", "-cpu", "host", "-M", "virt,gic-version=3"]
     } else {
@@ -838,16 +846,26 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         // The network peers on this host: an emu exporting its root, a
         // UDP echo server, and a free port QEMU forwards to the kernel's
         // export.
-        let (host, echo, fwd) = match (HostExport::start(&ws), UdpEcho::start(), free_port()) {
-            (Ok(h), Ok(e), Ok(f)) => (h, e, f),
-            (h, e, f) => {
-                let e = h.err().or(e.err()).or(f.err()).unwrap_or_default();
+        let (host, echo, fwd, rstyx) = match (
+            HostExport::start(&ws),
+            UdpEcho::start(),
+            free_port(),
+            free_port(),
+        ) {
+            (Ok(h), Ok(e), Ok(f), Ok(r)) => (h, e, f, r),
+            (h, e, f, r) => {
+                let e = h
+                    .err()
+                    .or(e.err())
+                    .or(f.err())
+                    .or(r.err())
+                    .unwrap_or_default();
                 eprintln!("kernel: {}: {e}", k.name);
                 failed.push(k.name);
                 continue;
             }
         };
-        let net = net_args(fwd);
+        let net = net_args(fwd, Some(rstyx));
         // The directory the kernel mounts on /n/host over virtio-9p.
         let shared = match SharedDir::create(&ws, k.name).and_then(|d| d.args().map(|a| (d, a))) {
             Ok(s) => s,
@@ -860,7 +878,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         // `test` runs the conformance guests, the sh corpus and the
         // network checks instead of an interactive shell.
         let bootargs = format!(
-            "{}test hostexport={} udpecho={} netexport{}",
+            "{}test hostexport={} udpecho={} netexport rstyx{}",
             if kvm { "exit=psci " } else { "" },
             host.port,
             echo.port,
@@ -880,10 +898,15 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         args.push("-kernel");
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
         let mut mounted = false;
+        let mut mcp = false;
         let r = run_qemu(&args, &image, KERNEL_TIMEOUT, KERNEL_INPUT, |text| {
             if !mounted && text.contains("kernel: net ready\n") {
                 mounted = true;
                 mount_guest(&ws, fwd, "kernel")?;
+            }
+            if !mcp && text.contains("kernel: rstyx ready\n") {
+                mcp = true;
+                mcp_guest(&ws, rstyx)?;
             }
             Ok(())
         });
@@ -933,6 +956,10 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         } else if !mounted {
             Some(format!(
                 "no `kernel: net ready`: tcp!*!{GUEST_EXPORT_PORT} was not exported"
+            ))
+        } else if !mcp {
+            Some(format!(
+                "no `kernel: rstyx ready`: tcp!*!{GUEST_RSTYX_PORT} was not served"
             ))
         } else if echoed == 0 {
             Some(String::from("the UDP echo server heard nothing"))
@@ -1002,6 +1029,61 @@ fn mount_guest(ws: &Path, port: u16, who: &str) -> Result<()> {
             "{who} export mount failed ({status})\n{stdout}{stderr}"
         ));
     }
+    Ok(())
+}
+
+/// Drives an MCP session on the kernel from this host, as an MCP client
+/// would: a hosted emu runs `rcmd tcp!127.0.0.1!port mcpd`, through
+/// QEMU's forward of `port` to the kernel's `auxi/rstyxd`, authenticated
+/// with the test key and encrypted. One `run` call must come back with
+/// its output.
+fn mcp_guest(ws: &Path, port: u16) -> Result<()> {
+    let emu = ws.join("target/debug/emu");
+    let meta = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"xtask","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}"#;
+    let request = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"run","arguments":{{"command":"echo session on the kernel; cat /dev/sysname"}},{meta}}}}}"#
+    );
+    let mut child = Command::new(&emu)
+        .arg("-r")
+        .arg(ws.join("root"))
+        .arg("--vm=wasmi")
+        .args(["rcmd", &format!("tcp!127.0.0.1!{port}"), "mcpd"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{}: {e}", emu.display()))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // End of input ends the session once the call is answered.
+        let _ = stdin.write_all(request.as_bytes());
+        let _ = stdin.write_all(b"\n");
+    }
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| format!("emu: {e}"))? {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(120) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(String::from("the MCP session on the kernel timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    if !status.success() || !stdout.contains(r#""stdout":"session on the kernel\n"#) {
+        return Err(format!(
+            "the MCP session on the kernel failed ({status})\n{stdout}{stderr}"
+        ));
+    }
+    eprintln!("kernel: an MCP session over virtio-net answered");
     Ok(())
 }
 

@@ -398,38 +398,102 @@ bind '#C' /cmd
 A mount point can be bound whole: `bind /lib /n/lib` shows the read-only
 `/lib`, since #97.
 
-## A remote server: `rcmd host mcpd`
+## Remote sessions (stage 3): `rcmd host mcpd`
 
 `rcmd` carries a command's standard input and output to another
-Purgatorio over an authenticated connection (`docs/rcmd.md`), so the same
-stdio server runs remotely with no bridge of its own. On the system that
-is to hold the sessions:
+Purgatorio over a connection that is authenticated with the mount proof
+and then encrypted (`docs/rcmd.md`). The same stdio server therefore runs
+remotely with no transport of its own, and an emu on the client's host is
+the bridge: the MCP client starts it, and it speaks MCP on its standard
+input and output.
+
+On the system that is to hold the sessions, an emu or the kernel:
 
 ```sh
 listen 'tcp!*!rstyx' /bin/auxi/rstyxd.wasm &
 ```
 
-and as the client's command, on an emu that holds a key that system
-trusts:
+On the host that runs the MCP client, the command to register is:
 
 ```sh
 emu -r /path/to/root rcmd tcp!host!6668 mcpd
 ```
 
+With Claude Code:
+
+```sh
+claude mcp add purgatorio-remote -- /path/to/purgatorio/target/release/emu \
+    -r /path/to/purgatorio/root rcmd 'tcp!host!6668' mcpd
+```
+
+and in an `mcpServers` table:
+
+```json
+{
+  "mcpServers": {
+    "purgatorio-remote": {
+      "command": "/path/to/purgatorio/target/release/emu",
+      "args": ["-r", "/path/to/purgatorio/root", "rcmd", "tcp!host!6668", "mcpd"]
+    }
+  }
+}
+```
+
+- `host` is an address the emu can dial: an IP address, or a name its
+  `/lib/ndb` or the host's resolver knows. `6668` is `rstyx` in
+  `/lib/ndb/common`, so `rcmd host mcpd` works too.
+- `mcpd`'s options go after it: `rcmd tcp!host!6668 mcpd -t 10000 -n
+  /lib/mcp/work.ns` (the file is a name on the remote system).
+- The local emu proves its user's identity with the default keys, or
+  with `rcmd -k keyfile`. The stock root on both ends holds the public
+  test key, so an unchanged pair authenticates; a deployment replaces it
+  (`docs/auth.md`).
+- After the proof the connection is encrypted with ChaCha20-Poly1305 under
+  keys from an X25519 exchange bound to the proof. `rcmd` refuses a
+  server that offers no session key; `-A` asks for a connection in the
+  clear, authenticated by nobody, and only an `rstyxd -A` accepts it.
+- `rcmd`'s own errors (`rcmd: bad record mac`, a refused proof) go to the
+  emu's standard output, which is the MCP stream, and the emu exits; the
+  client sees the server go away.
+
 Each connection is one `mcpd` with its own sessions. The caller's
 namespace is mounted on `/n/client` in `rstyxd`'s copy of the namespace;
-a session does not see it unless its policy binds it. The connection is
-authenticated but not encrypted yet. `crates/purg-emu/tests/rcmd.rs`
-drives a session this way on loopback.
+a session does not see it unless its policy binds it.
+
+Tests: `crates/purg-emu/tests/rcmd.rs` drives a session over loopback in
+one emu, and from one emu to another as an MCP client would, with
+revision 2026-07-28; another test relays the connection through the test
+and checks that the command, its output and the 9P traffic are not in
+the clear and that a changed byte ends the session. `cargo xtask kernel`
+(TCG and `--kvm`) serves `auxi/rstyxd` on the kernel's `tcp!*!6668`
+through QEMU's user networking, and a hosted emu on the host runs one
+`run` call there with `rcmd tcp!127.0.0.1!<forwarded port> mcpd`.
+
+### Why not `mcpd` behind `listen` directly
+
+Stage 3 asked whether `mcpd` should also listen on `/net` itself, with
+the mount authentication. It does not. That server would need its own
+handshake, its own encryption and its own client on the host, and would
+do what `rstyxd` and `rcmd` already do: authenticate with the mount proof,
+encrypt, carry standard input and output, and give each connection its
+own process group that is killed when it ends. One path is tested in
+the hosted tests and on the kernel; a second would double that.
 
 ## Later stages
 
 From issue #70:
 
-3. Remote sessions: `mcpd` behind `listen` on `/net` with the mount
-   authentication, a host bridge from stdio to that connection, and the
-   kernel over virtio-net. Per-session `/prog` filtering belongs here.
 4. `mcpfs`, which mounts other MCP servers' tools as files. (`rcmd` as
    the transport is done, above.)
 5. Fuel and memory limits per session.
 
+Notes for stage 5 from stage 3:
+
+- The cost of a session is mostly its progs: the session prog, two
+  `memfs`, two `export -r`, and now a short-lived worker per file tool,
+  each with its own wasm instance and kernel thread. On the kernel each
+  prog holds a stack and its memory until it exits, so a limit on the
+  number of progs in a domain would bound a session as much as a memory
+  limit would.
+- `#pdomain` already names the set of progs a session owns, which is
+  where per-session counters for fuel and memory could live.
