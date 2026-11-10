@@ -128,6 +128,45 @@ strip = "debuginfo"
 inherits = "release"
 panic = "abort"
 
+# The kernel is built for size except where speed is bought cheaply
+# (docs/footprint.md has the measurements). Everything is `opt-level = "z"`
+# with fat LTO, but the interpreter, wasmi, stays at 3: guests run at the
+# speed of its dispatch loop, and at "z" a CPU-bound guest takes 1.5 times
+# as long. Do not use "s": wasmi's dispatch relies on LLVM turning its
+# calls into jumps, and at "s" a prog's kernel stack went from 22 KiB to
+# more than 2 MiB in the test mode (the scheduler's stack check panics).
 [profile.kernel]
 inherits = "release"
 panic = "abort"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+
+[profile.kernel.package.wasmi]
+opt-level = 3
+
+[profile.kernel.package.wasmi_core]
+opt-level = 3
+
+[profile.kernel.package.wasmi_ir]
+opt-level = 3
+
+[profile.kernel.package.wasmi_collections]
+opt-level = 3
+
+# The smallest kernel: the interpreter built for size as well. Used with
+# `--no-default-features` by `cargo xtask size --small`.
+[profile.kernel-small]
+inherits = "kernel"
+
+[profile.kernel-small.package.wasmi]
+opt-level = "z"
+
+[profile.kernel-small.package.wasmi_core]
+opt-level = "z"
+
+[profile.kernel-small.package.wasmi_ir]
+opt-level = "z"
+
+[profile.kernel-small.package.wasmi_collections]
+opt-level = "z"
