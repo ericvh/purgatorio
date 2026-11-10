@@ -4,6 +4,12 @@
 //! `inferno`, and mode 0755 for directories and `.wasm` files, 0644
 //! otherwise. The same tree always gives the same bytes. `purg_core::initrd`
 //! reads the result.
+//!
+//! The function-name files `build-root` writes beside the guests
+//! (`bin/<cmd>.names`, `docs/debug.md`) stay out of an image unless it is
+//! asked for them ([`NAMES_ENV`]): they are a sixth of the size of the
+//! modules. Those of the test guests in `bin/test` go in, because the sh
+//! corpus reads them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +18,21 @@ use crate::Result;
 
 const BLOCK: usize = 512;
 const OWNER: &[u8] = b"inferno";
+
+/// Set to `1`, the kernel's and the probe's images carry every `.names`
+/// file. `cargo xtask kernel|probe|initrd --names` sets it.
+pub const NAMES_ENV: &str = "PURG_IMAGE_NAMES";
+
+/// Whether [`NAMES_ENV`] asks for every `.names` file.
+pub fn names_wanted() -> bool {
+    std::env::var_os(NAMES_ENV).is_some_and(|v| v == "1")
+}
+
+/// Whether the file at `path` (relative to the root, `/`-separated) goes
+/// into an image; `names` is [`names_wanted`].
+pub fn in_image(path: &str, names: bool) -> bool {
+    names || !path.ends_with(".names") || path.starts_with("bin/test/")
+}
 
 fn octal(field: &mut [u8], v: u64) -> Result<()> {
     let s = format!("{v:0w$o}", w = field.len() - 1);
@@ -85,8 +106,9 @@ fn walk(base: &Path, dir: &Path, out: &mut Vec<(PathBuf, bool)>) -> Result<()> {
 }
 
 /// A ustar archive of the directories `dirs` under `base`, with paths
-/// relative to `base` (`bin`, `bin/sh.wasm`, ...).
-pub fn archive(base: &Path, dirs: &[&str]) -> Result<Vec<u8>> {
+/// relative to `base` (`bin`, `bin/sh.wasm`, ...). Without `names` it
+/// leaves out the `.names` files [`in_image`] keeps out.
+pub fn archive(base: &Path, dirs: &[&str], names: bool) -> Result<Vec<u8>> {
     let mut paths = Vec::new();
     for d in dirs {
         walk(base, &base.join(d), &mut paths)?;
@@ -98,6 +120,9 @@ pub fn archive(base: &Path, dirs: &[&str]) -> Result<Vec<u8>> {
             .to_str()
             .ok_or_else(|| format!("{}: not UTF-8", rel.display()))?
             .replace(std::path::MAIN_SEPARATOR, "/");
+        if !dir && !in_image(&path, names) {
+            continue;
+        }
         let mode = if dir || path.ends_with(".wasm") {
             0o755
         } else {
@@ -145,8 +170,8 @@ mod tests {
     #[test]
     fn round_trip_and_deterministic() {
         let d = scratch("tar-round-trip");
-        let a = archive(&d, &["bin", "lib"]).unwrap();
-        assert_eq!(a, archive(&d, &["bin", "lib"]).unwrap());
+        let a = archive(&d, &["bin", "lib"], false).unwrap();
+        assert_eq!(a, archive(&d, &["bin", "lib"], false).unwrap());
         assert_eq!(a.len() % BLOCK, 0);
         let e = entries(&a).unwrap();
         let got: Vec<_> = e
@@ -177,12 +202,31 @@ mod tests {
         assert!(e[9].data.is_empty());
     }
 
+    /// Function names go in only when asked for, except the test guests'.
+    #[test]
+    fn names_only_when_asked() {
+        let d = scratch("tar-names");
+        fs::create_dir_all(d.join("bin/test")).unwrap();
+        fs::write(d.join("bin/sh.names"), b"0 main\n").unwrap();
+        fs::write(d.join("bin/test/t.names"), b"0 main\n").unwrap();
+        let paths = |names| {
+            let a = archive(&d, &["bin"], names).unwrap();
+            let e = entries(&a).unwrap();
+            e.iter()
+                .map(|e| e.path.clone())
+                .filter(|p| p.ends_with(".names"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths(false), ["bin/test/t.names"]);
+        assert_eq!(paths(true), ["bin/sh.names", "bin/test/t.names"]);
+    }
+
     /// `crates/purg-core/tests/data/initrd.tar` is this writer's output for
     /// the fixture; purg-core's tests read it into a RamTree.
     #[test]
     fn fixture_is_current() {
         let d = scratch("tar-fixture");
-        let a = archive(&d, &["bin", "lib"]).unwrap();
+        let a = archive(&d, &["bin", "lib"], false).unwrap();
         let path = crate::workspace().join("crates/purg-core/tests/data/initrd.tar");
         if std::env::var_os("UPDATE_FIXTURE").is_some() {
             fs::write(&path, &a).unwrap();

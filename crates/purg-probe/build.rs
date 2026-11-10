@@ -1,11 +1,20 @@
 //! Links the bare-metal image with `purg-aarch64`'s `link.x` and embeds
 //! `root/bin` and `root/lib` (whose guest binaries `cargo xtask build-root`
-//! installs) as the files of the probe's root tree.
+//! installs) as the files of the probe's root tree. The guests' `.names`
+//! files stay out as they do of the kernel's (`xtask/src/tar.rs`).
 
 use std::env;
 use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// `xtask/src/tar.rs` returns this.
+type Result<T> = std::result::Result<T, String>;
+
+/// Only its image filter is used here.
+#[path = "../../xtask/src/tar.rs"]
+#[allow(dead_code)]
+mod tar;
 
 /// Directories under `root/` embedded in the image.
 const EMBEDDED: &[&str] = &["bin", "lib"];
@@ -41,6 +50,13 @@ fn main() {
         println!("cargo:rerun-if-changed={}", root.join(d).display());
         walk(&root.join(d), &mut files);
     }
+    println!("cargo:rerun-if-changed=../../xtask/src/tar.rs");
+    println!("cargo:rerun-if-env-changed={}", tar::NAMES_ENV);
+    let names = tar::names_wanted();
+    files.retain(|f| {
+        let rel = f.strip_prefix(&root).unwrap().to_str().unwrap();
+        tar::in_image(&rel.replace(std::path::MAIN_SEPARATOR, "/"), names)
+    });
     let mut src = String::from("pub const FILES: &[(&str, &[u8])] = &[\n");
     for f in &files {
         let name = f.strip_prefix(&root).unwrap().to_str().unwrap();

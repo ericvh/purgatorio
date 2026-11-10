@@ -77,7 +77,17 @@ a file beside the module, as Inferno keeps a `.sbl` beside a `.dis`:
   `target_features` sections from the module it installs. The installed
   modules are byte for byte what `strip = "symbols"` gave before.
 - The names files are about 16% of the size of the modules (2.4 MB
-  beside 14.6 MB), and are in the root the probe and the kernel carry.
+  beside 15.1 MB). The hosted root (`root/bin`) has them all.
+- The probe's and the kernel's images leave them out, since the root is
+  most of the kernel image. Only the test guests' (`bin/test/*.names`,
+  about 120 KB) go in, because the sh corpus reads them. On bare metal
+  `stack` and `prof` therefore show other commands' functions as `func
+  <index>`, and `stack -v` gives the index and the module's path, which
+  `wasmdump -f` on a hosted root turns into names.
+- `cargo xtask kernel --names`, `probe --names` and `initrd --names` put
+  every names file into the image (`PURG_IMAGE_NAMES=1` does the same for
+  a plain `cargo build` of the probe or the kernel), for when readable
+  stacks on bare metal are worth the size.
 
 `stack`, `prof` and `wasmdump -f` look for the `.names` file first, then
 for a `name` section in the module itself (a module built elsewhere), and
@@ -218,9 +228,9 @@ children, ordered by path and index:
 prints the result on standard error:
 
 ```
-% prof test/debug spin
-module /bin/test/debug.wasm samples 20
-100.0%      20 debug::burn
+% prof test/debug hot
+module /bin/test/debug.wasm samples 8
+100.0%       8 debug::burn
 ```
 
 ## What each engine gives
