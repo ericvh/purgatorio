@@ -360,6 +360,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-dbfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-dd"
 version = "0.1.0"
 dependencies = [
