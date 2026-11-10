@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-install-ckproto"
+description = "install/ckproto: find files a prototype misses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ckproto"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+
+[lints]
+workspace = true

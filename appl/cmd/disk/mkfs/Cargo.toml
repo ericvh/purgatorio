@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-disk-mkfs"
+description = "disk/mkfs: archive or copy the files a prototype selects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mkfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+
+[lints]
+workspace = true

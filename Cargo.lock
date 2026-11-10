@@ -208,6 +208,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-disk-mkext"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-disk-mkfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-du"
 version = "0.1.0"
 dependencies = [
@@ -307,6 +323,30 @@ dependencies = [
 name = "appl-cmd-import"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-ckproto"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-mkproto"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-proto2list"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
  "purgatorio",
 ]
 
@@ -746,6 +786,13 @@ version = "0.1.0"
 [[package]]
 name = "appl-lib-plumbmsg"
 version = "0.1.0"
+
+[[package]]
+name = "appl-lib-proto"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-lib-regexp"

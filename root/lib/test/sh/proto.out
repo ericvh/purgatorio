@@ -1,0 +1,105 @@
+bin
+	one
+	two
+lib
+	'a b'
+	l.b
+	l.dis
+	sub
+		deep
+bin
+	one
+	two
+src/bin
+	one
+	two
+src/lib/sub
+	deep
+mkproto: cannot stat src/nosuch: file does not exist
+/tmp/prototest/src	-	0	-2147483139	2000000	0	0
+/tmp/prototest/src/bin	-	0	-2147483139	2000000	0	0
+/tmp/prototest/src/bin/one	-	4	436	1000000	-132667233	0
+/tmp/prototest/src/bin/two	-	8	436	1000000	-339219643	0
+/tmp/prototest/src/lib	-	0	-2147483139	2000000	0	0
+/tmp/prototest/src/lib/a b	-	11	436	1000000	-1247754962	0
+/tmp/prototest/src/lib/l.b	-	4	436	1000000	-1599305933	0
+/tmp/prototest/src/lib/l.dis	-	4	436	1000000	-771574182	0
+/tmp/prototest/src/lib/sub	-	0	-2147483139	2000000	0	0
+/tmp/prototest/src/lib/sub/deep	-	5	436	1000000	664713346	0
+p2: line 7 : can't stat file /tmp/prototest/src/bin/missing: file does not exist
+/tmp/prototest/src	-	0	-2147483139	2000000	0	0
+/tmp/prototest/src/bin	-	0	-2147483139	2000000	0	0
+/tmp/prototest/src/bin/one	-	4	436	1000000	-132667233	0
+/tmp/prototest/src/bin/two	/tmp/prototest/src/bin/renamed	8	436	1000000	-339219643	0
+/tmp/prototest/src/lib/a b missing
+/tmp/prototest/src/lib/l.dis missing
+/tmp/prototest/src/lib/sub missing
+/tmp/prototest/src/lib/a b missing
+/tmp/prototest/src/lib/sub missing
+/bin
+/bin/one
+/bin/two
+/lib
+/lib/l.b
+bin
+	one
+	two
+lib
+	l.b
+/tmp/prototest/src/lib/a b missing
+/tmp/prototest/src/lib/l.dis missing
+/tmp/prototest/src/lib/sub missing
+processing p4
+file system made
+processing p4
+/bin	2000000	0
+/bin/one	1000000	4
+/bin/two	1000000	8
+/lib	2000000	0
+/lib/l.b	1000000	4
+/lib/sub	2000000	0
+/lib/sub/deep	1000000	4
+file system made
+/x/bin 20000000775 ann staff 2000000 0
+/x/bin/one 664 ann staff 1000000 4
+/x/bin/two 664 ann staff 1000000 8
+/x/lib 20000000775 ann staff 2000000 0
+/x/lib/l.b 600 ann staff 1000000 4
+/x/lib/sub 20000000775 ann staff 2000000 0
+/x/lib/sub/deep 664 ann staff 1000000 4
+done
+done
+out/bin
+out/lib
+out/bin/one
+out/bin/two
+out/lib/l.b
+out/lib/sub
+out/lib/sub/deep
+lib
+x /tmp/prototest/part/lib/sub/deep 4 bytes
+done
+part/lib
+part/lib/sub
+part/lib/sub/deep
+mkext: too few fields in file header
+premature end of archive
+processing p4
+/bin/one
+/bin/two
+/lib/l.b
+/lib/sub/deep
+file system made
+two two
+processing p4
+file system made
+processing p4
+/bin/one
+/bin/two
+/lib/l.b
+/lib/sub/deep
+file system made
+processing nosuchproto
+mkfs: can't open nosuchproto: file does not exist: skipping
+file system made
+disk/mkfs: usage: mkfs [-aprvxS] [-d root] [-n kfscmdname] [-s src-fs] [-u userfile] [-z n] [-G group] [-U user] proto ...

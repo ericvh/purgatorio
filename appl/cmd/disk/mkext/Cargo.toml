@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-disk-mkext"
+description = "disk/mkext: unpack a mkfs archive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mkext"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+
+[lints]
+workspace = true
