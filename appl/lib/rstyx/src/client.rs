@@ -28,6 +28,8 @@ pub struct Opts {
     pub noauth: bool,
     /// `-k`: the authinfo to make the proof from.
     pub keyfile: Option<String>,
+    /// `-x`: the directory served as `/n/client` (default `/`).
+    pub export: Option<String>,
 }
 
 fn text(d: &[u8]) -> String {
@@ -100,7 +102,7 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
     if o.noauth {
         argv.push(String::from("-A"));
     }
-    argv.push(String::from("/"));
+    argv.push(o.export.clone().unwrap_or_else(|| String::from("/")));
     purgatorio::spawn(
         "/bin/export.wasm",
         &argv,

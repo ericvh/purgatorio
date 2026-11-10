@@ -7,13 +7,14 @@ a  b it's c
 status 
 same
 carried
+local
 sh: nosuchcommand: file does not exist
 status fail:nosuchcommand: file does not exist
 mount -b /n/client/dev /dev ''
 a  b
 rcmd: authentication required
 rcmd: unknown algorithm rc4
-rcmd: usage: rcmd [-A] [-k keyfile] [-e alg] host [cmd [arg...]]
+rcmd: usage: rcmd [-A] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]
 local
 rcmd: untrusted signer
 rcmd: authentication required

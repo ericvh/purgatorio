@@ -14,7 +14,7 @@ an Inferno `rstyxd`.
 ## Commands
 
 ```
-rcmd [-A] [-k keyfile] [-e alg] host [cmd [arg...]]
+rcmd [-A] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]
 cpu  [-A] [-k keyfile] [-C alg] [net!]host [command [arg...]]
 auxi/rstyxd [-A] [-k keyfile]
 auxi/cpuslave [command [arg...]]
@@ -25,6 +25,8 @@ auxi/cpuslave [command [arg...]]
 - With no command the remote runs `sh`. One argument is a command line
   for the remote `sh`. Several arguments are the words of one command and
   are quoted on the way, so they arrive as given.
+- `rcmd -x dir` exports `dir` instead of `/`, so `/n/client` there is
+  `dir` here.
 - `-A` skips authentication in both directions. `-k` names the authinfo
   to prove with (`-f` is accepted, as Inferno spells it).
 - `-e` and `-C` name an algorithm for the connection. Only `none` (or
