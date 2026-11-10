@@ -1,0 +1,71 @@
+tr a-z A-Z < a.txt > a.up
+tr a-z A-Z < b.txt > b.up
+cat a.up b.up > out
+HELLO
+WORLD
+mk: 'all' is up to date
+mk: 'out' is up to date
+tr a-z A-Z < a.txt > a.up
+cat a.up b.up > out
+a.up(200) < a.txt(300)
+tr a-z A-Z < a.txt > a.up
+tr a-z A-Z < a.txt > a.up
+tr a-z A-Z < b.txt > b.up
+cat a.up b.up > out
+tr a-z A-Z < a.txt > a.up
+tr a-z A-Z < b.txt > b.up
+cat a.up b.up > out
+touch(a.up)
+touch(out)
+rm -f out a.up b.up
+a.txt
+b.txt
+dir
+mkfile
+mk: don't know how to make 'nosuch'
+error
+mk: nofile: file does not exist
+fail:nofile: file does not exist
+amp x x.lo
+echo pct y
+pct y
+echo re q q.txt
+re q q.txt
+echo partial > f; cat /nonexistent
+cat: /nonexistent: file does not exist
+mk: echo partial > f; cat /nonexistent: exit status=fail:errors, deleting 'f'
+ls: f: file does not exist
+echo partial > f; cat /nonexistent
+cat: /nonexistent: file does not exist
+mk: echo partial > f; cat /nonexistent: exit status=fail:errors, deleting 'f'
+cat /nonexistent >[2] /dev/null
+mk: cat /nonexistent >[2] /dev/null: exit status=fail:errors
+touch(h)
+error
+h
+echo from-include piped second one two $#L
+echo Q $Q flags -f mk4
+echo args 
+from-include piped second one two 2
+Q flags -f mk4
+args
+echo from-include piped second one two $#L
+echo Q $Q flags -f mk4 X=cmd
+echo args show
+from-include piped second one two 2
+Q flags -f mk4 X=cmd
+args show
+mk: 'p1' is up to date
+echo copy p2
+copy p2
+cp a.txt mid
+cp mid fin
+mk: 'fin' is up to date
+cp a.txt mid
+cp mid fin
+mk: ambiguous recipes for a:
+	a <-(mk7:1)- b
+	a <-(mk7:3)- c
+mk: cycle in graph detected at target loop
+mk: mk9:1: syntax error; expected : or =
+mk: usage: mk [-f file] [-n] [-a] [-e] [-t] [-k] [-i] [-d[egp]] [-wtarget,...] [targets ...]
