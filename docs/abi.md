@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.6)
+# Purgatorio application ABI (v0.7)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.6`. The loader rejects a mismatched version. Modules
+section containing `0.7`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -88,7 +88,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.6
+## `purgatorio` imports in v0.7
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -175,7 +175,7 @@ The host writes `args` into a fresh page of the module's memory, the export
 overwrites that page with its result and returns the result length, and the
 host copies up to `olen` bytes of it to `out`.
 
-### Authentication (M5; version 2 proofs in v0.6)
+### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7)
 
 A mount authenticates before `Tattach` with an Ed25519 signature over a
 challenge from the server. This is not Inferno's keyring protocol, so real
@@ -197,6 +197,14 @@ and a security review.
   kind and the body. A rejected proof fails the write with `authentication
   failed`, `certificate expired`, `certificate revoked`, `untrusted signer`
   or `certificate name mismatch`.
+- Since v0.7 the server offers `challenge[32] || server_key[32]`, an
+  ephemeral X25519 key, and clients write a version 3 proof, `0x03 ||
+  kind || signature[64] || client_key[32] || body`, whose signature also
+  covers both ephemeral keys. Both ends then derive a key per direction,
+  and every Styx message after the proof travels as a ChaCha20-Poly1305
+  record. A client refuses a server that offers no key (`no session key
+  offered`). Versions 1 and 2 are still accepted from older guests, and
+  their conversations stay in the clear.
 - The client's key comes from `#¤` (with a certificate loaded by `cert
   ...` on its `ctl`), an authinfo in `/usr/<user>/keyring/default`, or a
   seed in `/usr/<user>/key` (or the public test key `/lib/test/auth.key`).
@@ -224,8 +232,14 @@ operation: it is ready when an exit message is queued.
 
 `fauth(fd, aname, alen)` versions the 9P conversation on `fd` and sends
 `Tauth` for the caller's user and `aname`. It returns a new fd on the auth
-file. Reading it gives the server's 32-byte challenge. Writing a proof
-(above) to it completes the exchange. A wrong proof fails that write. The
+file. Since v0.7 a read of at least 96 bytes (`purg_abi::auth::SIGNED`) at
+offset 0 gives the server's offer followed by an ephemeral key the kernel
+made for this client: the bytes a version 3 proof signs. The kernel keeps
+the secret half. Writing that proof switches the conversation to records,
+and the kernel does the rest. A read of 32 bytes gives the bare challenge,
+for a version 1 or 2 proof and a conversation in the clear; a read of 96
+that returns fewer bytes means the server offers no key. Writing a proof
+(above) completes the exchange. A wrong proof fails that write. The
 caller then calls `mount(fd, afd, ...)` with the same `aname`, which
 attaches with the auth fid. An `afd` that did not authenticate makes the attach fail with
 `authentication required`. An `afd` that is not an auth fd, or that belongs
@@ -239,8 +253,9 @@ conversation. After a successful `fauth`, mount that conversation with the
 
 The SDK has `purgatorio::fauth`, plus `purgatorio::auth::{proof, proof_for,
 authenticate, authenticate_for, amount, amount_key}`. `proof_for` builds a
-version 2 proof from the sources above, or from an authinfo given as
-`keyfile`. `amount` is Inferno's `auth->amount`: fauth, authenticate, then
+version 3 proof (or version 2, given a bare challenge) from the sources
+above, or from an authinfo given as `keyfile`. `authenticate` reads 96
+bytes and fails with `no session key offered` when fewer come. `amount` is Inferno's `auth->amount`: fauth, authenticate, then
 mount, falling back to a plain mount when the server does not
 authenticate. `mount` and `import` use it, with `-k keyfile` for
 `amount_key`.

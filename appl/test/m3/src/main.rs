@@ -7,7 +7,9 @@
 //! reads fd 0 until it is killed. `m3 --stream path` writes a ready byte to
 //! fd 1 and streams fd 0 into `path` until it is killed. `m3 --spin` writes
 //! a ready byte to fd 1 and then computes, with no host calls, until it is
-//! killed.
+//! killed. `m3 --pump frame log` copies fd 0 to fd 1 and appends what it
+//! copies to `log`; when `frame` is a number it flips a bit in the last
+//! byte of that frame (a 9P message or a record) on the way.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -28,6 +30,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some("--export-noauth") => purgatorio::export(0, "/", MNOAUTH),
         Some("--stream") => stream_child(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--block") => block(),
+        Some("--pump") => pump(
+            args.get(2).and_then(|f| f.parse().ok()),
+            args.get(3).map(String::as_str).unwrap_or(""),
+        ),
         Some("--spin") => spin(),
         _ => checks(),
     }
@@ -63,6 +69,9 @@ fn checks() -> Result<(), Error> {
         ("fauth_not_required", fauth_not_required),
         ("noauth_rejected", noauth_rejected),
         ("amount", amount),
+        ("crypt_wire", crypt_wire),
+        ("crypt_clear", crypt_clear),
+        ("crypt_tamper", crypt_tamper),
         ("stream_pipe_file", stream_pipe_file),
         ("stream_file_pipe", stream_file_pipe),
         ("stream_short_write", stream_short_write),
@@ -286,9 +295,13 @@ fn fauth_mount() -> Result<(), String> {
     let conn = exporter("--export")?;
     let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
     let mut f = std::fs::File::from(afd);
-    let mut challenge = [0u8; purgatorio::abi::auth::CHALLENGE];
-    f.read_exact(&mut challenge).map_err(|e| e.to_string())?;
-    let proof = purgatorio::auth::proof(&challenge, &purgatorio::auth::user()).map_err(|e| e.0)?;
+    // The offer and the kernel's ephemeral key: a version 3 proof.
+    let mut signed = [0u8; purgatorio::abi::auth::SIGNED];
+    f.read_exact(&mut signed).map_err(|e| e.to_string())?;
+    let proof = purgatorio::auth::proof(&signed, &purgatorio::auth::user()).map_err(|e| e.0)?;
+    if proof.first() != Some(&purgatorio::abi::auth::PROOF_V3) {
+        return Err(String::from("not a version 3 proof"));
+    }
     f.write_all(&proof).map_err(|e| e.to_string())?;
     purgatorio::mount(conn.as_raw_fd(), f.as_raw_fd(), &dir, MREPL, "").map_err(|e| e.0)?;
     drop(f);
@@ -341,6 +354,190 @@ fn amount() -> Result<(), String> {
         read_through(&dir).map_err(|e| format!("{flag}: {e}"))?;
     }
     Ok(())
+}
+
+/// One direction of a relay: copies fd 0 to fd 1, appending what passes
+/// to `log` before passing it on, until either side fails or it is
+/// killed. With `flip`, the last byte of that frame is changed.
+///
+/// When it stops it kills the other direction, whose pid is in
+/// `<log>.peer`: that one holds both pipes too, so neither end would see
+/// the hangup while it lives.
+fn pump(flip: Option<usize>, log: &str) -> ! {
+    let stop = || -> ! {
+        if let Ok(pid) = std::fs::read_to_string(format!("{log}.peer")) {
+            let _ = std::fs::write(format!("/prog/{}/ctl", pid.trim()), "kill\n");
+        }
+        exits("")
+    };
+    let mut seen = Vec::new();
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut input = std::io::stdin();
+    let mut output = std::io::stdout();
+    loop {
+        let n = match input.read(&mut buf) {
+            Ok(0) | Err(_) => stop(),
+            Ok(n) => n,
+        };
+        let start = seen.len();
+        seen.extend_from_slice(&buf[..n]);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+        {
+            let _ = f.write_all(&buf[..n]);
+        }
+        if let Some(end) = flip.and_then(|k| frame_end(&seen, k))
+            && (start..start + n).contains(&(end - 1))
+        {
+            buf[end - 1 - start] ^= 1;
+        }
+        if output
+            .write_all(&buf[..n])
+            .and_then(|()| output.flush())
+            .is_err()
+        {
+            stop();
+        }
+    }
+}
+
+/// Where frame `k` of `log` ends, once its size is in. 9P messages and
+/// the records after an authenticated attach both start with their size.
+fn frame_end(log: &[u8], k: usize) -> Option<usize> {
+    let mut pos = 0;
+    for i in 0..=k {
+        let size = u32::from_le_bytes(log.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        if i == k {
+            return Some(pos + size);
+        }
+        pos += size;
+    }
+    None
+}
+
+const WIRE_NAME: &str = "m3-wire-secret-name";
+const WIRE_DATA: &[u8] = b"a payload nobody on the wire may read";
+
+/// What a relay between a mount and `m3 <flag>` saw.
+struct Wire {
+    /// The mount's result, then what was written through it and read back.
+    mounted: Result<(), String>,
+    up: Vec<u8>,
+    down: Vec<u8>,
+}
+
+/// Mounts `m3 <flag>` through a relay of two `m3 --pump` progs, writes a
+/// file through the mount and reads it back, then stops the relay.
+fn through_relay(flag: &str, flags: u32, flip: Option<(bool, usize)>) -> Result<Wire, String> {
+    let dir = mtpt("wire")?;
+    let logs = ["/tmp/m3-wire-up", "/tmp/m3-wire-down"];
+    for l in logs {
+        let _ = std::fs::remove_file(l);
+        let _ = std::fs::remove_file(format!("{l}.peer"));
+    }
+    let server = exporter(flag)?;
+    let [c, r] = purgatorio::pipe().map_err(|e| e.0)?;
+    let frame = |up: bool| match flip {
+        Some((u, k)) if u == up => k.to_string(),
+        _ => String::from("-"),
+    };
+    let mut pids = Vec::new();
+    for (up, from, to, log) in [(true, &r, &server, logs[0]), (false, &server, &r, logs[1])] {
+        let pid = purgatorio::spawn(
+            SELF,
+            &[
+                String::from("m3"),
+                String::from("--pump"),
+                frame(up),
+                String::from(log),
+            ],
+            pctl::NEWFD,
+            &[(from.as_raw_fd(), 0), (to.as_raw_fd(), 1)],
+        )
+        .map_err(|e| e.0)?;
+        pids.push(pid);
+    }
+    for (log, peer) in [(logs[0], pids[1]), (logs[1], pids[0])] {
+        std::fs::write(format!("{log}.peer"), peer.to_string()).map_err(|e| e.to_string())?;
+    }
+    drop(r);
+    drop(server);
+    let mounted =
+        purgatorio::auth::amount(c.as_raw_fd(), &dir, MREPL | MCREATE | (flags & MNOAUTH), "")
+            .map_err(|e| e.0);
+    drop(c);
+    let used = mounted.clone().and_then(|()| {
+        let path = format!("{dir}/tmp/{WIRE_NAME}");
+        let r = std::fs::write(&path, WIRE_DATA)
+            .and_then(|()| std::fs::read(&path))
+            .map_err(|e| e.to_string());
+        let _ = std::fs::remove_file(&path);
+        purgatorio::unmount(None, &dir).ok();
+        match r? {
+            d if d == WIRE_DATA => Ok(()),
+            d => Err(format!("read back {} bytes", d.len())),
+        }
+    });
+    for pid in &pids {
+        let _ = std::fs::write(format!("/prog/{pid}/ctl"), "kill\n");
+    }
+    let mut left = pids.clone();
+    while !left.is_empty() {
+        let msg = purgatorio::wait().map_err(|e| e.0)?;
+        left.retain(|p| *p != msg.pid);
+    }
+    let up = std::fs::read(logs[0]).unwrap_or_default();
+    let down = std::fs::read(logs[1]).unwrap_or_default();
+    Ok(Wire {
+        mounted: mounted.and(used),
+        up,
+        down,
+    })
+}
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// After an authenticated attach nothing on the wire is plaintext Styx:
+/// neither a file's name nor its contents pass in the clear.
+fn crypt_wire() -> Result<(), String> {
+    let w = through_relay("--export", 0, None)?;
+    w.mounted?;
+    if !contains(&w.up, purgatorio::auth::user().as_bytes()) {
+        return Err(String::from("Tauth's user name is not on the wire"));
+    }
+    for (dir, log) in [("up", &w.up), ("down", &w.down)] {
+        if contains(log, WIRE_NAME.as_bytes()) || contains(log, WIRE_DATA) {
+            return Err(format!("{dir}: plaintext on the wire"));
+        }
+    }
+    Ok(())
+}
+
+/// `-A` against a server without a key stays in the clear.
+fn crypt_clear() -> Result<(), String> {
+    let w = through_relay("--export-noauth", MNOAUTH, None)?;
+    w.mounted?;
+    if !contains(&w.up, WIRE_NAME.as_bytes()) || !contains(&w.up, WIRE_DATA) {
+        return Err(String::from("the clear conversation is not on the wire"));
+    }
+    Ok(())
+}
+
+/// A byte changed in the first record each way (frame 4: after Tversion,
+/// Tauth, the Tread of the offer and the Twrite of the proof) fails the
+/// mount, with no hang.
+fn crypt_tamper() -> Result<(), String> {
+    let w = through_relay("--export", 0, Some((false, 4)))?;
+    want_err(w.mounted.map_err(Error::from), "bad record mac")?;
+    let w = through_relay("--export", 0, Some((true, 4)))?;
+    want_err(
+        w.mounted.map_err(Error::from),
+        purgatorio::abi::error::EHUNGUP,
+    )
 }
 
 const STREAM_DATA: &[u8] = b"the quick brown fox jumps over the lazy dog";

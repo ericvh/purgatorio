@@ -2,7 +2,7 @@ auth/sign: no key
 signed
 countersigned
 digest ok
-abi 0.6
+abi 0.7
 signer trusted builder
 signer untrusted
 1

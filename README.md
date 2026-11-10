@@ -36,7 +36,7 @@ a `; ` prompt.
 | Namespace: `namec`, `bind` with `MREPL`/`MBEFORE`/`MAFTER`/`MCREATE` unions, `unmount`, `chdir`, lexical `..` | done |
 | Progs: `spawn_prog`, `pctl` (`NEWFD FORKFD NEWNS FORKNS NEWPGRP NODEVS NEWENV FORKENV`), wait messages; `Rendez` and qio checked with loom | done |
 | WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
-| App ABI v0.6: all of WASI preview 1 plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)). Stock Rust `std` programs with no SDK run and see the namespace | done |
+| App ABI v0.7: all of WASI preview 1 plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)). Stock Rust `std` programs with no SDK run and see the namespace | done |
 | `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, builtins `cd exit run wait load`; file-name patterns (`*`, `?`, `[class]`) | done |
 | `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`, `${hd}` `${tl}` `${index}` `${quote}` `${unquote}`. `load expr`: postfix `${expr}` | done |
 | `load string`: the sh-string(1) builtins (`prefix`, `in`, `${splitl}`, `${slice}`, `${fields}`, `${padl}`, ...). `load regex`: `match` and `${re g\|v\|s\|sg\|m\|mg\|M}` | done |
@@ -46,7 +46,7 @@ a `; ` prompt.
 | `load` and `call` of reactor modules from `/bin/lib` (the shell's `load add` gives `${add 20 22}`) | done |
 | `#M` mount, `export`, `#s` file2chan, `#d`, `#%`, kernel channels | done |
 | `#I` (`/net/tcp`, `/net/udp`, `/net/cs`) on host sockets, `#C` host commands; `dial`, `announce` and `listen` are file operations in the SDK | done |
-| Authenticated mount: the server checks an Ed25519 proof over a challenge before `Tattach`, from a key it holds or a certificate from a signer it trusts; `-A` skips it. `#¤` or a guest factotum signs for the client. See [docs/auth.md](docs/auth.md) | done |
+| Authenticated mount: the server checks an Ed25519 proof over a challenge before `Tattach`, from a key it holds or a certificate from a signer it trusts; `-A` skips it. The handshake also agrees a session key (ephemeral X25519), and the conversation after it is encrypted and authenticated with ChaCha20-Poly1305 records. `#¤` or a guest factotum signs for the client. See [docs/auth.md](docs/auth.md) | done |
 | Auth tools: `auth/createsignerkey signer keyfs keysrv passwd changelogin factotum secstore countersigner mkauthinfo verify getpk`, `getauthinfo`, `crypt`, `netkey`; password login is SPAKE2 | done |
 | `#D`: TLS 1.3 client with a pinned P-256 server key | done |
 | W1 commands: `bind cat cp date echo emuinit env ls mkdir mv pwd rm sleep unmount wc` | done |
@@ -71,7 +71,7 @@ a `; ` prompt.
 crates/
   purg-abi/          no_std  ABI constants shared by host and guest
   purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec; a 9P2000.u translator
-  purg-auth/         no_std  certificates, mount proofs, password login (SPAKE2), sealing
+  purg-auth/         no_std  certificates, mount proofs, session keys and records, password login (SPAKE2), sealing
   purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam)
   purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree, Styx mount/export;
                              #/ #c #e #| #p #s #d #% #M #I #C #D #¤
