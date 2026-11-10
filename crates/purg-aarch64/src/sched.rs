@@ -96,6 +96,9 @@ pub struct SchedStats {
     pub prog_stack: usize,
     /// The deepest stack of a thread that ran no prog.
     pub kproc_stack: usize,
+    /// The deepest stack of an export worker: a kproc named `export`,
+    /// which serves Styx requests through the exporting prog's namespace.
+    pub export_stack: usize,
 }
 
 struct Thread {
@@ -113,6 +116,16 @@ struct Thread {
 }
 
 impl Thread {
+    /// Which of [`SchedStats`]'s deepest stacks this thread counts in:
+    /// an export worker, one that ran a prog, or another kproc.
+    fn class(&self) -> usize {
+        if self.name == "export" {
+            2
+        } else {
+            usize::from(self.pid == 0)
+        }
+    }
+
     fn new(ctx: Context, stack: Option<Vec<u8>>, entry: Option<Box<dyn FnOnce() + Send>>) -> Self {
         Thread {
             ctx,
@@ -140,14 +153,14 @@ struct Threads {
     spawned: u64,
     /// The deepest stacks of exited threads: those that ran a prog, and
     /// the rest.
-    deepest: [usize; 2],
+    deepest: [usize; 3],
 }
 
 impl Threads {
     /// Records how deep `th`'s stack went.
     fn measure(&mut self, th: &Thread) {
         if let Some(stack) = &th.stack {
-            let class = usize::from(th.pid == 0);
+            let class = th.class();
             self.deepest[class] = self.deepest[class].max(stack_used(stack));
         }
     }
@@ -256,7 +269,7 @@ impl Scheduler {
                 switches: 0,
                 peak: 0,
                 spawned: 0,
-                deepest: [0; 2],
+                deepest: [0; 3],
             }),
             stack_size,
             preempt_count: AtomicU32::new(0),
@@ -345,7 +358,7 @@ impl Scheduler {
         let mut deepest = t.deepest;
         for th in t.all.iter().flatten() {
             if let Some(stack) = &th.stack {
-                let class = usize::from(th.pid == 0);
+                let class = th.class();
                 deepest[class] = deepest[class].max(stack_used(stack));
             }
         }
@@ -356,6 +369,7 @@ impl Scheduler {
             stack_size: self.stack_size,
             prog_stack: deepest[0],
             kproc_stack: deepest[1],
+            export_stack: deepest[2],
         }
     }
 

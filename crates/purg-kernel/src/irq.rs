@@ -27,8 +27,10 @@ pub const TICK_HZ: u64 = 100;
 /// so this leaves more than ten times that.
 const STACK_SIZE: usize = 256 << 10;
 
-/// Stack for the core's service kprocs (the mount readers), which run no
-/// prog: the deepest went 6 KiB.
+/// Stack for the core's service kprocs, which run no prog
+/// (`purg_aarch64::platform::SERVICE_KPROCS`). Across the test mode the
+/// deepest mount reader went 6 KiB and the deepest export worker 18 KiB,
+/// so this leaves more than three times the worst.
 pub const KPROC_STACK_SIZE: usize = 64 << 10;
 
 pub static SCHED: Scheduler = Scheduler::new(STACK_SIZE);
