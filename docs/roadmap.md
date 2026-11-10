@@ -67,6 +67,9 @@ Phase K, but they belong to the hosted milestones' acceptance criteria.
   Styx decoder, plus `proptest` round trips (plan Section 9).
 - [ ] **PG-31** W3/W4 apps not yet written: `mntgen`, minimal `ndb`, `tar`,
   `gzip`/`gunzip`, `logfile`, cron-like; sh `string` and `regex` modules.
+- [ ] **PG-33** Mount points hold no reference to the file mounted on: the
+  mount table matches them by qid. Inferno's holds a fid there. mntgen (#15)
+  works around it by keeping each name's qid stable; fix it in purg-core.
 - [ ] **PG-32** macOS details from plan Section 10.1 to confirm on a real Mac:
   explicit prog thread stack sizes, a clean `no free procs` error at the thread
   limit, `.DS_Store`/`._*` hidden in `#U`, dual-stack `announce tcp!*!port`.
