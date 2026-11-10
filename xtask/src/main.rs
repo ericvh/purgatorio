@@ -194,8 +194,10 @@ fn build_root() -> Result<()> {
         ])
         .env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags(&ws))
         .env(WRAPPER_ENV, "1")
+        // `RUSTC_WRAPPER`, not `RUSTC_WORKSPACE_WRAPPER`: the crates from
+        // the registry need the same treatment as the workspace's.
         .env(
-            "RUSTC_WORKSPACE_WRAPPER",
+            "RUSTC_WRAPPER",
             env::current_exe().map_err(|e| format!("xtask path: {e}"))?,
         );
     for g in &guests {
@@ -1037,24 +1039,40 @@ fn check_wasm(files: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Set when xtask runs as cargo's `RUSTC_WORKSPACE_WRAPPER` for guest builds.
+/// Set when xtask runs as cargo's `RUSTC_WRAPPER` for guest builds.
 const WRAPPER_ENV: &str = "PURG_XTASK_RUSTC_WRAPPER";
 
-/// Runs rustc with every `-C metadata=<hash>` replaced by one derived from
-/// the crate name alone. On stable, Cargo's hash covers `rustc -vV`,
-/// including the host triple; rustc orders generic instantiations by symbol
-/// name, which contains that hash, so the build host would otherwise change
-/// function order in guest modules.
+/// Runs rustc, for crates built for the guest target, with every
+/// `-C metadata=<hash>` replaced by one derived from the crate's name and
+/// version alone. On stable, Cargo's hash covers `rustc -vV`, including
+/// the host triple; rustc orders generic instantiations by symbol name,
+/// which contains that hash, so the build host would otherwise change
+/// function order (and, through it, inlining) in guest modules.
+///
+/// This covers every crate in a guest, the registry's as well as the
+/// workspace's: a dependency's hash is in the symbols of whatever is
+/// instantiated from its generics. Host crates (build scripts, proc
+/// macros) are left alone.
 fn rustc_wrapper(args: &[String]) -> ExitCode {
     let Some((rustc, rest)) = args.split_first() else {
         eprintln!("xtask: rustc wrapper called without rustc");
         return ExitCode::FAILURE;
     };
+    let guest = rest
+        .windows(2)
+        .any(|w| w[0] == "--target" && w[1] == GUEST_TARGET)
+        || rest
+            .iter()
+            .any(|a| *a == format!("--target={GUEST_TARGET}"));
     let crate_name = rest
         .iter()
         .position(|a| a == "--crate-name")
         .and_then(|i| rest.get(i + 1))
-        .cloned();
+        .filter(|_| guest)
+        .map(|name| match env::var("CARGO_PKG_VERSION") {
+            Ok(v) if !v.is_empty() => format!("{name}-{v}"),
+            _ => name.clone(),
+        });
     let mut out = Vec::with_capacity(rest.len());
     let mut it = rest.iter();
     while let Some(a) = it.next() {
