@@ -100,6 +100,53 @@ it costs nothing at run time and old modules still load.
   only the digest or also the module's name, and whether the digest should
   move to the ABI so a guest can ask for its own.
 
+## Commands still missing from Inferno's appl/cmd
+
+Checked against `inferno-os/appl/cmd` on 2026-11-10: 347 Limbo sources,
+about 120 top-level commands plus subdirectories. We have 42 of the
+top-level ones (with #14 and #15). Our `tar`, `cron` and in-kernel `cs`
+have no top-level Inferno counterpart: Inferno has `gettar`/`puttar`,
+no cron, and `ndb/cs`. Each item is one PR-sized batch; follow the man
+pages as the spec and keep Inferno's error wording.
+
+- [ ] **PG-35** Text and file tools: `sort uniq comm tr fmt strings freq
+  look tsort tokenize xargs basename cleanname touch chmod chgrp dd newer mc
+  read zeros test time cal sha1sum sum uuencode uudecode tcs units calc
+  unicode randpass bytes p`, and `ed` (larger; scripts rely on it).
+- [ ] **PG-36** The remaining sh modules: `arg`, `csv`, `echo`,
+  `file2chan`, `mload`, `mpexpr`, `sexprs`, `test` (`tk` waits for Phase G).
+- [ ] **PG-37** Namespace and Styx tools: `styxchat styxmon iostats nsbuild
+  lockfs trfs fcp`, `cpu` with `auxi/cpuslave` and `auxi/rstyxd`, `rcmd`,
+  Plan 9 interop `9export 9srvfs`, the `fs` walker and its modules (`fs/*`),
+  and file servers `archfs tarfs dossrv 9660srv vacfs vacget vacput ftpfs
+  dbfs rawdbfs` plus `dbm/*`.
+- [ ] **PG-38** Networking, alongside K3: `ip/` (`ping sntp dhcp tftpd bootpd
+  rip virgild`; PPP later), the rest of `ndb/` (`cs` as a guest server like
+  Inferno's, `csquery dns dnsquery mkhash registry regquery`), `telnet`,
+  `webgrab`, `whois`.
+- [ ] **PG-39** Authentication tools, redesigned for Ed25519 (D9) rather than
+  ported: `auth/` (`createsignerkey signer countersigner keyfs keysrv getpk
+  changelogin logind passwd mkauthinfo secstore verify`, a guest
+  `factotum`), `getauthinfo`, `netkey`, `runas`, `crypt`, `spki/verify`. Ties
+  in with module signing (PG-34).
+- [ ] **PG-40** System and admin: `plumber plumb sendmail timestamp pause
+  stream` (the call landed in #16), `mk`, `disk/` (`format kfs kfscmd mkfs
+  mkext prep mbr ftl`, for K3's native file system), `install/`
+  (`mkproto inst` and friends), and `man2txt`/`man2html` once we have our own
+  man pages.
+- [ ] **PG-41** Dis tools that need a wasm counterpart: `disdep disdump`
+  (module imports, exports, ABI version and digest), `prof mprof cprof`
+  (fuel or epoch sampling), `stack stackv mdb` (stack traces from the name
+  section, `/prog/<pid>/` debug files), `asm`. `limbo/`, `yacc` and `m4` are
+  not needed: guests are Rust.
+- Out of scope for now: graphics and Tk (`wm`, `tkcmd`, `wish`, `tclsh`,
+  `bit2gif`, `gif2bit`, `9win`, `rioimport`, `wmexport`, `wmimport`, `mouse`,
+  `touchcal`, `B`) wait for Phase G; audio (`auplay`, `raw2iaf`,
+  `wav2iaf`); hardware and devices (`lego/`, `avr/`, `palm/`, `mpc/`, `usb/`,
+  `irtest`); the `mash` shell; `fortune`. Not yet looked at closely: `ar`,
+  `cook`, `cddb`, `ftest`, `getfile`, `idea`, `itest`, `itreplay`,
+  `manufacture`, `metamorph`, `promptstring`, `rdp`, `src`.
+
 ## Gaps against the plan
 
 Items the plan lists for M1 to M5 that are not in the repo yet. None blocks
