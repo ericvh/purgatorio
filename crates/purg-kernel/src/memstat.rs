@@ -66,12 +66,13 @@ pub fn report(what: &str) {
     let t = SCHED.stats();
     println!(
         "kernel: mem {what}: threads {} now, {} at most, {} started; \
-         deepest stacks: prog thread {} KiB, export worker {} KiB, other kproc {} KiB (of {} KiB), boot {} KiB",
+         deepest stacks: prog thread {} KiB, export worker {} KiB, mount reader {} KiB, other kproc {} KiB (of {} KiB), boot {} KiB",
         t.threads,
         t.peak_threads,
         t.spawned,
         kib(t.prog_stack),
         kib(t.export_stack),
+        kib(t.mnt_stack),
         kib(t.kproc_stack),
         kib(t.stack_size),
         kib(boot_stack_used())

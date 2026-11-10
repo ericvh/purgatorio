@@ -99,6 +99,9 @@ pub struct SchedStats {
     /// The deepest stack of an export worker: a kproc named `export`,
     /// which serves Styx requests through the exporting prog's namespace.
     pub export_stack: usize,
+    /// The deepest stack of a mount reader: a kproc named `mnt`, which
+    /// reads a mounted server's replies.
+    pub mnt_stack: usize,
 }
 
 struct Thread {
@@ -117,12 +120,13 @@ struct Thread {
 
 impl Thread {
     /// Which of [`SchedStats`]'s deepest stacks this thread counts in:
-    /// an export worker, one that ran a prog, or another kproc.
+    /// an export worker, a mount reader, one that ran a prog, or another
+    /// kproc.
     fn class(&self) -> usize {
-        if self.name == "export" {
-            2
-        } else {
-            usize::from(self.pid == 0)
+        match self.name.as_str() {
+            "export" => 2,
+            "mnt" => 3,
+            _ => usize::from(self.pid == 0),
         }
     }
 
@@ -153,7 +157,7 @@ struct Threads {
     spawned: u64,
     /// The deepest stacks of exited threads: those that ran a prog, and
     /// the rest.
-    deepest: [usize; 3],
+    deepest: [usize; 4],
 }
 
 impl Threads {
@@ -269,7 +273,7 @@ impl Scheduler {
                 switches: 0,
                 peak: 0,
                 spawned: 0,
-                deepest: [0; 3],
+                deepest: [0; 4],
             }),
             stack_size,
             preempt_count: AtomicU32::new(0),
@@ -370,6 +374,7 @@ impl Scheduler {
             prog_stack: deepest[0],
             kproc_stack: deepest[1],
             export_stack: deepest[2],
+            mnt_stack: deepest[3],
         }
     }
 
