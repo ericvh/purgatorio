@@ -188,7 +188,9 @@ tells an attacker nothing they do not already hold.
 
 ### Clients
 
-The kernel's own mount (`mount` with `afd = -1`) and the SDK
+The `mount` command lets the kernel authenticate unless it is given `-k`
+or a guest factotum is mounted; then it uses the SDK, as `import` always
+does. The kernel's own mount (`mount` with `afd = -1`) and the SDK
 (`purgatorio::auth`, used by `mount`, `import` and `amount`) build the
 proof from the authinfo named by `-k keyfile` on `mount` or `import`, or
 else from the first source that has a key:
