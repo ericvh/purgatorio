@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-telnet"
+description = "telnet: talk to a remote machine with the Telnet protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "telnet"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
