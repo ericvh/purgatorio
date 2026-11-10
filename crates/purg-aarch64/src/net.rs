@@ -673,6 +673,19 @@ impl Conn for TcpConn {
     }
 }
 
+/// A dropped connection gives its socket back. It is closed, not
+/// aborted, so what was written is still sent, and it goes to the back of
+/// the free list, so it is reused (and only then aborted, if the close
+/// has not finished) as late as possible.
+impl Drop for TcpConn {
+    fn drop(&mut self) {
+        let mut stack = self.smol.lock();
+        stack.sockets.get_mut::<tcp::Socket>(self.handle).close();
+        stack.poll();
+        stack.free.insert(0, self.handle);
+    }
+}
+
 struct SmolListen {
     smol: Arc<Smol>,
     /// The socket listening now; an accepted one is replaced.
@@ -717,12 +730,24 @@ impl Listener for SmolListen {
     }
 }
 
+/// A dropped listener stops listening and gives its socket back.
+impl Drop for SmolListen {
+    fn drop(&mut self) {
+        let handle = *self.handle.lock();
+        let mut stack = self.smol.lock();
+        stack.sockets.get_mut::<tcp::Socket>(handle).abort();
+        stack.poll();
+        stack.free.insert(0, handle);
+    }
+}
+
 /// The loopback UDP ports in use, by number.
 type LoopUdpPorts = Mutex<Vec<(u16, Weak<LoopUdp>)>>;
 
 /// In-process connections for `127.0.0.1`. The guest tests dial themselves.
 struct Loopback {
-    listeners: Mutex<Vec<(u16, Arc<LoopListen>)>>,
+    /// Weak: a listener lives as long as its `#I` conversation.
+    listeners: Mutex<Vec<(u16, Weak<LoopListen>)>>,
     udp: Arc<LoopUdpPorts>,
     next: AtomicU16,
 }
@@ -791,7 +816,9 @@ impl Loopback {
             waiting: Mutex::new(VecDeque::new()),
             ready: Rendez::new(),
         });
-        self.listeners.lock().push((port, Arc::clone(&listen)));
+        let mut listeners = self.listeners.lock();
+        listeners.retain(|(_, w)| w.strong_count() > 0);
+        listeners.push((port, Arc::downgrade(&listen)));
         Ok(listen)
     }
 
@@ -800,8 +827,8 @@ impl Loopback {
             .listeners
             .lock()
             .iter()
-            .find(|(p, _)| *p == port)
-            .map(|(_, l)| Arc::clone(l))
+            .filter(|(p, _)| *p == port)
+            .find_map(|(_, l)| l.upgrade())
             .ok_or(Cow::Borrowed("connection refused"))?;
         let client_in = Arc::new(Pipe::new());
         let server_in = Arc::new(Pipe::new());
