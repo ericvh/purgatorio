@@ -82,7 +82,7 @@ root/                        the file tree emu serves as #U (build-root adds roo
   lib/sh/profile             run by sh -l at boot
   lib/test/sh/               sh scripts and their expected output
 xtask/                       build tasks
-docs/                        design plan, roadmap, ABI
+docs/                        design plan, ABI (the roadmap is GitHub issues)
 ```
 
 The `no_std` crates are the code the aarch64 kernel will share unchanged.

@@ -8,8 +8,9 @@ with `bind`/`mount`, and one protocol, Styx (9P2000).
 - `docs/plan.md`: the reference design and the milestone acceptance
   criteria (Section 11) and open decisions (Section 12). Read the relevant
   section before starting a milestone.
-- `docs/roadmap.md`: the task list. What is done, what is next, known gaps.
-  Keep it current: tick tasks off and add new ones as work lands.
+- The task list is GitHub issues (`gh issue list --repo ericvh/purgatorio`),
+  grouped by milestone (K1–K4, Phase G) and label. `docs/roadmap.md` only
+  points there.
 - `docs/abi.md`: the guest ABI (WASI p1 plus the `purgatorio` module).
 - `docs/wasm64.md`: why we stay on wasm32 and how a later wasm64 port fits.
 - `README.md`: user-facing status, layout and build instructions.
@@ -93,9 +94,9 @@ named `<name>`, added to the workspace `members`.
 
 - Work moves through milestones without waiting for review between them.
   Keep each milestone or sub-feature a separate, reviewable commit or PR.
-- Feature PRs do not edit `docs/roadmap.md`. Say in the PR description which
-  item the PR closes; the roadmap is updated separately after merges. (Many
-  parallel branches ticking items is what caused most merge conflicts.)
+- Track work in GitHub issues, not in files: a PR says `Closes #n` in its
+  description, and new work becomes a new issue. (Many parallel branches
+  ticking a roadmap file is what caused most merge conflicts.)
   Likewise a new crate needs no `Cargo.toml` edit (members are globs), and a
   new sh corpus script needs no `expected.out` edit (`@sh-corpus` expands to
   the scripts on disk).
