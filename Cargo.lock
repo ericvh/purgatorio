@@ -375,6 +375,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-ip-sntp"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ip-tftpd"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-kill"
 version = "0.1.0"
 dependencies = [
@@ -499,9 +513,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-ndb-cs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-ndb",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ndb-csquery"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ndb-dns"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-ndb",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ndb-dnsquery"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ndb-query"
 version = "0.1.0"
 dependencies = [
+ "appl-lib-ndb",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ndb-registry"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-ndb",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ndb-regquery"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-ndb",
  "purgatorio",
 ]
 
@@ -743,6 +804,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-telnet"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-test"
 version = "0.1.0"
 dependencies = [
@@ -849,6 +917,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-webgrab"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-whois"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-xargs"
 version = "0.1.0"
 dependencies = [
@@ -876,6 +958,13 @@ version = "0.1.0"
 [[package]]
 name = "appl-lib-mashcase"
 version = "0.1.0"
+
+[[package]]
+name = "appl-lib-ndb"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-lib-plumbmsg"
@@ -918,6 +1007,14 @@ dependencies = [
 name = "appl-test-net"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-test-netsrv"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-ndb",
  "purgatorio",
 ]
 
