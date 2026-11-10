@@ -1,11 +1,13 @@
-//! m3: file2chan, a pipe export/mount, kill of a blocked read, fauth with
-//! an explicit auth fd, and stream.
+//! m3: file2chan, a pipe export/mount, kill of a blocked read and of a
+//! computing prog, fauth with an explicit auth fd, and stream.
 //!
 //! `m3 --serve-file path` serves `path` and writes a ready byte to fd 1.
 //! `m3 --export` serves `/` on fd 0, and `m3 --export-noauth` does so
 //! without authentication. `m3 --block` writes a ready byte to fd 1 and then
 //! reads fd 0 until it is killed. `m3 --stream path` writes a ready byte to
-//! fd 1 and streams fd 0 into `path` until it is killed.
+//! fd 1 and streams fd 0 into `path` until it is killed. `m3 --spin` writes
+//! a ready byte to fd 1 and then computes, with no host calls, until it is
+//! killed.
 
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -26,6 +28,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some("--export-noauth") => purgatorio::export(0, "/", MNOAUTH),
         Some("--stream") => stream_child(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--block") => block(),
+        Some("--spin") => spin(),
         _ => checks(),
     }
 }
@@ -40,12 +43,21 @@ fn block() -> ! {
     }
 }
 
+fn spin() -> ! {
+    let _ = file2chan::write_fd(1, b"R");
+    let mut x = 0u64;
+    loop {
+        x = std::hint::black_box(x.wrapping_add(1));
+    }
+}
+
 fn checks() -> Result<(), Error> {
     let mut failed = 0;
     for (name, f) in [
         ("file2chan", file2chan as fn() -> Result<(), String>),
         ("export", export_loop),
         ("kill", kill_blocked),
+        ("kill_spin", kill_spin),
         ("fauth", fauth_mount),
         ("fauth_bad_proof", fauth_bad_proof),
         ("fauth_not_required", fauth_not_required),
@@ -195,6 +207,35 @@ fn kill_blocked() -> Result<(), String> {
         return Err(format!("wait {msg:?}"));
     }
     let _ = mode::OREAD;
+    Ok(())
+}
+
+/// A prog computing with no host calls has no call to interrupt, so the
+/// VM's periodic note check (wasmi fuel, wasmtime epochs) stops it.
+fn kill_spin() -> Result<(), String> {
+    let [ready_r, ready_w] = purgatorio::pipe().map_err(|e| e.0)?;
+    let pid = purgatorio::spawn(
+        SELF,
+        &[String::from("m3"), String::from("--spin")],
+        pctl::NEWFD,
+        &[(ready_w.as_raw_fd(), 1)],
+    )
+    .map_err(|e| e.0)?;
+    drop(ready_w);
+    let mut b = [0u8; 1];
+    std::fs::File::from(ready_r)
+        .read_exact(&mut b)
+        .map_err(|e| e.to_string())?;
+    std::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())?;
+    let msg = loop {
+        let msg = purgatorio::wait().map_err(|e| e.0)?;
+        if msg.pid == pid {
+            break msg;
+        }
+    };
+    if msg.status != "killed" {
+        return Err(format!("wait {msg:?}"));
+    }
     Ok(())
 }
 

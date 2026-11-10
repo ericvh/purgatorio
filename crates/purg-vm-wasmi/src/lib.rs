@@ -1,6 +1,14 @@
 //! wasmi backend for [`purg_vm::Engine`]: a pure-Rust `no_std` interpreter,
 //! used by the bare-metal probe and kernel and selectable in the emu with
 //! `--vm=wasmi`.
+//!
+//! Guest code runs on fuel, [`SLICE`] units at a time. When a slice runs
+//! out the backend checks the prog's note: a prog killed while computing,
+//! with no host call to return `interrupted` from, is stopped with status
+//! `killed` at the end of the slice after the one in which it was first
+//! seen killed. That spare slice lets a guest that did see `interrupted`
+//! exit with its own status. The emu's wasmtime backend does the same
+//! with epoch interruption.
 #![no_std]
 
 extern crate alloc;
@@ -15,7 +23,17 @@ use alloc::vec::Vec;
 use purg_abi::error::{EBADADDR, EBADEXEC};
 use purg_core::Error;
 use purg_vm::{Ctx, Mem, Stop};
-use wasmi::{Caller, Engine, Extern, Instance, Linker, Module, Store};
+use wasmi::{
+    AsContextMut, Caller, Config, CustomFuelCosts, Engine, Extern, Instance, Linker, Module, Store,
+    TypedFunc, TypedResumableCall, WasmParams, WasmResults,
+};
+
+/// Fuel per slice: roughly the number of wasm instructions run between
+/// note checks.
+pub const SLICE: u64 = 1 << 20;
+
+/// The status of a prog stopped by [`SLICE`] checks after a kill.
+pub const KILLED: &str = "killed";
 
 pub struct Wasmi {
     engine: Engine,
@@ -24,7 +42,17 @@ pub struct Wasmi {
 
 impl Wasmi {
     pub fn new() -> Result<Wasmi, Error> {
-        let engine = Engine::default();
+        let mut config = Config::default();
+        config.consume_fuel(true);
+        // Translating a function on its first call is host work and costs
+        // no fuel: wasmi 2 reports running out of fuel there as an error,
+        // not as a call that can be resumed.
+        config.fuel_cost(CustomFuelCosts {
+            bytes_copied_per_fuel: 64,
+            fuel_per_bytes_translated: 0,
+            fuel_per_bytes_validated: 0,
+        });
+        let engine = Engine::new(&config);
         let mut linker = Linker::new(&engine);
         link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
         register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
@@ -156,9 +184,12 @@ fn load_reactor(
     let mut linker = Linker::new(&engine);
     link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
     register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-    let instance = linker
-        .instantiate_and_start(&mut *caller, &module)
-        .map_err(bad_exec)?;
+    // A start function runs unsliced: it cannot be resumed.
+    let fuel = caller.get_fuel().unwrap_or(SLICE);
+    let _ = caller.set_fuel(u64::MAX);
+    let instance = linker.instantiate_and_start(&mut *caller, &module);
+    let _ = caller.set_fuel(fuel);
+    let instance = instance.map_err(bad_exec)?;
     let pid = caller.data().prog.pid;
     let mut table = modules.lock();
     let list = table.entry(pid).or_default();
@@ -204,8 +235,7 @@ fn call_reactor(caller: &mut Caller<'_, Ctx>, modules: &Modules, call: Call) -> 
     let func = instance
         .get_typed_func::<(i32, i32), i32>(&*caller, &export)
         .map_err(|_| Error::from("export not found"))?;
-    let n = func
-        .call(&mut *caller, (base as i32, arguments.len() as i32))
+    let n = call_sliced(&mut *caller, &func, (base as i32, arguments.len() as i32))
         .map_err(|e| Error::from(format!("trap: {e}")))?;
     if n < 0 || call.olen < 0 || n as usize > PAGE || n as usize > call.olen as usize {
         return Err(Error::from("bad result length"));
@@ -221,9 +251,46 @@ fn bad_exec(e: impl core::fmt::Display) -> Error {
     Error::from(format!("{EBADEXEC}: {e}"))
 }
 
+/// Calls `func` a [`SLICE`] of fuel at a time, checking the prog's note
+/// between slices (see the crate docs).
+fn call_sliced<P: WasmParams, R: WasmResults>(
+    mut ctx: impl AsContextMut<Data = Ctx>,
+    func: &TypedFunc<P, R>,
+    params: P,
+) -> Result<R, wasmi::Error> {
+    let mut seen_killed = false;
+    let mut call = func.call_resumable(&mut ctx, params)?;
+    loop {
+        match call {
+            TypedResumableCall::Finished(r) => return Ok(r),
+            TypedResumableCall::HostTrap(t) => {
+                let e = t.host_error();
+                return Err(match e.downcast_ref::<HostStop>() {
+                    Some(stop) => wasmi::Error::host(HostStop(stop.0.clone())),
+                    None => wasmi::Error::new(format!("{e}")),
+                });
+            }
+            TypedResumableCall::OutOfFuel(t) => {
+                if ctx.as_context().data().prog.proc.note.killed() {
+                    if seen_killed {
+                        let stop = Stop::Exit(String::from(KILLED));
+                        return Err(wasmi::Error::host(HostStop(stop)));
+                    }
+                    seen_killed = true;
+                }
+                ctx.as_context_mut()
+                    .set_fuel(SLICE.max(t.required_fuel()))?;
+                call = t.resume(&mut ctx)?;
+            }
+        }
+    }
+}
+
 impl Wasmi {
     fn call(&self, store: &mut Store<Ctx>, wasm: &[u8]) -> Result<Stop, Error> {
         let module = Module::new(&self.engine, wasm).map_err(bad_exec)?;
+        // A start function runs unsliced: it cannot be resumed.
+        store.set_fuel(u64::MAX).map_err(bad_exec)?;
         let instance = self
             .linker
             .instantiate_and_start(&mut *store, &module)
@@ -231,7 +298,8 @@ impl Wasmi {
         let entry = instance
             .get_typed_func::<(), ()>(&*store, purg_abi::ENTRY)
             .map_err(bad_exec)?;
-        Ok(match entry.call(&mut *store, ()) {
+        store.set_fuel(SLICE).map_err(bad_exec)?;
+        Ok(match call_sliced(&mut *store, &entry, ()) {
             Ok(()) => Stop::Exit(String::new()),
             Err(e) => match e.downcast_ref::<HostStop>() {
                 Some(stop) => stop.0.clone(),

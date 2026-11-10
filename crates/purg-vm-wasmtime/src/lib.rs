@@ -1,16 +1,32 @@
 //! wasmtime backend for [`purg_vm::Engine`]: Cranelift-compiled, the hosted
 //! default.
+//!
+//! Guest code is interrupted every [`TICK`] (epoch interruption) to check
+//! the prog's note: a prog killed while computing, with no host call to
+//! return `interrupted` from, is stopped with status `killed` at the tick
+//! after the one that first saw it killed. That spare tick lets a guest
+//! that did see `interrupted` exit with its own status. The wasmi backend
+//! does the same with fuel.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use purg_abi::error::{EBADADDR, EBADEXEC};
 use purg_core::Error;
 use purg_vm::{Ctx, Mem, Stop};
-use wasmtime::{AsContextMut, Caller, Config, Engine, Extern, Instance, Linker, Module, Store};
+use wasmtime::{
+    AsContextMut, Caller, Config, Engine, Extern, Instance, Linker, Module, Store, UpdateDeadline,
+};
 
 /// Compiled modules kept for reuse; the cache is emptied when full.
 const CACHED_MODULES: usize = 64;
+
+/// How often running guests check their note.
+pub const TICK: Duration = Duration::from_millis(10);
+
+/// The status of a prog stopped by the [`TICK`] checks after a kill.
+pub const KILLED: &str = "killed";
 
 pub struct Wasmtime {
     engine: Engine,
@@ -22,7 +38,20 @@ pub struct Wasmtime {
 
 impl Wasmtime {
     pub fn new() -> Result<Wasmtime, Error> {
-        let engine = Engine::new(&Config::new()).map_err(|e| Error::from(e.to_string()))?;
+        let engine = Engine::new(Config::new().epoch_interruption(true))
+            .map_err(|e| Error::from(e.to_string()))?;
+        // The ticker ends with the engine.
+        let weak = engine.weak();
+        std::thread::Builder::new()
+            .name(String::from("epoch"))
+            .spawn(move || {
+                while let Some(engine) = weak.upgrade() {
+                    engine.increment_epoch();
+                    drop(engine);
+                    std::thread::sleep(TICK);
+                }
+            })
+            .map_err(|e| Error::from(e.to_string()))?;
         let mut linker = Linker::new(&engine);
         link(&mut linker).map_err(|e| Error::from(e.to_string()))?;
         register_modules(&mut linker).map_err(|e| Error::from(e.to_string()))?;
@@ -255,6 +284,17 @@ impl purg_vm::Engine for Wasmtime {
 
     fn run(&self, wasm: &[u8], ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
         let mut store = Store::new(&self.engine, ctx);
+        let mut seen_killed = false;
+        store.epoch_deadline_callback(move |state| {
+            if state.data().prog.proc.note.killed() {
+                if seen_killed {
+                    return Err(wasmtime::Error::new(Stop::Exit(String::from(KILLED))));
+                }
+                seen_killed = true;
+            }
+            Ok(UpdateDeadline::Continue(1))
+        });
+        store.set_epoch_deadline(1);
         let res = self.call(&mut store, wasm);
         (store.into_data(), res)
     }

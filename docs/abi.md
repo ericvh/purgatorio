@@ -241,6 +241,10 @@ file to cover the range. `fd_fdstat_set_rights` accepts any open fd, since
 rights are not tracked. `path_link` and `path_symlink` return `NOTSUP`
 (Inferno has no links). `clock_res_get` reports the clock resolution.
 `proc_raise` kills the prog's note, so its next blocking call returns
-`EINTR`. `sock_accept` on an Inferno `listen` file returns the new
+`EINTR`. A killed prog that keeps computing without a host call is stopped
+with status `killed`. Both VMs check the note periodically, every 10 ms
+under wasmtime (epoch interruption) and every 2^20 units of fuel under
+wasmi, and stop the prog at the check after the one that first sees it
+killed, so a prog that saw `EINTR` has time to exit with its own status. `sock_accept` on an Inferno `listen` file returns the new
 conversation's `data` fd, and `sock_recv`, `sock_send` and `sock_shutdown`
 work on such fds.
