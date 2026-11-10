@@ -38,6 +38,8 @@ struct Mcp {
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     next_id: i64,
+    /// Responses that came while waiting for another.
+    early: Vec<Value>,
 }
 
 impl Mcp {
@@ -69,6 +71,7 @@ impl Mcp {
             child,
             lines,
             next_id: 1,
+            early: Vec::new(),
         }
     }
 
@@ -185,6 +188,48 @@ impl Mcp {
         let (is_error, v) = self.tool(name, args);
         assert!(is_error, "{}: {name} {args}: {}", self.vm, v.encode());
         String::from(v.as_str().unwrap())
+    }
+
+    /// Sends a tool call without waiting; returns its id.
+    fn send_tool(&mut self, name: &str, args: &str) -> i64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+        ));
+        id
+    }
+
+    /// The response to request `id`, keeping others that come first.
+    fn recv_id(&mut self, id: i64) -> Value {
+        if let Some(i) = self
+            .early
+            .iter()
+            .position(|v| v.get("id") == Some(&Value::Int(id)))
+        {
+            return self.early.remove(i);
+        }
+        loop {
+            let v = self.recv();
+            if v.get("id") == Some(&Value::Int(id)) {
+                return v;
+            }
+            self.early.push(v);
+        }
+    }
+
+    /// The structured result of tool call `id`, which must succeed.
+    fn tool_result(&mut self, id: i64) -> Value {
+        let v = self.recv_id(id);
+        let r = v.get("result").unwrap();
+        assert_eq!(
+            r.get("isError"),
+            Some(&Value::Bool(false)),
+            "{}: {}",
+            self.vm,
+            v.encode()
+        );
+        r.get("structuredContent").unwrap().clone()
     }
 
     /// Runs an sh command line with default limits.
@@ -312,7 +357,7 @@ fn handshake_discovery_and_tools_list() {
         assert_eq!(str_of(r.get("serverInfo").unwrap(), "name"), "mcpd");
         assert_eq!(
             r.get("capabilities").unwrap().encode(),
-            r#"{"tools":{"listChanged":false}}"#
+            r#"{"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false}}"#
         );
         assert_eq!(str_of(&r, "instructions"), PRIMER, "{vm}");
         // A notification gets no reply: the next line answers the ping.
@@ -332,6 +377,15 @@ fn handshake_discovery_and_tools_list() {
                 "list_dir",
                 "stat",
                 "remove",
+                "job_start",
+                "job_read",
+                "job_write",
+                "job_kill",
+                "job_list",
+                "ns",
+                "bind",
+                "mount",
+                "unmount",
                 "reset"
             ],
             "{vm}"
@@ -358,7 +412,7 @@ fn handshake_discovery_and_tools_list() {
         assert_eq!(str_of(&r, "instructions"), PRIMER);
         let r = m.request("tools/list", &format!("{{{meta}}}"));
         assert_eq!(str_of(&r, "resultType"), "complete");
-        assert!(matches!(r.get("tools"), Some(Value::Array(t)) if t.len() == 7));
+        assert!(matches!(r.get("tools"), Some(Value::Array(t)) if t.len() == 16));
         let r = m.request(
             "tools/call",
             &format!(r#"{{"name":"run","arguments":{{"command":"echo stateless"}},{meta}}}"#),
@@ -767,14 +821,27 @@ fn a_namespace_file_grants_a_workspace() {
         std::fs::write(
             &policy.path,
             format!(
-                "# grant one host directory\nmkdir /n/work\nbind -c '#U/tmp/{}' /n/work\n",
+                "# grant one host directory\nbind -c '#U/tmp/{}' /n/work\n\
+                 # a mount point, bound whole (#97)\nbind /lib /n/lib\n\
+                 bind -a $home /mnt/home/x\n",
                 work.name
             ),
         )
         .unwrap();
         let mut m = Mcp::start(vm, &["-n", &format!("/tmp/{}", policy.name)]);
         let r = m.run("cat /n/work/in.txt; echo out > /n/work/out.txt; ls /n");
-        assert_eq!(r.stdout, "from the host\n/n/work\n", "{vm}: {r:?}");
+        assert_eq!(r.stdout, "from the host\n/n/lib\n/n/work\n", "{vm}: {r:?}");
+        // /lib is an export mounted on the session's root; binding it binds
+        // what is mounted, not the empty directory under it.
+        let names = |m: &mut Mcp, dir: &str| {
+            let v = m.ok("list_dir", &format!(r#"{{"path":"{dir}"}}"#));
+            v.get("entries").unwrap().encode()
+        };
+        let lib = names(&mut m, "/lib");
+        assert!(lib.contains(r#""name":"probe""#), "{vm}: {lib}");
+        assert_eq!(names(&mut m, "/n/lib"), lib, "{vm}");
+        // Variables are expanded, and missing mount points made.
+        assert_eq!(m.run("ls -d /mnt/home/x").stdout, "/mnt/home/x\n", "{vm}");
         assert_eq!(
             std::fs::read_to_string(work.path.join("out.txt")).unwrap(),
             "out\n",
@@ -811,10 +878,10 @@ fn reset_and_recovery() {
         assert_eq!(r.get("reset"), Some(&Value::Bool(true)), "{vm}");
         let after = m.run("ls /tmp; echo $#v; ns | grep -c '/tmp/u /n'; ps | grep sleep | wc -l");
         assert_eq!(after.stdout, "0\n0\n      0\n", "{vm}: {after:?}");
-        // The old session's progs are gone: one session prog, two memfs,
-        // two exports, and this command.
+        // The old session's progs are gone: the front end, its relay, one
+        // session prog, two memfs, two exports, and this command.
         let ps = m.run("ps").stdout;
-        assert_eq!(ps.matches("mcpd\n").count(), 2, "{vm}:\n{ps}");
+        assert_eq!(ps.matches("mcpd\n").count(), 3, "{vm}:\n{ps}");
         assert_eq!(ps.matches("memfs\n").count(), 2, "{vm}:\n{ps}");
         assert_eq!(ps.matches("export\n").count(), 2, "{vm}:\n{ps}");
 
@@ -852,7 +919,7 @@ fn malformed_and_unknown_requests() {
         m.send("");
         m.send(r#"{"jsonrpc":"2.0","method":"notifications/nosuch"}"#);
         m.send(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99}}"#);
-        for method in ["resources/list", "prompts/get", "nosuch"] {
+        for method in ["prompts/get", "resources/subscribe", "nosuch"] {
             let v = m.exchange(method, "{}");
             assert_eq!(error_code(&v), -32601, "{vm}: {method}");
         }
@@ -914,5 +981,362 @@ fn primer_examples_are_true() {
             m.ok("stat", &format!(r#"{{"path":"/bin/{cmd}.wasm"}}"#));
         }
         m.finish();
+    }
+}
+
+/// Reads job `id` until it has exited; returns the last result and all of
+/// stdout and stderr read on the way.
+fn read_to_exit(m: &mut Mcp, id: i64) -> (Value, String, String) {
+    let (mut out, mut err) = (String::new(), String::new());
+    loop {
+        let v = m.ok("job_read", &format!(r#"{{"id":{id},"wait_ms":20000}}"#));
+        out.push_str(str_of(&v, "stdout"));
+        err.push_str(str_of(&v, "stderr"));
+        if v.get("running") == Some(&Value::Bool(false)) {
+            return (v, out, err);
+        }
+    }
+}
+
+#[test]
+fn jobs_run_alongside_other_calls() {
+    for vm in VMS {
+        let mut m = Mcp::start(vm, &[]);
+        let job = m.ok("job_start", r#"{"argv":["cat"]}"#);
+        let id = int_of(&job, "id");
+        assert!(int_of(&job, "pid") > 0, "{vm}");
+
+        // A read that waits for output does not hold up other calls, nor
+        // does the job, blocked reading its input.
+        let waiting = m.send_tool("job_read", &format!(r#"{{"id":{id},"wait_ms":60000}}"#));
+        let started = Instant::now();
+        let r = m.run("echo meanwhile");
+        assert_eq!(r.stdout, "meanwhile\n", "{vm}");
+        let f = m.ok("read_file", r#"{"path":"/lib/probe/hello.txt"}"#);
+        assert_eq!(str_of(&f, "content"), "hello from the probe root\n");
+        let l = m.ok("job_list", "{}");
+        assert!(
+            l.encode().contains(r#""command":"cat","running":true"#),
+            "{vm}: {}",
+            l.encode()
+        );
+        assert!(
+            !m.early
+                .iter()
+                .any(|v| v.get("id") == Some(&Value::Int(waiting))),
+            "{vm}: the waiting read was answered early"
+        );
+        let w = m.ok("job_write", &format!(r#"{{"id":{id},"data":"hello\n"}}"#));
+        assert_eq!(int_of(&w, "queued"), 6, "{vm}");
+        let v = m.tool_result(waiting);
+        assert!(started.elapsed() < Duration::from_secs(50), "{vm}");
+        assert_eq!(str_of(&v, "stdout"), "hello\n", "{vm}: {}", v.encode());
+        assert_eq!((int_of(&v, "offset"), int_of(&v, "next_offset")), (0, 6));
+        assert_eq!(v.get("running"), Some(&Value::Bool(true)), "{vm}");
+
+        // The next read starts where that one ended; offsets read again.
+        let v = m.ok("job_read", &format!(r#"{{"id":{id}}}"#));
+        assert_eq!(
+            (str_of(&v, "stdout"), int_of(&v, "offset")),
+            ("", 6),
+            "{vm}"
+        );
+        let w = m.ok(
+            "job_write",
+            &format!(r#"{{"id":{id},"data":"Ynll","encoding":"base64","eof":true}}"#),
+        );
+        assert_eq!(w.get("eof"), Some(&Value::Bool(true)), "{vm}");
+        let (v, out, _) = read_to_exit(&mut m, id);
+        assert_eq!(out, "bye", "{vm}");
+        assert_eq!(
+            (str_of(&v, "status"), v.get("ok")),
+            ("", Some(&Value::Bool(true)))
+        );
+        let v = m.ok("job_read", &format!(r#"{{"id":{id},"offset":0}}"#));
+        assert_eq!(str_of(&v, "stdout"), "hello\nbye", "{vm}");
+        let e = m.fails("job_write", &format!(r#"{{"id":{id},"data":"x"}}"#));
+        assert_eq!(e, format!("job {id} has exited"), "{vm}");
+        assert_eq!(m.fails("job_read", r#"{"id":999}"#), "job 999: no such job");
+
+        // An sh command line, with stderr and a failing status.
+        let j = m.ok(
+            "job_start",
+            r#"{"command":"echo out; echo err >[1=2]; cat /nonexistent","stdin":"unused"}"#,
+        );
+        let (v, out, err) = read_to_exit(&mut m, int_of(&j, "id"));
+        assert_eq!(out, "out\n", "{vm}");
+        assert_eq!(err, "err\ncat: /nonexistent: file does not exist\n", "{vm}");
+        assert!(!str_of(&v, "status").is_empty(), "{vm}: {}", v.encode());
+        assert_eq!(v.get("ok"), Some(&Value::Bool(false)));
+
+        // Input given at the start, then end of file.
+        let j = m.ok("job_start", r#"{"argv":["wc","-c"],"stdin":"abc"}"#);
+        let jid = int_of(&j, "id");
+        m.ok("job_write", &format!(r#"{{"id":{jid},"eof":true}}"#));
+        let (_, out, _) = read_to_exit(&mut m, jid);
+        assert_eq!(out.trim(), "3", "{vm}");
+
+        // A killed job reports it, and everything it started is gone.
+        let j = m.ok("job_start", r#"{"command":"sleep 300 & sleep 300"}"#);
+        let kid = int_of(&j, "id");
+        let start = Instant::now();
+        while m.run("ps | grep -c sleep").stdout != "2\n" {
+            assert!(start.elapsed() < Duration::from_secs(30), "{vm}");
+        }
+        let k = m.ok("job_kill", &format!(r#"{{"id":{kid}}}"#));
+        assert_eq!(k.get("killed"), Some(&Value::Bool(true)), "{vm}");
+        let (v, _, _) = read_to_exit(&mut m, kid);
+        // sh reports the kill as an interrupted wait (fail:lost) rather
+        // than dying with status killed; either way it is a failure.
+        assert!(
+            v.get("ok") == Some(&Value::Bool(false)) && !str_of(&v, "status").is_empty(),
+            "{vm}: {}",
+            v.encode()
+        );
+        let k = m.ok("job_kill", &format!(r#"{{"id":{kid}}}"#));
+        assert_eq!(k.get("killed"), Some(&Value::Bool(false)), "{vm}");
+        assert_eq!(m.run("ps | grep -c sleep").stdout, "0\n", "{vm}");
+
+        // Output past the bound: the oldest is dropped and counted, and the
+        // job is not held up.
+        let j = m.ok("job_start", r#"{"command":"cat /bin/*.wasm"}"#);
+        let bid = int_of(&j, "id");
+        let mut total = 0;
+        loop {
+            let v = m.ok(
+                "job_read",
+                &format!(r#"{{"id":{bid},"wait_ms":20000,"max_bytes":0}}"#),
+            );
+            if v.get("running") == Some(&Value::Bool(false)) {
+                break;
+            }
+        }
+        let l = m.ok("job_list", "{}");
+        let Some(Value::Array(jobs)) = l.get("jobs") else {
+            panic!("{vm}: {}", l.encode())
+        };
+        for j in jobs {
+            if int_of(j, "id") == bid {
+                total = int_of(j, "stdout_bytes");
+            }
+        }
+        assert!(total > 2 << 20, "{vm}: {total}");
+        let v = m.ok(
+            "job_read",
+            &format!(r#"{{"id":{bid},"offset":0,"max_bytes":10}}"#),
+        );
+        assert_eq!(int_of(&v, "lost"), total - (1 << 20), "{vm}");
+        assert_eq!(int_of(&v, "offset"), total - (1 << 20), "{vm}");
+        assert!(int_of(&v, "next_offset") <= int_of(&v, "offset") + 10);
+
+        // Jobs end with reset.
+        m.ok("job_start", r#"{"command":"sleep 300"}"#);
+        assert_eq!(m.run("ps | grep -c sleep").stdout, "1\n", "{vm}");
+        m.ok("reset", "{}");
+        assert_eq!(m.run("ps | grep -c sleep").stdout, "0\n", "{vm}");
+        let l = m.ok("job_list", "{}");
+        assert_eq!(l.encode(), r#"{"jobs":[]}"#, "{vm}");
+        // And with the session: the harness checks the server exits.
+        m.ok("job_start", r#"{"argv":["cat"]}"#);
+        m.finish();
+    }
+}
+
+#[test]
+fn namespace_tools() {
+    for vm in VMS {
+        let mut m = Mcp::start(vm, &[]);
+        let ns = m.ok("ns", "{}");
+        let text = str_of(&ns, "ns");
+        assert_eq!(text, m.run("ns").stdout, "{vm}");
+        assert!(text.contains(" /tmp\n"), "{vm}: {text}");
+
+        m.run("mkdir /tmp/u /tmp/v; echo u > /tmp/u/f; echo v > /tmp/v/g");
+        m.ok("bind", r#"{"from":"/tmp/u","to":"/n"}"#);
+        m.ok(
+            "bind",
+            r#"{"from":"/tmp/v","to":"/n","order":"after","create":true}"#,
+        );
+        assert_eq!(m.run("ls /n").stdout, "/n/f\n/n/g\n", "{vm}");
+        let ns = m.ok("ns", "{}");
+        assert!(
+            str_of(&ns, "ns").contains(" -ac /tmp/v /n"),
+            "{vm}: {}",
+            ns.encode()
+        );
+        // Binds last for later calls, as those made by commands do.
+        m.ok("unmount", r#"{"from":"/tmp/u","to":"/n"}"#);
+        assert_eq!(m.run("ls /n").stdout, "/n/g\n", "{vm}");
+        m.ok("unmount", r#"{"to":"/n"}"#);
+        assert_eq!(m.run("ls /n").stdout, "", "{vm}");
+        let e = m.fails("unmount", r#"{"to":"/n"}"#);
+        assert!(e.starts_with("unmount: /n: "), "{vm}: {e}");
+        let e = m.fails("bind", r#"{"from":"/nonexistent","to":"/n"}"#);
+        assert_eq!(
+            e, "bind: cannot bind /nonexistent on /n: file does not exist",
+            "{vm}"
+        );
+
+        // NODEVS holds for the tools too.
+        for (dev, at) in [("#C", "/cmd"), ("#C", "/n"), ("#U", "/n"), ("#I", "/net")] {
+            let e = m.fails("bind", &format!(r#"{{"from":"{dev}","to":"{at}"}}"#));
+            assert!(
+                e.contains("mount/attach disallowed"),
+                "{vm} {dev} {at}: {e}"
+            );
+        }
+        let e = m.fails("mount", r#"{"source":"tcp!127.0.0.1!564","to":"/n"}"#);
+        assert!(e.starts_with("mount: "), "{vm}: {e}");
+
+        // A file server started by the mount.
+        m.ok(
+            "mount",
+            r#"{"source":"{memfs --serve}","to":"/mnt","create":true}"#,
+        );
+        m.ok("write_file", r#"{"path":"/mnt/x","content":"in memfs"}"#);
+        assert_eq!(m.run("cat /mnt/x").stdout, "in memfs", "{vm}");
+        m.ok("reset", "{}");
+        assert_eq!(m.run("ls /mnt /n").stdout, "", "{vm}");
+        m.finish();
+    }
+}
+
+#[test]
+fn resources_are_session_files() {
+    for vm in VMS {
+        let mut m = Mcp::start(vm, &[]);
+        m.ok("write_file", r#"{"path":"a b.txt","content":"hello"}"#);
+        m.run("mkdir d");
+        m.ok(
+            "write_file",
+            r#"{"path":"d/c.bin","content":"AAEC/w==","encoding":"base64"}"#,
+        );
+        let r = m.request("resources/list", "{}");
+        assert_eq!(
+            r.get("resources").unwrap().encode(),
+            r#"[{"uri":"purg:///tmp/a%20b.txt","name":"/tmp/a b.txt","size":5},{"uri":"purg:///tmp/d/c.bin","name":"/tmp/d/c.bin","size":4}]"#,
+            "{vm}"
+        );
+        let read = |m: &mut Mcp, uri: &str| {
+            let r = m.request("resources/read", &format!(r#"{{"uri":"{uri}"}}"#));
+            let Some(Value::Array(c)) = r.get("contents") else {
+                panic!("{}", r.encode())
+            };
+            c[0].clone()
+        };
+        assert_eq!(
+            read(&mut m, "purg:///tmp/a%20b.txt").encode(),
+            r#"{"uri":"purg:///tmp/a%20b.txt","mimeType":"text/plain","text":"hello"}"#
+        );
+        let c = read(&mut m, "purg:///tmp/d/c.bin");
+        assert_eq!(str_of(&c, "blob"), "AAEC/w==", "{vm}");
+        assert_eq!(str_of(&c, "mimeType"), "application/octet-stream");
+        let c = read(&mut m, "purg:///tmp");
+        assert_eq!(str_of(&c, "text"), "a b.txt\nd/\n", "{vm}");
+        assert_eq!(str_of(&c, "mimeType"), "inode/directory");
+        // Any file in the namespace, through the template.
+        let c = read(&mut m, "purg:///lib/probe/hello.txt");
+        assert_eq!(str_of(&c, "text"), "hello from the probe root\n");
+        let c = read(&mut m, "purg:///dev/sysname");
+        assert!(!str_of(&c, "text").is_empty(), "{vm}");
+        let t = m.request("resources/templates/list", "{}");
+        assert!(t.encode().contains("purg:///{+path}"), "{vm}");
+
+        let v = m.exchange("resources/read", r#"{"uri":"purg:///tmp/nope"}"#);
+        assert_eq!(error_code(&v), -32002, "{vm}");
+        let v = m.exchange("resources/read", r#"{"uri":"/tmp/a"}"#);
+        assert_eq!(error_code(&v), -32602, "{vm}");
+        // A URI names a file from the root, never a device.
+        let v = m.exchange("resources/read", r#"{"uri":"purg:///%23U/tmp"}"#);
+        assert_eq!(error_code(&v), -32002, "{vm}: {}", v.encode());
+        // Too big for a resource.
+        m.run("cat /bin/sh.wasm /bin/sh.wasm /bin/sh.wasm /bin/sh.wasm /bin/sh.wasm > big");
+        let v = m.exchange("resources/read", r#"{"uri":"purg:///tmp/big"}"#);
+        assert_eq!(error_code(&v), -32603, "{vm}");
+        assert!(v.encode().contains("read_file"), "{vm}");
+        m.finish();
+    }
+}
+
+#[test]
+fn the_audit_log() {
+    for vm in VMS {
+        let log = HostTemp::new("log", vm);
+        let mut m = Mcp::start(vm, &["-l", &format!("/tmp/{}", log.name)]);
+        m.run("echo hi");
+        m.fails("read_file", r#"{"path":"/tmp/nope"}"#);
+        m.fails("run", r#"{"command":"x","timeout_ms":0}"#);
+        let long = "y".repeat(5000);
+        m.ok(
+            "write_file",
+            &format!(r#"{{"path":"f","content":"{long}"}}"#),
+        );
+        m.request("resources/read", r#"{"uri":"purg:///tmp/f"}"#);
+        // The session cannot reach the log: not by name, nor as its fd 2.
+        m.ok("write_file", r#"{"path":"/fd/2","content":"forged\n"}"#);
+        let e = m.fails(
+            "read_file",
+            &format!(r##"{{"path":"#U/tmp/{}"}}"##, log.name),
+        );
+        assert!(e.contains("mount/attach disallowed"), "{vm}: {e}");
+        m.ok("reset", "{}");
+        m.finish();
+
+        let text = std::fs::read_to_string(&log.path).unwrap();
+        // The call is logged with its arguments; the write went nowhere.
+        assert!(
+            !text.lines().any(|l| l.starts_with("forged")),
+            "{vm}:\n{text}"
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        let mut rest = Vec::new();
+        for l in &lines {
+            let (secs, what) = l.split_once(' ').unwrap();
+            assert!(secs.parse::<u64>().unwrap() > 1_600_000_000, "{vm}: {l}");
+            rest.push(what);
+        }
+        let shape: Vec<String> = rest
+            .iter()
+            .map(|w| {
+                let f: Vec<&str> = w.splitn(5, ' ').collect();
+                match f.as_slice() {
+                    ["session", "start", pid] => {
+                        assert!(pid.parse::<u32>().is_ok());
+                        String::from("session start")
+                    }
+                    [kind, name, status, ms, args] => {
+                        assert!(ms.strip_suffix("ms").unwrap().parse::<u64>().is_ok(), "{w}");
+                        assert!(args.starts_with('{'), "{w}");
+                        format!("{kind} {name} {status}")
+                    }
+                    _ => String::from(*w),
+                }
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "session start",
+                "tool run ok",
+                "tool read_file error",
+                "tool run invalid",
+                "tool write_file ok",
+                "resource resources/read ok",
+                "tool write_file ok",
+                "tool read_file error",
+                "session reset",
+                "session start",
+                "tool reset ok",
+                "session end",
+            ],
+            "{vm}:\n{text}"
+        );
+        assert!(
+            text.contains(r#"tool run ok "#) && text.contains(r#"{"command":"echo hi"}"#),
+            "{vm}:\n{text}"
+        );
+        // Long arguments are cut.
+        assert!(text.contains("...(5000 bytes)"), "{vm}:\n{text}");
+        assert!(lines.iter().all(|l| l.len() < 600), "{vm}");
     }
 }

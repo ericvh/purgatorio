@@ -1,0 +1,9 @@
+{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"stdout\":\"\",\"stderr\":\"\",\"ok\":true,\"status\":\"\",\"timed_out\":false,\"stdout_truncated\":false,\"stderr_truncated\":false}"}],"structuredContent":{"stdout":"","stderr":"","ok":true,"status":"","timed_out":false,"stdout_truncated":false,"stderr_truncated":false},"isError":false}}
+{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{\"ok\":true}"}],"structuredContent":{"ok":true},"isError":false}}
+{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"bind: cannot bind #C on /n: mount/attach disallowed"}],"isError":true}}
+{"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"{\"stdout\":\"/n/f\\n\",\"stderr\":\"\",\"ok\":true,\"status\":\"\",\"timed_out\":false,\"stdout_truncated\":false,\"stderr_truncated\":false}"}],"structuredContent":{"stdout":"/n/f\n","stderr":"","ok":true,"status":"","timed_out":false,"stdout_truncated":false,"stderr_truncated":false},"isError":false}}
+{"jsonrpc":"2.0","id":7,"result":{"contents":[{"uri":"purg:///n/f","mimeType":"text/plain","text":"f\n"}]}}
+{"jsonrpc":"2.0","id":8,"error":{"code":-32002,"message":"Resource not found","data":{"uri":"purg:///n/nope","reason":"/n/nope: file does not exist"}}}
+{"jsonrpc":"2.0","id":9,"result":{"content":[{"type":"text","text":"{\"queued\":6,\"eof\":false}"}],"structuredContent":{"queued":6,"eof":false},"isError":false}}
+{"jsonrpc":"2.0","id":10,"result":{"content":[{"type":"text","text":"{\"stdout\":\"hello\\n\",\"stderr\":\"\",\"offset\":0,\"next_offset\":6,\"stderr_offset\":0,\"next_stderr_offset\":0,\"lost\":0,\"stderr_lost\":0,\"running\":true,\"ok\":false,\"status\":\"\"}"}],"structuredContent":{"stdout":"hello\n","stderr":"","offset":0,"next_offset":6,"stderr_offset":0,"next_stderr_offset":0,"lost":0,"stderr_lost":0,"running":true,"ok":false,"status":""},"isError":false}}
+status 

@@ -14,6 +14,34 @@ pub const DEFAULT_READ: i64 = 64 * 1024;
 pub const MAX_READ: i64 = 1024 * 1024;
 /// Most entries `list_dir` returns.
 pub const MAX_ENTRIES: usize = 5000;
+/// Output of a job kept for each of stdout and stderr: the last this many
+/// bytes.
+pub const JOB_BUFFER: usize = 1024 * 1024;
+/// Jobs that may run at once, and exited jobs kept for job_read.
+pub const MAX_JOBS: usize = 32;
+/// Default timeout of `mount`.
+pub const MOUNT_TIMEOUT_MS: i64 = 30_000;
+/// Largest file `resources/read` returns.
+pub const MAX_RESOURCE: usize = 1024 * 1024;
+/// Most files `resources/list` lists.
+pub const MAX_RESOURCES: usize = 1000;
+
+/// Checks what a schema here cannot say: `job_start` takes exactly one of
+/// `command` and `argv`, and `argv` names a program.
+pub fn check(name: &str, args: &Value) -> Result<(), String> {
+    if name == "job_start" {
+        let err = |s: &str| Err(String::from(s));
+        match (args.get("command"), args.get("argv")) {
+            (Some(_), Some(_)) => return err("give arguments.command or arguments.argv, not both"),
+            (None, None) => return err("arguments.command or arguments.argv is required"),
+            (None, Some(Value::Array(a))) if a.is_empty() => {
+                return err("arguments.argv must not be empty");
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 fn string(desc: &str) -> Value {
     obj([("type", "string".into()), ("description", desc.into())])
@@ -144,7 +172,8 @@ pub fn tools() -> Vec<Value> {
              command with `{cmd}. The server instructions hold a longer primer. Changes to the \
              namespace (bind, mount) and to environment variables persist for later calls; the \
              working directory does not. Programs still running when the command line ends keep \
-             running until `reset` or the end of the session, but lose their output. Returns \
+             running until `reset` or the end of the session, but lose their output; start such \
+             programs with job_start instead. Returns \
              stdout and stderr as text (bytes that are not UTF-8 become U+FFFD; use read_file \
              for binary data), the exit status string, and flags telling whether the command \
              timed out and was killed or its output was cut at the cap.",
@@ -402,6 +431,382 @@ pub fn tools() -> Vec<Value> {
             true,
         ),
         tool(
+            "job_start",
+            "Start a background job",
+            "Start a long-running or interactive program and return at once with its job id. \
+             Give `command`, an sh command line (the same Inferno sh as run), or `argv`, a \
+             program and its arguments run without sh. The job runs in the session's namespace \
+             with pipes for its standard input, output and error. Read its output with \
+             job_read, feed its input with job_write, stop it with job_kill. Jobs end with \
+             reset and with the session.",
+            object(
+                vec![
+                    ("command", string("An sh command line. Give this or argv.")),
+                    (
+                        "argv",
+                        obj([
+                            ("type", "array".into()),
+                            (
+                                "description",
+                                "A program and its arguments, such as [\"cat\", \"-\"]. \
+                                 The program is found as sh finds it (cat is /bin/cat.wasm). \
+                                 Give this or command."
+                                    .into(),
+                            ),
+                            ("items", obj([("type", "string".into())])),
+                        ]),
+                    ),
+                    (
+                        "stdin",
+                        string(
+                            "Text written to the job's standard input first. More can follow with job_write.",
+                        ),
+                    ),
+                    ("cwd", string("Directory to start in. Default /tmp.")),
+                ],
+                &[],
+            ),
+            object(
+                vec![
+                    (
+                        "id",
+                        integer("The job id, for the other job tools.", 1, None),
+                    ),
+                    (
+                        "pid",
+                        integer("The job's prog id, as ps and /prog show it.", 1, None),
+                    ),
+                ],
+                &["id", "pid"],
+            ),
+            false,
+            true,
+        ),
+        tool(
+            "job_read",
+            "Read a job's output",
+            "Return a job's output from an offset, and whether it has exited. Offsets count \
+             bytes from the start of each stream; by default a read starts where the last one \
+             ended, so calling job_read repeatedly returns new output only. With wait_ms, wait \
+             up to that long for output or for the job to exit; other calls are answered \
+             meanwhile. The server keeps the last 1 MiB of each stream: older output is \
+             dropped and counted in `lost`, and the job is never stopped by output nobody \
+             reads.",
+            object(
+                vec![
+                    ("id", integer("The job id from job_start.", 1, None)),
+                    (
+                        "offset",
+                        integer(
+                            "Where to start in standard output. Default: where the last job_read ended.",
+                            0,
+                            None,
+                        ),
+                    ),
+                    (
+                        "stderr_offset",
+                        integer(
+                            "Where to start in standard error. Default: where the last job_read ended.",
+                            0,
+                            None,
+                        ),
+                    ),
+                    (
+                        "wait_ms",
+                        integer(
+                            "If there is no new output, wait up to this many milliseconds for some, or for the exit. Default 0.",
+                            0,
+                            Some(MAX_TIMEOUT_MS),
+                        ),
+                    ),
+                    (
+                        "max_bytes",
+                        integer(
+                            "Most bytes of each stream to return. Default 65536.",
+                            0,
+                            Some(MAX_OUTPUT),
+                        ),
+                    ),
+                ],
+                &["id"],
+            ),
+            object(
+                vec![
+                    (
+                        "stdout",
+                        string(
+                            "Standard output from `offset`. Bytes that are not UTF-8 become U+FFFD.",
+                        ),
+                    ),
+                    ("stderr", string("Standard error from `stderr_offset`.")),
+                    (
+                        "offset",
+                        integer("Offset of the first byte of stdout returned.", 0, None),
+                    ),
+                    (
+                        "next_offset",
+                        integer("Offset after the last byte of stdout returned.", 0, None),
+                    ),
+                    (
+                        "stderr_offset",
+                        integer("Offset of the first byte of stderr returned.", 0, None),
+                    ),
+                    (
+                        "next_stderr_offset",
+                        integer("Offset after the last byte of stderr returned.", 0, None),
+                    ),
+                    (
+                        "lost",
+                        integer(
+                            "Bytes of stdout before `offset` that were asked for but already dropped.",
+                            0,
+                            None,
+                        ),
+                    ),
+                    ("stderr_lost", integer("The same for stderr.", 0, None)),
+                    (
+                        "running",
+                        boolean("True until the job has exited and its output is all collected."),
+                    ),
+                    (
+                        "status",
+                        string(
+                            "Inferno exit status once it has exited: empty for success, otherwise text such as fail:errors or killed.",
+                        ),
+                    ),
+                    (
+                        "ok",
+                        boolean("True if the job has exited with an empty status."),
+                    ),
+                ],
+                &[
+                    "stdout",
+                    "stderr",
+                    "offset",
+                    "next_offset",
+                    "stderr_offset",
+                    "next_stderr_offset",
+                    "lost",
+                    "stderr_lost",
+                    "running",
+                    "status",
+                    "ok",
+                ],
+            ),
+            true,
+            false,
+        ),
+        tool(
+            "job_write",
+            "Write to a job's input",
+            "Queue `data` for a job's standard input and return at once; the bytes reach the \
+             job as it reads them, in order. With eof true, close the input after the data, so \
+             the job reads end of file.",
+            object(
+                vec![
+                    ("id", integer("The job id from job_start.", 1, None)),
+                    (
+                        "data",
+                        string(
+                            "What to write: text, or base64 when encoding is base64. Default empty.",
+                        ),
+                    ),
+                    (
+                        "encoding",
+                        choice("How data is encoded. Default utf8.", &["utf8", "base64"]),
+                    ),
+                    (
+                        "eof",
+                        boolean("Close the job's input after this data. Default false."),
+                    ),
+                ],
+                &["id"],
+            ),
+            object(
+                vec![
+                    ("queued", integer("Number of bytes queued.", 0, None)),
+                    (
+                        "eof",
+                        boolean(
+                            "True if the input is closed or will be once the queue is written.",
+                        ),
+                    ),
+                ],
+                &["queued", "eof"],
+            ),
+            false,
+            false,
+        ),
+        tool(
+            "job_kill",
+            "Stop a job",
+            "Kill a job and every program it started. job_read then reports the exit, with \
+             status killed. A job that has already exited is left as it is.",
+            object(
+                vec![("id", integer("The job id from job_start.", 1, None))],
+                &["id"],
+            ),
+            object(
+                vec![(
+                    "killed",
+                    boolean("True if the job was running and has been sent the kill."),
+                )],
+                &["killed"],
+            ),
+            false,
+            true,
+        ),
+        tool(
+            "job_list",
+            "List jobs",
+            "List the session's jobs, running and exited, with their ids, commands and exit \
+             status. Exited jobs are kept until there are more than 32 of them.",
+            object(Vec::new(), &[]),
+            object(
+                vec![(
+                    "jobs",
+                    obj([
+                        ("type", "array".into()),
+                        (
+                            "items",
+                            object(
+                                vec![
+                                    ("id", integer("Job id.", 1, None)),
+                                    ("pid", integer("Prog id.", 1, None)),
+                                    (
+                                        "command",
+                                        string("The command line, or the argv joined with spaces."),
+                                    ),
+                                    ("running", boolean("True until the job has exited.")),
+                                    ("status", string("Exit status once exited.")),
+                                    ("stdout_bytes", integer("Bytes of stdout so far.", 0, None)),
+                                    ("stderr_bytes", integer("Bytes of stderr so far.", 0, None)),
+                                ],
+                                &[
+                                    "id",
+                                    "pid",
+                                    "command",
+                                    "running",
+                                    "status",
+                                    "stdout_bytes",
+                                    "stderr_bytes",
+                                ],
+                            ),
+                        ),
+                    ]),
+                )],
+                &["jobs"],
+            ),
+            true,
+            false,
+        ),
+        tool(
+            "ns",
+            "Show the namespace",
+            "Return the session's namespace as Inferno's ns command prints it: one bind or \
+             mount command per line, in the order that rebuilds it.",
+            object(Vec::new(), &[]),
+            object(
+                vec![("ns", string("The namespace, as ns prints it."))],
+                &["ns"],
+            ),
+            true,
+            false,
+        ),
+        tool(
+            "bind",
+            "Bind a file or directory",
+            "Make `to` refer to `from` in the session's namespace, as Inferno's bind does. \
+             order replace (default) hides what was at `to`; before and after make a union \
+             directory with `from` searched first or last. create lets new files be made in \
+             `from` through the union. Devices (#U, #C, #I ...) cannot be named: the session \
+             has given up the right to attach them, and binding one fails with \
+             `mount/attach disallowed`. Lasts until reset.",
+            object(
+                vec![
+                    ("from", string("The existing file or directory.")),
+                    ("to", string("Where it appears.")),
+                    (
+                        "order",
+                        choice(
+                            "replace (default), before or after.",
+                            &["replace", "before", "after"],
+                        ),
+                    ),
+                    (
+                        "create",
+                        boolean("Allow creation in from through to. Default false."),
+                    ),
+                ],
+                &["from", "to"],
+            ),
+            object(vec![("ok", boolean("Always true."))], &["ok"]),
+            false,
+            false,
+        ),
+        tool(
+            "mount",
+            "Mount a file server",
+            "Mount a 9P (Styx) file server on `to` in the session's namespace, as Inferno's \
+             mount command does. `source` is a dial string (tcp!host!port, which needs /net \
+             granted to the session) or a {command} block run by sh with a pipe as its \
+             standard input and output, such as {memfs -s}. The mount authenticates when the \
+             server asks, unless authenticate is false. Lasts until reset.",
+            object(
+                vec![
+                    ("source", string("A dial string or a {command} block.")),
+                    ("to", string("The mount point.")),
+                    ("spec", string("The attach name (aname). Default empty.")),
+                    (
+                        "order",
+                        choice(
+                            "replace (default), before or after.",
+                            &["replace", "before", "after"],
+                        ),
+                    ),
+                    (
+                        "create",
+                        boolean("Allow creation through the mount point. Default false."),
+                    ),
+                    (
+                        "authenticate",
+                        boolean("Authenticate if the server asks. Default true."),
+                    ),
+                    (
+                        "timeout_ms",
+                        integer(
+                            "Give up after this many milliseconds. Default 30000.",
+                            1,
+                            Some(MAX_TIMEOUT_MS),
+                        ),
+                    ),
+                ],
+                &["source", "to"],
+            ),
+            object(vec![("ok", boolean("Always true."))], &["ok"]),
+            false,
+            false,
+        ),
+        tool(
+            "unmount",
+            "Undo a bind or mount",
+            "Remove `from` from the union at `to`, or with no `from`, everything bound or \
+             mounted at `to`, as Inferno's unmount does.",
+            object(
+                vec![
+                    (
+                        "from",
+                        string("The member to remove. Default: all of them."),
+                    ),
+                    ("to", string("The mount point.")),
+                ],
+                &["to"],
+            ),
+            object(vec![("ok", boolean("Always true."))], &["ok"]),
+            false,
+            true,
+        ),
+        tool(
             "reset",
             "Start a fresh session",
             "Kill every program the session started and rebuild its namespace: /tmp is empty \
@@ -491,7 +896,7 @@ mod tests {
     #[test]
     fn definitions_are_well_formed() {
         let tools = tools();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 16);
         for t in &tools {
             let name = t.get("name").unwrap().as_str().unwrap();
             assert!(
