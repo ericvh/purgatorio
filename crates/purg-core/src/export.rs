@@ -56,6 +56,94 @@ const KEEP_IDLE: usize = 2;
 struct Fid {
     path: String,
     chan: Chan,
+    /// The file's qid path on this connection.
+    uqid: Uqid,
+}
+
+/// Qid paths for the files of an export.
+///
+/// A qid path is unique within one device, and every device's root is 0,
+/// but a client sees the export as one tree: it tells files apart by qid
+/// path alone, so two files with one path are one file to its mount table
+/// (a bind on `/dev` would show on `/prog`). As Inferno's exportfs does,
+/// each file a fid refers to, identified by device type, device number
+/// and path, is given a path no other such file has: its own when that is
+/// free, otherwise a made-up one. The path is the file's for as long as
+/// some fid refers to it, which is as long as a client can have it in a
+/// mount table.
+///
+/// Only the qids of fids are mapped (`Rattach`, `Rwalk`, `Ropen`,
+/// `Rcreate`, `Rstat`). The entries of a directory read carry the qids
+/// their devices gave, as in Inferno.
+#[derive(Default)]
+struct Uqids {
+    /// (device type, device number, qid path) to the path given out, and
+    /// how many [`Uqid`]s hold it.
+    files: BTreeMap<(char, u32, u64), (u64, usize)>,
+    /// The paths given out.
+    taken: alloc::collections::BTreeSet<u64>,
+    /// Counts the made-up paths.
+    made: u64,
+}
+
+/// Made-up paths have the top bit set, where devices seldom put anything.
+const UQID_MADE: u64 = 1 << 63;
+
+/// One reference to a file's qid path on the connection.
+struct Uqid {
+    table: Arc<Mutex<Uqids>>,
+    file: (char, u32, u64),
+    path: u64,
+}
+
+impl Uqid {
+    fn new(table: &Arc<Mutex<Uqids>>, c: &Chan) -> Uqid {
+        let file = c.key();
+        let mut t = table.lock();
+        let path = match t.files.get_mut(&file) {
+            Some((path, refs)) => {
+                *refs += 1;
+                *path
+            }
+            None => {
+                let mut path = file.2;
+                while t.taken.contains(&path) {
+                    t.made += 1;
+                    path = UQID_MADE | t.made;
+                }
+                t.taken.insert(path);
+                t.files.insert(file, (path, 1));
+                path
+            }
+        };
+        drop(t);
+        Uqid {
+            table: table.clone(),
+            file,
+            path,
+        }
+    }
+
+    /// `q` as the client sees it.
+    fn qid(&self, q: Qid) -> Qid {
+        Qid {
+            path: self.path,
+            ..q
+        }
+    }
+}
+
+impl Drop for Uqid {
+    fn drop(&mut self) {
+        let mut t = self.table.lock();
+        if let Some((_, refs)) = t.files.get_mut(&self.file) {
+            *refs -= 1;
+            if *refs == 0 {
+                t.files.remove(&self.file);
+                t.taken.remove(&self.path);
+            }
+        }
+    }
 }
 
 /// A request a worker has not answered yet.
@@ -579,6 +667,7 @@ struct Export {
     pgrp: Arc<Pgrp>,
     root: String,
     fids: Mutex<BTreeMap<u32, Arc<Fid>>>,
+    uqids: Arc<Mutex<Uqids>>,
     iounit: AtomicU32,
     /// Refuse every request that would change the tree.
     rdonly: bool,
@@ -597,6 +686,7 @@ impl Export {
             root: chan.name.clone(),
             pgrp,
             fids: Mutex::new(BTreeMap::new()),
+            uqids: Arc::new(Mutex::new(Uqids::default())),
             iounit: AtomicU32::new(8192),
             rdonly: false,
         })
@@ -698,12 +788,14 @@ impl Export {
             absolute(aname, &self.root)
         };
         let chan = self.pgrp.namec(&path, "/").map_err(|e| e.to_string())?;
-        let qid = chan.qid;
+        let uqid = Uqid::new(&self.uqids, &chan);
+        let qid = uqid.qid(chan.qid);
         self.insert(
             fid,
             Fid {
                 path: chan.name.clone(),
                 chan,
+                uqid,
             },
         )?;
         Ok(qid)
@@ -717,10 +809,14 @@ impl Export {
         let mut path = base.path.clone();
         let mut chan = base.chan.clone_unopened();
         let mut qids = Vec::new();
+        // The files walked through keep their paths until the walk ends.
+        let mut uqids = Vec::new();
         for (i, name) in names.iter().enumerate() {
             match self.step(&path, name) {
                 Ok(c) => {
-                    qids.push(c.qid);
+                    let uqid = Uqid::new(&self.uqids, &c);
+                    qids.push(uqid.qid(c.qid));
+                    uqids.push(uqid);
                     path = c.name.clone();
                     chan = c;
                 }
@@ -732,7 +828,11 @@ impl Export {
                 }
             }
         }
-        let new = Fid { path, chan };
+        let uqid = match uqids.pop() {
+            Some(u) => u,
+            None => Uqid::new(&self.uqids, &chan),
+        };
+        let new = Fid { path, chan, uqid };
         if newfid == fid {
             self.replace(fid, &base, new)?;
         } else {
@@ -750,13 +850,15 @@ impl Export {
         }
         let f = self.fid(fid)?;
         let opened = open(f.chan.clone_unopened(), mode).map_err(|e| e.to_string())?;
-        let qid = opened.qid;
+        let uqid = Uqid::new(&self.uqids, &opened);
+        let qid = uqid.qid(opened.qid);
         self.replace(
             fid,
             &f,
             Fid {
                 path: f.path.clone(),
                 chan: opened,
+                uqid,
             },
         )?;
         Ok((qid, self.iounit.load(Ordering::Acquire)))
@@ -781,13 +883,15 @@ impl Export {
         let mut c = Chan::new(dir.dev.clone(), dir.devno, w.qid, String::new(), w.aux);
         c.name = absolute(&path, "/");
         let opened = open(c, mode).map_err(|e| e.to_string())?;
-        let qid = opened.qid;
+        let uqid = Uqid::new(&self.uqids, &opened);
+        let qid = uqid.qid(opened.qid);
         self.replace(
             fid,
             &f,
             Fid {
                 path: opened.name.clone(),
                 chan: opened,
+                uqid,
             },
         )?;
         Ok((qid, self.iounit.load(Ordering::Acquire)))
@@ -837,7 +941,8 @@ impl Export {
 
     fn stat(&self, fid: u32) -> Result<Vec<u8>, String> {
         let f = self.fid(fid)?;
-        let d = f.chan.dev.stat(&f.chan).map_err(|e| e.to_string())?;
+        let mut d = f.chan.dev.stat(&f.chan).map_err(|e| e.to_string())?;
+        d.qid = f.uqid.qid(d.qid);
         d.pack().map_err(|e| e.to_string())
     }
 

@@ -115,7 +115,13 @@ impl Raw {
             purg_platform::sync::set_current_note(Some(mine));
             while let Ok(buf) = read_msg(&from, MAX_MSIZE) {
                 let msg = Msg::decode(&buf, MAX_MSIZE).unwrap();
-                if tx.send((msg.tag, format!("{:?}", msg.fcall))).is_err() {
+                let text = match &msg.fcall {
+                    Fcall::Rstat { stat } => {
+                        format!("Rstat {:?}", purg_styx::Dir::unpack(stat).unwrap().0)
+                    }
+                    other => format!("{other:?}"),
+                };
+                if tx.send((msg.tag, text)).is_err() {
                     break;
                 }
             }
@@ -401,6 +407,115 @@ fn version_aborts_requests_and_clunks_fids() {
     assert!(text.contains("unknown fid"), "{text}");
 
     drop(raw);
+    within("the export ends", move || s.server.join().unwrap());
+    kprocs_gone(&mock);
+}
+
+/// The qid paths in an `Rwalk`.
+fn walked(text: &str) -> Vec<u64> {
+    text.split("path: ")
+        .skip(1)
+        .map(|s| s.split(',').next().unwrap().trim().parse().unwrap())
+        .collect()
+}
+
+/// Every device numbers its own files, and every device's root is 0.
+/// Through an export they are files of one tree, so each gets a qid path
+/// no other file the client holds has.
+#[test]
+fn exported_files_have_qids_of_their_own() {
+    let (mut p, mock) = setup();
+    for (dev, at) in [("#c", "#R/c"), ("#e", "#R/e")] {
+        let fd = p.create(at, mode::OREAD, purg_styx::DMDIR | 0o755).unwrap();
+        p.close(fd).unwrap();
+        p.bind(dev, at, MREPL).unwrap();
+    }
+    let s = serve(&mut p, &mock);
+    let raw = Raw::new(&mut p, s.conn);
+    let mut held = Vec::new();
+    for (fid, name) in [(1, "c"), (2, "e"), (3, "box"), (4, "plain")] {
+        let text = raw.call(
+            1,
+            Fcall::Twalk {
+                fid: 0,
+                newfid: fid,
+                wnames: vec![name],
+            },
+            "Rwalk",
+        );
+        held.extend(walked(&text));
+    }
+    // The root of the export, which the attach fid holds, is a device
+    // root too.
+    let root = walked(&raw.call(1, Fcall::Tstat { fid: 0 }, "Rstat"))[0];
+    held.push(root);
+    let mut distinct = held.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), held.len(), "{held:?}");
+
+    // A fid's stat and open agree with the walk that made it.
+    assert_eq!(
+        walked(&raw.call(1, Fcall::Tstat { fid: 1 }, "Rstat"))[0],
+        held[0]
+    );
+    let opened = raw.call(
+        1,
+        Fcall::Topen {
+            fid: 2,
+            mode: mode::OREAD,
+        },
+        "Ropen",
+    );
+    assert_eq!(walked(&opened)[0], held[1]);
+    // And a second walk to a file that is held gives the same qid.
+    let again = raw.call(
+        1,
+        Fcall::Twalk {
+            fid: 0,
+            newfid: 9,
+            wnames: vec!["c"],
+        },
+        "Rwalk",
+    );
+    assert_eq!(walked(&again)[0], held[0]);
+
+    drop(raw);
+    within("the export ends", move || s.server.join().unwrap());
+    kprocs_gone(&mock);
+}
+
+/// The symptom in the issue: a bind on one exported device root showed up
+/// on all of them, because the client's mount table saw one file.
+#[test]
+fn a_bind_on_one_exported_device_root_stays_there() {
+    let (mut p, mock) = setup();
+    for (dev, at) in [("#c", "#R/c"), ("#e", "#R/e")] {
+        let fd = p.create(at, mode::OREAD, purg_styx::DMDIR | 0o755).unwrap();
+        p.close(fd).unwrap();
+        p.bind(dev, at, MREPL).unwrap();
+    }
+    let fd = p
+        .create("#R/other", mode::OREAD, purg_styx::DMDIR | 0o755)
+        .unwrap();
+    p.close(fd).unwrap();
+    let fd = p.create("#R/other/marker", mode::OWRITE, 0o644).unwrap();
+    p.close(fd).unwrap();
+    let s = serve(&mut p, &mock);
+    p.mount(s.conn, -1, "#R/mnt", MREPL | MNOAUTH, "").unwrap();
+    p.close(s.conn).unwrap();
+
+    p.stat("#R/mnt/c/user").unwrap();
+    p.bind("#R/other", "#R/mnt/e", MREPL).unwrap();
+    p.stat("#R/mnt/e/marker").unwrap();
+    // `c` and the root of the mount are still what they were.
+    p.stat("#R/mnt/c/user").unwrap();
+    assert!(p.stat("#R/mnt/c/marker").is_err());
+    p.stat("#R/mnt/plain").unwrap();
+    assert!(p.stat("#R/mnt/marker").is_err());
+
+    p.unmount(None, "#R/mnt/e").unwrap();
+    p.unmount(None, "#R/mnt").unwrap();
     within("the export ends", move || s.server.join().unwrap());
     kprocs_gone(&mock);
 }
