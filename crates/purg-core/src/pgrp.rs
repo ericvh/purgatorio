@@ -124,13 +124,20 @@ impl Pgrp {
     ///
     /// With `MBEFORE` or `MAFTER` the mount point becomes a union; when it is
     /// not yet mounted on, the original directory is its other member.
+    ///
+    /// `new` is resolved through the mount table, as Inferno's `bind` does:
+    /// when it is a mount point, what is mounted there is bound, and when
+    /// that is a union every member is.
     pub fn bind(&self, new: &str, old: &str, flags: u32) -> Result<()> {
-        let to = self.namec_unmounted(new)?;
+        let to = self.namec(new, &self.dot())?;
         self.bind_chan(to, old, flags)
     }
 
     /// Binds an existing Chan at `old`. `mount` uses this for a `#M` root.
-    pub fn bind_chan(&self, to: Chan, old: &str, flags: u32) -> Result<()> {
+    ///
+    /// When `to` is a union, its other members follow it at `old`, in
+    /// order, with the same `MBEFORE` or `MAFTER` (and without `MCREATE`).
+    pub fn bind_chan(&self, mut to: Chan, old: &str, flags: u32) -> Result<()> {
         let from = self.namec_unmounted(old)?;
         if to.is_dir() != from.is_dir() {
             return Err(Error::new(error::EISMOUNT));
@@ -138,10 +145,21 @@ impl Pgrp {
         if flags & mount::MORDER != mount::MREPL && !from.is_dir() {
             return Err(Error::new("mount must be a directory to union"));
         }
-        let to = Member {
+        let rest = to.union.take();
+        let mut to = vec![Member {
             chan: Arc::new(to),
             flags,
-        };
+        }];
+        if let Some(rest) = rest {
+            let order = match flags & mount::MORDER {
+                mount::MBEFORE => mount::MBEFORE,
+                _ => mount::MAFTER,
+            };
+            to.extend(rest.iter().skip(1).map(|m| Member {
+                chan: m.chan.clone(),
+                flags: order,
+            }));
+        }
         // Chans released by this bind are dropped after the lock: dropping a
         // `#M` Chan clunks its fid, which waits for the file server.
         let mut released: Vec<Member> = Vec::new();
@@ -164,9 +182,9 @@ impl Pgrp {
         };
         let m = &mut mounts[idx];
         match flags & mount::MORDER {
-            mount::MBEFORE => m.to.insert(0, to),
-            mount::MAFTER => m.to.push(to),
-            _ => released = core::mem::replace(&mut m.to, vec![to]),
+            mount::MBEFORE => drop(m.to.splice(0..0, to)),
+            mount::MAFTER => m.to.extend(to),
+            _ => released = core::mem::replace(&mut m.to, to),
         }
         drop(mounts);
         drop(released);
@@ -175,10 +193,18 @@ impl Pgrp {
 
     /// `unmount(name, old)`: removes `name` from the union at `old`, or
     /// everything mounted there when `name` is `None`.
+    ///
+    /// `name` is resolved as `bind` resolved it, through the mount table,
+    /// and the member is found as Inferno's `eqchan` does: same device and
+    /// qid path. The directory `name` is mounted on also matches, for a
+    /// member bound before anything was mounted there.
     pub fn unmount(&self, name: Option<&str>, old: &str) -> Result<()> {
         let from = self.namec_unmounted(old)?;
         let target = match name {
-            Some(n) => Some(self.namec_unmounted(n)?.key()),
+            Some(n) => Some([
+                self.namec(n, &self.dot())?.key(),
+                self.namec_unmounted(n)?.key(),
+            ]),
             None => None,
         };
         let mut mounts = self.mounts.write();
@@ -191,10 +217,10 @@ impl Pgrp {
             None => (Some(mounts.remove(i)), None),
             Some(t) => {
                 let m = &mut mounts[i];
-                let j =
-                    m.to.iter()
-                        .position(|x| x.chan.key() == t)
-                        .ok_or(Error::new(error::EUNMOUNT))?;
+                let j = t
+                    .iter()
+                    .find_map(|k| m.to.iter().position(|x| x.chan.key() == *k))
+                    .ok_or(Error::new(error::EUNMOUNT))?;
                 let gone = m.to.remove(j);
                 let only_original = m.to.len() == 1 && m.is_original(&m.to[0]);
                 if m.to.is_empty() || only_original {
