@@ -40,6 +40,11 @@ const SELF: &str = "/bin/mcpd.wasm";
 /// A longer request line is refused; it bounds the memory a client can make
 /// the server hold.
 const MAX_LINE: usize = 16 << 20;
+/// How long a file tool may take before the session is given up on.
+const FILE_TOOL_MS: i64 = 60_000;
+/// What `run` may take beyond its own timeout: killing the command and
+/// collecting its output.
+const RUN_SLACK_MS: i64 = 15_000;
 /// How long the front end waits for a killed session prog to exit.
 const REAP_MS: i32 = 3000;
 
@@ -150,14 +155,20 @@ impl Front {
     }
 
     /// Sends one tool call to the session prog and reads its answer.
-    /// `None` means the session prog is gone.
-    fn exchange(w: &mut Worker, request: &str) -> Option<Value> {
-        w.to.write_all(request.as_bytes()).ok()?;
-        let mut line = String::new();
-        if w.from.read_line(&mut line).ok()? == 0 {
-            return None;
+    /// `Err(false)` means the session prog is gone, `Err(true)` that it did
+    /// not answer within `limit_ms`.
+    fn exchange(w: &mut Worker, request: &str, limit_ms: i64) -> Result<Value, bool> {
+        w.to.write_all(request.as_bytes()).map_err(|_| false)?;
+        let fd = w.from.get_ref().as_raw_fd();
+        let limit = i32::try_from(limit_ms).unwrap_or(i32::MAX);
+        if let Ok(None) = session::wait_readable(&[fd], limit) {
+            return Err(true);
         }
-        json::parse(&line).ok()
+        let mut line = String::new();
+        match w.from.read_line(&mut line) {
+            Ok(n) if n > 0 => json::parse(&line).map_err(|_| false),
+            _ => Err(false),
+        }
     }
 }
 
@@ -174,12 +185,29 @@ impl rpc::Host for Front {
         let w = self.worker.as_mut().map_err(|e| e.clone())?;
         let mut request = json::obj([("name", name.into()), ("arguments", args.clone())]).encode();
         request.push('\n');
-        let Some(reply) = Front::exchange(w, &request) else {
-            self.restart();
-            return Err(String::from(
-                "the session ended while the tool was running (its server prog was killed); \
-                 a new session has been started, with an empty /tmp and a fresh namespace",
-            ));
+        // `run` enforces its own timeout; this one is the backstop for a
+        // session prog that is stuck, such as a file tool reading a file
+        // that never answers.
+        let limit = match name {
+            "run" => {
+                let t = args.get("timeout_ms").and_then(Value::as_i64);
+                t.unwrap_or(tooldefs::DEFAULT_TIMEOUT_MS) + RUN_SLACK_MS
+            }
+            _ => FILE_TOOL_MS,
+        };
+        let reply = match Front::exchange(w, &request, limit) {
+            Ok(reply) => reply,
+            Err(stuck) => {
+                self.restart();
+                let why = if stuck {
+                    "the tool did not finish in time (a file that blocks when read or written?)"
+                } else {
+                    "the session ended while the tool was running (its server prog was killed)"
+                };
+                return Err(format!(
+                    "{why}; a new session has been started, with an empty /tmp and a fresh namespace"
+                ));
+            }
         };
         if let Some(g) = reply.get("group").and_then(Value::as_i64) {
             self.groups.insert(g as u32);
@@ -290,13 +318,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             return Ok(());
         }
         Some("--session") => {
-            let policy = match args.get(2) {
-                Some(path) => Some(
-                    std::fs::read_to_string(path)
-                        .map_err(|e| format!("{path}: {}", Error::from(e))),
-                ),
-                None => None,
-            };
+            let policy = args.get(2).map(|path| {
+                std::fs::read_to_string(path).map_err(|e| format!("{path}: {}", Error::from(e)))
+            });
             let built = policy
                 .transpose()
                 .and_then(|p| session::Session::build(p.as_deref()));

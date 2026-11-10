@@ -208,6 +208,7 @@ fn serve_export(sys: &System) -> Result<(), Error> {
         &chan,
         sys.kernel.platform.as_ref(),
         false,
+        false,
     )?;
     println!("probe: net served");
     Ok(())
