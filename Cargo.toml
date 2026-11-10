@@ -12,6 +12,10 @@ members = [
     "appl/lib/*",
     "appl/test/*",
     # Commands in a subdirectory, installed as /bin/<dir>/<name>.wasm.
+    "appl/cmd/ndb/cs",
+    "appl/cmd/ndb/csquery",
+    "appl/cmd/ndb/dns",
+    "appl/cmd/ndb/dnsquery",
     "appl/cmd/ndb/query",
     "appl/cmd/install/ckproto",
     "appl/cmd/install/mkproto",
@@ -45,6 +49,7 @@ purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
 appl-archive = { path = "appl/archive" }
 regexp = { package = "appl-lib-regexp", path = "appl/lib/regexp" }
+ndb = { package = "appl-lib-ndb", path = "appl/lib/ndb" }
 
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }
 libc = "0.2"

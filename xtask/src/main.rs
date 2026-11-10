@@ -58,6 +58,21 @@ struct Guest {
     dir: String,
 }
 
+impl Guest {
+    /// The installed file's name. A binary in a directory of commands may
+    /// carry the directory as a prefix, so that it does not collide with a
+    /// top-level command's binary: `ndb-cs` in `bin/ndb` installs as
+    /// `bin/ndb/cs.wasm`, beside `bin/cs.wasm`.
+    fn installed(&self) -> &str {
+        let sub = self.dir.rsplit('/').next().unwrap_or("");
+        self.bin
+            .strip_prefix(sub)
+            .and_then(|b| b.strip_prefix('-'))
+            .filter(|b| !b.is_empty() && self.dir.contains('/'))
+            .unwrap_or(&self.bin)
+    }
+}
+
 /// First `name = "..."` value after the `[section]` header in a manifest.
 fn manifest_name(manifest: &str, section: &str) -> Option<String> {
     let mut in_section = false;
@@ -196,12 +211,12 @@ fn build_root() -> Result<()> {
         wasm::check(&bytes, true).map_err(|e| format!("{}: {e}", src.display()))?;
         let dest_dir = ws.join("root").join(&g.dir);
         fs::create_dir_all(&dest_dir).map_err(|e| format!("{}: {e}", dest_dir.display()))?;
-        let dest = dest_dir.join(format!("{}.wasm", g.bin));
+        let dest = dest_dir.join(format!("{}.wasm", g.installed()));
         fs::write(&dest, &bytes).map_err(|e| format!("{}: {e}", dest.display()))?;
         eprintln!(
             "installed /{}/{}.wasm ({} bytes)",
             g.dir,
-            g.bin,
+            g.installed(),
             bytes.len()
         );
     }

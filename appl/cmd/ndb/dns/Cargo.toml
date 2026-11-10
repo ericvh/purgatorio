@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-ndb-dns"
+description = "ndb/dns: the DNS resolver, serving /net/dns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dns"
+path = "src/main.rs"
+
+[dependencies]
+ndb.workspace = true
+purgatorio.workspace = true
+
+[lints]
+workspace = true

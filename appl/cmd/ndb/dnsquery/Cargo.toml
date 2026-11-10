@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ndb-dnsquery"
+description = "ndb/dnsquery: ask the DNS resolver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dnsquery"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
