@@ -11,6 +11,7 @@ name = "mash"
 path = "src/main.rs"
 
 [dependencies]
+filepat.workspace = true
 purgatorio.workspace = true
 regexp.workspace = true
 

@@ -22,7 +22,6 @@
 
 mod ast;
 mod exec;
-mod glob;
 mod history;
 mod lex;
 mod make;

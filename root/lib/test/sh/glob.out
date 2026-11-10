@@ -1,0 +1,24 @@
+a.c b.c
+/bin/sh.wasm /bin/sh.wasm
+l/x1 l/x2 ./l/x1 ./l/x2 l/x1 l/x2
+/tmp/sh-glob/l/x1 /tmp/sh-glob/l/x2 /tmp/sh-glob/l/y l/x1 l/x2
+l/sub/x3 l/sub/x3 l/sub/x3
+nomatch* l/z? [ l/x*/y a[b
+*.c *.c a.c b.c l/x1 l/x2
+*.c *.c l/*.c
+*.c
+m/a* m/a* m/ab
+a.c b.c l/x1 l/x2 l/y
+l/*.bak
+2 a.c b.c
+file l/x1
+file l/x2
+hi
+hi
+more
+sh: redirection needs one file name
+sh: redirection needs one file name
+matches
+expanded first
+class
+complement

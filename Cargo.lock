@@ -564,6 +564,7 @@ dependencies = [
 name = "appl-cmd-mash"
 version = "0.1.0"
 dependencies = [
+ "appl-lib-filepat",
  "appl-lib-regexp",
  "purgatorio",
 ]
@@ -822,6 +823,7 @@ dependencies = [
 name = "appl-cmd-sh"
 version = "0.1.0"
 dependencies = [
+ "appl-lib-filepat",
  "appl-lib-regexp",
  "purgatorio",
 ]
@@ -1082,6 +1084,13 @@ dependencies = [
 [[package]]
 name = "appl-lib-add"
 version = "0.1.0"
+
+[[package]]
+name = "appl-lib-filepat"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-lib-mashcase"

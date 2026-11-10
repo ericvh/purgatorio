@@ -67,6 +67,7 @@ purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
 appl-archive = { path = "appl/archive" }
 authlib = { package = "appl-authlib", path = "appl/authlib" }
+filepat = { package = "appl-lib-filepat", path = "appl/lib/filepat" }
 regexp = { package = "appl-lib-regexp", path = "appl/lib/regexp" }
 ndb = { package = "appl-lib-ndb", path = "appl/lib/ndb" }
 

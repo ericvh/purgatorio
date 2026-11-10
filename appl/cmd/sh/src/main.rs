@@ -3,8 +3,9 @@
 //!
 //! Supported: simple commands, pipelines (`|`), `;`, `&`, `&&`, `||`, `!`,
 //! `{` blocks `}`, redirections (`<`, `>`, `>>`, `>[n]`, `>[n=m]`,
-//! `>[n=]`), `'quoting'`, `^` concatenation, list variables (`x=(a b)`,
-//! `$x`, `$#x`, `$"x`, `$*`, `$1`, `$status`, `$apid`), `` `{command} ``
+//! `>[n=]`), `'quoting'`, `^` concatenation, file name patterns (`*`, `?`,
+//! `[class]`), list variables (`x=(a b)`, `$x`, `$#x`, `$"x`, `$*`, `$1`,
+//! `$status`, `$apid`), `` `{command} ``
 //! substitution, `${expr ...}` and comments. Variables are exported through
 //! `/env` unless declared with `:=`. Builtins: `cd`, `exit`, `run`, `wait`,
 //! `load`. `load std` adds `if`, `while`, `for`, `and`, `or`, `not`, `~`,
