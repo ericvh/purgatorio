@@ -30,8 +30,8 @@ entries come from `purg-auth`'s `modsig`, the code the loader uses
 % wasmdump /bin/lib/add.wasm
 module /bin/lib/add.wasm
 size 2337
-digest 06c34de490dced9a693b06d485c929b0f3bdbf0ce0dc9981b40c5d0507ecaa34
-abi 0.6
+digest 8f0134cf255fe3efe4029373980ec325cd8c44b923ad6fc9fc2aba408feeff34
+abi 0.7
 sections 8
 	type offset 8 size 21
 	...
@@ -46,7 +46,7 @@ global 0 mut i32 1048576
 start -
 elements 0
 data 1
-custom purgatorio.abi 0.6
+custom purgatorio.abi 0.7
 ```
 
 Imports are grouped under the module they come from
