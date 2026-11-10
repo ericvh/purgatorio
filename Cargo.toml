@@ -31,7 +31,9 @@ members = [
     "xtask",
 ]
 # Matched by appl/cmd/* but hold crates, with no Cargo.toml of their own.
-exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/ip"]
+# fuzz/ is a cargo-fuzz project with a workspace of its own (it needs
+# nightly and libFuzzer).
+exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/ip", "fuzz"]
 
 [workspace.package]
 version = "0.1.0"

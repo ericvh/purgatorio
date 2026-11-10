@@ -483,3 +483,74 @@ fn flush_and_passthrough() {
     assert!(s.response(&[1, 0, 0]).is_err());
     assert!(s.response(&W::new().msg(kind::RCLUNK, 1)[..6]).is_err());
 }
+
+/// Found by the property test `shim_directory_read_fits_count`: an entry
+/// with empty names and numeric ids grows when translated (three ten-digit
+/// names are 30 bytes, the .u fields they replace 14), so a full .u reply
+/// used to come back larger than the count the client asked for.
+#[test]
+fn directory_read_fits_the_count_asked() {
+    let mut s = Shim::new();
+    let attach = Fcall::Tattach {
+        fid: 1,
+        afid: NOFID,
+        uname: "u",
+        aname: "",
+    };
+    s.request(&enc(1, attach)).unwrap();
+    s.response(&W::new().qid(DIRQ).msg(kind::RATTACH, 1))
+        .unwrap();
+    let tread = Fcall::Tread {
+        fid: 1,
+        offset: 0,
+        count: 128,
+    };
+    let down = s.request(&enc(2, tread.clone())).unwrap();
+    // The server is asked for less: 128 * 63 / 79.
+    let asked = Fcall::Tread {
+        fid: 1,
+        offset: 0,
+        count: 102,
+    };
+    assert_eq!(dec(&down).fcall, asked);
+    // Two 64-byte entries would fill a count of 128 and translate to 160
+    // bytes; only one fits in 102.
+    let big = [4_000_000_000, 4_000_000_001, 4_000_000_002];
+    let e = ustat(FILEQ, 0o644, 0, "a", "", big);
+    assert_eq!(e.len(), 64);
+    let r = W::new().u32(64).bytes(&e).msg(kind::RREAD, 2);
+    let out = s.response(&r).unwrap();
+    let Fcall::Rread { data } = dec(&out).fcall else {
+        panic!("not Rread")
+    };
+    assert_eq!(data.len(), 80);
+    let d = dirs(data).next().unwrap().unwrap();
+    assert_eq!(d.uid, "4000000000");
+    // A file read is not scaled.
+    s.request(&enc(3, Fcall::Tclunk { fid: 1 })).unwrap();
+    let t = enc(4, tread);
+    assert_eq!(s.request(&t).unwrap(), t);
+}
+
+/// Found by the mutation smoke test: a reply that passes through the shim
+/// (the same layout in both dialects) was not checked, so the client could
+/// be handed bytes that are not a 9P2000 R-message.
+#[test]
+fn malformed_replies_are_refused() {
+    let mut s = Shim::new();
+    // A truncated body, an unknown type, a T-message, and trailing bytes.
+    let short = W::new().u16(7).msg(kind::RWRITE, 1);
+    let unknown = W::new().msg(99, 1);
+    let request = enc(1, Fcall::Tclunk { fid: 1 });
+    let long = W::new().u8(0).msg(kind::RCLUNK, 1);
+    for bad in [short, unknown, request, long] {
+        assert!(s.response(&bad).is_err(), "{bad:02x?}");
+    }
+    // The replies whose Qid the shim reads are checked whole too.
+    s.request(&enc(2, Fcall::Topen { fid: 1, mode: 0 }))
+        .unwrap();
+    let ropen = W::new().qid(DIRQ).u32(0).u8(0).msg(kind::ROPEN, 2);
+    assert!(s.response(&ropen).is_err());
+    let good = W::new().u32(5).msg(kind::RWRITE, 3);
+    assert_eq!(s.response(&good).unwrap(), good);
+}

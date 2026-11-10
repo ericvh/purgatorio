@@ -21,9 +21,16 @@
 //!   follows each fid's Qid through attach, walk, open and create. The
 //!   `.` and `..` entries QEMU lists are dropped.
 //!
-//! A directory read can come back shorter than the client asked even when
-//! more entries follow (the .u entries are longer than the 9P2000 ones),
-//! so the client must read until an empty reply, as 9P requires.
+//! A translated entry can be longer than the .u one: QEMU sends empty
+//! user and group names with numeric ids, which become decimal names. So
+//! a directory `Tread` goes down with a smaller count, chosen so that the
+//! translated reply never exceeds what the client asked for. A directory
+//! read can therefore come back shorter than the client asked even when
+//! more entries follow, so the client must read until an empty reply, as
+//! 9P requires.
+//!
+//! Replies that pass through are checked to be well-formed 9P2000 first,
+//! so the client is never handed a message it cannot decode.
 //!
 //! Every other message has the same layout in both dialects and passes
 //! through unchanged.
@@ -35,7 +42,7 @@ use alloc::vec::Vec;
 
 use purg_abi::{auth, error};
 
-use crate::dir::{DMAPPEND, DMAUTH, DMDIR, DMEXCL, Dir, Qid};
+use crate::dir::{DMAPPEND, DMAUTH, DMDIR, DMEXCL, Dir, Qid, STATFIXLEN};
 use crate::fcall::{Fcall, Msg, VERSION, kind};
 use crate::wire::{Reader, Writer};
 use crate::{Error, message_size};
@@ -164,9 +171,18 @@ impl Shim {
                 t.to_vec(),
             ),
             Fcall::Topen { fid, .. } => (Pending::Open { fid }, t.to_vec()),
-            Fcall::Tread { fid, .. } => {
+            Fcall::Tread { fid, offset, count } => {
                 let dir = self.dirs.get(&fid).copied().unwrap_or(false);
-                (Pending::Read { dir }, t.to_vec())
+                let out = if dir {
+                    // Ask for less, so that the translated entries still
+                    // fit in what the client asked for.
+                    let count = dir_count(count);
+                    let fcall = Fcall::Tread { fid, offset, count };
+                    Msg { tag, fcall }.encode()?
+                } else {
+                    t.to_vec()
+                };
+                (Pending::Read { dir }, out)
             }
             Fcall::Tclunk { fid } | Fcall::Tremove { fid } => {
                 // The fid is gone whatever the reply says.
@@ -255,9 +271,10 @@ impl Shim {
                 .encode()
             }
             (kind::RATTACH, Pending::Attach { fid }) => {
+                let out = plain(r)?;
                 let qid = Qid::read(&mut body)?;
                 self.dirs.insert(fid, qid.is_dir());
-                Ok(r.to_vec())
+                Ok(out)
             }
             (kind::RWALK, Pending::Walk { fid, newfid, n }) => {
                 let Fcall::Rwalk { wqids } = Msg::decode(r, u32::MAX)?.fcall else {
@@ -274,19 +291,46 @@ impl Shim {
                 Ok(r.to_vec())
             }
             (kind::ROPEN | kind::RCREATE, Pending::Open { fid }) => {
+                let out = plain(r)?;
                 let qid = Qid::read(&mut body)?;
                 self.dirs.insert(fid, qid.is_dir());
-                Ok(r.to_vec())
+                Ok(out)
             }
             (kind::RFLUSH, Pending::Flush { oldtag }) => {
                 // The flushed request is answered (if at all) before the
                 // Rflush.
                 self.tags.remove(&oldtag);
-                Ok(r.to_vec())
+                plain(r)
             }
-            _ => Ok(r.to_vec()),
+            _ => plain(r),
         }
     }
+}
+
+/// An R-message that has the same layout in both dialects, checked to be
+/// well-formed 9P2000 so the client never sees a reply it cannot decode.
+fn plain(r: &[u8]) -> Result<Vec<u8>, Error> {
+    let msg = Msg::decode(r, u32::MAX)?;
+    let ty = msg.fcall.kind();
+    if ty % 2 == 0 {
+        return Err(Error::BadType(ty));
+    }
+    Ok(r.to_vec())
+}
+
+/// The smallest .u stat entry: a 9P2000 entry with empty strings, plus an
+/// empty `extension[s]` and three numeric ids.
+const USTAT_MIN: u64 = STATFIXLEN as u64 + 2 + 3 * 4;
+/// The most a stat entry grows when translated from .u: it loses the .u
+/// fields (14 bytes) and three empty names can each become a ten-digit
+/// number.
+const USTAT_GROWTH: u64 = 3 * 10 - (2 + 3 * 4);
+
+/// The count to ask a .u server for when the client wants `count` bytes of
+/// directory: small enough that the translated entries cannot exceed
+/// `count`, however many entries come back.
+fn dir_count(count: u32) -> u32 {
+    (u64::from(count) * USTAT_MIN / (USTAT_MIN + USTAT_GROWTH)) as u32
 }
 
 /// Builds a message of type `ty` whose body `body` writes.
