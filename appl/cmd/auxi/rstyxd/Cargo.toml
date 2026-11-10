@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auxi-rstyxd"
+description = "auxi/rstyxd: serve remote commands for rcmd and cpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rstyxd"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+rstyx = { package = "appl-lib-rstyx", path = "../../../lib/rstyx" }
+
+[lints]
+workspace = true

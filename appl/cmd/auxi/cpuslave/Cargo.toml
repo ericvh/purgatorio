@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-auxi-cpuslave"
+description = "auxi/cpuslave: the remote half of cpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cpuslave"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

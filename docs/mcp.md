@@ -361,6 +361,30 @@ bind '#C' /cmd
 A mount point can be bound whole: `bind /lib /n/lib` shows the read-only
 `/lib`, since #97.
 
+## A remote server: `rcmd host mcpd`
+
+`rcmd` carries a command's standard input and output to another
+Purgatorio over an authenticated connection (`docs/rcmd.md`), so the same
+stdio server runs remotely with no bridge of its own. On the system that
+is to hold the sessions:
+
+```sh
+listen 'tcp!*!rstyx' /bin/auxi/rstyxd.wasm &
+```
+
+and as the client's command, on an emu that holds a key that system
+trusts:
+
+```sh
+emu -r /path/to/root rcmd tcp!host!6668 mcpd
+```
+
+Each connection is one `mcpd` with its own sessions. The caller's
+namespace is mounted on `/n/client` in `rstyxd`'s copy of the namespace;
+a session does not see it unless its policy binds it. The connection is
+authenticated but not encrypted yet. `crates/purg-emu/tests/rcmd.rs`
+drives a session this way on loopback.
+
 ## Later stages
 
 From issue #70:
@@ -368,8 +392,8 @@ From issue #70:
 3. Remote sessions: `mcpd` behind `listen` on `/net` with the mount
    authentication, a host bridge from stdio to that connection, and the
    kernel over virtio-net. Per-session `/prog` filtering belongs here.
-4. `cpu`/`rcmd` as the transport, and `mcpfs`, which mounts other MCP
-   servers' tools as files.
+4. `mcpfs`, which mounts other MCP servers' tools as files. (`rcmd` as
+   the transport is done, above.)
 5. Fuel and memory limits per session.
 
 Notes for stage 3 from stage 2:

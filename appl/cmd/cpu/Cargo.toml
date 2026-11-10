@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-cpu"
+description = "cpu: run a command on a remote system with this system's devices"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cpu"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+rstyx = { package = "appl-lib-rstyx", path = "../../lib/rstyx" }
+
+[lints]
+workspace = true
