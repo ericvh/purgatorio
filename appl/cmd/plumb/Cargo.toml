@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-plumb"
+description = "plumb: send a message to the plumber"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "plumb"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+plumbmsg = { package = "appl-lib-plumbmsg", path = "../../lib/plumbmsg" }
+
+[lints]
+workspace = true

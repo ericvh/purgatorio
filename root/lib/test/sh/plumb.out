@@ -1,0 +1,48 @@
+/chan/plumb.edit
+/chan/plumb.image
+/chan/plumb.input
+/chan/plumb.view
+plumb
+edit
+/tmp/plumbtest
+text
+
+5
+hello
+me
+edit
+/tmp/plumbtest
+text
+x=1	y='two words'
+12
+not one word
+notes
+plumb
+view
+/tmp/plumbtest
+text
+
+24
+/tmp/plumbtest/notes.txt
+plumb: can't start application
+plumb: don't know who message goes to
+plumb: no matching plumb rule
+fail:no matching plumb rule
+plumb
+edit
+/tmp/plumbtest
+text
+action=showdata
+11
+from stdin
+read: read error: buffer too short for message
+plumb
+edit
+/tmp/plumbtest
+text
+
+28
+too long for a ten byte read
+plumb: usage: plumb [-s src] [-d dest] [-w wdir] [-t type] [-a name value] [-i] data ...
+plumber: can't read /tmp/plumbtest/nosuch: file does not exist
+plumber: bad:1: rule must have "plumb to" action
