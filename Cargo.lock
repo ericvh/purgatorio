@@ -1554,6 +1554,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "purg-kernel"
+version = "0.1.0"
+dependencies = [
+ "linked_list_allocator",
+ "purg-aarch64",
+]
+
+[[package]]
 name = "purg-platform"
 version = "0.1.0"
 dependencies = [

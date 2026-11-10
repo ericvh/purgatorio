@@ -85,3 +85,7 @@ strip = "symbols"
 [profile.probe]
 inherits = "release"
 panic = "abort"
+
+[profile.kernel]
+inherits = "release"
+panic = "abort"
