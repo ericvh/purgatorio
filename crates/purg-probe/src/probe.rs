@@ -206,7 +206,7 @@ fn serve_export(sys: &System) -> Result<(), Error> {
         sys.pgrp.clone(),
         "/",
         &chan,
-        sys.kernel.platform.as_ref(),
+        &sys.kernel.platform,
         false,
         false,
     )?;

@@ -300,7 +300,7 @@ impl Prog {
             self.pgrp.clone(),
             &dir,
             &fd,
-            self.kernel.platform.as_ref(),
+            &self.kernel.platform,
             flags & purg_abi::mount::MNOAUTH != 0,
             flags & purg_abi::export::RDONLY != 0,
         )

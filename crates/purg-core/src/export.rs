@@ -1,25 +1,100 @@
 //! `export`: serve a namespace over a file descriptor as a Styx server.
+//!
+//! Requests are served concurrently, as Inferno's exportfs does, so one
+//! that blocks (a read of a pipe, of a file2chan file, of a slow device)
+//! does not hold up the others on the connection:
+//!
+//! - The caller's thread reads requests. It answers `Tversion` and
+//!   `Tflush` itself and hands everything else to a pool of worker kprocs
+//!   ([`WorkQ`]), which grows when a request arrives and no worker is free.
+//! - A worker runs one request at a time under a [`Note`] of the request's
+//!   own. `Tflush` kills that note, which interrupts the worker if it is
+//!   asleep in a device. The flushed request still runs to its end (it
+//!   may be a `Tclunk`), and `Rflush` is sent after its reply, or in place
+//!   of it when the request was interrupted. So no reply to a flushed tag
+//!   can follow the `Rflush`, as flush(5) requires.
+//! - Replies go through an [`OutQ`]: one thread at a time writes, whole
+//!   messages, with no lock held across the write.
+//! - The fid table is a map behind a lock, taken only to look a fid up or
+//!   to change the table. A request works on its own reference to the fid,
+//!   so a read and a write on one fid can run together, and a fid that is
+//!   clunked under a blocked request is closed when that request ends.
+//! - When the client hangs up, or the exporting prog is killed, every
+//!   request's note is killed and `serve` returns once the workers have
+//!   gone.
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use purg_abi::{error, mode};
 use purg_platform::Platform;
+use purg_platform::sync::{self, Mutex, Note, Rendez};
 use purg_styx::server::{StyxFs, dispatch};
 use purg_styx::{Dir, Fcall, Msg, NOFID, QTAUTH, Qid};
 
+use crate::block::park;
 use crate::chan::Chan;
 use crate::error::{Error, Result as KResult};
 use crate::names::cleanname;
 use crate::pgrp::{Pgrp, absolute};
 use crate::rw::{read_msg, write_full};
 use crate::sysfile::{self, open};
+use crate::workq::{OutQ, Put, WorkQ};
 
+/// The most worker kprocs one export runs. With all of them blocked,
+/// further requests wait (a `Tflush` still gets through).
+pub const MAX_WORKERS: usize = 32;
+/// Idle workers kept for the next request; others exit.
+const KEEP_IDLE: usize = 2;
+
+/// What a fid refers to. Never changed once it is in the table: `Topen`
+/// and `Tcreate` put a new one in its place.
 struct Fid {
     path: String,
     chan: Chan,
+}
+
+/// A request a worker has not answered yet.
+struct Flight {
+    /// The note the request runs under.
+    note: Arc<Note>,
+    /// Tags of the `Tflush`es waiting for it, oldest first.
+    flushes: Vec<u16>,
+    /// A `Tversion` aborted it: nothing is sent for it.
+    aborted: bool,
+}
+
+/// One request, as read.
+struct Req {
+    tag: u16,
+    buf: Vec<u8>,
+}
+
+/// One exported connection, shared by the reader and the workers.
+struct Conn {
+    fs: Export,
+    fd: Arc<Chan>,
+    platform: Arc<dyn Platform>,
+    noauth: bool,
+    /// The exporting prog: workers serve files as it would.
+    pid: u32,
+    msize: AtomicU32,
+    afids: Mutex<BTreeMap<u32, Afid>>,
+    /// Requests handed to the workers and not yet answered, by tag.
+    flights: Mutex<BTreeMap<u16, Flight>>,
+    /// Woken when `flights` empties.
+    quiet: Rendez,
+    work: WorkQ<Req>,
+    out: OutQ<Vec<u8>>,
+    /// The note a worker writes replies under, so a write blocked on a
+    /// client that does not read can be interrupted at the end.
+    wnote: Arc<Note>,
+    /// Nothing more can be written.
+    dead: AtomicBool,
 }
 
 /// Serves `root` (a path in `pgrp`) as 9P2000 on `fd` until the client hangs up.
@@ -29,38 +104,289 @@ struct Fid {
 /// When `noauth` is false and `pgrp` (the exporter's namespace) trusts a
 /// key or a signer (`docs/auth.md`), `Tattach` is accepted only after a
 /// proof over a challenge from `platform`.
+///
+/// Requests are served by worker kprocs, started through `platform` as
+/// they are needed. They have all exited when this returns.
 pub fn serve(
     pgrp: Arc<Pgrp>,
     root: &str,
-    fd: &Chan,
-    platform: &dyn Platform,
+    fd: &Arc<Chan>,
+    platform: &Arc<dyn Platform>,
     noauth: bool,
     rdonly: bool,
 ) -> KResult<()> {
     let mut fs = Export::new(pgrp, root)?;
     fs.rdonly = rdonly;
-    let mut afids = BTreeMap::new();
-    let mut msize = purg_styx::MAX_MSIZE;
-    loop {
-        let buf = match read_msg(fd, msize) {
-            Ok(b) => b,
-            Err(e) if e.as_str() == error::EHUNGUP || e.as_str() == error::EINTR => return Ok(()),
-            Err(e) => return Err(e),
+    let conn = Arc::new(Conn {
+        fs,
+        fd: fd.clone(),
+        platform: platform.clone(),
+        noauth,
+        pid: platform.current_pid(),
+        msize: AtomicU32::new(purg_styx::MAX_MSIZE),
+        afids: Mutex::new(BTreeMap::new()),
+        flights: Mutex::new(BTreeMap::new()),
+        quiet: Rendez::new(),
+        work: WorkQ::new(MAX_WORKERS, KEEP_IDLE),
+        out: OutQ::new(),
+        wnote: Arc::new(Note::new()),
+        dead: AtomicBool::new(false),
+    });
+    let result = conn.read_requests();
+    conn.shutdown();
+    result
+}
+
+impl Conn {
+    /// The reader: runs on the exporting prog's thread until the client
+    /// hangs up or the prog is killed.
+    fn read_requests(self: &Arc<Self>) -> KResult<()> {
+        loop {
+            let msize = self.msize.load(Ordering::Acquire);
+            let buf = match read_msg(&self.fd, msize) {
+                Ok(b) => b,
+                Err(e) if e.as_str() == error::EHUNGUP || e.as_str() == error::EINTR => {
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
+            let msg = match Msg::decode(&buf, msize) {
+                Ok(m) => m,
+                Err(_) => return Err(Error::new(error::EIO)),
+            };
+            let tag = msg.tag;
+            let for_worker = match &msg.fcall {
+                Fcall::Tversion { .. } => {
+                    if !self.reset() {
+                        return Ok(());
+                    }
+                    let mut m = msize;
+                    let reply = dispatch(&mut View(&self.fs), &msg, &mut m);
+                    self.msize.store(m, Ordering::Release);
+                    self.send(reply);
+                    false
+                }
+                Fcall::Tflush { oldtag } => {
+                    self.flush(*oldtag, tag);
+                    false
+                }
+                _ => true,
+            };
+            drop(msg);
+            if for_worker {
+                self.submit(Req { tag, buf });
+            }
+            if self.dead.load(Ordering::Acquire) {
+                return Err(Error::new(error::EHUNGUP));
+            }
+        }
+    }
+
+    /// Hands a request to a worker, starting one if none is free.
+    fn submit(self: &Arc<Self>, req: Req) {
+        let tag = req.tag;
+        {
+            let mut flights = self.flights.lock();
+            if flights.contains_key(&tag) {
+                drop(flights);
+                self.send(rerr(tag, "duplicate tag"));
+                return;
+            }
+            flights.insert(
+                tag,
+                Flight {
+                    note: Arc::new(Note::new()),
+                    flushes: Vec::new(),
+                    aborted: false,
+                },
+            );
+        }
+        if self.work.put(req) == Put::Queued {
+            return;
+        }
+        let conn = self.clone();
+        let started = self.platform.spawn_kproc(
+            "export",
+            Box::new(move || {
+                conn.platform.set_current_pid(conn.pid);
+                while let Some(req) = conn.work.take() {
+                    conn.run(req, false);
+                }
+            }),
+        );
+        if started.is_err() && self.work.unstarted() == 0 {
+            // No kproc to be had and none running: serve what is queued
+            // here, one request at a time, as a prog without workers
+            // would. The exporting prog's own note stays in force.
+            while let Some(req) = self.work.try_take() {
+                self.run(req, true);
+            }
+        }
+    }
+
+    /// Runs one request and sends its reply. A worker runs it under the
+    /// request's note; `inline` keeps the caller's.
+    fn run(&self, req: Req, inline: bool) {
+        let note = self.flights.lock().get(&req.tag).map(|f| f.note.clone());
+        let Some(note) = note else {
+            return;
         };
-        let msg = match Msg::decode(&buf, msize) {
-            Ok(m) => m,
-            Err(_) => return Err(Error::new(error::EIO)),
+        if !inline {
+            sync::set_current_note(Some(note));
+        }
+        let reply = self.handle(&req);
+        if !inline {
+            sync::set_current_note(None);
+        }
+        self.finish(req.tag, reply);
+    }
+
+    fn handle(&self, req: &Req) -> Vec<u8> {
+        let mut msize = self.msize.load(Ordering::Acquire);
+        let Ok(msg) = Msg::decode(&req.buf, msize) else {
+            return rerr(req.tag, error::EIO);
         };
-        let reply = if noauth {
-            dispatch(&mut fs, &msg, &mut msize)
-        } else {
-            match auth_reply(&mut afids, platform, &fs, &msg) {
-                Some(bytes) => bytes,
-                None => dispatch(&mut fs, &msg, &mut msize),
+        if !self.noauth
+            && let Some(bytes) = auth_reply(&self.afids, self.platform.as_ref(), &self.fs, &msg)
+        {
+            return bytes;
+        }
+        dispatch(&mut View(&self.fs), &msg, &mut msize)
+    }
+
+    /// Ends a request: queues its reply and the `Rflush` of every `Tflush`
+    /// that named it. Both are queued under the lock [`Conn::flush`] looks
+    /// the tag up with, so an `Rflush` never overtakes the reply.
+    fn finish(&self, tag: u16, reply: Vec<u8>) {
+        let quiet = {
+            let mut flights = self.flights.lock();
+            let Some(f) = flights.remove(&tag) else {
+                return;
+            };
+            if !f.aborted {
+                // A flushed request that was interrupted has no answer of
+                // its own: the client is told it was flushed.
+                if f.flushes.is_empty() || !interrupted(&reply) {
+                    self.out.push(reply);
+                }
+                for t in f.flushes {
+                    self.out.push(rflush(t));
+                }
+            }
+            flights.is_empty()
+        };
+        if quiet {
+            self.quiet.wakeup();
+        }
+        self.write_replies();
+    }
+
+    /// `Tflush`: interrupts the request with `oldtag`, if a worker still
+    /// has it, and has its end answer this flush. Otherwise the request
+    /// was answered already (or never seen) and `Rflush` goes out now.
+    fn flush(&self, oldtag: u16, tag: u16) {
+        let note = {
+            let mut flights = self.flights.lock();
+            match flights.get_mut(&oldtag) {
+                Some(f) => {
+                    f.flushes.push(tag);
+                    Some(f.note.clone())
+                }
+                None => {
+                    self.out.push(rflush(tag));
+                    None
+                }
             }
         };
-        write_full(fd, &reply)?;
+        match note {
+            Some(note) => note.kill(),
+            None => self.write_replies(),
+        }
     }
+
+    /// `Tversion` starts the conversation again: outstanding requests are
+    /// aborted and every fid is clunked. Returns false when the exporting
+    /// prog was killed while waiting for the workers.
+    fn reset(&self) -> bool {
+        let notes: Vec<Arc<Note>> = self
+            .flights
+            .lock()
+            .values_mut()
+            .map(|f| {
+                f.aborted = true;
+                f.note.clone()
+            })
+            .collect();
+        for n in notes {
+            n.kill();
+        }
+        if park(&self.quiet, || self.flights.lock().is_empty()).is_err() {
+            return false;
+        }
+        let afids = core::mem::take(&mut *self.afids.lock());
+        drop(afids);
+        self.fs.clunk_all();
+        true
+    }
+
+    fn send(&self, reply: Vec<u8>) {
+        self.out.push(reply);
+        self.write_replies();
+    }
+
+    /// Writes queued replies, unless another thread is already writing.
+    fn write_replies(&self) {
+        self.out.drain(|bytes| {
+            if self.dead.load(Ordering::Acquire) {
+                return;
+            }
+            // A worker has no note of its own between requests.
+            let borrowed = sync::current_note().is_none();
+            if borrowed {
+                sync::set_current_note(Some(self.wnote.clone()));
+            }
+            if write_full(&self.fd, &bytes).is_err() {
+                self.dead.store(true, Ordering::Release);
+            }
+            if borrowed {
+                sync::set_current_note(None);
+            }
+        });
+    }
+
+    /// Interrupts every request, waits for the workers to exit and closes
+    /// every fid.
+    fn shutdown(&self) {
+        self.dead.store(true, Ordering::Release);
+        drop(self.work.close());
+        let notes: Vec<Arc<Note>> = self
+            .flights
+            .lock()
+            .values()
+            .map(|f| f.note.clone())
+            .collect();
+        for n in notes {
+            n.kill();
+        }
+        self.wnote.kill();
+        self.work.join();
+        let flights = core::mem::take(&mut *self.flights.lock());
+        drop(flights);
+        let afids = core::mem::take(&mut *self.afids.lock());
+        drop(afids);
+        self.fs.clunk_all();
+    }
+}
+
+fn rflush(tag: u16) -> Vec<u8> {
+    reply(tag, Fcall::Rflush)
+}
+
+/// Whether `reply` is the `Rerror` of an interrupted request.
+fn interrupted(reply: &[u8]) -> bool {
+    // size[4] type[1] tag[2] ename[s]
+    reply.get(4) == Some(&purg_styx::kind::RERROR)
+        && reply.get(9..) == Some(error::EINTR.as_bytes())
 }
 
 struct Afid {
@@ -142,8 +468,11 @@ fn rerr(tag: u16, ename: &'static str) -> Vec<u8> {
 
 /// Handles `Tauth`, the auth fid and `Tattach` when this export
 /// authenticates. `None` means the message belongs to the file tree.
+///
+/// The auth fids are locked only to look at or change the table: the trust
+/// files are read, and a proof is checked, with no lock held.
 fn auth_reply(
-    afids: &mut BTreeMap<u32, Afid>,
+    afids: &Mutex<BTreeMap<u32, Afid>>,
     platform: &dyn Platform,
     fs: &Export,
     msg: &Msg<'_>,
@@ -154,11 +483,12 @@ fn auth_reply(
             return None;
         }
         let afid = *afid;
-        if afid == NOFID || fs.fids.contains_key(&afid) || afids.contains_key(&afid) {
-            return Some(rerr(tag, "fid in use"));
-        }
         let mut challenge = [0u8; crate::auth::CHALLENGE];
         platform.entropy(&mut challenge);
+        let mut afids = afids.lock();
+        if afid == NOFID || fs.has_fid(afid) || afids.contains_key(&afid) {
+            return Some(rerr(tag, "fid in use"));
+        }
         afids.insert(
             afid,
             Afid {
@@ -179,50 +509,61 @@ fn auth_reply(
             },
         ));
     }
-    if let Fcall::Tread { fid, offset, count } = &msg.fcall
-        && let Some(afid) = afids.get(fid)
-    {
-        let start = usize::try_from(*offset).unwrap_or(usize::MAX);
-        let data = afid.challenge.get(start..).unwrap_or(&[]);
-        let n = (*count as usize).min(data.len());
-        return Some(reply(tag, Fcall::Rread { data: &data[..n] }));
+    // Each look at the table is a statement of its own, so its lock is
+    // released before anything else happens.
+    if let Fcall::Tread { fid, offset, count } = &msg.fcall {
+        let challenge = afids.lock().get(fid).map(|a| a.challenge);
+        if let Some(challenge) = challenge {
+            let start = usize::try_from(*offset).unwrap_or(usize::MAX);
+            let data = challenge.get(start..).unwrap_or(&[]);
+            let n = (*count as usize).min(data.len());
+            return Some(reply(tag, Fcall::Rread { data: &data[..n] }));
+        }
     }
-    if let Fcall::Twrite { fid, data, .. } = &msg.fcall
-        && let Some(afid) = afids.get_mut(fid)
-    {
-        // The proof is one write.
-        let now = platform.now_ns() / 1_000_000_000;
-        let t = trust(fs, &afid.uname);
-        let checked = purg_auth::proof::check(
-            &t.policy(now),
-            &afid.challenge,
-            &afid.uname,
-            &afid.aname,
-            data,
-        );
-        afid.ok = checked.is_ok();
-        return Some(match checked {
-            Ok(()) => reply(
-                tag,
-                Fcall::Rwrite {
-                    count: u32::try_from(data.len()).unwrap_or(u32::MAX),
-                },
-            ),
-            Err(e) => rerr(tag, e),
-        });
+    if let Fcall::Twrite { fid, data, .. } = &msg.fcall {
+        let held = afids
+            .lock()
+            .get(fid)
+            .map(|a| (a.challenge, a.uname.clone(), a.aname.clone()));
+        if let Some((challenge, uname, aname)) = held {
+            // The proof is one write.
+            let now = platform.now_ns() / 1_000_000_000;
+            let t = trust(fs, &uname);
+            let checked = purg_auth::proof::check(&t.policy(now), &challenge, &uname, &aname, data);
+            // The fid may have been clunked meanwhile, or clunked and made
+            // again with another challenge.
+            match afids.lock().get_mut(fid) {
+                Some(a) if a.challenge == challenge => a.ok = checked.is_ok(),
+                _ => return Some(rerr(tag, UNKNOWN_FID)),
+            }
+            return Some(match checked {
+                Ok(()) => reply(
+                    tag,
+                    Fcall::Rwrite {
+                        count: u32::try_from(data.len()).unwrap_or(u32::MAX),
+                    },
+                ),
+                Err(e) => rerr(tag, e),
+            });
+        }
     }
-    if let Fcall::Tclunk { fid } = &msg.fcall
-        && afids.remove(fid).is_some()
-    {
-        return Some(reply(tag, Fcall::Rclunk));
+    if let Fcall::Tclunk { fid } = &msg.fcall {
+        let gone = afids.lock().remove(fid).is_some();
+        if gone {
+            return Some(reply(tag, Fcall::Rclunk));
+        }
     }
     if let Fcall::Tattach {
         afid, uname, aname, ..
     } = &msg.fcall
     {
-        return match afids.get(afid) {
-            Some(a) if a.ok && a.uname == *uname && a.aname == *aname => None,
-            Some(_) => Some(rerr(tag, crate::auth::REQUIRED)),
+        let proved = afids
+            .lock()
+            .get(afid)
+            .map(|a| a.ok && a.uname == *uname && a.aname == *aname);
+        return match proved {
+            Some(true) => None,
+            Some(false) => Some(rerr(tag, crate::auth::REQUIRED)),
             None if trust(fs, uname).required() => Some(rerr(tag, crate::auth::REQUIRED)),
             None => None,
         };
@@ -230,14 +571,21 @@ fn auth_reply(
     None
 }
 
+/// The exported tree and the connection's fids.
+///
+/// Every method takes `&self`: the fid table is locked to look a fid up or
+/// to change the table, never across a device call, which may block.
 struct Export {
     pgrp: Arc<Pgrp>,
     root: String,
-    fids: BTreeMap<u32, Fid>,
-    iounit: u32,
+    fids: Mutex<BTreeMap<u32, Arc<Fid>>>,
+    iounit: AtomicU32,
     /// Refuse every request that would change the tree.
     rdonly: bool,
 }
+
+const UNKNOWN_FID: &str = "unknown fid";
+const FID_IN_USE: &str = "fid in use";
 
 impl Export {
     fn new(pgrp: Arc<Pgrp>, root: &str) -> KResult<Export> {
@@ -248,8 +596,8 @@ impl Export {
         Ok(Export {
             root: chan.name.clone(),
             pgrp,
-            fids: BTreeMap::new(),
-            iounit: 8192,
+            fids: Mutex::new(BTreeMap::new()),
+            iounit: AtomicU32::new(8192),
             rdonly: false,
         })
     }
@@ -290,16 +638,59 @@ impl Export {
             Ok(())
         }
     }
-}
 
-impl StyxFs for Export {
-    fn set_msize(&mut self, msize: u32) {
-        self.iounit = msize.saturating_sub(purg_styx::IOHDRSZ).max(1);
+    fn has_fid(&self, fid: u32) -> bool {
+        self.fids.lock().contains_key(&fid)
     }
 
-    fn attach(&mut self, fid: u32, _afid: u32, _uname: &str, aname: &str) -> Result<Qid, String> {
-        if self.fids.contains_key(&fid) {
-            return Err(String::from("fid in use"));
+    /// The caller's own reference to what `fid` names.
+    fn fid(&self, fid: u32) -> Result<Arc<Fid>, String> {
+        self.fids
+            .lock()
+            .get(&fid)
+            .cloned()
+            .ok_or_else(|| String::from(UNKNOWN_FID))
+    }
+
+    /// Makes `fid` name `new`. A fid cannot be made twice.
+    fn insert(&self, fid: u32, new: Fid) -> Result<(), String> {
+        let mut fids = self.fids.lock();
+        if fids.contains_key(&fid) {
+            drop(fids);
+            // `new` is dropped with the lock released: closing it may
+            // wait for a file server.
+            return Err(String::from(FID_IN_USE));
+        }
+        fids.insert(fid, Arc::new(new));
+        Ok(())
+    }
+
+    /// Puts `new` in the place of `old`, which `fid` must still name: a
+    /// concurrent `Tclunk` or `Twalk` may have changed it.
+    fn replace(&self, fid: u32, old: &Arc<Fid>, new: Fid) -> Result<(), String> {
+        let previous = {
+            let mut fids = self.fids.lock();
+            match fids.get_mut(&fid) {
+                Some(slot) if Arc::ptr_eq(slot, old) => core::mem::replace(slot, Arc::new(new)),
+                _ => {
+                    drop(fids);
+                    return Err(String::from(UNKNOWN_FID));
+                }
+            }
+        };
+        drop(previous);
+        Ok(())
+    }
+
+    /// Clunks every fid.
+    fn clunk_all(&self) {
+        let fids = core::mem::take(&mut *self.fids.lock());
+        drop(fids);
+    }
+
+    fn attach(&self, fid: u32, aname: &str) -> Result<Qid, String> {
+        if self.has_fid(fid) {
+            return Err(String::from(FID_IN_USE));
         }
         let path = if aname.is_empty() {
             self.root.clone()
@@ -308,30 +699,23 @@ impl StyxFs for Export {
         };
         let chan = self.pgrp.namec(&path, "/").map_err(|e| e.to_string())?;
         let qid = chan.qid;
-        self.fids.insert(
+        self.insert(
             fid,
             Fid {
                 path: chan.name.clone(),
                 chan,
             },
-        );
+        )?;
         Ok(qid)
     }
 
-    fn walk(&mut self, fid: u32, newfid: u32, names: &[&str]) -> Result<Vec<Qid>, String> {
-        if newfid != fid && self.fids.contains_key(&newfid) {
-            return Err(String::from("fid in use"));
+    fn walk(&self, fid: u32, newfid: u32, names: &[&str]) -> Result<Vec<Qid>, String> {
+        if newfid != fid && self.has_fid(newfid) {
+            return Err(String::from(FID_IN_USE));
         }
-        let base = self
-            .fids
-            .get(&fid)
-            .ok_or_else(|| String::from("unknown fid"))?;
+        let base = self.fid(fid)?;
         let mut path = base.path.clone();
         let mut chan = base.chan.clone_unopened();
-        if names.is_empty() {
-            self.fids.insert(newfid, Fid { path, chan });
-            return Ok(Vec::new());
-        }
         let mut qids = Vec::new();
         for (i, name) in names.iter().enumerate() {
             match self.step(&path, name) {
@@ -348,41 +732,44 @@ impl StyxFs for Export {
                 }
             }
         }
-        self.fids.insert(newfid, Fid { path, chan });
+        let new = Fid { path, chan };
+        if newfid == fid {
+            self.replace(fid, &base, new)?;
+        } else {
+            self.insert(newfid, new)?;
+        }
         Ok(qids)
     }
 
-    fn open(&mut self, fid: u32, mode: u8) -> Result<(Qid, u32), String> {
+    fn open(&self, fid: u32, mode: u8) -> Result<(Qid, u32), String> {
         let access = mode & mode::ACCESS;
         if (access != mode::OREAD && access != mode::OEXEC)
             || mode & (mode::OTRUNC | mode::ORCLOSE) != 0
         {
             self.writable()?;
         }
-        let f = self
-            .fids
-            .get_mut(&fid)
-            .ok_or_else(|| String::from("unknown fid"))?;
+        let f = self.fid(fid)?;
         let opened = open(f.chan.clone_unopened(), mode).map_err(|e| e.to_string())?;
         let qid = opened.qid;
-        f.chan = opened;
-        Ok((qid, self.iounit))
+        self.replace(
+            fid,
+            &f,
+            Fid {
+                path: f.path.clone(),
+                chan: opened,
+            },
+        )?;
+        Ok((qid, self.iounit.load(Ordering::Acquire)))
     }
 
-    fn create(&mut self, fid: u32, name: &str, perm: u32, mode: u8) -> Result<(Qid, u32), String> {
+    fn create(&self, fid: u32, name: &str, perm: u32, mode: u8) -> Result<(Qid, u32), String> {
         self.writable()?;
-        let path = {
-            let f = self
-                .fids
-                .get(&fid)
-                .ok_or_else(|| String::from("unknown fid"))?;
-            let mut p = f.path.clone();
-            if !p.ends_with('/') {
-                p.push('/');
-            }
-            p.push_str(name);
-            p
-        };
+        let f = self.fid(fid)?;
+        let mut path = f.path.clone();
+        if !path.ends_with('/') {
+            path.push('/');
+        }
+        path.push_str(name);
         let (dir, leaf) = self
             .pgrp
             .create_target(&path, "/")
@@ -395,21 +782,19 @@ impl StyxFs for Export {
         c.name = absolute(&path, "/");
         let opened = open(c, mode).map_err(|e| e.to_string())?;
         let qid = opened.qid;
-        self.fids.insert(
+        self.replace(
             fid,
+            &f,
             Fid {
                 path: opened.name.clone(),
                 chan: opened,
             },
-        );
-        Ok((qid, self.iounit))
+        )?;
+        Ok((qid, self.iounit.load(Ordering::Acquire)))
     }
 
-    fn read(&mut self, fid: u32, offset: u64, count: u32) -> Result<Vec<u8>, String> {
-        let f = self
-            .fids
-            .get(&fid)
-            .ok_or_else(|| String::from("unknown fid"))?;
+    fn read(&self, fid: u32, offset: u64, count: u32) -> Result<Vec<u8>, String> {
+        let f = self.fid(fid)?;
         let mut buf = alloc::vec![0u8; count as usize];
         let n = if f.chan.is_dir() {
             sysfile::dir_read(&f.chan, &mut buf, offset)
@@ -421,12 +806,9 @@ impl StyxFs for Export {
         Ok(buf)
     }
 
-    fn write(&mut self, fid: u32, offset: u64, data: &[u8]) -> Result<u32, String> {
+    fn write(&self, fid: u32, offset: u64, data: &[u8]) -> Result<u32, String> {
         self.writable()?;
-        let f = self
-            .fids
-            .get(&fid)
-            .ok_or_else(|| String::from("unknown fid"))?;
+        let f = self.fid(fid)?;
         let n = f
             .chan
             .dev
@@ -435,41 +817,87 @@ impl StyxFs for Export {
         u32::try_from(n).map_err(|_| String::from(error::EIO))
     }
 
-    fn clunk(&mut self, fid: u32) -> Result<(), String> {
-        self.fids
-            .remove(&fid)
-            .ok_or_else(|| String::from("unknown fid"))?;
-        Ok(())
+    fn clunk(&self, fid: u32) -> Result<(), String> {
+        let f = self.fids.lock().remove(&fid);
+        // Dropped here, with the table unlocked. A request still using the
+        // fid keeps the file open until it ends.
+        f.map(drop).ok_or_else(|| String::from(UNKNOWN_FID))
     }
 
-    fn remove(&mut self, fid: u32) -> Result<(), String> {
+    fn remove(&self, fid: u32) -> Result<(), String> {
         // Tremove clunks the fid even when the remove is refused.
         let f = self
             .fids
+            .lock()
             .remove(&fid)
-            .ok_or_else(|| String::from("unknown fid"))?;
+            .ok_or_else(|| String::from(UNKNOWN_FID))?;
         self.writable()?;
         f.chan.dev.remove(&f.chan).map_err(|e| e.to_string())
     }
 
-    fn stat(&mut self, fid: u32) -> Result<Vec<u8>, String> {
-        let f = self
-            .fids
-            .get(&fid)
-            .ok_or_else(|| String::from("unknown fid"))?;
+    fn stat(&self, fid: u32) -> Result<Vec<u8>, String> {
+        let f = self.fid(fid)?;
         let d = f.chan.dev.stat(&f.chan).map_err(|e| e.to_string())?;
         d.pack().map_err(|e| e.to_string())
     }
 
-    fn wstat(&mut self, fid: u32, stat: &[u8]) -> Result<(), String> {
+    fn wstat(&self, fid: u32, stat: &[u8]) -> Result<(), String> {
         self.writable()?;
         let d = Dir::unpack(stat)
             .map(|(d, _)| d)
             .map_err(|e| e.to_string())?;
-        let f = self
-            .fids
-            .get(&fid)
-            .ok_or_else(|| String::from("unknown fid"))?;
+        let f = self.fid(fid)?;
         f.chan.dev.wstat(&f.chan, &d).map_err(|e| e.to_string())
+    }
+}
+
+/// [`Export`] as the `StyxFs` that [`dispatch`] drives. Each worker makes
+/// its own for the request it is serving.
+struct View<'a>(&'a Export);
+
+impl StyxFs for View<'_> {
+    fn set_msize(&mut self, msize: u32) {
+        let iounit = msize.saturating_sub(purg_styx::IOHDRSZ).max(1);
+        self.0.iounit.store(iounit, Ordering::Release);
+    }
+
+    fn attach(&mut self, fid: u32, _afid: u32, _uname: &str, aname: &str) -> Result<Qid, String> {
+        self.0.attach(fid, aname)
+    }
+
+    fn walk(&mut self, fid: u32, newfid: u32, names: &[&str]) -> Result<Vec<Qid>, String> {
+        self.0.walk(fid, newfid, names)
+    }
+
+    fn open(&mut self, fid: u32, mode: u8) -> Result<(Qid, u32), String> {
+        self.0.open(fid, mode)
+    }
+
+    fn create(&mut self, fid: u32, name: &str, perm: u32, mode: u8) -> Result<(Qid, u32), String> {
+        self.0.create(fid, name, perm, mode)
+    }
+
+    fn read(&mut self, fid: u32, offset: u64, count: u32) -> Result<Vec<u8>, String> {
+        self.0.read(fid, offset, count)
+    }
+
+    fn write(&mut self, fid: u32, offset: u64, data: &[u8]) -> Result<u32, String> {
+        self.0.write(fid, offset, data)
+    }
+
+    fn clunk(&mut self, fid: u32) -> Result<(), String> {
+        self.0.clunk(fid)
+    }
+
+    fn remove(&mut self, fid: u32) -> Result<(), String> {
+        self.0.remove(fid)
+    }
+
+    fn stat(&mut self, fid: u32) -> Result<Vec<u8>, String> {
+        self.0.stat(fid)
+    }
+
+    fn wstat(&mut self, fid: u32, stat: &[u8]) -> Result<(), String> {
+        self.0.wstat(fid, stat)
     }
 }

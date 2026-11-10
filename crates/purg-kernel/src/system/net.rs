@@ -119,7 +119,7 @@ impl System {
             self.pgrp.clone(),
             "/",
             &chan,
-            self.kernel.platform.as_ref(),
+            &self.kernel.platform,
             false,
             false,
         )
