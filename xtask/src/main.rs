@@ -607,6 +607,7 @@ fn kernel(kvm: bool) -> Result<()> {
     fs::write(&image, elf_to_image(&elf)?).map_err(|e| format!("{}: {e}", image.display()))?;
     let golden = ws.join("crates/purg-kernel/expected.out");
     let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
+    let want = expand_golden(&want, "kernel", &ws)?;
     let runs: Vec<&KernelRun> = if kvm {
         if env::consts::ARCH != "aarch64" || !Path::new("/dev/kvm").exists() {
             eprintln!("kernel: skipping the KVM run: needs an aarch64 host with /dev/kvm");
