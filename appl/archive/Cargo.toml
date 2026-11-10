@@ -1,0 +1,18 @@
+[package]
+name = "appl-archive"
+description = "ustar and gzip code shared by tar, gettar, puttar, lstar, gzip and gunzip"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "archive"
+path = "src/lib.rs"
+
+[dependencies]
+purgatorio.workspace = true
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+
+[lints]
+workspace = true

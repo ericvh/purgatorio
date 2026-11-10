@@ -13,6 +13,7 @@ members = [
     "sdk/purgatorio",
     "sdk/purgatorio-macros",
     "appl/lib/add",
+    "appl/archive",
     "appl/lib/regexp",
     "appl/cmd/bind",
     "appl/cmd/cmp",
@@ -28,11 +29,15 @@ members = [
     "appl/cmd/env",
     "appl/cmd/export",
     "appl/cmd/fc",
+    "appl/cmd/gettar",
     "appl/cmd/grep",
+    "appl/cmd/gunzip",
+    "appl/cmd/gzip",
     "appl/cmd/import",
     "appl/cmd/kill",
     "appl/cmd/listen",
     "appl/cmd/ls",
+    "appl/cmd/lstar",
     "appl/cmd/md5sum",
     "appl/cmd/memfs",
     "appl/cmd/mkdir",
@@ -43,6 +48,7 @@ members = [
     "appl/cmd/os",
     "appl/cmd/ps",
     "appl/cmd/pwd",
+    "appl/cmd/puttar",
     "appl/cmd/ramfile",
     "appl/cmd/rm",
     "appl/cmd/sed",
@@ -50,6 +56,7 @@ members = [
     "appl/cmd/sleep",
     "appl/cmd/styxlisten",
     "appl/cmd/tail",
+    "appl/cmd/tar",
     "appl/cmd/tee",
     "appl/cmd/unmount",
     "appl/cmd/wc",
@@ -79,6 +86,7 @@ purg-vm-wasmtime = { path = "crates/purg-vm-wasmtime" }
 purg-vm-wasmi = { path = "crates/purg-vm-wasmi" }
 purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
+appl-archive = { path = "appl/archive" }
 regexp = { package = "appl-lib-regexp", path = "appl/lib/regexp" }
 
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }

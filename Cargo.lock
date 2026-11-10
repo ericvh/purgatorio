@@ -12,6 +12,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -66,6 +72,14 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "appl-archive"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide",
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-cmd-bind"
@@ -166,10 +180,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-gettar"
+version = "0.1.0"
+dependencies = [
+ "appl-archive",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-grep"
 version = "0.1.0"
 dependencies = [
  "appl-lib-regexp",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-gunzip"
+version = "0.1.0"
+dependencies = [
+ "appl-archive",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-gzip"
+version = "0.1.0"
+dependencies = [
+ "appl-archive",
  "purgatorio",
 ]
 
@@ -198,6 +236,14 @@ dependencies = [
 name = "appl-cmd-ls"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-lstar"
+version = "0.1.0"
+dependencies = [
+ "appl-archive",
  "purgatorio",
 ]
 
@@ -265,6 +311,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-puttar"
+version = "0.1.0"
+dependencies = [
+ "appl-archive",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-pwd"
 version = "0.1.0"
 dependencies = [
@@ -319,6 +373,14 @@ dependencies = [
 name = "appl-cmd-tail"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-tar"
+version = "0.1.0"
+dependencies = [
+ "appl-archive",
  "purgatorio",
 ]
 
@@ -1264,6 +1326,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57804b2c9b69967f1536a56f86297e367a33b19e98852ed624b84551cdbc0d90"
 dependencies = [
  "rustix",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
 ]
 
 [[package]]

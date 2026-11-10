@@ -49,6 +49,7 @@ a `; ` prompt.
 | W1 commands: `bind cat cp date echo emuinit env ls mkdir mv pwd rm sleep unmount wc` | done |
 | W2 commands: `cmp diff du fc grep kill md5sum memfs mount ns ps ramfile sed tail tee xd` | done |
 | W3 commands: `cs dial export import listen netstat os styxlisten` | done |
+| W4 archive commands: `gettar gunzip gzip lstar puttar tar` (ustar and gzip code in `appl/archive`) | done |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
@@ -73,6 +74,7 @@ sdk/
   purgatorio-macros/         #[purgatorio::main]
 appl/cmd/<name>/             commands (sh, ls, ...), built to root/bin/<name>.wasm
 appl/lib/<name>/             loadable reactor modules, built to root/bin/lib/<name>.wasm
+appl/archive/                ustar and gzip library shared by the archive commands
 appl/lib/regexp/             Plan 9 regular expressions, a library linked into grep, sed and sh
 appl/test/{abi,procs,m3,net,wasi}/  conformance guests, built to root/bin/test/<name>.wasm
 root/                        the file tree emu serves as #U (build-root adds root/tmp)

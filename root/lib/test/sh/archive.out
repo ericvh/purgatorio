@@ -1,0 +1,70 @@
+hello hello hello
+00000000  1f 8b 08 00 00 00 00 00 00 ff cb 48 cd c9 c9 e7  ...........H....
+00000010  02 00 20 30 3a 36 06 00 00 00                    .. 0:6....
+hello
+hello from gnu tar
+g 1000000000 0 0
+g/a-rather-long-directory-name-for-testing-the-split-fields 1000000000 0 0
+g/a-rather-long-directory-name-for-testing-the-split-fields/and-an-equally-long-file-name-beneath-it.txt 1000000000 5 0
+g/hello 1000000000 19 0
+src
+src/a
+src/sub
+src/sub/b
+src/sub/deep
+src/sub/deep/c
+src
+src/a
+src/sub
+src/sub/b
+src/sub/deep
+src/sub/deep/c
+src/sub
+src/sub/b
+src/sub/deep
+src/sub/deep/c
+trees same
+archives same
+src
+src/a
+src/sub
+src/sub/b
+src/sub/deep
+src/sub/deep/c
+tgz is gzipped tar
+g.tar.gz
+replaced
+gzip file round trip
+d-rwxr-xr-x        0 Sep  9  2001 g
+d-rwxr-x---        0 Sep  9  2001 g/a-rather-long-directory-name-for-testing-the-split-fields
+--rw-r--r--        5 Sep  9  2001 g/a-rather-long-directory-name-for-testing-the-split-fields/and-an-equally-long-file-name-beneath-it.txt
+--rw-r-----       19 Sep  9  2001 g/hello
+g
+g/a-rather-long-directory-name-for-testing-the-split-fields
+g/a-rather-long-directory-name-for-testing-the-split-fields/and-an-equally-long-file-name-beneath-it.txt
+g/hello
+hello from gnu tar
+d-rwxr-xr-x        0 Sep  9  2001 g
+d-rwxr-x---        0 Sep  9  2001 g/a-rather-long-directory-name-for-testing-the-split-fields
+--rw-r--r--        5 Sep  9  2001 g/a-rather-long-directory-name-for-testing-the-split-fields/and-an-equally-long-file-name-beneath-it.txt
+--rw-r-----       19 Sep  9  2001 g/hello
+changed
+hello
+src
+src/a
+src/sub
+src/sub/b
+src/sub/deep
+src/sub/deep/c
+gettar same
+src/a
+gunzip: not in gzip format
+fail:not in gzip format
+gunzip: src/a: no .gz suffix
+tar: missing.tar: file does not exist
+fail:missing.tar: file does not exist
+tar: unexpected end of archive
+tar: usage: tar {ctx}[fkmpRTvz] [archive] [file ...]
+tar: usage: tar {ctx}[fkmpRTvz] [archive] [file ...]
+tar: missing: file does not exist
+fail:errors

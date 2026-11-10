@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-lstar"
+description = "lstar: list a tar archive on standard input"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lstar"
+path = "src/main.rs"
+
+[dependencies]
+appl-archive.workspace = true
+purgatorio.workspace = true
+
+[lints]
+workspace = true
