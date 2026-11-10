@@ -139,11 +139,17 @@ pages as the spec and keep Inferno's error wording.
   (fuel or epoch sampling), `stack stackv mdb` (stack traces from the name
   section, `/prog/<pid>/` debug files), `asm`. `limbo/`, `yacc` and `m4` are
   not needed: guests are Rust.
+- [ ] **PG-42** `mash`, Inferno's other shell (mash(1)), as its own command
+  beside `sh`: its grammar and expressions, history, the built-in make
+  (dependencies and rules, `make`/`depends`), `serve`, and its loadable
+  libraries (`mashlib`). Write a parser in Rust, sharing `appl/lib/regexp`
+  and the SDK with sh; do not try to share sh's parser. Its Tk builtins
+  wait for Phase G. Tests in the sh corpus style, on both VMs and the probe.
 - Out of scope for now: graphics and Tk (`wm`, `tkcmd`, `wish`, `tclsh`,
   `bit2gif`, `gif2bit`, `9win`, `rioimport`, `wmexport`, `wmimport`, `mouse`,
   `touchcal`, `B`) wait for Phase G; audio (`auplay`, `raw2iaf`,
   `wav2iaf`); hardware and devices (`lego/`, `avr/`, `palm/`, `mpc/`, `usb/`,
-  `irtest`); the `mash` shell; `fortune`. Not yet looked at closely: `ar`,
+  `irtest`); `fortune`. Not yet looked at closely: `ar`,
   `cook`, `cddb`, `ftest`, `getfile`, `idea`, `itest`, `itreplay`,
   `manufacture`, `metamorph`, `promptstring`, `rdp`, `src`.
 
