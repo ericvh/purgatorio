@@ -264,7 +264,7 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
     let cons = console::init(&info, Input::Blocking);
     selftest::lock_test();
     selftest::tsleep_test();
-    // The console test needs `xtask kernel` typing `hello` and ^D, so it
+    // The console test needs `xtask kernel` typing its input, so it
     // runs only in test mode; interactively the console belongs to sh.
     let test = has_bootarg(&info, "test");
     if test {

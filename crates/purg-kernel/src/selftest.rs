@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use purg_aarch64::console::Pl011Console;
+use purg_core::linedisc::ConsReader;
 use purg_platform::Console;
 use purg_platform::sync::{Mutex, Rendez, Sched};
 
@@ -124,60 +125,150 @@ pub fn tsleep_test() {
 /// How long to wait for `cargo xtask kernel` to type the input.
 const INPUT_TIMEOUT_MS: u64 = 20_000;
 
-/// The console reader's result: the line, then what the next read returned.
-type Reading = Mutex<Option<(Vec<u8>, usize)>>;
+/// What `cargo xtask kernel` types for the cooked check: a line killed
+/// with ^U, then a line with a typo fixed with DEL and ^H and a two-byte
+/// character erased with one DEL, ended with CR; then ^D. (`xtask` holds
+/// the same bytes as `KERNEL_INPUT`.)
+///
+/// `junk^U` `hexl` DEL ^H `llo é` `ü` DEL CR ^D
+const COOKED_LINE: &str = "hello é\n";
 
-/// A thread reads a line from the console, blocking until the UART
-/// interrupt brings it, then reads again and must see the ^D that follows
-/// as end of input. `cargo xtask kernel` types `hello\n^D` once it sees the
-/// prompt line, a little later, so the reader really blocks, and the CPU
-/// must idle meanwhile.
-pub fn console_test(cons: &'static Pl011Console) {
-    let line: Arc<Reading> = Arc::new(Mutex::new(None));
+/// What the terminal must have been sent for it.
+const COOKED_ECHO: &[u8] =
+    b"junk\x08 \x08\x08 \x08\x08 \x08\x08 \x08hexl\x08 \x08\x08 \x08llo \xc3\xa9\xc3\xbc\x08 \x08\n";
+
+/// What `xtask` types for the raw check: bytes the cooked console would
+/// have edited with or turned into something else.
+const RAW_INPUT: &[u8] = b"a\x7f\x15\r\x04";
+
+/// The console, keeping a copy of what is written to it.
+struct Tee {
+    cons: &'static Pl011Console,
+    written: Mutex<Vec<u8>>,
+}
+
+impl Console for Tee {
+    fn read(&self, buf: &mut [u8]) -> purg_platform::Result<usize> {
+        self.cons.read(buf)
+    }
+
+    fn write(&self, buf: &[u8]) -> purg_platform::Result<usize> {
+        self.written.lock().extend_from_slice(buf);
+        self.cons.write(buf)
+    }
+}
+
+/// Runs `read` on its own thread and waits for its result, which needs
+/// `xtask` to type something after the `waiting for {what}` line. The
+/// thread must block for the input, with the CPU idle meanwhile.
+fn typed<T: Send + 'static>(what: &str, read: impl FnOnce() -> T + Send + 'static) -> T {
+    let result: Arc<Mutex<Option<T>>> = Arc::new(Mutex::new(None));
     let done = Rendez::new();
     {
-        let (line, done) = (line.clone(), done.clone());
+        let (result, done) = (result.clone(), done.clone());
         SCHED.spawn(Box::new(move || {
-            let mut got = Vec::new();
-            while !got.contains(&b'\n') {
-                let mut b = [0u8; 64];
-                match cons.read(&mut b) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => got.extend_from_slice(&b[..n]),
-                }
-            }
-            let mut b = [0u8; 64];
-            let after = cons.read(&mut b).unwrap_or(usize::MAX);
-            *line.lock() = Some((got, after));
+            let v = read();
+            *result.lock() = Some(v);
             done.wakeup();
         }));
     }
     let idles = SCHED.idles();
-    println!("kernel: console: waiting for input");
-    if !done.tsleep(|| line.lock().is_some(), INPUT_TIMEOUT_MS * MS) {
-        fail(format_args!("no console input in {INPUT_TIMEOUT_MS} ms"));
+    println!("kernel: console: waiting for {what}");
+    if !done.tsleep(|| result.lock().is_some(), INPUT_TIMEOUT_MS * MS) {
+        fail(format_args!("no console {what} in {INPUT_TIMEOUT_MS} ms"));
     }
-    let Some((got, after)) = line.lock().take() else {
+    let Some(v) = result.lock().take() else {
         fail(format_args!("console reader vanished"));
     };
-    let Some(text) = got
-        .strip_suffix(b"\n")
-        .and_then(|l| core::str::from_utf8(l).ok())
-    else {
-        fail(format_args!("console read {got:?}, not a line"));
+    if SCHED.idles() == idles {
+        fail(format_args!(
+            "the cpu never idled waiting for console {what}"
+        ));
+    }
+    v
+}
+
+/// The console through the line discipline `#c/cons` uses
+/// (`purg_core::linedisc`), with `cargo xtask kernel` typing.
+///
+/// Cooked: a thread reads a line, blocking until the UART interrupt
+/// brings it, then reads again and must see the ^D that follows as end of
+/// input. The line arrives edited, and the terminal was sent the echo.
+///
+/// Raw: the same bytes that edit a cooked line arrive as they are, in as
+/// many reads as it takes, and nothing is echoed.
+pub fn console_test(cons: &'static Pl011Console) {
+    let tee = Arc::new(Tee {
+        cons,
+        written: Mutex::new(Vec::new()),
+    });
+    let reader = Arc::new(ConsReader::new());
+
+    let (got, after) = {
+        let (tee, reader) = (tee.clone(), reader.clone());
+        typed("input", move || {
+            let mut b = [0u8; 64];
+            let n = reader.read(&*tee, &mut b).unwrap_or(0);
+            let got = b[..n].to_vec();
+            let after = reader.read(&*tee, &mut b).unwrap_or(usize::MAX);
+            (got, after)
+        })
     };
+    if got != COOKED_LINE.as_bytes() {
+        fail(format_args!(
+            "console read {:?}, not {COOKED_LINE:?}",
+            got.escape_ascii()
+        ));
+    }
     if after != 0 {
         fail(format_args!(
             "console: ^D read as {after} bytes, not end of input"
         ));
     }
-    if SCHED.idles() == idles {
+    let echo = core::mem::take(&mut *tee.written.lock());
+    if echo != COOKED_ECHO {
         fail(format_args!(
-            "the cpu never idled waiting for console input"
+            "console echoed {:?}, not {:?}",
+            echo.escape_ascii(),
+            COOKED_ECHO.escape_ascii()
         ));
+    }
+    println!(
+        "kernel: console read {:?} then end of input, and echoed the typing",
+        COOKED_LINE.trim_end()
+    );
+
+    reader.set_raw(true);
+    let got = {
+        let (tee, reader) = (tee.clone(), reader.clone());
+        typed("raw input", move || {
+            let mut got = Vec::new();
+            while got.len() < RAW_INPUT.len() {
+                let mut b = [0u8; 64];
+                match reader.read(&*tee, &mut b) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&b[..n]),
+                }
+            }
+            got
+        })
+    };
+    if got != RAW_INPUT {
+        fail(format_args!(
+            "raw console read {:?}, not {:?}",
+            got.escape_ascii(),
+            RAW_INPUT.escape_ascii()
+        ));
+    }
+    let echo = tee.written.lock();
+    if !echo.is_empty() {
+        fail(format_args!("raw console echoed {:?}", echo.escape_ascii()));
     }
     if cons.dropped() != 0 {
         fail(format_args!("console dropped {} bytes", cons.dropped()));
     }
-    println!("kernel: console read {text:?} then end of input");
+    println!(
+        "kernel: raw console read {} bytes unedited and echoed nothing",
+        got.len()
+    );
 }

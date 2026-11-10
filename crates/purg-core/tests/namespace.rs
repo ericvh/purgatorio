@@ -17,6 +17,8 @@ use purg_platform::Console;
 struct MockConsole {
     input: Mutex<Vec<u8>>,
     output: Mutex<Vec<u8>>,
+    /// A bare byte stream, as a UART is: `#c` echoes and edits.
+    bare: std::sync::atomic::AtomicBool,
 }
 
 impl Console for MockConsole {
@@ -31,6 +33,10 @@ impl Console for MockConsole {
     fn write(&self, buf: &[u8]) -> purg_platform::Result<usize> {
         self.output.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
+    }
+
+    fn line_discipline(&self) -> bool {
+        self.bare.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -266,6 +272,56 @@ fn cons_reads_a_line_at_a_time() {
         lines.push(String::from_utf8_lossy(&buf[..n]).into_owned());
     }
     assert_eq!(lines, ["one\n", "two\n", "three"]);
+}
+
+/// With a terminal in front of the console (hosted), `#c` echoes nothing
+/// and passes editing characters through: the terminal did all that.
+#[test]
+fn cons_leaves_echo_and_editing_to_a_terminal() {
+    let (mut p, mock) = setup();
+    *mock.console.input.lock().unwrap() = b"ab\x7fc\n".to_vec();
+    let fd = p.open("#c/cons", mode::OREAD).unwrap();
+    let mut buf = [0u8; 64];
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"ab\x7fc\n");
+    assert!(mock.console.output.lock().unwrap().is_empty());
+}
+
+/// On a bare byte stream (the kernel's UART) `#c` echoes and edits, until
+/// `rawon` is written to `consctl`.
+#[test]
+fn cons_echoes_and_edits_on_a_bare_console() {
+    let (mut p, mock) = setup();
+    let cons = &mock.console;
+    cons.bare.store(true, std::sync::atomic::Ordering::Release);
+    let typed = |b: &[u8]| cons.input.lock().unwrap().extend_from_slice(b);
+    let echoed = || std::mem::take(&mut *cons.output.lock().unwrap());
+    let fd = p.open("#c/cons", mode::OREAD).unwrap();
+    let ctl = p.open("#c/consctl", mode::OWRITE).unwrap();
+    let mut buf = [0u8; 64];
+
+    typed("junk\x15ecx\x7fho hé\x08i\rnext\r".as_bytes());
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"echo hi\n");
+    assert_eq!(
+        echoed(),
+        "junk\x08 \x08\x08 \x08\x08 \x08\x08 \x08ecx\x08 \x08ho hé\x08 \x08i\nnext\n".as_bytes()
+    );
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"next\n");
+
+    p.write(ctl, b"rawon").unwrap();
+    typed(b"a\x7f\x15\r\x04");
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"a\x7f\x15\r\x04");
+    assert!(echoed().is_empty(), "raw mode echoes nothing");
+
+    p.write(ctl, b"rawoff").unwrap();
+    typed(b"ok\n\x04");
+    let n = p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"ok\n");
+    assert_eq!(echoed(), b"ok\n");
+    assert_eq!(p.read(fd, &mut buf).unwrap(), 0, "^D at the line start");
 }
 
 #[test]

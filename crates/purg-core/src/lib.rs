@@ -31,6 +31,7 @@ pub mod export;
 pub mod fgrp;
 pub mod initrd;
 pub mod kchan;
+pub mod linedisc;
 pub mod mux;
 pub mod names;
 pub mod pgrp;

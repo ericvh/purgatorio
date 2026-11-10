@@ -10,11 +10,11 @@
 //! `purg_platform::sync` lock. Readers also drain the FIFO themselves, so
 //! input still arrives (at the tick rate) if the DTB names no interrupt.
 //!
-//! Input is cooked only as far as a terminal line needs: CR (what a
-//! terminal sends for Enter) and CR LF both become LF, as a tty's `icrnl`
-//! does on hosted. A UART has no end of file, so ^D (0x04) at the start of
-//! a line reads as end of input (`read` returns 0), as with Inferno's
-//! cooked console; elsewhere it is an ordinary byte. Nothing is echoed.
+//! Input is raw: the bytes the UART received, CR for Enter and no end of
+//! file. The console asks for the line discipline
+//! ([`Console::line_discipline`]), so `#c/cons` echoes, edits lines, turns
+//! CR into LF and reads ^D as end of input (`purg_core::linedisc`), and
+//! `eia0` on the same UART stays a plain byte stream.
 //!
 //! Writes are serialised with a lock, so concurrent writers' buffers do not
 //! interleave.
@@ -32,18 +32,12 @@ use crate::irq::{self, After};
 use crate::mmu;
 use crate::pl011::Pl011;
 
-/// End of input at the start of a line.
-const EOF: u8 = 0x04;
 const RING: usize = 4096;
 
 struct Ring {
     buf: [u8; RING],
     head: usize,
     len: usize,
-    /// The last byte received was CR, so a following LF is dropped.
-    after_cr: bool,
-    /// No byte has been read since the last LF.
-    line_start: bool,
     /// Bytes dropped because the ring was full.
     dropped: u64,
 }
@@ -54,27 +48,11 @@ impl Ring {
             buf: [0; RING],
             head: 0,
             len: 0,
-            after_cr: false,
-            line_start: true,
             dropped: 0,
         }
     }
 
     fn push(&mut self, b: u8) {
-        let b = match (b, self.after_cr) {
-            (b'\n', true) => {
-                self.after_cr = false;
-                return;
-            }
-            (b'\r', _) => {
-                self.after_cr = true;
-                b'\n'
-            }
-            (b, _) => {
-                self.after_cr = false;
-                b
-            }
-        };
         if self.len == RING {
             self.dropped += 1;
             return;
@@ -194,16 +172,9 @@ impl Console for Pl011Console {
         let mut n = 0;
         while n < buf.len() {
             let Some(b) = ring.peek() else { break };
-            if b == EOF && ring.line_start {
-                if n == 0 {
-                    ring.pop();
-                }
-                break;
-            }
             ring.pop();
             buf[n] = b;
             n += 1;
-            ring.line_start = b == b'\n';
         }
         Ok(n)
     }
@@ -212,6 +183,10 @@ impl Console for Pl011Console {
         let _g = self.wlock.lock();
         self.uart.write(buf);
         Ok(buf.len())
+    }
+
+    fn line_discipline(&self) -> bool {
+        true
     }
 }
 
