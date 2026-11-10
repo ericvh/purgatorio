@@ -81,3 +81,59 @@ fn unmount_names_the_mount_point_that_was_bound() {
     p.unmount(Some("#R/x"), "#R/y").unwrap();
     assert_eq!(names(&mut p, "#R/y"), Vec::<String>::new());
 }
+
+/// The current directory is a held Chan, as Inferno's `dot` is (issue
+/// #55): it goes on naming the directory `chdir` found when the name that
+/// led there is unmounted or bound over.
+#[test]
+fn the_current_directory_outlives_its_name() {
+    let mut p = setup();
+    p.bind("#R/a", "#R/x", MREPL).unwrap();
+    p.chdir("#R/x").unwrap();
+    p.stat("in-a").unwrap();
+
+    p.unmount(None, "#R/x").unwrap();
+    p.stat("in-a").unwrap();
+    assert!(p.stat("#R/x/in-a").is_err());
+
+    p.bind("#R/b", "#R/x", MREPL).unwrap();
+    p.stat("in-a").unwrap();
+    assert!(p.stat("in-b").is_err());
+    p.stat("#R/x/in-b").unwrap();
+    // A file made by a relative name lands in the directory held.
+    touch(&mut p, "made");
+    p.stat("#R/a/made").unwrap();
+
+    // Another chdir, to the same name, finds what is there now.
+    p.chdir("/").unwrap();
+    p.chdir("#R/x").unwrap();
+    p.stat("in-b").unwrap();
+    assert!(p.stat("in-a").is_err());
+}
+
+/// A union the current directory was reached through is seen as it is
+/// now: a later `bind -a` on it shows.
+#[test]
+fn the_current_directory_sees_its_union_grow() {
+    let mut p = setup();
+    p.bind("#R/a", "#R/x", MREPL).unwrap();
+    p.chdir("#R/x").unwrap();
+    p.bind("#R/b", "#R/x", MAFTER).unwrap();
+    p.stat("in-a").unwrap();
+    p.stat("in-b").unwrap();
+    assert_eq!(names(&mut p, "."), ["in-a", "in-b"]);
+}
+
+/// A mount made on the current directory's name after the `chdir` is not
+/// entered through `dot`; the name leads to it.
+#[test]
+fn the_current_directory_does_not_follow_a_later_mount() {
+    let p = setup();
+    p.chdir("#R/x").unwrap();
+    p.bind("#R/a", "#R/x", MREPL).unwrap();
+    assert!(p.stat("in-a").is_err());
+    p.stat("#R/x/in-a").unwrap();
+    assert_eq!(p.pgrp.dot(), "#R/x");
+    // `..` is lexical: it is the parent of the name.
+    p.stat("../a/in-a").unwrap();
+}

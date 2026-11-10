@@ -48,12 +48,43 @@ impl Mount {
     }
 }
 
+/// The current directory: Inferno's `dot`, a held Chan and not only a
+/// name.
+///
+/// A name in or below the current directory is walked from this Chan, so
+/// it leads to the same files whatever has since been bound over, or
+/// unmounted from, the names that led here. Holding the Chan also keeps
+/// the directory referenced: on a file server, its fid stays live.
+///
+/// Names are still cleaned lexically first, so `..` out of the current
+/// directory is resolved by name, from the root.
+#[derive(Clone)]
+struct Dot {
+    /// The cleaned absolute name `chdir` was given.
+    name: String,
+    /// The directory `chdir` found. `None` for the namespace's root.
+    chan: Option<Arc<Chan>>,
+    /// Mount-table identity of the directory `chan` was mounted on when
+    /// `chdir` crossed a mount point to reach it.
+    mtpt: Option<(char, u32, u64)>,
+}
+
+impl Dot {
+    fn root() -> Dot {
+        Dot {
+            name: String::from("/"),
+            chan: None,
+            mtpt: None,
+        }
+    }
+}
+
 /// A namespace: a root, a mount table and the current directory.
 pub struct Pgrp {
     devtab: Arc<DevTab>,
     root: Arc<Chan>,
     mounts: RwLock<Vec<Mount>>,
-    dot: Mutex<String>,
+    dot: Mutex<Dot>,
     nodevs: AtomicBool,
 }
 
@@ -66,7 +97,7 @@ impl Pgrp {
             devtab,
             root: Arc::new(root),
             mounts: RwLock::new(Vec::new()),
-            dot: Mutex::new(String::from("/")),
+            dot: Mutex::new(Dot::root()),
             nodevs: AtomicBool::new(false),
         })
     }
@@ -75,8 +106,9 @@ impl Pgrp {
         &self.devtab
     }
 
+    /// The current directory's name.
     pub fn dot(&self) -> String {
-        self.dot.lock().clone()
+        self.dot.lock().name.clone()
     }
 
     /// A copy of this namespace (`FORKNS`).
@@ -85,7 +117,7 @@ impl Pgrp {
             devtab: self.devtab.clone(),
             root: self.root.clone(),
             mounts: RwLock::new(self.mounts.read().clone()),
-            dot: Mutex::new(self.dot()),
+            dot: Mutex::new(self.dot.lock().clone()),
             nodevs: AtomicBool::new(self.nodevs.load(Ordering::Relaxed)),
         }
     }
@@ -93,14 +125,14 @@ impl Pgrp {
     /// An empty namespace whose root is this one's current directory
     /// (`NEWNS`).
     pub fn newns(&self) -> Result<Arc<Pgrp>> {
-        let mut root = self.namec(&self.dot(), "/")?;
+        let mut root = self.namec(".", &self.dot())?;
         root.name = String::from("/");
         root.union = None;
         Ok(Arc::new(Pgrp {
             devtab: self.devtab.clone(),
             root: Arc::new(root),
             mounts: RwLock::new(Vec::new()),
-            dot: Mutex::new(String::from("/")),
+            dot: Mutex::new(Dot::root()),
             nodevs: AtomicBool::new(self.nodevs.load(Ordering::Relaxed)),
         }))
     }
@@ -110,14 +142,73 @@ impl Pgrp {
         self.nodevs.store(true, Ordering::Relaxed);
     }
 
-    /// `chdir`: `path` must be a directory.
+    /// `chdir`: `path` must be a directory. The Chan it resolves to is
+    /// held as the current directory until the next `chdir`.
     pub fn chdir(&self, path: &str) -> Result<()> {
-        let c = self.namec(path, &self.dot())?;
+        let dot = self.dot();
+        // `cd .` stays where it is, whatever the name leads to now.
+        let relative = !path.starts_with('/') && !path.starts_with('#');
+        if relative && absolute(path, &dot) == dot {
+            return Ok(());
+        }
+        let under = self.resolve(path, &dot, false)?;
+        let mtpt = under.key();
+        let mut c = self.domount(under, true);
         if !c.is_dir() {
             return Err(Error::new(error::ENOTDIR));
         }
-        *self.dot.lock() = c.name.clone();
+        // The union is looked up again at each use: it may grow.
+        let mounted = c.union.take().is_some();
+        let new = if c.name == "/" {
+            Dot::root()
+        } else {
+            Dot {
+                name: c.name.clone(),
+                chan: Some(Arc::new(c)),
+                mtpt: mounted.then_some(mtpt),
+            }
+        };
+        // The old Chan is dropped after the lock: for a `#M` file that
+        // clunks its fid, which waits for the file server.
+        let old = core::mem::replace(&mut *self.dot.lock(), new);
+        drop(old);
         Ok(())
+    }
+
+    /// Where to start walking `full`, a name given relative to `dot`, when
+    /// it is in or below the current directory: that directory's held
+    /// Chan, its name, and the rest of `full`.
+    ///
+    /// If the directory was reached through a mount point that still has
+    /// it as its first member, the Chan carries the union as it is now.
+    /// Otherwise it is the directory alone, even when something has been
+    /// mounted on its name since: Inferno's `dot` does not follow a mount
+    /// made after the `chdir`.
+    fn start_at_dot<'a>(&self, full: &'a str, dot: &str) -> Option<(Chan, String, &'a str)> {
+        let held = self.dot.lock().clone();
+        let chan = held.chan.as_ref()?;
+        if held.name != dot {
+            return None;
+        }
+        let rest = match full.strip_prefix(held.name.as_str())? {
+            "" => "",
+            r => r.strip_prefix('/')?,
+        };
+        let mut cur = chan.clone_unopened();
+        cur.union = None;
+        if let Some(key) = held.mtpt {
+            let live = self
+                .mounts
+                .read()
+                .iter()
+                .find(|m| m.from.key() == key)
+                .filter(|m| m.to.first().is_some_and(|f| f.chan.key() == cur.key()))
+                .map(|m| m.to.clone());
+            if let Some(to) = live {
+                cur.union = Some(to.into());
+            }
+        }
+        Some((cur, held.name.clone(), rest))
     }
 
     /// `bind(new, old, flags)`: makes `new` visible at `old`.
@@ -267,7 +358,10 @@ impl Pgrp {
         if name.is_empty() || name == "." || name == ".." || split_device(&full).1.is_empty() {
             return Err(Error::new(error::EFILENAME));
         }
-        let dir = self.namec(&parent, dot)?;
+        // The parent is named in full here, but a name given relative to
+        // the current directory is still walked from it.
+        let relative = !path.starts_with('/') && !path.starts_with('#');
+        let dir = self.resolve_full(&parent, dot, true, relative)?;
         if !dir.is_dir() {
             return Err(Error::new(error::ENOTDIR));
         }
@@ -291,25 +385,48 @@ impl Pgrp {
         if path.is_empty() {
             return Err(Error::new(error::ENONEXIST));
         }
-        let full = absolute(path, dot);
-        let start = match split_device(&full) {
-            (Some(dev), _) => {
-                let mut chars = dev[1..].chars();
-                let dc = chars.next().ok_or(Error::new(error::EFILENAME))?;
-                if self.nodevs.load(Ordering::Relaxed) && !NODEVS_ALLOWED.contains(&dc) {
-                    return Err(Error::new(error::ENOATTACH));
-                }
-                self.devtab.attach(dc, chars.as_str())?
+        let relative = !path.starts_with('/') && !path.starts_with('#');
+        self.resolve_full(&absolute(path, dot), dot, cross_last, relative)
+    }
+
+    /// Resolves the cleaned absolute name `full`. When it was given
+    /// `relative` to `dot` and does not leave the current directory, the
+    /// walk starts at the Chan held for that directory; otherwise at the
+    /// root or the device the name starts with.
+    fn resolve_full(
+        &self,
+        full: &str,
+        dot: &str,
+        cross_last: bool,
+        relative: bool,
+    ) -> Result<Chan> {
+        let held = if relative {
+            self.start_at_dot(full, dot)
+        } else {
+            None
+        };
+        let (mut cur, mut name, elems): (Chan, String, Vec<&str>) = match held {
+            Some((cur, name, rest)) => {
+                let elems = rest.split('/').filter(|e| !e.is_empty()).collect();
+                (cur, name, elems)
             }
-            (None, _) => self.root.clone_unopened(),
+            None => {
+                let (start, prefix) = match split_device(full) {
+                    (Some(dev), _) => {
+                        let mut chars = dev[1..].chars();
+                        let dc = chars.next().ok_or(Error::new(error::EFILENAME))?;
+                        if self.nodevs.load(Ordering::Relaxed) && !NODEVS_ALLOWED.contains(&dc) {
+                            return Err(Error::new(error::ENOATTACH));
+                        }
+                        (self.devtab.attach(dc, chars.as_str())?, String::from(dev))
+                    }
+                    (None, _) => (self.root.clone_unopened(), String::new()),
+                };
+                let elems: Vec<&str> = elements(full).collect();
+                let cur = self.domount(start, cross_last || !elems.is_empty());
+                (cur, prefix, elems)
+            }
         };
-        let prefix = match split_device(&full) {
-            (Some(dev), _) => String::from(dev),
-            (None, _) => String::new(),
-        };
-        let elems: Vec<&str> = elements(&full).collect();
-        let mut cur = self.domount(start, cross_last || !elems.is_empty());
-        let mut name = prefix;
         for (i, e) in elems.iter().enumerate() {
             let last = i + 1 == elems.len();
             let members: Vec<Arc<Chan>> = match &cur.union {
@@ -349,7 +466,7 @@ impl Pgrp {
             cur = self.domount(next, cross_last || !last);
         }
         cur.name = if full.starts_with('#') || !full.starts_with('/') {
-            full
+            String::from(full)
         } else if name.is_empty() {
             String::from("/")
         } else {
