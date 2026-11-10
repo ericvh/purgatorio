@@ -14,12 +14,15 @@ use purg_platform::{Platform, sync};
 use purg_styx::server::{IOHDRSZ, MAX_MSIZE};
 use purg_styx::{DMDIR, Dir, Fcall, Msg, NOFID, NOTAG, QTAUTH, QTDIR, VERSION, dirs};
 
-use crate::auth;
+use purg_auth::record::{self, Opener, Sealer};
+use purg_auth::session;
+
+use crate::auth::{self, NO_SESSION, OFFER, SIGNED};
 use crate::chan::Chan;
 use crate::dev::{Dev, Walked};
 use crate::error::{Error, Result};
 use crate::mux::Mux;
-use crate::rw::{read_msg, write_full};
+use crate::rw::{read_msg, read_sealed, write_full, write_sealed};
 
 struct Session {
     /// The mount id: `Chan::devno` of every file on this session.
@@ -29,8 +32,25 @@ struct Session {
     note: Arc<Note>,
     msize: Arc<AtomicU32>,
     iounit: AtomicU32,
-    write: Mutex<()>,
+    /// Held across each write, so messages go out whole. Once a version 3
+    /// handshake has agreed a key it holds the sealer of the client's
+    /// direction.
+    write: Mutex<Option<Sealer>>,
+    /// The tag whose reply is the last one in the clear, and the opener
+    /// the reader takes up after it.
+    rekey: Arc<Mutex<Option<(u16, Opener)>>>,
+    /// The exchange on an auth fd from [`DevMnt::auth`].
+    kx: Mutex<Option<Kx>>,
+    platform: Arc<dyn Platform>,
     next_fid: AtomicU32,
+}
+
+/// What a client keeps between reading the server's offer from an auth fd
+/// and writing its proof.
+struct Kx {
+    user: String,
+    aname: String,
+    client: Option<session::Client>,
 }
 
 struct MntFile {
@@ -79,10 +99,7 @@ impl Session {
         if bytes.len() > self.msize() as usize {
             return Err(Error::new(error::EIO));
         }
-        {
-            let _g = self.write.lock();
-            write_full(&self.fd, &bytes)?;
-        }
+        self.send(&bytes)?;
         match self.mux.wait(tag) {
             Ok(buf) => Ok(buf),
             Err(e) if e.as_str() == error::EINTR => {
@@ -91,6 +108,102 @@ impl Session {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Writes one whole message, sealed once the session has a key.
+    fn send(&self, bytes: &[u8]) -> Result<()> {
+        let mut g = self.write.lock();
+        write_sealed(&self.fd, g.as_mut(), bytes)
+    }
+
+    /// Whether the conversation is encrypted.
+    fn sealed(&self) -> bool {
+        self.write.lock().is_some()
+    }
+
+    /// Sends the version 3 proof `fcall`, the last message in the clear,
+    /// and switches the conversation to records under `keys`: everything
+    /// written after it is sealed, and everything read after its reply is
+    /// opened. A conversation that is already sealed keeps its keys.
+    ///
+    /// No `Tflush` can be sent for it: a prog killed while it waits takes
+    /// the whole session down instead, so both ends always agree where
+    /// the records start.
+    fn rpc_switch(&self, fcall: Fcall<'_>, keys: &session::Keys) -> Result<Vec<u8>> {
+        let tag = self.mux.begin()?;
+        let bytes = Msg { tag, fcall }
+            .encode()
+            .map_err(|_| Error::new(error::EIO))?;
+        let (sealer, opener) = keys.client();
+        let mut g = self.write.lock();
+        if g.is_some() {
+            drop(g);
+            return self.wait_or_fail(tag, self.send(&bytes));
+        }
+        // The reader must know the switch before the reply can arrive,
+        // and nothing else may be written between the proof and the
+        // sealer: both happen under the write lock.
+        *self.rekey.lock() = Some((tag, opener));
+        let sent = write_full(&self.fd, &bytes);
+        if sent.is_ok() {
+            *g = Some(sealer);
+        }
+        drop(g);
+        self.wait_or_fail(tag, sent)
+    }
+
+    fn wait_or_fail(&self, tag: u16, sent: Result<()>) -> Result<Vec<u8>> {
+        let got = sent.and_then(|()| self.mux.wait(tag));
+        if got.is_err() {
+            self.note.kill();
+            self.mux.fail_all();
+        }
+        got
+    }
+
+    /// A read of the auth fd that wants a version 3 exchange: fetches the
+    /// server's offer and returns it followed by a fresh ephemeral key of
+    /// this client's ([`SIGNED`] bytes). A server that offers only a
+    /// challenge gives just that, and the caller decides.
+    fn read_offer(&self, buf: &mut [u8]) -> Result<usize> {
+        let reply = self.rpc(Fcall::Tread {
+            fid: AUTH_FID,
+            offset: 0,
+            count: OFFER as u32,
+        })?;
+        let data = match self.decode(&reply)? {
+            Fcall::Rread { data } => data,
+            _ => return Err(Error::new(error::EIO)),
+        };
+        let offer: &[u8; OFFER] = match data.try_into() {
+            Ok(o) if !self.sealed() => o,
+            _ => {
+                let n = data.len().min(buf.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                return Ok(n);
+            }
+        };
+        let client = self.client(offer)?;
+        buf[..SIGNED].copy_from_slice(&client.signed);
+        if let Some(kx) = self.kx.lock().as_mut() {
+            kx.client = Some(client);
+        }
+        Ok(SIGNED)
+    }
+
+    /// The session keys for `proof`, written to the auth fd, when it is a
+    /// version 3 proof over the offer [`Session::read_offer`] gave.
+    fn proof_keys(&self, proof: &[u8]) -> Option<session::Keys> {
+        let kx = self.kx.lock();
+        let kx = kx.as_ref()?;
+        kx.client.as_ref()?.keys(&kx.user, &kx.aname, proof)
+    }
+
+    /// This client's answer to the server's `offer`: a fresh ephemeral key.
+    fn client(&self, offer: &[u8; OFFER]) -> Result<session::Client> {
+        let mut random = [0u8; 32];
+        self.platform.entropy(&mut random);
+        session::Client::new(offer, random).ok_or(Error::new(auth::FAILED))
     }
 
     fn flush_tag(&self, tag: u16) {
@@ -105,10 +218,7 @@ impl Session {
         .encode() else {
             return;
         };
-        let sent = {
-            let _g = self.write.lock();
-            write_full(&self.fd, &bytes)
-        };
+        let sent = self.send(&bytes);
         if sent.is_err() {
             // No `Rflush` will come for a request that was never sent.
             self.mux.forget(ftag);
@@ -141,8 +251,14 @@ impl Session {
         self.decode(&buf).map(drop)
     }
 
-    /// `Some(afid)` when the server asked for a signature. `None` when it
-    /// does not authenticate.
+    /// `Some(afid)` when the server asked for a proof. `None` when it does
+    /// not authenticate.
+    ///
+    /// The exchange is version 3 (`docs/auth.md`): the server offers its
+    /// challenge and an ephemeral key, `secret` signs that offer and this
+    /// client's ephemeral key, and the conversation is encrypted from the
+    /// proof on. A server that offers no key is refused, so nothing on
+    /// the way can strip the offer and keep the conversation in the clear.
     fn authenticate(
         &self,
         user: &str,
@@ -164,22 +280,30 @@ impl Session {
         let buf = self.rpc(Fcall::Tread {
             fid: AFID,
             offset: 0,
-            count: auth::CHALLENGE as u32,
+            count: OFFER as u32,
         })?;
-        let challenge = match self.decode(&buf)? {
+        let offer: [u8; OFFER] = match self.decode(&buf)? {
+            Fcall::Rread { data } if data.len() == OFFER => {
+                data.try_into().map_err(|_| Error::new(error::EIO))?
+            }
             Fcall::Rread { data } if data.len() == auth::CHALLENGE => {
-                let mut c = [0u8; auth::CHALLENGE];
-                c.copy_from_slice(data);
-                c
+                return Err(Error::new(NO_SESSION));
             }
             _ => return Err(Error::new(error::EIO)),
         };
-        let proof = secret(&challenge)?;
-        let buf = self.rpc(Fcall::Twrite {
-            fid: AFID,
-            offset: 0,
-            data: &proof,
-        })?;
+        let client = self.client(&offer)?;
+        let proof = secret(&client.signed)?;
+        let keys = client
+            .keys(user, aname, &proof)
+            .ok_or(Error::new(auth::FAILED))?;
+        let buf = self.rpc_switch(
+            Fcall::Twrite {
+                fid: AFID,
+                offset: 0,
+                data: &proof,
+            },
+            &keys,
+        )?;
         match self.decode(&buf)? {
             Fcall::Rwrite { count } if count as usize == proof.len() => Ok(Some(AFID)),
             _ => Err(Error::new(error::EIO)),
@@ -228,27 +352,49 @@ impl DevMnt {
             note: note.clone(),
             msize: Arc::new(AtomicU32::new(msize)),
             iounit: AtomicU32::new(msize.saturating_sub(IOHDRSZ)),
-            write: Mutex::new(()),
+            write: Mutex::new(None),
+            rekey: Arc::new(Mutex::new(None)),
+            kx: Mutex::new(None),
+            platform: self.platform.clone(),
             next_fid: AtomicU32::new(1),
         });
         let msize = session.msize.clone();
+        let rekey = session.rekey.clone();
         self.platform.spawn_kproc(
             "mnt",
             Box::new(move || {
                 sync::set_current_note(Some(note));
+                // The server's direction, once the version 3 proof's reply
+                // has been read.
+                let mut opener: Option<Opener> = None;
                 loop {
                     let max = msize.load(Ordering::Acquire).max(IOHDRSZ);
-                    match read_msg(&fd, max) {
-                        Ok(buf) => match Msg::decode(&buf, max) {
-                            Ok(msg) => {
-                                mux.deliver(msg.tag, buf);
+                    let got = match opener.as_mut() {
+                        Some(o) => read_sealed(&fd, o, max),
+                        None => read_msg(&fd, max),
+                    };
+                    let tag = match &got {
+                        Ok(buf) => Msg::decode(buf, max).map(|m| m.tag).ok(),
+                        Err(_) => None,
+                    };
+                    match (got, tag) {
+                        (Ok(buf), Some(tag)) => {
+                            if opener.is_none() {
+                                let mut k = rekey.lock();
+                                if k.as_ref().is_some_and(|(t, _)| *t == tag) {
+                                    opener = k.take().map(|(_, o)| o);
+                                }
                             }
-                            Err(_) => {
-                                mux.fail_all();
-                                break;
+                            mux.deliver(tag, buf);
+                        }
+                        (Err(e), _) => {
+                            match record::error(e.as_str()) {
+                                Some(why) => mux.fail_because(why),
+                                None => mux.fail_all(),
                             }
-                        },
-                        Err(_) => {
+                            break;
+                        }
+                        (Ok(_), None) => {
                             mux.fail_all();
                             break;
                         }
@@ -343,6 +489,14 @@ impl DevMnt {
     /// Returns an open Chan on the auth fid: reading it gives the server's
     /// challenge, and writing it sends the proof.
     ///
+    /// A read of at least [`SIGNED`] bytes at offset 0 fetches the server's
+    /// offer and returns it with a fresh ephemeral key of this kernel's
+    /// appended: the bytes a version 3 proof signs. Writing that proof
+    /// then switches the conversation to records, and the ephemeral
+    /// secret never leaves the kernel. A shorter read gives the bare
+    /// challenge, for a version 1 or 2 proof and a conversation in the
+    /// clear.
+    ///
     /// The exchange up to `Rauth` runs on the caller's thread. A server that
     /// does not authenticate therefore leaves no session (and no reader)
     /// behind, and the fd can still be mounted with `afd = -1`.
@@ -375,6 +529,11 @@ impl DevMnt {
             },
         )?;
         let session = self.start(fd, msize)?;
+        *session.kx.lock() = Some(Kx {
+            user: String::from(user),
+            aname: String::from(aname),
+            client: None,
+        });
         let aux = Arc::new(MntFile {
             session: session.clone(),
             fid: AUTH_FID,
@@ -575,6 +734,9 @@ impl Dev for DevMnt {
 
     fn read(&self, c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
         let f = file(c)?;
+        if f.fid == AUTH_FID && offset == 0 && buf.len() >= SIGNED {
+            return f.session.read_offer(buf);
+        }
         let count = (buf.len() as u32).min(f.session.iounit().max(1));
         let reply = f.session.rpc(Fcall::Tread {
             fid: f.fid,
@@ -622,11 +784,20 @@ impl Dev for DevMnt {
     fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize> {
         let f = file(c)?;
         let n = buf.len().min(f.session.iounit().max(1) as usize);
-        let reply = f.session.rpc(Fcall::Twrite {
+        let fcall = Fcall::Twrite {
             fid: f.fid,
             offset,
             data: &buf[..n],
-        })?;
+        };
+        let keys = if f.fid == AUTH_FID {
+            f.session.proof_keys(&buf[..n])
+        } else {
+            None
+        };
+        let reply = match keys {
+            Some(k) => f.session.rpc_switch(fcall, &k)?,
+            None => f.session.rpc(fcall)?,
+        };
         match f.session.decode(&reply)? {
             Fcall::Rwrite { count } => Ok(count as usize),
             _ => Err(Error::new(error::EIO)),

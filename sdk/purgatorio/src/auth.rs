@@ -1,9 +1,11 @@
 //! Authentication from the guest side (`docs/auth.md`).
 //!
-//! [`crate::fauth`] gives an auth fd. The client reads the server's
-//! challenge from it and writes a proof, then passes the fd to
-//! [`crate::mount`]. [`amount`] does all of this, as Inferno's
-//! `auth->amount` does.
+//! [`crate::fauth`] gives an auth fd. The client reads what to sign from
+//! it (the server's challenge and ephemeral key, and the kernel's
+//! ephemeral key for this client) and writes a version 3 proof, then
+//! passes the fd to [`crate::mount`]. From the proof on the conversation is
+//! encrypted. [`amount`] does all of this, as Inferno's `auth->amount`
+//! does.
 //!
 //! The proof comes from the first source that has a key: the guest
 //! factotum (`/mnt/factotum/rpc`), `#¤` (and the certificate loaded into
@@ -353,9 +355,15 @@ pub fn authenticate_for(
     // SAFETY: `afd` stays open for this call, and ManuallyDrop keeps the
     // File from closing it.
     let mut f = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(afd.as_raw_fd()) });
-    let mut challenge = [0u8; abi::auth::CHALLENGE];
-    f.read_exact(&mut challenge)?;
-    let p = proof_for(&challenge, user, aname, keyfile)?;
+    // One read: the kernel answers a read of SIGNED bytes with the offer
+    // and its own ephemeral key. Anything shorter is a server that offers
+    // no session key, and is refused rather than spoken to in the clear.
+    let mut signed = [0u8; abi::auth::SIGNED];
+    let n = f.read(&mut signed)?;
+    if n != signed.len() {
+        return Err(Error::from(abi::auth::NO_SESSION));
+    }
+    let p = proof_for(&signed, user, aname, keyfile)?;
     // The proof is one write.
     let n = f.write(&p)?;
     if n != p.len() {

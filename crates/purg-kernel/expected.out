@@ -58,6 +58,9 @@ ok fauth_bad_proof
 ok fauth_not_required
 ok noauth_rejected
 ok amount
+ok crypt_wire
+ok crypt_clear
+ok crypt_tamper
 ok stream_pipe_file
 ok stream_file_pipe
 ok stream_short_write

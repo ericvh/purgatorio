@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.6";
+pub const ABI_VERSION: &str = "0.7";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 

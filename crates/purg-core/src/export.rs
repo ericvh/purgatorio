@@ -22,6 +22,11 @@
 //! - When the client hangs up, or the exporting prog is killed, every
 //!   request's note is killed and `serve` returns once the workers have
 //!   gone.
+//! - After a version 3 proof (`docs/auth.md`) the conversation is records.
+//!   The reader opens requests from the message after the proof on; the
+//!   proof's reply is queued with the sealer behind it, and the thread
+//!   draining the queue seals every reply after that, so the records go
+//!   out in the order of their sequence numbers whichever worker answered.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -31,6 +36,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use purg_abi::{error, mode};
+use purg_auth::record::{Opener, Sealer};
 use purg_platform::Platform;
 use purg_platform::sync::{self, Mutex, Note, Rendez};
 use purg_styx::server::{StyxFs, dispatch};
@@ -41,7 +47,7 @@ use crate::chan::Chan;
 use crate::error::{Error, Result as KResult};
 use crate::names::cleanname;
 use crate::pgrp::{Pgrp, absolute};
-use crate::rw::{read_msg, write_full};
+use crate::rw::{read_msg, read_sealed, write_full};
 use crate::sysfile::{self, open};
 use crate::workq::{OutQ, Put, WorkQ};
 
@@ -177,7 +183,14 @@ struct Conn {
     /// Woken when `flights` empties.
     quiet: Rendez,
     work: WorkQ<Req>,
-    out: OutQ<Vec<u8>>,
+    out: OutQ<Out>,
+    /// The tag of the version 3 proof the reader switched on, and the
+    /// sealer the replies take up once its reply is queued.
+    switch: Mutex<Option<(u16, Sealer)>>,
+    /// The sealer of this server's direction. Only the thread draining
+    /// [`Conn::out`] touches it, so records go out in the order of their
+    /// sequence numbers.
+    sealer: Mutex<Option<Sealer>>,
     /// The note a worker writes replies under, so a write blocked on a
     /// client that does not read can be interrupted at the end.
     wnote: Arc<Note>,
@@ -217,6 +230,8 @@ pub fn serve(
         quiet: Rendez::new(),
         work: WorkQ::new(MAX_WORKERS, KEEP_IDLE),
         out: OutQ::new(),
+        switch: Mutex::new(None),
+        sealer: Mutex::new(None),
         wnote: Arc::new(Note::new()),
         dead: AtomicBool::new(false),
     });
@@ -229,9 +244,15 @@ impl Conn {
     /// The reader: runs on the exporting prog's thread until the client
     /// hangs up or the prog is killed.
     fn read_requests(self: &Arc<Self>) -> KResult<()> {
+        // The client's direction, once a version 3 proof has been read.
+        let mut opener: Option<Opener> = None;
         loop {
             let msize = self.msize.load(Ordering::Acquire);
-            let buf = match read_msg(&self.fd, msize) {
+            let got = match opener.as_mut() {
+                Some(o) => read_sealed(&self.fd, o, msize),
+                None => read_msg(&self.fd, msize),
+            };
+            let buf = match got {
                 Ok(b) => b,
                 Err(e) if e.as_str() == error::EHUNGUP || e.as_str() == error::EINTR => {
                     return Ok(());
@@ -243,6 +264,16 @@ impl Conn {
                 Err(_) => return Err(Error::new(error::EIO)),
             };
             let tag = msg.tag;
+            if opener.is_none()
+                && !self.noauth
+                && let Some(keys) = self.proof_keys(&msg)
+            {
+                // The client seals everything after its version 3 proof,
+                // and opens everything after the proof's reply.
+                let (sealer, o) = keys.server();
+                *self.switch.lock() = Some((tag, sealer));
+                opener = Some(o);
+            }
             let for_worker = match &msg.fcall {
                 Fcall::Tversion { .. } => {
                     if !self.reset() {
@@ -355,12 +386,20 @@ impl Conn {
                 // A flushed request that was interrupted has no answer of
                 // its own: the client is told it was flushed.
                 if f.flushes.is_empty() || !interrupted(&reply) {
-                    self.out.push(reply);
+                    self.out.push(Out::Msg(reply));
                 }
                 for t in f.flushes {
-                    self.out.push(rflush(t));
+                    self.out.push(Out::Msg(rflush(t)));
                 }
             }
+            // The reply to a version 3 proof is the last one in the clear.
+            let mut switch = self.switch.lock();
+            if switch.as_ref().is_some_and(|(t, _)| *t == tag)
+                && let Some((_, sealer)) = switch.take()
+            {
+                self.out.push(Out::Key(sealer));
+            }
+            drop(switch);
             flights.is_empty()
         };
         if quiet {
@@ -381,7 +420,7 @@ impl Conn {
                     Some(f.note.clone())
                 }
                 None => {
-                    self.out.push(rflush(tag));
+                    self.out.push(Out::Msg(rflush(tag)));
                     None
                 }
             }
@@ -418,13 +457,36 @@ impl Conn {
     }
 
     fn send(&self, reply: Vec<u8>) {
-        self.out.push(reply);
+        self.out.push(Out::Msg(reply));
         self.write_replies();
     }
 
+    /// The session keys when `msg` is a version 3 proof written to one of
+    /// this connection's auth fids. The proof is checked later, by the
+    /// worker that answers it; the keys only need its client key.
+    fn proof_keys(&self, msg: &Msg<'_>) -> Option<purg_auth::session::Keys> {
+        let Fcall::Twrite { fid, data, .. } = &msg.fcall else {
+            return None;
+        };
+        if data.first() != Some(&purg_auth::proof::V3) {
+            return None;
+        }
+        let afids = self.afids.lock();
+        let a = afids.get(fid)?;
+        a.kx.keys(&a.uname, &a.aname, data)
+    }
+
     /// Writes queued replies, unless another thread is already writing.
+    /// The drainer is the only writer, so it seals them in queue order.
     fn write_replies(&self) {
-        self.out.drain(|bytes| {
+        self.out.drain(|item| {
+            let bytes = match item {
+                Out::Msg(b) => b,
+                Out::Key(s) => {
+                    *self.sealer.lock() = Some(s);
+                    return;
+                }
+            };
             if self.dead.load(Ordering::Acquire) {
                 return;
             }
@@ -433,7 +495,12 @@ impl Conn {
             if borrowed {
                 sync::set_current_note(Some(self.wnote.clone()));
             }
-            if write_full(&self.fd, &bytes).is_err() {
+            // Sealed with the lock held, written without it.
+            let sealed = match self.sealer.lock().as_mut() {
+                Some(s) => s.seal(&bytes).ok(),
+                None => Some(bytes),
+            };
+            if sealed.is_none_or(|b| write_full(&self.fd, &b).is_err()) {
                 self.dead.store(true, Ordering::Release);
             }
             if borrowed {
@@ -477,8 +544,17 @@ fn interrupted(reply: &[u8]) -> bool {
         && reply.get(9..) == Some(error::EINTR.as_bytes())
 }
 
+/// What the reply queue carries.
+enum Out {
+    /// A reply.
+    Msg(Vec<u8>),
+    /// Seal every reply after this one.
+    Key(Sealer),
+}
+
 struct Afid {
-    challenge: [u8; crate::auth::CHALLENGE],
+    /// The challenge and this server's ephemeral key for the fid.
+    kx: purg_auth::session::Server,
     uname: String,
     aname: String,
     ok: bool,
@@ -573,6 +649,9 @@ fn auth_reply(
         let afid = *afid;
         let mut challenge = [0u8; crate::auth::CHALLENGE];
         platform.entropy(&mut challenge);
+        let mut random = [0u8; 32];
+        platform.entropy(&mut random);
+        let kx = purg_auth::session::Server::new(challenge, random);
         let mut afids = afids.lock();
         if afid == NOFID || fs.has_fid(afid) || afids.contains_key(&afid) {
             return Some(rerr(tag, "fid in use"));
@@ -580,7 +659,7 @@ fn auth_reply(
         afids.insert(
             afid,
             Afid {
-                challenge,
+                kx,
                 uname: String::from(*uname),
                 aname: String::from(*aname),
                 ok: false,
@@ -599,11 +678,15 @@ fn auth_reply(
     }
     // Each look at the table is a statement of its own, so its lock is
     // released before anything else happens.
+    // The auth fid reads as the offer: the challenge, then the ephemeral
+    // key. A version 2 client reads only the challenge. What follows the
+    // offer is where a server's own proof would go (`docs/auth.md`); this
+    // server has none, so a read there is empty.
     if let Fcall::Tread { fid, offset, count } = &msg.fcall {
-        let challenge = afids.lock().get(fid).map(|a| a.challenge);
-        if let Some(challenge) = challenge {
+        let offer = afids.lock().get(fid).map(|a| a.kx.offer);
+        if let Some(offer) = offer {
             let start = usize::try_from(*offset).unwrap_or(usize::MAX);
-            let data = challenge.get(start..).unwrap_or(&[]);
+            let data = offer.get(start..).unwrap_or(&[]);
             let n = (*count as usize).min(data.len());
             return Some(reply(tag, Fcall::Rread { data: &data[..n] }));
         }
@@ -612,16 +695,16 @@ fn auth_reply(
         let held = afids
             .lock()
             .get(fid)
-            .map(|a| (a.challenge, a.uname.clone(), a.aname.clone()));
-        if let Some((challenge, uname, aname)) = held {
+            .map(|a| (a.kx.offer, a.uname.clone(), a.aname.clone()));
+        if let Some((offer, uname, aname)) = held {
             // The proof is one write.
             let now = platform.now_ns() / 1_000_000_000;
             let t = trust(fs, &uname);
-            let checked = purg_auth::proof::check(&t.policy(now), &challenge, &uname, &aname, data);
+            let checked = purg_auth::proof::check(&t.policy(now), &offer, &uname, &aname, data);
             // The fid may have been clunked meanwhile, or clunked and made
             // again with another challenge.
             match afids.lock().get_mut(fid) {
-                Some(a) if a.challenge == challenge => a.ok = checked.is_ok(),
+                Some(a) if a.kx.offer == offer => a.ok = checked.is_ok(),
                 _ => return Some(rerr(tag, UNKNOWN_FID)),
             }
             return Some(match checked {

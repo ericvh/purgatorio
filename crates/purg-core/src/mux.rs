@@ -29,6 +29,8 @@ pub struct Mux {
     slots: Mutex<BTreeMap<u16, Slot>>,
     /// Set by [`Mux::fail_all`]: no reply will ever arrive.
     closed: core::sync::atomic::AtomicBool,
+    /// Why, when it was not a hangup ([`Mux::fail_because`]).
+    why: Mutex<Option<&'static str>>,
     wake: Rendez,
 }
 
@@ -38,8 +40,14 @@ impl Mux {
             next: core::sync::atomic::AtomicU16::new(0),
             slots: Mutex::new(BTreeMap::new()),
             closed: core::sync::atomic::AtomicBool::new(false),
+            why: Mutex::new(None),
             wake: Rendez::new(),
         }
+    }
+
+    /// The error for a request on a closed connection.
+    fn closed_error(&self) -> Error {
+        Error::new(self.why.lock().unwrap_or(error::EHUNGUP))
     }
 
     /// Allocates a tag and records an empty slot for it. Fails with
@@ -47,7 +55,8 @@ impl Mux {
     pub fn begin(&self) -> Result<u16> {
         let mut slots = self.slots.lock();
         if self.closed.load(core::sync::atomic::Ordering::Acquire) {
-            return Err(Error::new(error::EHUNGUP));
+            drop(slots);
+            return Err(self.closed_error());
         }
         if slots.len() >= 64 * 1024 - 1 {
             return Err(Error::new(error::EIO));
@@ -90,7 +99,8 @@ impl Mux {
         match slot.msg {
             Some(m) => Ok(m),
             None if self.closed.load(core::sync::atomic::Ordering::Acquire) => {
-                Err(Error::new(error::EHUNGUP))
+                drop(slots);
+                Err(self.closed_error())
             }
             None => Err(Error::new(error::EINTR)),
         }
@@ -159,6 +169,13 @@ impl Mux {
     /// Tags in use.
     pub fn outstanding(&self) -> usize {
         self.slots.lock().len()
+    }
+
+    /// [`Mux::fail_all`], with `why` as the error the waiters get instead
+    /// of a hangup. The first reason given is kept.
+    pub fn fail_because(&self, why: &'static str) {
+        self.why.lock().get_or_insert(why);
+        self.fail_all();
     }
 
     /// Fails every outstanding tag, and every later [`Mux::begin`], as when
