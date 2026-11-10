@@ -20,6 +20,8 @@ pub const KEYDB: &str = "/keydb/keys";
 pub const SIGNERS: &str = "/lib/keys/signers";
 /// The revocation list.
 pub const REVOKED: &str = "/lib/keys/revoked";
+/// The keys trusted to sign modules (`docs/signing.md`).
+pub const MODULES: &str = "/lib/keys/modules";
 
 /// Parses `-C m,t`: Argon2id memory in KiB and passes.
 pub fn cost(s: &str) -> Result<(u32, u32), Error> {

@@ -1066,6 +1066,54 @@ fn check_wasm(files: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `sign <module> --key <seed file> [--cert <file>]... [-o <out>]`: signs
+/// a module (`docs/signing.md`) with a 32-byte seed file. Each `--cert`
+/// adds a certificate to the chain, first the one for the key. Signing is
+/// a step after the build: `build-root` never signs, and the same module
+/// and key give the same bytes on every host.
+fn sign(args: &[String]) -> Result<()> {
+    const USAGE: &str =
+        "usage: cargo xtask sign <module> --key <seed file> [--cert <file>]... [-o <out>]";
+    let (mut module, mut key, mut out, mut certs) = (None, None, None, Vec::new());
+    let mut args = args.iter();
+    while let Some(a) = args.next() {
+        let slot = match a.as_str() {
+            "--key" => &mut key,
+            "-o" => &mut out,
+            "--cert" => {
+                certs.push(args.next().ok_or(USAGE)?.clone());
+                continue;
+            }
+            _ if module.is_none() && !a.starts_with('-') => {
+                module = Some(a.clone());
+                continue;
+            }
+            _ => return Err(USAGE.into()),
+        };
+        *slot = Some(args.next().ok_or(USAGE)?.clone());
+    }
+    let (module, key) = (module.ok_or(USAGE)?, key.ok_or(USAGE)?);
+    let read = |f: &str| fs::read(f).map_err(|e| format!("{f}: {e}"));
+    let seed: [u8; purg_auth::SEED] = read(&key)?
+        .try_into()
+        .map_err(|_| format!("{key}: not a 32-byte seed"))?;
+    let mut chain = Vec::new();
+    for c in &certs {
+        chain.push(purg_auth::keys::find_cert(&read(c)?).ok_or(format!("{c}: bad certificate"))?);
+    }
+    let signed = purg_auth::modsig::sign(&read(&module)?, &seed, chain)
+        .map_err(|e| format!("{module}: {e}"))?;
+    let out = out.unwrap_or_else(|| module.clone());
+    fs::write(&out, &signed).map_err(|e| format!("{out}: {e}"))?;
+    let digest = purg_auth::modsig::digest(&signed).map_err(|_| format!("{out}: not a module"))?;
+    println!(
+        "{out}: digest {} signed by {}",
+        purg_auth::hex::encode(&digest),
+        purg_auth::hex::encode(&purg_auth::public_key(&seed))
+    );
+    Ok(())
+}
+
 /// Set when xtask runs as cargo's `RUSTC_WRAPPER` for guest builds.
 const WRAPPER_ENV: &str = "PURG_XTASK_RUSTC_WRAPPER";
 
@@ -1151,6 +1199,7 @@ fn main() -> ExitCode {
         }
         Some("initrd") => initrd().map(|_| ExitCode::SUCCESS),
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
+        Some("sign") => sign(&rest).map(|()| ExitCode::SUCCESS),
         Some("probe") => match rest.as_slice() {
             [] => probe(false).map(|()| ExitCode::SUCCESS),
             [f] if f == "--kvm" => probe(true).map(|()| ExitCode::SUCCESS),
@@ -1163,7 +1212,7 @@ fn main() -> ExitCode {
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] | kernel [--kvm] | initrd | clippy-guests | check-wasm file.wasm...",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] | kernel [--kvm] | initrd | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {

@@ -1,0 +1,13 @@
+auth/sign: no key
+signed
+countersigned
+digest ok
+abi 0.6
+signer trusted builder
+signer untrusted
+1
+auth/verify: certificate revoked
+it runs
+same module
+auth/verify: certificate expired
+not expired then

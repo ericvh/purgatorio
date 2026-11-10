@@ -16,7 +16,10 @@
 //! [data]`, `needkey <attrs>`, `error <message>`). For `ed25519`, `start
 //! proto=ed25519 role=client user=<u> aname=<a>`, then `write <challenge>`,
 //! then `read` gives `ok <proof>`, a mount proof factotum builds and signs
-//! itself (`docs/auth.md`); it never signs arbitrary bytes. For `pass`,
+//! itself (`docs/auth.md`); it never signs arbitrary bytes. With
+//! `role=modsign`, `write <digest[32] || abi>` then `read` gives `ok
+//! <entry>`, a module signature entry (`docs/signing.md`) over a message
+//! factotum also builds itself. For `pass`,
 //! `start proto=pass server=<s> [user=<u>]`, then `read` gives `ok <user>
 //! <password>`, quoted.
 
@@ -225,6 +228,9 @@ impl Factotum {
                         let Some(ch) = &rpc.challenge else {
                             return b"error phase error".to_vec();
                         };
+                        if attr::get(attrs, "role") == Some("modsign") {
+                            return modsign(seed, cert.as_ref(), ch);
+                        }
                         let uname = attr::get(attrs, "user")
                             .map(String::from)
                             .or_else(|| user.clone())
@@ -243,6 +249,22 @@ impl Factotum {
             }
             _ => b"error unknown verb".to_vec(),
         }
+    }
+}
+
+/// Signs a module: `request` is its digest followed by its ABI version.
+fn modsign(seed: &[u8; fmt::SEED], cert: Option<&Cert>, request: &[u8]) -> Vec<u8> {
+    use fmt::modsig::{DIGEST, Entry};
+    let Some((digest, abi)) = request.split_first_chunk::<DIGEST>() else {
+        return b"error bad digest".to_vec();
+    };
+    match Entry::sign(seed, cert.cloned().into_iter().collect(), digest, abi) {
+        Ok(e) => {
+            let mut out = b"ok ".to_vec();
+            out.extend_from_slice(&e.encode());
+            out
+        }
+        Err(e) => format!("error {e}").into_bytes(),
     }
 }
 

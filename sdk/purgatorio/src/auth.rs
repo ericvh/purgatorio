@@ -14,13 +14,14 @@
 //! The formats and protocols themselves are in [`fmt`] (the `purg-auth`
 //! crate); this module adds files, the namespace and randomness.
 
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::mem::ManuallyDrop;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 pub use purg_auth as fmt;
 use purg_auth::cert::Cert;
 use purg_auth::keys::AuthInfo;
+use purg_auth::modsig;
 use purg_auth::{PUBLIC, SEED, SIGNATURE};
 
 use crate::{Error, abi};
@@ -212,16 +213,62 @@ fn factotum(challenge: &[u8], user: &str, aname: &str) -> Option<Vec<u8>> {
 fn agent_sign(msg: &[u8]) -> Option<[u8; SIGNATURE]> {
     let mut f = std::fs::File::from(crate::open("#¤/rpc", abi::mode::ORDWR).ok()?);
     f.write_all(msg).ok()?;
+    // The write moved the offset, and the reply is read from its start.
+    f.seek(std::io::SeekFrom::Start(0)).ok()?;
     let mut out = [0u8; abi::auth::PROOF];
     (f.read(&mut out).ok()? == out.len()).then(|| out[..SIGNATURE].try_into().ok())?
 }
 
 /// `#¤`'s public key and certificate, when it holds a key.
 fn agent_key() -> Option<([u8; PUBLIC], Option<Cert>)> {
-    let ctl = std::fs::read("#¤/ctl").ok()?;
+    // A device name is not a path wasi-libc can resolve: open it directly.
+    let mut ctl = Vec::new();
+    std::fs::File::from(crate::open("#¤/ctl", abi::mode::OREAD).ok()?)
+        .read_to_end(&mut ctl)
+        .ok()?;
     let hex = ctl.strip_prefix(b"key ")?.get(..PUBLIC * 2)?;
     let public = purg_auth::hex::array::<PUBLIC>(hex)?;
     Some((public, purg_auth::keys::find_cert(&ctl)))
+}
+
+/// Asks the guest factotum for a module signature entry
+/// (`docs/signing.md`). `None` when it is not mounted or has no key.
+fn factotum_module(digest: &[u8; modsig::DIGEST], abi: &[u8]) -> Option<modsig::Entry> {
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("{FACTOTUM}/rpc"))
+        .ok()?;
+    let mut rpc = |req: &[u8]| -> Option<Vec<u8>> {
+        f.write_all(req).ok()?;
+        let mut buf = vec![0u8; 16384];
+        let n = f.read(&mut buf).ok()?;
+        buf.truncate(n);
+        Some(buf)
+    };
+    if rpc(b"start proto=ed25519 role=modsign")? != b"ok" {
+        return None;
+    }
+    let mut w = b"write ".to_vec();
+    w.extend_from_slice(digest);
+    w.extend_from_slice(abi);
+    if rpc(&w)? != b"ok" {
+        return None;
+    }
+    modsig::Entry::parse(rpc(b"read")?.strip_prefix(b"ok ")?)
+}
+
+/// Signs a module's digest and ABI version with a key held by an agent:
+/// the guest factotum, then `#¤`. The private key never reaches this prog.
+pub fn sign_module(digest: &[u8; modsig::DIGEST], abi: &[u8]) -> Result<modsig::Entry, Error> {
+    if let Some(e) = factotum_module(digest, abi) {
+        return Ok(e);
+    }
+    let (public, cert) = agent_key().ok_or_else(|| Error::from(abi::auth::NO_KEY))?;
+    let msg = modsig::message(digest, abi).ok_or_else(|| Error::from(modsig::BAD_SIGNATURE))?;
+    let sig = agent_sign(&msg).ok_or_else(|| Error::from(abi::auth::NO_KEY))?;
+    let certs = cert.filter(|c| c.key == public).into_iter().collect();
+    modsig::Entry::new(public, sig, certs).map_err(Error::from)
 }
 
 /// Builds the proof for `challenge` as `user`, for attach name `aname`.
