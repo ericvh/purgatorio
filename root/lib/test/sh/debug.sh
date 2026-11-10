@@ -1,6 +1,8 @@
 # stack, trace, broke and prof (docs/debug.md, issue #40).
 # /bin/test/debug traps, sleeps or spins three calls down, in functions
-# that are never inlined: main, outer, middle, inner (and burn, for spin).
+# that are never inlined: main, outer, middle, inner (and burn, for spin
+# and hot). hot runs until it has been sampled 8 times, so the profiles
+# do not depend on the speed of the machine.
 # The stacks are the same on both VMs, because both run the same traced
 # module. What differs is filtered here: the wording of a trap, pids,
 # function indices and sample counts.
@@ -53,10 +55,10 @@ trace sh -c 'ls /bin/echo.wasm; echo a b c | wc -w | sed ''s/ *//''; load add; e
 trace auth/modpolicy warn echo traced under a module policy >[2] /dev/null
 
 echo profile
-# burn is where spin spends its time, whichever way the VM samples.
-prof -n 1 test/debug spin >[2=1] | sed 's/ +[0-9]+$/ N/' | sed 's/^ *[0-9.]+% +[0-9]+ //'
+# burn is where hot spends its time, whichever way the VM samples.
+prof -n 1 test/debug hot >[2=1] | sed 's/ +[0-9]+$/ N/' | sed 's/^ *[0-9.]+% +[0-9]+ //'
 # The samples of a command's children come back with its own.
-prof -n 1 sh -c 'test/debug spin; test/debug spin' >[2=1] | grep 'debug(\.wasm|::)' | sed 's/ +[0-9]+$/ N/' | sed 's/^ *[0-9.]+% +[0-9]+ //'
+prof -n 1 sh -c 'test/debug hot; test/debug spin' >[2=1] | grep 'debug(\.wasm|::)' | sed 's/ +[0-9]+$/ N/' | sed 's/^ *[0-9.]+% +[0-9]+ //'
 # A profiled prog that traps is reported and reaped.
 prof test/debug trap >[2=1] | grep '^prof' | sed 's/^prof: [0-9]+ /prof: PID /' | sed 's/trap: .*unreachable.*/trap: unreachable/'
 echo broken `{ps | grep -c ' broken +debug$'}
