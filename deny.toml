@@ -1,0 +1,88 @@
+# cargo-deny policy (plan decision D1: Purgatorio is Apache-2.0, and every
+# dependency must have a license we can distribute under it).
+#
+# CI runs `cargo deny check licenses bans sources` with the cargo-deny
+# version pinned in .github/workflows/ci.yml, and `cargo deny check
+# advisories` as a step that reports but does not fail (the advisory
+# database changes without any change of ours). See docs/plan.md
+# Section 9.3.
+
+[graph]
+# Every target and every feature: the widest graph Cargo.lock describes,
+# so a Windows-only or optional dependency is checked too.
+all-features = true
+
+[licenses]
+version = 2
+# Only licenses the dependency graph needs today. Each is permissive, has
+# no copyleft or field-of-use terms, and may be combined with and shipped
+# in an Apache-2.0 work. A crate offering a choice (`MIT OR Apache-2.0`,
+# `Unlicense OR MIT`, `MIT OR Apache-2.0 OR LGPL-2.1-or-later`, ...) is
+# taken under an option listed here, so the other options need no entry.
+#
+# Adding a license to this list is a decision about what we may ship:
+# say why in the line you add, and in the pull request.
+allow = [
+    # Our own license. Also most of the graph, as `MIT OR Apache-2.0`.
+    "Apache-2.0",
+    # Apache-2.0 plus a permission (no extra notice needed for compiled
+    # output); never more restrictive than Apache-2.0. Wasmtime and
+    # Cranelift.
+    "Apache-2.0 WITH LLVM-exception",
+    # Permissive; needs the copyright notice kept. Crates that are
+    # MIT-only: spin, libm, generic-array, slab, loom, tracing, and the
+    # MIT side of `Unlicense OR MIT` (memchr, aho-corasick, byteorder).
+    "MIT",
+    # Permissive; notice plus a no-endorsement clause. curve25519-dalek,
+    # ed25519-dalek, subtle.
+    "BSD-3-Clause",
+    # Permissive, equivalent to MIT. ring (`Apache-2.0 AND ISC`),
+    # rustls-webpki, untrusted.
+    "ISC",
+    # Permissive with no conditions at all, not even a notice. smoltcp,
+    # managed.
+    "0BSD",
+    # Permissive; altered source must be marked, binaries need nothing.
+    # foldhash.
+    "Zlib",
+    # Covers the Unicode data tables in unicode-ident, which is
+    # `(MIT OR Apache-2.0) AND Unicode-3.0`. Permissive, notice only. The
+    # crate is used by proc macros at build time.
+    "Unicode-3.0",
+]
+# How sure the license-text match must be when a crate has no usable
+# `license` field and cargo-deny reads its license files instead.
+confidence-threshold = 0.93
+# An entry above that nothing uses any more should be removed.
+unused-allowed-license = "warn"
+# libfuzzer-sys is `(MIT OR Apache-2.0) AND NCSA`: it carries LLVM's
+# libFuzzer, under the permissive University of Illinois/NCSA license.
+# It is a dependency of the fuzz targets in fuzz/ only (a separate
+# workspace) and is never part of anything we ship, so NCSA is allowed
+# for that crate alone and not in general.
+exceptions = [{ allow = ["NCSA"], crate = "libfuzzer-sys" }]
+
+[licenses.private]
+# Our own crates are checked like any other (they are all Apache-2.0).
+ignore = false
+
+[bans]
+# Two versions of one crate cost build time and binary size but are not an
+# error; the report says which dependency pulls each in.
+multiple-versions = "warn"
+# Workspace members depend on each other by path, which cargo-deny counts
+# as a wildcard requirement.
+wildcards = "allow"
+
+[sources]
+# Everything comes from crates.io. A git dependency or another registry
+# has no immutable, audited source, so it fails the check.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[advisories]
+version = 2
+# RustSec advisory ids we have looked at and accepted, each with a reason.
+ignore = []
