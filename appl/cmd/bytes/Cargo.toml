@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-bytes"
+description = "bytes: show or replace a range of bytes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bytes"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

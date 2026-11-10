@@ -1,0 +1,75 @@
+a
+b
+c
+d
+tokenize: usage: tokenize string delimiters
+00000000  00 00 00 00 00 00 00 00                          ........
+AAA
+zeros: usage: zeros [-r] [-v value] blocksize [number]
+begin 666 remote
+45&AE('%U:6-K(&)R;W=N(&9O> H 
+ 
+end
+The quick brown fox
+The quick brown fox
+uudecode: no begin line
+fail:no begin line
+el
+hX	Ylo
+lo
+bytes: out of order range
+ 97 141 61 a        2
+ 98 142 62 b        1
+61 a        2
+62 b        1
+apple
+apricot
+apple
+banana
+cherry
+fail:not found
+look: can't open /tmp/sh-misc/nonexistent
+fail:no dictionary
+a
+b
+c
+tsort: cycle in input
+tsort: y
+tsort: x
+y
+x
+one   three five
+two   four
+   January 2000
+ S  M Tu  W Th  F  S
+                   1
+ 2  3  4  5  6  7  8
+ 9 10 11 12 13 14 15
+16 17 18 19 20 21 22
+23 24 25 26 27 28 29
+30 31
+   September 1752
+ S  M Tu  W Th  F  S
+       1  2 14 15 16
+17 18 19 20 21 22 23
+24 25 26 27 28 29 30
+
+
+
+     37
+cal: bad argument
+0041 A	0042 B	0043 C	0044 D	0045 E	0046 F	0047 G	0048 H
+0049 I
+☺
+A
+HI
+0034
+0032
+0078
+0079
+007a
+     17
+     41
+Usage: randpass [password-length(<256, default=16)]
+fail:usage
+page
