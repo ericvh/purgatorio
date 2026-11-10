@@ -144,4 +144,6 @@ ok udp_echo
 kernel: ok
 kernel: net ready
 kernel: net served
+kernel: rstyx ready
+kernel: rstyx served
 kernel: ok

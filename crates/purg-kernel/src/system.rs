@@ -127,6 +127,32 @@ impl System {
         Ok((status?, got.transpose()?.unwrap_or_default()))
     }
 
+    /// [`System::run_test`] with `stdin` open for reading and writing as
+    /// fd 0 and the console as fds 1 and 2, as `listen` starts a server on
+    /// a connection.
+    #[cfg(feature = "net")]
+    pub fn run_test_on(&self, argv: &[&str], stdin: &str) -> Result<String, Error> {
+        let threads = SCHED.live();
+        let mut prog = Prog::new(self.kernel.clone(), Arc::new(self.pgrp.fork()));
+        let first = prog.pid;
+        self.kernel.platform.set_current_pid(prog.pid);
+        let opened = prog
+            .open(stdin, mode::ORDWR)
+            .and_then(|_| prog.open("/dev/cons", mode::OWRITE))
+            .and_then(|_| prog.dup(1, 2))
+            .and_then(|_| purg_vm::init_preopens(&mut prog));
+        let status = opened.and_then(|()| {
+            let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
+            let path = purg_vm::command_path(&argv[0]);
+            let (ctx, status) =
+                purg_vm::run_command(Ctx::new(prog, argv, self.engine.clone()), &path);
+            purg_vm::exit(ctx);
+            status
+        });
+        self.reap(first, threads)?;
+        status
+    }
+
     /// Kills the progs with pids from `first` on that are still running,
     /// removes those that are broken, and waits for them to go, and for the kernel threads to be no more
     /// than `threads`: the progs' own, and the readers of the mounts in

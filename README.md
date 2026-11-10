@@ -61,7 +61,7 @@ a `; ` prompt.
 | `fs`: trees as values (`walk filter select merge write bundle unbundle exec query` and the gates) | done; fs(1)'s other modules remain |
 | Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd` | done |
 | System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext` | done |
-| `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log. See [docs/mcp.md](docs/mcp.md) | stage 2 |
+| `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log; a `/prog` of its own progs only; remote sessions over encrypted `rcmd`, also on the kernel. See [docs/mcp.md](docs/mcp.md) | stage 3 |
 | Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
 | File and script tools: `basename cleanname touch chmod chgrp dd newer read test time xargs` | done |
 | Module and debugging tools: `wasmdump wasmdep` (Inferno's `disdump`, `disdep`), `trace stack broke prof`: call stacks and function profiles of traced progs through `/prog/<pid>/{stack,exception,prof}`, the same on both backends; function names in `/bin/<cmd>.names`. See [docs/debug.md](docs/debug.md) | done; `asm`, `mdb`, `mprof`, `cprof` open |
