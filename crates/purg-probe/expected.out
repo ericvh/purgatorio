@@ -66,6 +66,8 @@ ok sock
 ok sleep
 ok args
 probe: ok
+probe: sh /lib/test/sh/archive.sh
+probe: ok
 probe: sh /lib/test/sh/bind.sh
 probe: ok
 probe: sh /lib/test/sh/depth.sh

@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-gzip"
+description = "gzip: compress files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gzip"
+path = "src/main.rs"
+
+[dependencies]
+appl-archive.workspace = true
+purgatorio.workspace = true
+
+[lints]
+workspace = true

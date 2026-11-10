@@ -165,8 +165,10 @@ Phase K, but they belong to the hosted milestones' acceptance criteria.
   acceptance).
 - [ ] **PG-30** `cargo deny` license check (D1) and a fuzz smoke test of the
   Styx decoder, plus `proptest` round trips (plan Section 9).
-- [ ] **PG-31** W3/W4 apps not yet written: `mntgen`, minimal `ndb`, `tar`,
-  `gzip`/`gunzip`, `logfile`, cron-like; sh `string` and `regex` modules (done: `load string`, `load regex`).
+- [ ] **PG-31** W3/W4 apps not yet written: `mntgen`, minimal `ndb`,
+  `logfile`, cron-like.
+  - [x] `tar`, `gettar`/`puttar`/`lstar`, `gzip`/`gunzip`.
+  - [x] sh `load string`, `load regex`.
 - [ ] **PG-32** macOS details from plan Section 10.1 to confirm on a real Mac:
   explicit prog thread stack sizes, a clean `no free procs` error at the thread
   limit, `.DS_Store`/`._*` hidden in `#U`, dual-stack `announce tcp!*!port`.
