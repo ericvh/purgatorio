@@ -1,0 +1,65 @@
+# mash: words, variables, quoting, carets, generators, pipes and redirection.
+d = /tmp/mash-lang;
+rm -rf $d;
+mkdir -p $d;
+
+# Lists and the forms of $.
+x = a b c;
+echo $x;
+echo $"x;
+echo (len $x) (hd $x) (tl $x);
+empty = ;
+echo [$empty] (len $empty);
+whatis x empty;
+
+# Quoting: a backslash escapes a quote or a backslash.
+echo 'it\'s' 'a\\b' 'two words';
+quote 'it\'s' plain 'a b' '*';
+
+# Carets: free, explicit, distributive and pairwise.
+stem = rotta;
+echo $stem.b -$stem;
+echo x^$x $x^.c;
+echo (a :: b :: c)^(1 :: 2);
+n = 1 2;
+echo $x^$n;
+echo '['^$empty^']';
+
+# Generators.
+lines = `{echo one two; echo three};
+echo (len $lines) $lines;
+first = "{echo first line; echo second};
+echo (len $first) $first;
+echo 'a b c' > $d/f;
+cat <{cat $d/f};
+touch $d/tee;
+echo piped | tee >{cat > $d/tee} > /dev/null;
+while (! "{cat $d/tee}) sleep 0.1;
+cat $d/tee;
+
+# Redirection and pipes.
+echo hello > $d/out;
+echo again >> $d/out;
+cat < $d/out;
+cat $d/out | wc -l;
+echo a b c | tr a-z A-Z | cat;
+{ echo grouped; echo output } > $d/g;
+cat $d/g;
+echo rw > $d/rw;
+cat <> $d/rw;
+cat $d/rw;
+
+# File name patterns, after all other expansion.
+touch $d/p1.c $d/p2.c $d/p.h;
+echo $d^/*.c;
+echo $d/p?.c;
+echo $d/p[2-9].c;
+echo $d/nomatch*;
+echo '*.c';
+
+# Background commands and sequencing.
+touch $d/bg;
+echo bg > $d/bg &
+while (! "{cat $d/bg}) sleep 0.1;
+cat $d/bg;
+rm -r $d;

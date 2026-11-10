@@ -1,0 +1,91 @@
+# mash: expressions, control flow, functions, scopes and builtins.
+x = a b c;
+
+# Expressions are lists; null is false.
+if ($x == (a :: b :: c)) echo equal;
+if ($x != a) echo not equal;
+if (! $x) echo no else echo yes;
+if (hd $x == a) echo 'hd' is a;
+echo (tl tl $x) (len (a :: b)) (! (a == b));
+e = ;
+if ($e) echo no else echo null is false;
+if ($e == $e) echo null equals null;
+if ($e ~ $e) echo null matches null;
+
+# ~ matches regular expressions.
+if (hello ~ '^h.*o$') echo match;
+if (hello ~ (x :: ell)) echo one of a list;
+if ((a :: bc) ~ 'c$') echo a list against one;
+if (! ((a :: b) ~ (a :: b))) echo two lists never match;
+
+# for, while and nested if/else.
+for (i in 1 2 3) {
+	if ($i == 2) echo two else if ($i == 3) echo three else echo other;
+};
+l = a b c;
+while ($l) {
+	echo -n (hd $l);
+	l = (tl $l);
+};
+echo;
+
+# case matches the first arm whose patterns match.
+fn kind {
+	case $args {
+		'^[0-9]+$' => echo $args is a number;
+		'^-' :: '^\+' => echo $args is a sign;
+		'.' => echo $args is a word;
+	};
+};
+kind 42;
+kind -;
+kind hello;
+
+# Functions get their arguments in a local $args.
+fn greet { echo hello $args (len $args) };
+greet world;
+greet a b;
+args = global;
+greet;
+echo $args;
+whatis greet;
+fn greet;
+whatis greet;
+
+# := makes a local; = updates a local if there is one.
+fn scope {
+	v := inner;
+	v = changed;
+	echo inside $v;
+};
+v = outer;
+scope;
+echo $v;
+
+# @{...} runs in a new scope; {...} does not.
+@{ v = sub; echo $v };
+echo $v;
+{ v = group };
+echo $v;
+
+# Builtins.
+whatis echo whatis;
+eval echo evaluated '$v';
+prompt;
+echo;
+prompt 'new% ' '... ';
+prompt;
+echo;
+echo `{status cat /dev/null};
+echo (len `{status cat /nonexistent});
+echo no output > /dev/null;
+cd /lib;
+pwd;
+fn rec { rec };
+rec;
+echo after;
+echo $undefined;
+echo still running;
+rescue x { y };
+exit;
+echo not reached;

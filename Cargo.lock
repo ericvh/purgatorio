@@ -394,6 +394,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-mash"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-regexp",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-mc"
 version = "0.1.0"
 dependencies = [
@@ -781,6 +789,10 @@ dependencies = [
 
 [[package]]
 name = "appl-lib-add"
+version = "0.1.0"
+
+[[package]]
+name = "appl-lib-mashcase"
 version = "0.1.0"
 
 [[package]]

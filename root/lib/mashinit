@@ -1,0 +1,4 @@
+# Run by mash when it starts with no arguments.
+user = "{cat /dev/user};
+home = /usr/$user;
+run - $home/lib/mashinit;

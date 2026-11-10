@@ -1,0 +1,30 @@
+# mash: $args, run, eval, env and errors in a file.
+echo (len $args) $args;
+d = /tmp/mash-misc;
+rm -rf $d;
+mkdir -p $d;
+echo 'echo run with $args (len $args); r = set by run; l := local;' > $d/script;
+run $d/script x 'y z';
+echo $r;
+echo $args;
+run - $d/nosuch;
+run $d/nosuch;
+run -q $d/script;
+eval 'e = 1;' echo '$e';
+eval 'echo (';
+fn f { echo f };
+env;
+echo 'ok' > $d/a;
+cat < $d/nosuch;
+echo > $d/nodir/x;
+cat < $d/a > $d/b > $d/c;
+echo a | cat < $d/a;
+echo 'newline
+in quote';
+echo next line;
+nosuch;
+x = (1 :: 2) (3);
+y = (x :: $x);
+for (i in $y) echo -n $i;
+echo;
+rm -r $d;

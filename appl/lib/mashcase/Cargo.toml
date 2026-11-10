@@ -1,0 +1,15 @@
+[package]
+name = "appl-lib-mashcase"
+description = "mashcase: a mash builtin module with upper and lower"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "mashcase"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[lints]
+workspace = true
