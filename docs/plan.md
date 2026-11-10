@@ -450,6 +450,32 @@ Ports are rewrites guided by the Limbo source and man pages (`man/1`, `man/2`, `
 
 All columns are required checks for merge, except where marked optional.
 
+### 9.3 Property tests, fuzzing and the license check
+
+**Property tests.** `crates/purg-styx/tests/prop.rs` uses `proptest` (a dev-dependency; the crate itself stays `no_std`). It checks that every message, `Dir` and `Qid` round-trips, that `decode(encode(x)) == x`, that a message cut at any length is an error, that `msize` is respected, and that the `.u` shim never panics and only hands the client well-formed 9P2000. They run under `cargo test` with a small case count. To run more:
+
+```sh
+PROPTEST_CASES=20000 cargo test -p purg-styx --test prop
+```
+
+A failure prints a minimal input. Turn it into a named test next to the fix; no regression files are kept.
+
+**Fuzz smoke test.** `crates/purg-styx/tests/fuzz_smoke.rs` runs under `cargo test` and needs no tools. It mutates the captured fixtures and a `.u` conversation with a fixed-seed generator (a few thousand cases per target) and feeds them to the same checks the fuzzers use, so a failure reproduces on every host.
+
+**Fuzzing.** `fuzz/` is a `cargo-fuzz` project with two targets: `decode` (`Msg::decode`, `Dir::unpack`, `dirs`, `stat_from_u`) and `dotu` (a whole conversation through `dotu::Shim`). It is not a workspace member, so normal builds do not see it. The checks are in `fuzz/src/lib.rs`, which the two tests above include, so they are compiled and run on every `cargo test`. Fuzzing needs a nightly toolchain and `cargo install cargo-fuzz`; it is a manual job, not a CI job. CI only checks that the targets compile.
+
+```sh
+cd fuzz
+# The decoder, seeded with the captured 9P2000 traffic.
+cargo +nightly fuzz run decode corpus/decode ../crates/purg-styx/tests/fixtures/9fans -- -max_total_time=300
+# The shim, seeded with a 9P2000 and a 9P2000.u conversation.
+cargo +nightly fuzz run dotu corpus/dotu seeds/dotu -- -max_total_time=300
+```
+
+New inputs go to `fuzz/corpus/` and crashes to `fuzz/artifacts/`; neither is committed. Fix a crash with a named test in `crates/purg-styx/tests/`. The seeds in `fuzz/seeds/dotu` are built by `fuzz_smoke.rs`; after changing them there, run `PURG_BLESS=1 cargo test -p purg-styx --test fuzz_smoke`.
+
+**License check.** `deny.toml` is the `cargo-deny` policy for decision D1. It lists the licenses the dependency graph uses, with the reason each is acceptable in an Apache-2.0 distribution, refuses registries other than crates.io and all git dependencies, and warns about duplicate versions. CI installs a pinned `cargo-deny` and runs `cargo deny check licenses bans sources` for the workspace and for `fuzz/`. `cargo deny check advisories` runs as a step that reports but does not fail the job, because the advisory database changes without any change of ours. A new license is added to `deny.toml` only with a reason. The check covers Cargo dependencies only: fonts and other data files still need a separate check (D1), and a binary release needs a file of the third-party notices that the MIT, BSD-3-Clause, ISC and Unicode-3.0 licenses require.
+
 ---
 
 ## 10. Sharing code between hosted emu and the aarch64 kernel
