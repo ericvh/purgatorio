@@ -40,6 +40,7 @@ pub mod prog;
 pub mod qio;
 pub mod rw;
 mod sysfile;
+pub mod workq;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
