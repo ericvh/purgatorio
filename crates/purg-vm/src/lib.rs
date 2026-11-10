@@ -77,7 +77,10 @@ pub trait Engine: Send + Sync {
     /// the entry point is `Stop::Exit("")`; a trap is `Stop::Exit` with a
     /// description.
     /// The context is moved into the runtime's store and handed back.
-    fn run(&self, wasm: &[u8], ctx: Ctx) -> (Ctx, Result<Stop, Error>);
+    /// The engine owns the module's bytes so that it can free them once
+    /// it has compiled them: a prog does not hold a copy of its module's
+    /// file for as long as it runs.
+    fn run(&self, wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>);
 }
 
 /// Opens the standard fds every command starts with: 0, 1 and 2 on
@@ -127,7 +130,7 @@ pub fn module_name(path: &str) -> &str {
 
 /// Runs an already loaded module in `ctx`'s prog until it exits. Returns the
 /// Inferno exit status (`""` is success), or an error prefixed with `path`.
-pub fn run_module(ctx: Ctx, wasm: &[u8], path: &str) -> (Ctx, Result<String, Error>) {
+pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, Error>) {
     let platform = ctx.prog.kernel.platform.clone();
     platform.set_current_pid(ctx.prog.pid);
     platform.set_note(Some(ctx.prog.proc.note.clone()));
@@ -162,7 +165,7 @@ pub fn run_command(mut ctx: Ctx, path: &str) -> (Ctx, Result<String, Error>) {
     match load_module(&mut ctx.prog, path) {
         Ok(wasm) => {
             let wasm = trace::prepare(&ctx.prog.proc, wasm);
-            run_module(ctx, &wasm, path)
+            run_module(ctx, wasm, path)
         }
         Err(e) => (ctx, Err(Error::from(alloc::format!("{path}: {e}")))),
     }
@@ -203,7 +206,7 @@ pub fn spawn(
         Box::new(move || {
             let mut ctx = ctx;
             ctx.prog.started();
-            let (mut ctx, res) = run_module(ctx, &wasm, &path);
+            let (mut ctx, res) = run_module(ctx, wasm, &path);
             ctx.prog.status = match res {
                 Ok(s) => s,
                 Err(e) => {
