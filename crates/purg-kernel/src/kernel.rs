@@ -371,7 +371,14 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     let cons = console::init(&info);
     selftest::lock_test();
     selftest::tsleep_test();
-    selftest::console_test(cons);
+    // The console test needs `xtask kernel` typing `hello` and ^D, so it
+    // runs only in test mode; interactively the console belongs to sh.
+    let test = info
+        .bootargs
+        .is_some_and(|a| a.split_ascii_whitespace().any(|w| w == "test"));
+    if test {
+        selftest::console_test(cons);
+    }
 
     // The root is compiled in, as in Inferno's kernels; an initrd named by
     // the DTB replaces it.
@@ -388,9 +395,6 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         archive.iter().any(|&b| b != 0),
         "no root: build the guests (cargo xtask build-root) or boot with -initrd"
     );
-    let test = info
-        .bootargs
-        .is_some_and(|a| a.split_ascii_whitespace().any(|w| w == "test"));
     let mode = if test { Mode::Test } else { Mode::Interactive };
     println!("kernel: root {from}");
     let failed = system::start(archive, cons, info.rtc.map(|r| r.base as usize), mode);

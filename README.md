@@ -99,10 +99,24 @@ and builds a heap over the RAM after the image. It reads the DTB that QEMU
 leaves at the start of RAM, brings up the GIC (v2 or v3) and the virtual
 timer at 100 Hz, and runs preemptive kernel threads. Its self-test ends with
 two threads that only make progress when the timer switches between them.
+Locks defer preemption instead of being preempted, the console is driven by
+the UART interrupt, and an idle CPU waits in `wfi`.
+
+On top of that it runs the shared core (K2): `purg-core`, `purg-vm` and
+wasmi, with the emu's boot namespace over a RAM root. The root is a ustar
+archive of `root/bin` and `root/lib` compiled into the image, as Inferno's
+kernels do; an initrd named by the DTB replaces it. The kernel is also an
+arm64 Linux `Image`, so QEMU and boot loaders can pass it an initrd. It boots
+to `sh -l` on the serial console. With `test` in the boot arguments it runs
+the conformance guests and the sh corpus instead.
 
 ```sh
 cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on cortex-a72 and max
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
+cargo xtask initrd          # target/initrd/root.tar, the same archive the kernel compiles in
+# an interactive shell on the kernel (^D at the start of a line ends it):
+qemu-system-aarch64 -accel kvm -cpu host -M virt,gic-version=3 -m 512M -nographic \
+  -append exit=psci -kernel target/aarch64-unknown-none/kernel/purg-kernel.img
 ```
 
 Each run must match `crates/purg-kernel/expected.out`. Under KVM,
