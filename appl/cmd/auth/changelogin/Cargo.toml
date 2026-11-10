@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auth-changelogin"
+description = "auth/changelogin: set a user password in keyfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "changelogin"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true

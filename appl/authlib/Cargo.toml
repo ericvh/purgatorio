@@ -1,0 +1,18 @@
+[package]
+name = "appl-authlib"
+description = "Code shared by the authentication tools: keyfs accounts, the pglogin1 servers, option parsing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "authlib"
+path = "src/lib.rs"
+
+[dependencies]
+purgatorio.workspace = true
+purg-styx.workspace = true
+
+[lints]
+workspace = true

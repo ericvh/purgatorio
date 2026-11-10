@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auth-secstore"
+description = "auth/secstore: files encrypted under a password"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "secstore"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true

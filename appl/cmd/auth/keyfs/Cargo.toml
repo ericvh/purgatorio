@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auth-keyfs"
+description = "auth/keyfs: serve the encrypted key database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "keyfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true

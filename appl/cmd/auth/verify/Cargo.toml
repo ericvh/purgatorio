@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auth-verify"
+description = "auth/verify: check a certificate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "verify"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true
