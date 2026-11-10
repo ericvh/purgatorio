@@ -74,7 +74,11 @@ probe: sh /lib/test/sh/pipes.sh
 probe: ok
 probe: sh /lib/test/sh/redir.sh
 probe: ok
+probe: sh /lib/test/sh/regex.sh
+probe: ok
 probe: sh /lib/test/sh/status.sh
+probe: ok
+probe: sh /lib/test/sh/string.sh
 probe: ok
 probe: sh /lib/test/sh/tools.sh
 probe: ok

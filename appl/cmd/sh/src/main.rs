@@ -8,7 +8,9 @@
 //! substitution, `${expr ...}` and comments. Variables are exported through
 //! `/env` unless declared with `:=`. Builtins: `cd`, `exit`, `run`, `wait`,
 //! `load`. `load std` adds `if`, `while`, `for`, `and`, `or`, `not`, `~`,
-//! `fn` and `raise`. `load expr` adds `${expr}`.
+//! `fn`, `raise` and `${hd}`, `${tl}`, `${index}`, `${quote}` and
+//! `${unquote}`. `load expr` adds `${expr}`. `load string` adds the
+//! sh-string(1) builtins and `load regex` adds `match` and `${re}`.
 //!
 //! With `-l`, `/lib/sh/profile` runs first. Without `-c` or a file,
 //! commands are read from standard input, with a `; ` prompt if it is the
@@ -17,6 +19,8 @@
 mod exec;
 mod lex;
 mod parse;
+mod regex;
+mod string;
 
 use std::io::Read;
 

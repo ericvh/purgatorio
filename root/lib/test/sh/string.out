@@ -1,0 +1,59 @@
+prefix yes
+prefix no false
+in range
+in not-range false
+in negated
+in empty false
+[a]
+[.b.c]
+[abc]
+[]
+[a.b.]
+[c]
+[]
+[abc]
+[x y]
+[abc]
+[a]
+[::b::c]
+[abc]
+[]
+[a::b::]
+[c]
+[]
+[abc]
+hello HELLO
+5 6 0
+[él]
+[lo]
+[]
+[llo]
+4
+[a]
+[]
+[b]
+[]
+[ab   ]
+[   ab]
+[a b ]
+[abcdef]
+[   ]
+one / two three / two
+0
+1 a 'b c' ''
+[a]
+[b c]
+[]
+sh: usage: len s
+fail:usage: len s
+sh: usage: len s
+sh: usage: slice start end s
+sh: usage: slice start end s
+sh: usage: padl n [s ...]
+sh: usage: splitl s cl
+sh: usage: fields cl s
+sh: usage: prefix pre s
+fail:usage: prefix pre s
+sh: usage: in c cl
+sh: usage: index number list
+done
