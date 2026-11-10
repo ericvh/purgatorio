@@ -13,7 +13,9 @@ use purgatorio::abi::{mode, pctl};
 use purgatorio::{Error, Waitmsg};
 
 use crate::lex::{Part, RedirKind, VarKind, Word};
+use crate::modules::{Loaded, Module};
 use crate::parse::{self, AndOr, Cmd, CmdKind, Item, Pipeline, Redir};
+use crate::shmods::Fail;
 
 pub const SH: &str = "/bin/sh.wasm";
 
@@ -24,40 +26,46 @@ fn exported(name: &str) -> bool {
 
 /// The fds a command sees, as `(its fd, this prog's fd)`.
 #[derive(Clone)]
-struct Io {
+pub struct Io {
     map: Vec<(i32, i32)>,
 }
 
 impl Io {
-    fn std() -> Io {
+    pub fn std() -> Io {
         Io {
             map: vec![(0, 0), (1, 1), (2, 2)],
         }
     }
 
-    fn get(&self, fd: i32) -> Option<i32> {
+    pub fn get(&self, fd: i32) -> Option<i32> {
         self.map.iter().find(|m| m.0 == fd).map(|m| m.1)
     }
 
-    fn set(&mut self, fd: i32, to: i32) {
+    pub fn set(&mut self, fd: i32, to: i32) {
         self.map.retain(|m| m.0 != fd);
         self.map.push((fd, to));
     }
 
-    fn fdmap(&self) -> Vec<(i32, i32)> {
+    pub fn fdmap(&self) -> Vec<(i32, i32)> {
         self.map
             .iter()
             .map(|&(child, ours)| (ours, child))
             .collect()
     }
 
-    fn write(&self, fd: i32, s: &str) {
-        if let Some(fd) = self.get(fd) {
-            // SAFETY: `fd` is open in this prog for the duration of the
-            // command, and ManuallyDrop keeps the File from closing it.
-            let f = ManuallyDrop::new(unsafe { File::from_raw_fd(fd) });
-            let _ = (&*f).write_all(s.as_bytes());
-        }
+    pub fn write(&self, fd: i32, s: &str) {
+        let _ = self.try_write(fd, s.as_bytes());
+    }
+
+    /// Writes all of `b` to the command's fd `fd`.
+    pub fn try_write(&self, fd: i32, b: &[u8]) -> std::io::Result<()> {
+        let Some(fd) = self.get(fd) else {
+            return Err(std::io::Error::other("bad fd number"));
+        };
+        // SAFETY: `fd` is open in this prog for the duration of the
+        // command, and ManuallyDrop keeps the File from closing it.
+        let f = ManuallyDrop::new(unsafe { File::from_raw_fd(fd) });
+        (&*f).write_all(b)
     }
 }
 
@@ -74,25 +82,29 @@ pub fn quote(s: &str) -> String {
 }
 
 pub struct Shell {
-    vars: HashMap<String, Vec<String>>,
-    locals: HashSet<String>,
+    pub(crate) vars: HashMap<String, Vec<String>>,
+    pub(crate) locals: HashSet<String>,
     /// Background progs not yet seen to exit.
     background: HashSet<u32>,
     /// Exit messages for progs not yet waited for.
     exited: HashMap<u32, String>,
     pub status: String,
-    /// Handles from `load` of `/bin/lib/<name>.wasm`.
-    mods: HashMap<String, i32>,
-    /// `load std` has installed the control-flow builtins.
-    std: bool,
-    /// `load expr` has installed `${expr}`.
-    expr: bool,
-    /// `load string` has installed `prefix`, `in` and its `${}` builtins.
-    string: bool,
-    /// `load regex` has installed `match` and `${re}`.
-    regex: bool,
+    /// Modules from `load`, in the order they were loaded. A later module's
+    /// names hide an earlier one's.
+    pub(crate) loaded: Vec<Loaded>,
+    /// `mload` namespaces: a name and the modules loaded into it.
+    pub(crate) namespaces: Vec<(String, Vec<Loaded>)>,
     /// Function bodies from `fn name {body}`, including the braces.
     fns: HashMap<String, String>,
+    /// The exception a failed `${}` builtin raised, for the code that
+    /// reports the expansion error.
+    raised: Option<String>,
+    /// `load test`: where `report` sends messages.
+    pub(crate) test: Option<crate::shmods::TestConf>,
+    /// The outstanding requests of a `file2chan` server.
+    pub(crate) tags: crate::f2c::Tags,
+    /// Running the `-P` prelude of a sub-shell: `load` stays quiet.
+    pub(crate) quiet: bool,
 }
 
 /// Why execution stopped early.
@@ -103,7 +115,7 @@ pub enum Stop {
     Raise(String),
 }
 
-type Flow<T> = Result<T, Stop>;
+pub(crate) type Flow<T> = Result<T, Stop>;
 
 impl Shell {
     pub fn new(argv0: &str, args: Vec<String>) -> Shell {
@@ -119,16 +131,17 @@ impl Shell {
             background: HashSet::new(),
             exited: HashMap::new(),
             status: String::new(),
-            std: false,
-            expr: false,
-            string: false,
-            regex: false,
+            loaded: Vec::new(),
+            namespaces: Vec::new(),
             fns: HashMap::new(),
-            mods: HashMap::new(),
+            raised: None,
+            test: None,
+            tags: Default::default(),
+            quiet: false,
         }
     }
 
-    fn set_var(&mut self, name: &str, value: Vec<String>, local: bool) {
+    pub(crate) fn set_var(&mut self, name: &str, value: Vec<String>, local: bool) {
         if local {
             self.locals.insert(String::from(name));
         }
@@ -148,7 +161,7 @@ impl Shell {
         self.vars.insert(String::from(name), value);
     }
 
-    fn var(&self, name: &str) -> Vec<String> {
+    pub(crate) fn var(&self, name: &str) -> Vec<String> {
         if let Ok(n) = name.parse::<usize>()
             && n > 0
         {
@@ -224,10 +237,7 @@ impl Shell {
                         .collect();
                     failed.join("|")
                 }
-                Err(e) => {
-                    eprintln!("sh: {e}");
-                    format!("fail:{e}")
-                }
+                Err(e) => self.cmd_err(e, io)?,
             }
         };
         Ok(match (p.bang, status.is_empty()) {
@@ -255,7 +265,10 @@ impl Shell {
                         .insert(String::from("apid"), vec![last.to_string()]);
                 }
             }
-            Err(e) => self.fail(&e.0),
+            Err(e) => {
+                self.raised = None;
+                self.fail(&e.0);
+            }
         }
     }
 
@@ -296,8 +309,35 @@ impl Shell {
     }
 
     fn sub_shell(&mut self, src: &str, io: &Io) -> Result<u32, Error> {
-        let argv = vec![String::from("sh"), String::from("-c"), String::from(src)];
+        let mut argv = self.sh_argv();
+        argv.extend([String::from("-c"), String::from(src)]);
         purgatorio::spawn(SH, &argv, pctl::NEWFD, &io.fdmap())
+    }
+
+    /// The start of the argument list for a sub-shell: `sh`, then `-P`
+    /// and a prelude that loads this shell's modules and defines its
+    /// functions, if it has any, as Inferno's sh shares them with the
+    /// shells it forks.
+    pub(crate) fn sh_argv(&self) -> Vec<String> {
+        let mut prelude = String::new();
+        if !self.loaded.is_empty() {
+            let names: Vec<String> = self.loaded.iter().map(|l| quote(l.name())).collect();
+            prelude.push_str(&format!("load {}\n", names.join(" ")));
+        }
+        for (ns, mods) in &self.namespaces {
+            let names: Vec<String> = mods.iter().map(|l| quote(l.name())).collect();
+            prelude.push_str(&format!("mload {} {}\n", quote(ns), names.join(" ")));
+        }
+        let mut fns: Vec<(&String, &String)> = self.fns.iter().collect();
+        fns.sort();
+        for (name, body) in fns {
+            prelude.push_str(&format!("fn {} {body}\n", quote(name)));
+        }
+        let mut argv = vec![String::from("sh")];
+        if !prelude.is_empty() {
+            argv.extend([String::from("-P"), prelude]);
+        }
+        argv
     }
 
     fn spawn_simple(&mut self, cmd: &Cmd, io: &Io) -> Result<u32, Error> {
@@ -339,15 +379,24 @@ impl Shell {
             .collect()
     }
 
+    /// Reports an error from expanding or starting a command. A `${}`
+    /// builtin that raised an exception has its message printed as is and
+    /// the exception raised; any other error fails the command.
+    fn cmd_err(&mut self, e: Error, io: &Io) -> Flow<String> {
+        if let Some(name) = self.raised.take() {
+            io.write(2, &format!("{e}\n"));
+            return Err(Stop::Raise(name));
+        }
+        io.write(2, &format!("sh: {e}\n"));
+        Ok(format!("fail:{e}"))
+    }
+
     /// Runs a builtin, assignment or block in this prog.
     fn here(&mut self, cmd: &Cmd, io: &Io) -> Flow<String> {
         let mut io = io.clone();
         let _files = match self.redirect(&cmd.redirs, &mut io) {
             Ok(f) => f,
-            Err(e) => {
-                io.write(2, &format!("sh: {e}\n"));
-                return Ok(format!("fail:{e}"));
-            }
+            Err(e) => return self.cmd_err(e, &io),
         };
         match &cmd.kind {
             CmdKind::Assign { name, local, value } => match self.expand_all(value) {
@@ -355,10 +404,7 @@ impl Shell {
                     self.set_var(name, v, *local);
                     Ok(String::new())
                 }
-                Err(e) => {
-                    io.write(2, &format!("sh: {e}\n"));
-                    Ok(format!("fail:{e}"))
-                }
+                Err(e) => self.cmd_err(e, &io),
             },
             CmdKind::Block(items) => {
                 self.run_items(items, &io)?;
@@ -367,34 +413,28 @@ impl Shell {
             CmdKind::Simple(words) => {
                 let argv = match self.expand_all(words) {
                     Ok(a) => a,
-                    Err(e) => {
-                        io.write(2, &format!("sh: {e}\n"));
-                        return Ok(format!("fail:{e}"));
-                    }
+                    Err(e) => return self.cmd_err(e, &io),
                 };
                 if argv.is_empty() {
                     return Ok(String::new());
                 }
-                if let Some(body) = self.fns.get(&argv[0]).cloned() {
-                    return self.call_fn(&body, &argv);
-                }
-                if self.std_name(&argv[0]) {
-                    return self.std_cmd(&argv);
-                }
-                if self.mod_name(&argv[0]) {
-                    let res = if argv[0] == "match" {
-                        crate::regex::match_cmd(&argv)
-                    } else {
-                        crate::string::cmd(&argv)
-                    };
-                    return Ok(res.unwrap_or_else(|e| {
-                        io.write(2, &format!("sh: {e}\n"));
-                        format!("fail:{e}")
-                    }));
-                }
-                self.builtin(&argv, &io)
+                self.run_argv(&argv, &io)
             }
         }
+    }
+
+    /// Runs a function, a module's command or a builtin.
+    pub(crate) fn run_argv(&mut self, argv: &[String], io: &Io) -> Flow<String> {
+        if let Some(body) = self.fns.get(&argv[0]).cloned() {
+            return self.call_fn(&body, argv);
+        }
+        if let Some(m) = self.cmd_module(&argv[0]) {
+            return self.mod_cmd(m, argv, io);
+        }
+        if self.ns_has(&argv[0], true) {
+            return self.ns_cmd(argv, io);
+        }
+        self.builtin(argv, io)
     }
 
     fn builtin(&mut self, argv: &[String], io: &Io) -> Flow<String> {
@@ -437,7 +477,7 @@ impl Shell {
                 }
                 Ok(())
             }
-            "load" => self.load(&argv[1..]),
+            "load" => self.load(&argv[1..], io),
             _ => unreachable!("not a builtin"),
         };
         Ok(match res {
@@ -544,7 +584,7 @@ impl Shell {
         match &cmd.kind {
             CmdKind::Simple(words) => words
                 .first()
-                .and_then(Word::bare)
+                .and_then(head_name)
                 .is_some_and(|n| self.runs_name(n)),
             CmdKind::Assign { .. } | CmdKind::Block(_) => true,
         }
@@ -553,45 +593,63 @@ impl Shell {
     fn runs_name(&self, name: &str) -> bool {
         is_builtin(name)
             || self.fns.contains_key(name)
-            || self.std_name(name)
-            || self.mod_name(name)
+            || self.cmd_module(name).is_some()
+            || self.ns_has(name, true)
     }
 
-    /// Commands added by `load string` and `load regex`.
-    fn mod_name(&self, name: &str) -> bool {
-        (self.string && crate::string::is_cmd(name)) || (self.regex && name == "match")
+    /// The most recently loaded module that has command `name`.
+    fn cmd_module(&self, name: &str) -> Option<Module> {
+        self.loaded.iter().rev().find_map(|l| match l {
+            Loaded::Builtin(m) if m.cmds().contains(&name) => Some(*m),
+            _ => None,
+        })
     }
 
-    fn std_name(&self, name: &str) -> bool {
-        self.std
-            && matches!(
-                name,
-                "if" | "while" | "for" | "and" | "or" | "not" | "~" | "fn" | "raise"
-            )
+    /// Whether `name` is an `mload` namespace with commands (`cmd`) or
+    /// with `${}` builtins.
+    fn ns_has(&self, name: &str, cmd: bool) -> bool {
+        self.namespaces.iter().any(|(n, mods)| {
+            n == name
+                && mods.iter().any(|l| match l {
+                    Loaded::Builtin(m) if cmd => !m.cmds().is_empty(),
+                    Loaded::Builtin(m) => !m.substs().is_empty(),
+                    Loaded::Reactor(..) => !cmd,
+                })
+        })
     }
 
-    fn load(&mut self, names: &[String]) -> Result<(), Error> {
+    /// Finds module `name`: one compiled into sh, or a reactor from
+    /// `/bin/lib`.
+    pub(crate) fn find_module(&self, name: &str) -> Result<Loaded, Error> {
+        if let Some(m) = Module::by_name(name) {
+            return Ok(Loaded::Builtin(m));
+        }
+        if let Some(l) = self.loaded.iter().find(|l| l.name() == name) {
+            return Ok(l.clone());
+        }
+        let path = format!("/bin/lib/{name}.wasm");
+        let handle = purgatorio::load(&path).map_err(|e| Error(format!("load: {name}: {e}")))?;
+        Ok(Loaded::Reactor(String::from(name), handle))
+    }
+
+    fn load(&mut self, names: &[String], io: &Io) -> Result<(), Error> {
         if names.is_empty() {
             return Err(Error::from("usage: load module ..."));
         }
         for name in names {
-            match name.as_str() {
-                "std" => self.std = true,
-                "expr" => self.expr = true,
-                "string" => self.string = true,
-                "regex" => self.regex = true,
-                other => {
-                    let path = format!("/bin/lib/{other}.wasm");
-                    let handle = purgatorio::load(&path)
-                        .map_err(|e| Error(format!("load: {other}: {e}")))?;
-                    self.mods.insert(String::from(other), handle);
-                }
+            if self.loaded.iter().any(|l| l.name() == name) {
+                continue;
             }
+            let l = self.find_module(name)?;
+            if l == Loaded::Builtin(Module::Test) {
+                self.test_init(io);
+            }
+            self.loaded.push(l);
         }
         Ok(())
     }
 
-    /// `${...}`: run one loaded builtin and substitute what it prints as words.
+    /// `${...}`: run one loaded builtin and substitute its result.
     fn builtin_subst(&mut self, src: &str) -> Result<Vec<String>, Error> {
         let items = parse::parse(src).map_err(|e| Error(format!("syntax error: {e:?}")))?;
         let [item] = items.as_slice() else {
@@ -604,35 +662,62 @@ impl Shell {
             return Err(Error::from("builtin must be one command"));
         };
         let argv = self.expand_all(words)?;
-        let Some(name) = argv.first() else {
+        if argv.is_empty() {
             return Err(Error::from("empty builtin"));
-        };
-        if name == "expr" {
-            if !self.expr {
-                return Err(Error::from("expr: module not loaded"));
-            }
-            return Ok(vec![eval_expr(&argv[1..])?]);
         }
-        if self.std && is_std_subst(name) {
-            return std_subst(&argv);
-        }
-        if self.string && crate::string::is_subst(name) {
-            return crate::string::subst(&argv);
-        }
-        if self.regex && name == "re" {
-            return crate::regex::re(&argv);
-        }
-        if let Some(&handle) = self.mods.get(name) {
-            let args = argv[1..].join(" ");
-            let out = purgatorio::call(handle, name, args.as_bytes())
-                .map_err(|e| Error(format!("{name}: {e}")))?;
-            let text = String::from_utf8_lossy(&out);
-            return Ok(text.split_whitespace().map(String::from).collect());
-        }
-        Err(Error(format!("{name}: unknown ${{}} builtin")))
+        self.subst_argv(&argv).map_err(|f| {
+            self.raised = f.name;
+            Error(f.msg)
+        })
     }
 
-    fn std_cmd(&mut self, argv: &[String]) -> Flow<String> {
+    /// Runs `${}` builtin `argv[0]` from the most recently loaded module
+    /// that has it, or from an `mload` namespace.
+    pub(crate) fn subst_argv(&mut self, argv: &[String]) -> Result<Vec<String>, Fail> {
+        let name = argv[0].as_str();
+        if let Some(l) = self
+            .loaded
+            .iter()
+            .rev()
+            .find(|l| l.has_subst(name))
+            .cloned()
+        {
+            return self.mod_subst(&l, argv);
+        }
+        if self.ns_has(name, false) {
+            return self.ns_subst(argv);
+        }
+        Err(Fail::plain(&format!("{name}: unknown ${{}} builtin")))
+    }
+
+    /// Runs one `${}` builtin of a loaded module.
+    pub(crate) fn mod_subst(&mut self, l: &Loaded, argv: &[String]) -> Result<Vec<String>, Fail> {
+        let m = match l {
+            Loaded::Builtin(m) => *m,
+            Loaded::Reactor(name, handle) => {
+                let args = argv[1..].join(" ");
+                let out = purgatorio::call(*handle, name, args.as_bytes())
+                    .map_err(|e| Fail::plain(&format!("{name}: {e}")))?;
+                let text = String::from_utf8_lossy(&out);
+                return Ok(text.split_whitespace().map(String::from).collect());
+            }
+        };
+        match m {
+            Module::Std => Ok(std_subst(argv)?),
+            Module::Expr => crate::num::expr(argv, false),
+            Module::Mpexpr => crate::num::expr(argv, true),
+            Module::String => Ok(crate::string::subst(argv)?),
+            Module::Regex => Ok(crate::regex::re(argv)?),
+            Module::Csv => Ok(vec![crate::csv::join(&argv[1..])]),
+            Module::File2chan => self.rget(argv),
+            Module::Sexprs => crate::sexp::subst(argv),
+            Module::Arg | Module::Echo | Module::Mload | Module::Test => {
+                Err(Fail::plain(&format!("{}: unknown ${{}} builtin", argv[0])))
+            }
+        }
+    }
+
+    pub(crate) fn std_cmd(&mut self, argv: &[String]) -> Flow<String> {
         match argv[0].as_str() {
             "if" => self.std_if(argv),
             "while" => self.std_while(argv),
@@ -780,7 +865,7 @@ impl Shell {
         Ok(self.status.clone())
     }
 
-    fn run_block(&mut self, src: &str) -> Flow<()> {
+    pub(crate) fn run_block(&mut self, src: &str) -> Flow<()> {
         let inner = src.trim();
         let inner = inner
             .strip_prefix('{')
@@ -802,10 +887,6 @@ fn concat(a: Vec<String>, b: Vec<String>) -> Result<Vec<String>, Error> {
         (n, m) if n == m => a.into_iter().zip(b).map(|(x, y)| x + &y).collect(),
         _ => return Err(Error::from("bad concatenation")),
     })
-}
-
-fn is_std_subst(name: &str) -> bool {
-    matches!(name, "hd" | "tl" | "index" | "quote" | "unquote")
 }
 
 /// The list builtins of `load std`: `${hd list}`, `${tl list}`,
@@ -868,40 +949,17 @@ fn unquote(s: &str) -> Vec<String> {
     }
 }
 
-fn is_builtin(name: &str) -> bool {
-    matches!(name, "cd" | "exit" | "run" | "wait" | "load")
+/// The command name a word gives before expansion: its text if it is
+/// plain, or the first word of a list such as `(arg ...)`.
+fn head_name(w: &Word) -> Option<&str> {
+    match w.parts.as_slice() {
+        [Part::List(words)] => words.first().and_then(head_name),
+        _ => w.bare(),
+    }
 }
 
-/// Postfix integer expression: `1 2 +` is 3. `*` `/` `%` `-` `+`.
-fn eval_expr(args: &[String]) -> Result<String, Error> {
-    let mut stack: Vec<i64> = Vec::new();
-    for arg in args {
-        let next = match arg.as_str() {
-            "+" | "-" | "*" | "/" | "%" => {
-                let (Some(y), Some(x)) = (stack.pop(), stack.pop()) else {
-                    return Err(Error::from("expr: stack underflow"));
-                };
-                match *arg.as_bytes().first().unwrap_or(&0) {
-                    b'+' => x.wrapping_add(y),
-                    b'-' => x.wrapping_sub(y),
-                    b'*' => x.wrapping_mul(y),
-                    b'/' if y == 0 => return Err(Error::from("expr: division by zero")),
-                    b'/' => x / y,
-                    b'%' if y == 0 => return Err(Error::from("expr: division by zero")),
-                    b'%' => x % y,
-                    _ => return Err(Error::from("expr: bad operator")),
-                }
-            }
-            n => n
-                .parse::<i64>()
-                .map_err(|_| Error(format!("expr: bad number {n}")))?,
-        };
-        stack.push(next);
-    }
-    match stack.as_slice() {
-        [n] => Ok(n.to_string()),
-        _ => Err(Error::from("expr: leftover stack")),
-    }
+fn is_builtin(name: &str) -> bool {
+    matches!(name, "cd" | "exit" | "run" | "wait" | "load")
 }
 
 fn glob_match(word: &str, pat: &str) -> bool {
@@ -954,10 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn expr_and_patterns() {
-        assert_eq!(eval_expr(&v(&["1", "2", "+"])).unwrap(), "3");
-        assert_eq!(eval_expr(&v(&["3", "4", "*"])).unwrap(), "12");
-        assert_eq!(eval_expr(&v(&["20", "3", "-"])).unwrap(), "17");
+    fn patterns() {
         assert!(glob_match("hello", "h*o"));
         assert!(glob_match("yes", "yes"));
         assert!(!glob_match("ab", "a"));

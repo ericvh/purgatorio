@@ -276,6 +276,11 @@ impl Parser<'_> {
             let t = self.bump()?;
             match t.tok {
                 Tok::Word(_) | Tok::LParen => words.push(self.joined(t)?),
+                // A {block} in a list is a word holding its source.
+                Tok::LBrace => {
+                    self.block_body()?;
+                    words.push(Word::lit(&self.src[t.start..self.last_end]));
+                }
                 Tok::Newline => {}
                 Tok::RParen => break,
                 Tok::Eof => return Err(SyntaxError::Incomplete),
@@ -417,6 +422,22 @@ mod tests {
         assert_eq!(parts("echo (a b) ^ .c d"), [1, 2, 1]);
         assert_eq!(parts("echo (a b)^(c d)^e"), [1, 3]);
         assert_eq!(parts("echo (a b) (c)"), [1, 1, 1]);
+    }
+
+    #[test]
+    fn blocks_in_lists() {
+        let items = parse("(arg\n\tb {x=1}\n\t- a)").unwrap();
+        let CmdKind::Simple(words) = &items[0].andor.first.cmds[0].kind else {
+            panic!("not simple");
+        };
+        let [Word { parts }] = words.as_slice() else {
+            panic!("{words:?}");
+        };
+        let [Part::List(l)] = parts.as_slice() else {
+            panic!("{parts:?}");
+        };
+        assert_eq!(l[2], Word::lit("{x=1}"));
+        assert_eq!(l.len(), 5);
     }
 
     #[test]
