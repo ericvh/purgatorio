@@ -15,6 +15,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 purg-styx = { path = "../crates/purg-styx" }
+purg-auth = { path = "../crates/purg-auth", default-features = false }
 
 [[bin]]
 name = "decode"
@@ -26,6 +27,13 @@ bench = false
 [[bin]]
 name = "dotu"
 path = "fuzz_targets/dotu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "record"
+path = "fuzz_targets/record.rs"
 test = false
 doc = false
 bench = false

@@ -303,10 +303,14 @@ pub mod export {
 }
 
 /// Mount authentication: an Ed25519 signature over a server challenge.
-/// After `fauth`, the client reads `CHALLENGE` bytes from the auth fd and
-/// writes a proof in one write: a version 1 proof, `signature[SIGNATURE] ||
-/// public_key[PUBLIC]` (`PROOF` bytes), or a versioned proof whose first
-/// byte is `PROOF_VERSION` (`docs/auth.md`).
+/// After `fauth`, the client reads `SIGNED` bytes from the auth fd (the
+/// server's challenge and ephemeral key, and the client's ephemeral key)
+/// and writes a version 3 proof over them in one write. The conversation
+/// is then encrypted. Reading only `CHALLENGE` bytes gives the challenge
+/// alone, for a version 1 proof, `signature[SIGNATURE] ||
+/// public_key[PUBLIC]` (`PROOF` bytes), or a version 2 one whose first
+/// byte is `PROOF_VERSION`; the conversation then stays in the clear
+/// (`docs/auth.md`).
 pub mod auth {
     pub const SEED: usize = 32;
     pub const SIGNATURE: usize = 64;
@@ -321,6 +325,16 @@ pub mod auth {
     pub const KIND_CERT: u8 = 1;
     /// Bytes the server asks the client to sign.
     pub const CHALLENGE: usize = 32;
+    /// The first byte of a version 3 proof, which agrees a session key
+    /// (`docs/auth.md`, "Mount handshake, version 3").
+    pub const PROOF_V3: u8 = 3;
+    /// What a version 3 server offers on the auth fid: its challenge and
+    /// its ephemeral X25519 key.
+    pub const OFFER: usize = CHALLENGE + PUBLIC;
+    /// What a client reads from the auth fd since v0.7: the server's
+    /// [`OFFER`] followed by the client's ephemeral X25519 key, which the
+    /// kernel made. A version 3 proof signs these bytes.
+    pub const SIGNED: usize = OFFER + PUBLIC;
 
     pub const NOT_REQUIRED: &str = "authentication not required";
     pub const REQUIRED: &str = "authentication required";
@@ -330,6 +344,9 @@ pub mod auth {
     pub const REVOKED: &str = "certificate revoked";
     pub const UNTRUSTED: &str = "untrusted signer";
     pub const NAME_MISMATCH: &str = "certificate name mismatch";
+    /// The server did not offer a session key: it predates version 3, or
+    /// something on the way removed the offer.
+    pub const NO_SESSION: &str = "no session key offered";
 }
 
 /// Error strings, worded exactly as Inferno's.

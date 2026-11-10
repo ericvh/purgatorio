@@ -4,12 +4,23 @@
 //!   the raw challenge;
 //! - version 2: `0x02 || kind || signature[64] || body`, where the body is
 //!   a public key (kind 0) or a `pgcert1` line (kind 1), and the signature
-//!   is over [`message`].
+//!   is over [`message`];
+//! - version 3: `0x03 || kind || signature[64] || client_key[32] || body`,
+//!   which also carries the client's ephemeral X25519 key. The signature
+//!   covers the server's and the client's ephemeral keys, and both sides
+//!   derive the session keys from them ([`crate::session`]).
+//!
+//! What the client signs is the "challenge" it was given: the server's 32
+//! random bytes for version 2, or for version 3 [`SIGNED`] bytes, the
+//! server's [`OFFER`] (challenge and ephemeral key) followed by the
+//! client's ephemeral key. [`message`], [`assemble`] and [`make`] pick the
+//! version from that length.
 
 use alloc::vec::Vec;
 
 use purg_abi::auth::{
-    EXPIRED, FAILED, KIND_CERT, KIND_KEY, NAME_MISMATCH, PROOF, PROOF_VERSION, REVOKED, UNTRUSTED,
+    CHALLENGE, EXPIRED, FAILED, KIND_CERT, KIND_KEY, NAME_MISMATCH, PROOF, PROOF_VERSION, REVOKED,
+    UNTRUSTED,
 };
 
 use crate::cert::Cert;
@@ -17,15 +28,30 @@ use crate::{PUBLIC, SEED, SIGNATURE};
 
 /// The length of a version 1 proof.
 pub const V1_LEN: usize = PROOF;
+/// The first byte of a version 3 proof.
+pub const V3: u8 = purg_abi::auth::PROOF_V3;
 /// The context string a version 2 signature starts with.
 pub const CONTEXT: &[u8] = b"pgauth2\0";
+/// The context string a version 3 signature starts with.
+pub const CONTEXT3: &[u8] = b"pgauth3\0";
+/// What a version 3 server gives on the auth fid: `challenge[32] ||
+/// server_key[32]`, its ephemeral X25519 key.
+pub const OFFER: usize = purg_abi::auth::OFFER;
+/// What a version 3 client signs: the [`OFFER`] and its own ephemeral key.
+pub const SIGNED: usize = purg_abi::auth::SIGNED;
 /// A proof is at most this long (a certificate with every signature fits).
 pub const MAX_LEN: usize = 2048;
 
-/// The bytes a version 2 proof signs.
+/// The bytes a version 2 or 3 proof signs. `challenge` is the server's
+/// challenge (version 2) or [`SIGNED`] bytes (version 3).
 pub fn message(challenge: &[u8], uname: &str, aname: &str, kind: u8, body: &[u8]) -> Vec<u8> {
-    let mut m = Vec::with_capacity(CONTEXT.len() + challenge.len() + 5 + body.len() + 64);
-    m.extend_from_slice(CONTEXT);
+    let context = if challenge.len() == SIGNED {
+        CONTEXT3
+    } else {
+        CONTEXT
+    };
+    let mut m = Vec::with_capacity(context.len() + challenge.len() + 5 + body.len() + 64);
+    m.extend_from_slice(context);
     m.extend_from_slice(challenge);
     for s in [uname, aname] {
         let n = u16::try_from(s.len()).unwrap_or(u16::MAX);
@@ -45,17 +71,23 @@ pub fn body(cert: Option<&Cert>, public: &[u8; PUBLIC]) -> (u8, Vec<u8>) {
     }
 }
 
-/// Assembles a version 2 proof from its parts.
-pub fn assemble(kind: u8, signature: &[u8; SIGNATURE], body: &[u8]) -> Vec<u8> {
-    let mut p = Vec::with_capacity(2 + SIGNATURE + body.len());
-    p.push(PROOF_VERSION);
+/// Assembles a proof from its parts: version 3 when `challenge` is
+/// [`SIGNED`] bytes (the client's key is its last 32), else version 2.
+pub fn assemble(challenge: &[u8], kind: u8, signature: &[u8; SIGNATURE], body: &[u8]) -> Vec<u8> {
+    let v3 = challenge.len() == SIGNED;
+    let mut p = Vec::with_capacity(2 + SIGNATURE + PUBLIC + body.len());
+    p.push(if v3 { V3 } else { PROOF_VERSION });
     p.push(kind);
     p.extend_from_slice(signature);
+    if v3 {
+        p.extend_from_slice(&challenge[OFFER..]);
+    }
     p.extend_from_slice(body);
     p
 }
 
-/// A version 2 proof signed with `seed`, carrying `cert` when given.
+/// A proof signed with `seed`, carrying `cert` when given: version 3 when
+/// `challenge` is [`SIGNED`] bytes, else version 2.
 pub fn make(
     seed: &[u8; SEED],
     cert: Option<&Cert>,
@@ -65,7 +97,61 @@ pub fn make(
 ) -> Vec<u8> {
     let (kind, body) = body(cert, &crate::public_key(seed));
     let sig = crate::sign(seed, &message(challenge, uname, aname, kind, &body));
-    assemble(kind, &sig, &body)
+    assemble(challenge, kind, &sig, &body)
+}
+
+/// A version 3 proof taken apart.
+pub struct V3Proof<'a> {
+    pub kind: u8,
+    pub signature: [u8; SIGNATURE],
+    /// The client's ephemeral X25519 key.
+    pub client_key: [u8; PUBLIC],
+    pub body: &'a [u8],
+}
+
+/// Splits a version 3 proof. `None` when it is not one.
+pub fn parse_v3(proof: &[u8]) -> Option<V3Proof<'_>> {
+    if proof.len() > MAX_LEN || proof.first() != Some(&V3) {
+        return None;
+    }
+    let kind = *proof.get(1)?;
+    let signature = proof.get(2..2 + SIGNATURE)?.try_into().ok()?;
+    let client_key = proof
+        .get(2 + SIGNATURE..2 + SIGNATURE + PUBLIC)?
+        .try_into()
+        .ok()?;
+    let body = &proof[2 + SIGNATURE + PUBLIC..];
+    if body.is_empty() {
+        return None;
+    }
+    Some(V3Proof {
+        kind,
+        signature,
+        client_key,
+        body,
+    })
+}
+
+/// The [`SIGNED`] bytes of a version 3 exchange.
+pub fn signed(offer: &[u8; OFFER], client_key: &[u8; PUBLIC]) -> [u8; SIGNED] {
+    let mut s = [0u8; SIGNED];
+    s[..OFFER].copy_from_slice(offer);
+    s[OFFER..].copy_from_slice(client_key);
+    s
+}
+
+/// The message a version 3 `proof` signs, given the server's `offer`, and
+/// the client's ephemeral key it carries. Both sides hash the message into
+/// the session keys. `None` when `proof` is not version 3.
+pub fn transcript(
+    offer: &[u8; OFFER],
+    uname: &str,
+    aname: &str,
+    proof: &[u8],
+) -> Option<(Vec<u8>, [u8; PUBLIC])> {
+    let p = parse_v3(proof)?;
+    let m = message(&signed(offer, &p.client_key), uname, aname, p.kind, p.body);
+    Some((m, p.client_key))
 }
 
 /// What a server trusts.
@@ -94,13 +180,18 @@ impl Policy<'_> {
 
 /// Checks `proof` against `policy` for this `Tauth`. Returns the error the
 /// write fails with.
+///
+/// `offer` is what the server gave on the auth fid: the 32-byte challenge,
+/// or the [`OFFER`] of a server that takes version 3. Versions 1 and 2
+/// sign the challenge, its first 32 bytes.
 pub fn check(
     policy: &Policy<'_>,
-    challenge: &[u8],
+    offer: &[u8],
     uname: &str,
     aname: &str,
     proof: &[u8],
 ) -> Result<(), &'static str> {
+    let challenge = offer.get(..CHALLENGE).unwrap_or(offer);
     if proof.len() == V1_LEN {
         let (sig, key) = proof.split_at(SIGNATURE);
         let sig: [u8; SIGNATURE] = sig.try_into().map_err(|_| FAILED)?;
@@ -114,13 +205,25 @@ pub fn check(
             Ok(())
         };
     }
-    if proof.len() < 2 + SIGNATURE || proof.len() > MAX_LEN || proof[0] != PROOF_VERSION {
-        return Err(FAILED);
-    }
-    let kind = proof[1];
-    let sig: [u8; SIGNATURE] = proof[2..2 + SIGNATURE].try_into().map_err(|_| FAILED)?;
-    let body = &proof[2 + SIGNATURE..];
-    let signed = message(challenge, uname, aname, kind, body);
+    let (kind, sig, body, signed) = if proof.first() == Some(&V3) {
+        let offer: &[u8; OFFER] = offer.try_into().map_err(|_| FAILED)?;
+        let p = parse_v3(proof).ok_or(FAILED)?;
+        let m = message(&signed(offer, &p.client_key), uname, aname, p.kind, p.body);
+        (p.kind, p.signature, p.body, m)
+    } else {
+        if proof.len() < 2 + SIGNATURE || proof.len() > MAX_LEN || proof[0] != PROOF_VERSION {
+            return Err(FAILED);
+        }
+        let kind = proof[1];
+        let sig: [u8; SIGNATURE] = proof[2..2 + SIGNATURE].try_into().map_err(|_| FAILED)?;
+        let body = &proof[2 + SIGNATURE..];
+        (
+            kind,
+            sig,
+            body,
+            message(challenge, uname, aname, kind, body),
+        )
+    };
     match kind {
         KIND_KEY => {
             let key: [u8; PUBLIC] = body.try_into().map_err(|_| FAILED)?;
@@ -328,6 +431,52 @@ mod tests {
             check(&policy(&user, &[], &[]), &CHAL, "alice", "", &p),
             Ok(())
         );
+    }
+
+    /// A version 3 proof signs both ephemeral keys: a server key or a
+    /// client key changed on the way makes it fail.
+    #[test]
+    fn version_3() {
+        let public = [crate::public_key(&USER)];
+        let signer = [crate::public_key(&SIGNER)];
+        let mut offer = [0u8; OFFER];
+        offer[..32].copy_from_slice(&CHAL);
+        offer[32..].copy_from_slice(&[8; 32]);
+        let s = signed(&offer, &[9; 32]);
+        let p = make(&USER, None, &s, "alice", "");
+        assert_eq!(p[0], V3);
+        assert_eq!(&p[2 + SIGNATURE..2 + SIGNATURE + PUBLIC], &[9; 32]);
+        let pol = policy(&public, &[], &[]);
+        assert_eq!(check(&pol, &offer, "alice", "", &p), Ok(()));
+        // Checked against a version 2 server's bare challenge.
+        assert_eq!(check(&pol, &CHAL, "alice", "", &p), Err(FAILED));
+        // The server's key replaced.
+        let mut other = offer;
+        other[40] ^= 1;
+        assert_eq!(check(&pol, &other, "alice", "", &p), Err(FAILED));
+        // The client's key replaced.
+        let mut q = p.clone();
+        q[2 + SIGNATURE] ^= 1;
+        assert_eq!(check(&pol, &offer, "alice", "", &q), Err(FAILED));
+        // uname and aname are still covered.
+        assert_eq!(check(&pol, &offer, "bob", "", &p), Err(FAILED));
+        assert_eq!(check(&pol, &offer, "alice", "x", &p), Err(FAILED));
+        // A certificate.
+        let good = cert("alice", NOW + 60, &SIGNER);
+        let p = make(&USER, Some(&good), &s, "alice", "");
+        assert_eq!(
+            check(&policy(&[], &signer, &[]), &offer, "alice", "", &p),
+            Ok(())
+        );
+        let (t, key) = transcript(&offer, "alice", "", &p).unwrap();
+        assert_eq!(key, [9; 32]);
+        assert!(t.starts_with(CONTEXT3));
+        // A v2 proof is no transcript, and a v3 proof is not a v2 proof.
+        let v2 = make(&USER, None, &CHAL, "alice", "");
+        assert!(transcript(&offer, "alice", "", &v2).is_none());
+        let mut as_v2 = make(&USER, None, &s, "alice", "");
+        as_v2[0] = PROOF_VERSION;
+        assert_eq!(check(&pol, &offer, "alice", "", &as_v2), Err(FAILED));
     }
 
     #[test]
