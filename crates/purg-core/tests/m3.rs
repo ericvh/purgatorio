@@ -581,6 +581,7 @@ fn wait_file_is_pollable() {
     t.join().unwrap();
 }
 
+#[cfg(feature = "std")]
 fn write_file(p: &mut Prog, path: &str, bytes: &[u8]) {
     let fd = p.create(path, mode::OWRITE, 0o644).unwrap();
     assert_eq!(p.write(fd, bytes).unwrap(), bytes.len());
