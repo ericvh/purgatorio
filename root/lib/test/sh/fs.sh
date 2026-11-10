@@ -11,7 +11,8 @@ echo 'header' > t/src/sub/x.h
 echo 'object' > t/obj/main.o
 echo 'read me' > t/README
 chmod 444 t/README
-chmod 755 t/src/main.c
+chmod 755 t/src/main.c t/obj
+chmod 644 t/obj/main.o
 echo 'other main' > u/src/main.c
 echo 'new' > u/src/new.c
 echo walk
