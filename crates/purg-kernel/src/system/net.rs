@@ -4,7 +4,7 @@
 //! bootargs:
 //!
 //! - `hostexport=PORT`: mount the hosted emu's `styxlisten` export at
-//!   `tcp!10.0.2.2!PORT` (the host, in QEMU user networking) on `/n/host`
+//!   `tcp!10.0.2.2!PORT` (the host, in QEMU user networking) on `/n/remote`
 //!   and list it.
 //! - `udpecho=PORT`: send a datagram to the host's UDP echo server at
 //!   `udp!10.0.2.2!PORT` and check the echo.
@@ -58,7 +58,7 @@ impl System {
     pub fn net_tests(&self, checks: &Checks) -> usize {
         let mut failed = 0;
         if let Some(port) = checks.host_export {
-            self.say("kernel: mount the hosted emu's export on /n/host");
+            self.say("kernel: mount the hosted emu's export on /n/remote");
             let v = self.mount_host(port);
             self.verdict(&mut failed, v);
         }
@@ -79,15 +79,15 @@ impl System {
         failed
     }
 
-    /// Mounts `tcp!10.0.2.2!port` on `/n/host` and lists it: the host's
+    /// Mounts `tcp!10.0.2.2!port` on `/n/remote` and lists it: the host's
     /// `lib/probe`, and its `README`, which the kernel's root lacks.
     fn mount_host(&self, port: u16) -> core::result::Result<String, String> {
         let addr = format!("tcp!{HOST}!{port}");
         let steps: [&[&str]; 4] = [
-            &["mkdir", "-p", "/n/host"],
-            &["mount", "-A", &addr, "/n/host"],
-            &["ls", "/n/host/lib/probe"],
-            &["ls", "-d", "/n/host/README"],
+            &["mkdir", "-p", "/n/remote"],
+            &["mount", "-A", &addr, "/n/remote"],
+            &["ls", "/n/remote/lib/probe"],
+            &["ls", "-d", "/n/remote/README"],
         ];
         for argv in steps {
             match self.run(argv, None) {

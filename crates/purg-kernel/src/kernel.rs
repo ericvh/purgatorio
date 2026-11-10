@@ -289,7 +289,9 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
     let mode = if test { Mode::Test } else { Mode::Interactive };
     println!("kernel: root {from}");
     let net = system::net::open(&fdt, &info);
-    let failed = system::start(archive, cons, info.rtc.map(|r| r.base as usize), net, mode);
+    let host = system::host9p::find(&fdt);
+    let rtc = info.rtc.map(|r| r.base as usize);
+    let failed = system::start(archive, cons, rtc, net, host, mode);
     if failed != 0 {
         fail(format_args!("{failed} failed"));
     }

@@ -2,8 +2,8 @@
 //! `purg-probe`: the boot path and the shared link script, the DTB, the
 //! GIC, the timer and interrupt dispatch, exception vectors, the MMU, the
 //! PL011 console, the PL031 clock, a preemptive scheduler, the heap, a
-//! `purg_platform` `Platform`, virtio-mmio, and a smoltcp network stack
-//! for `#I`.
+//! `purg_platform` `Platform`, virtio-mmio, a smoltcp network stack for
+//! `#I`, and a virtio-9p transport.
 //!
 //! Pure code (the [`dtb`] parser, the [`mmu`] table builder and the
 //! [`board`] decisions) builds and is unit-tested on the host. Everything
@@ -34,6 +34,8 @@ pub mod heap;
 pub mod irq;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod net;
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub mod p9;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod pl011;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]

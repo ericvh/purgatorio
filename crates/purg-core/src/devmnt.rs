@@ -600,13 +600,11 @@ impl Dev for DevMnt {
             if data.is_empty() {
                 break;
             }
+            // Only an empty read ends the directory: a server may return
+            // fewer entries than fit (the 9P2000.u shim's replies shrink).
             offset += data.len() as u64;
-            let short = (data.len() as u32) < count;
             for d in dirs(&data) {
                 out.push(d.map_err(|_| Error::new(error::EIO))?);
-            }
-            if short {
-                break;
             }
         }
         Ok(out)

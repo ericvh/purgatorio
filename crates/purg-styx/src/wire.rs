@@ -45,6 +45,11 @@ impl<'a> Reader<'a> {
         core::str::from_utf8(self.bytes(n)?).map_err(|_| Error::BadString)
     }
 
+    /// Everything left.
+    pub(crate) fn rest(&mut self) -> &'a [u8] {
+        core::mem::take(&mut self.buf)
+    }
+
     pub(crate) fn finish(&self) -> Result<(), Error> {
         if self.buf.is_empty() {
             Ok(())

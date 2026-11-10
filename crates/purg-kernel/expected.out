@@ -11,6 +11,8 @@ kernel: a lock holder is never preempted, and waiters still get turns
 kernel: tsleep(50ms) woke on time with the cpu idle
 kernel: console: waiting for input
 kernel: console read "hello" then end of input
+kernel: #9/host: 9P2000 through 9P2000.u (the device answered 9P2000 with "unknown")
+kernel: #9/host mounted on /n/host
 kernel: run echo hello world
 hello world
 kernel: ok
@@ -84,9 +86,48 @@ kernel: rtc: read, set and put back
 eia0: this line went to /dev/eia0
 kernel: eia0: ctl, status and data ok
 @sh-corpus
-kernel: mount the hosted emu's export on /n/host
-/n/host/lib/probe/hello.txt
-/n/host/README
+kernel: run ls /n/host
+/n/host/hello.txt
+/n/host/many
+/n/host/sub
+kernel: ok
+kernel: run cat /n/host/hello.txt
+hello from the host
+kernel: ok
+kernel: run cat /n/host/sub/inner.txt
+inner file
+kernel: ok
+kernel: run sh -c ls /n/host/many | wc -l
+    300
+kernel: ok
+kernel: run sh -c echo written by the kernel > /n/host/new.txt
+kernel: ok
+kernel: run cat /n/host/new.txt
+written by the kernel
+kernel: ok
+kernel: run mv /n/host/new.txt /n/host/kept.txt
+kernel: ok
+kernel: run chmod 600 /n/host/kept.txt
+kernel: ok
+kernel: run cp /bin/sh.wasm /n/host/big.wasm
+kernel: ok
+kernel: run cmp /bin/sh.wasm /n/host/big.wasm
+kernel: ok
+kernel: run rm /n/host/big.wasm
+kernel: ok
+kernel: run mkdir /n/host/newdir
+kernel: ok
+kernel: run cat /n/host/nonexistent
+cat: /n/host/nonexistent: file does not exist
+kernel: failed as expected: fail:errors
+kernel: run rm /n/host/sub
+rm: /n/host/sub: directory not empty
+kernel: failed as expected: fail:errors
+kernel: 9p: stat, wstat and errors
+kernel: ok
+kernel: mount the hosted emu's export on /n/remote
+/n/remote/lib/probe/hello.txt
+/n/remote/README
 kernel: ok
 kernel: run /bin/test/net.wasm --udp (the host's UDP echo)
 ok udp_echo

@@ -1,9 +1,14 @@
-//! virtio-mmio (version 2) transports and a virtio-net driver.
+//! virtio-mmio (version 2) transports, a virtio-net driver and a
+//! virtio-9p driver.
 //!
 //! The transports come from the DTB ([`find`]); each has a register window
 //! in the device window and an SPI. [`VirtioNet`] drives a network card
 //! with one receive and one transmit queue of [`QUEUE`] buffers each, and
-//! implements [`smoltcp::phy::Device`] for [`crate::net`].
+//! implements [`smoltcp::phy::Device`] for [`crate::net`]. [`Virtio9p`]
+//! drives a 9P transport (QEMU's `-device virtio-9p-device`): one request
+//! queue on which each request is a chain of a T-message the device reads
+//! and a buffer it writes the R-message into; [`crate::p9`] makes it
+//! blocking.
 //!
 //! Memory: queues and buffers come from the heap, so the CPU sees them
 //! through the linear map and the device gets their physical addresses
@@ -17,6 +22,8 @@
 //! instead of a timer: register a handler that calls [`Mmio::ack`].
 
 use alloc::alloc::{Layout, alloc_zeroed};
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::arch::asm;
 use core::ptr::{read_volatile, write_volatile};
 
@@ -28,6 +35,8 @@ const VERSION: u32 = 2;
 
 /// The virtio device ID of a network card.
 pub const DEVICE_NET: u32 = 1;
+/// The virtio device ID of a 9P transport.
+pub const DEVICE_9P: u32 = 9;
 
 // Register offsets.
 const REG_MAGIC: usize = 0x000;
@@ -58,6 +67,10 @@ const FEATURES_OK: u32 = 8;
 const F_MAC: u64 = 1 << 5;
 const F_VERSION_1: u64 = 1 << 32;
 
+/// virtio-9p: the configuration space has a mount tag.
+const F_MOUNT_TAG: u64 = 1 << 0;
+
+const DESC_NEXT: u16 = 1;
 const DESC_WRITE: u16 = 2;
 
 /// Buffers per queue.
@@ -86,6 +99,12 @@ impl Mmio {
     fn read(&self, off: usize) -> u32 {
         // SAFETY: `new` requires a mapped window; offsets are in it.
         unsafe { read_volatile((self.base + off) as *const u32) }
+    }
+
+    /// A byte of the configuration space, which is byte-addressed.
+    fn read8(&self, off: usize) -> u8 {
+        // SAFETY: as in `read`.
+        unsafe { read_volatile((self.base + off) as *const u8) }
     }
 
     fn write(&self, off: usize, val: u32) {
@@ -470,6 +489,214 @@ impl smoltcp::phy::TxToken for TxToken<'_> {
         let out = f(&mut buf);
         let _ = self.q.push_frame(&buf);
         out
+    }
+}
+
+/// Requests a [`Virtio9p`] keeps in flight at once.
+pub const P9_SLOTS: usize = 16;
+/// Descriptors on the 9P queue: two per request.
+const P9_DESCS: usize = 2 * P9_SLOTS;
+
+/// A virtio 9P transport. Each of [`P9_SLOTS`] slots owns two descriptors
+/// (`2i`, the T-message, device-readable, chained to `2i+1`, the R-message
+/// buffer, device-writable) and two `msize` buffers, so a request is a copy
+/// in, a kick, and later a copy out. The device may answer in any order;
+/// [`Virtio9p::pop`] returns each reply with the cookie its request was
+/// submitted with.
+pub struct Virtio9p {
+    mmio: Mmio,
+    tag: String,
+    /// The largest message, each way.
+    msize: usize,
+    /// Each buffer's size: `msize` in whole cache lines.
+    bsize: usize,
+    desc: usize,
+    avail: usize,
+    used: usize,
+    bufs: usize,
+    avail_idx: u16,
+    last_used: u16,
+    /// Bit `i` set means slot `i` is free.
+    free: u32,
+    cookies: [u64; P9_SLOTS],
+}
+
+impl Virtio9p {
+    /// Resets and brings up the 9P transport at `t`, with buffers for
+    /// messages of up to `msize` bytes.
+    pub fn new(t: &Transport, msize: usize) -> Result<Virtio9p, &'static str> {
+        let m = t.mmio;
+        if m.device_id() != Some(DEVICE_9P) {
+            return Err("not a virtio-9p device");
+        }
+        m.write(REG_STATUS, 0);
+        while m.read(REG_STATUS) != 0 {
+            core::hint::spin_loop();
+        }
+        m.write(REG_STATUS, ACKNOWLEDGE);
+        m.write(REG_STATUS, ACKNOWLEDGE | DRIVER);
+        let offered = device_features(&m);
+        if offered & F_VERSION_1 == 0 {
+            return Err("virtio-9p is not a version 1 device");
+        }
+        let want = (F_VERSION_1 | F_MOUNT_TAG) & offered;
+        driver_features(&m, want);
+        m.write(REG_STATUS, ACKNOWLEDGE | DRIVER | FEATURES_OK);
+        if m.read(REG_STATUS) & FEATURES_OK == 0 {
+            return Err("virtio-9p rejected features");
+        }
+        // struct virtio_9p_config { le16 tag_len; u8 tag[tag_len]; }
+        let tag = if want & F_MOUNT_TAG != 0 {
+            let len = u16::from_le_bytes([m.read8(REG_CONFIG), m.read8(REG_CONFIG + 1)]) as usize;
+            let bytes: Vec<u8> = (0..len).map(|i| m.read8(REG_CONFIG + 2 + i)).collect();
+            String::from_utf8(bytes).map_err(|_| "virtio-9p mount tag is not UTF-8")?
+        } else {
+            String::new()
+        };
+
+        m.write(REG_QUEUE_SEL, 0);
+        if (m.read(REG_QUEUE_NUM_MAX) as usize) < P9_DESCS {
+            return Err("virtio queue is too small");
+        }
+        let bsize = msize.next_multiple_of(64);
+        let desc = dma(16 * P9_DESCS);
+        let avail = dma(4 + 2 * P9_DESCS + 2);
+        let used = dma(4 + 8 * P9_DESCS + 2);
+        let bufs = dma(2 * bsize * P9_SLOTS);
+        let set = |lo: usize, va: usize| {
+            let pa = mmu::virt_to_phys(va) as u64;
+            m.write(lo, pa as u32);
+            m.write(lo + 4, (pa >> 32) as u32);
+        };
+        m.write(REG_QUEUE_NUM, P9_DESCS as u32);
+        set(REG_QUEUE_DESC, desc);
+        set(REG_QUEUE_AVAIL, avail);
+        set(REG_QUEUE_USED, used);
+        // The rings were zeroed through the cache; the device reads memory.
+        dcache_clean(avail, 4 + 2 * P9_DESCS + 2);
+        dcache_clean(used, 4 + 8 * P9_DESCS + 2);
+        m.write(REG_QUEUE_READY, 1);
+        m.write(REG_STATUS, ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK);
+        fence();
+        Ok(Virtio9p {
+            mmio: m,
+            tag,
+            msize,
+            bsize,
+            desc,
+            avail,
+            used,
+            bufs,
+            avail_idx: 0,
+            last_used: 0,
+            free: (1u32 << P9_SLOTS) - 1,
+            cookies: [0; P9_SLOTS],
+        })
+    }
+
+    /// The mount tag (`mount_tag=` in QEMU), empty if the device has none.
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    pub fn msize(&self) -> usize {
+        self.msize
+    }
+
+    /// The device's registers, for an interrupt handler's [`Mmio::ack`].
+    pub fn mmio(&self) -> Mmio {
+        self.mmio
+    }
+
+    fn out_buf(&self, slot: usize) -> usize {
+        self.bufs + 2 * slot * self.bsize
+    }
+
+    fn in_buf(&self, slot: usize) -> usize {
+        self.out_buf(slot) + self.bsize
+    }
+
+    fn write_desc(&self, id: usize, addr: usize, len: usize, flags: u16, next: u16) {
+        let d = self.desc + id * 16;
+        // SAFETY: `d` is descriptor `id` of this queue's table.
+        unsafe {
+            write_volatile(d as *mut u64, mmu::virt_to_phys(addr) as u64);
+            write_volatile((d + 8) as *mut u32, len as u32);
+            write_volatile((d + 12) as *mut u16, flags);
+            write_volatile((d + 14) as *mut u16, next);
+        }
+    }
+
+    /// Hands the T-message `req` to the device, to be answered with
+    /// `cookie`. `Ok(false)` when every slot is in use.
+    pub fn submit(&mut self, req: &[u8], cookie: u64) -> Result<bool, &'static str> {
+        if req.len() > self.msize {
+            return Err("9P message larger than msize");
+        }
+        let Some(slot) = (0..P9_SLOTS).find(|i| self.free & (1 << i) != 0) else {
+            return Ok(false);
+        };
+        self.free &= !(1 << slot);
+        self.cookies[slot] = cookie;
+        let (out, inb) = (self.out_buf(slot), self.in_buf(slot));
+        // SAFETY: the slot is free, so the device is not using its buffers.
+        unsafe { core::ptr::copy_nonoverlapping(req.as_ptr(), out as *mut u8, req.len()) };
+        dcache_clean(out, req.len());
+        // No dirty line may be written back over what the device writes.
+        dcache_inval(inb, self.bsize);
+        let head = 2 * slot;
+        self.write_desc(head, out, req.len(), DESC_NEXT, (head + 1) as u16);
+        self.write_desc(head + 1, inb, self.msize, DESC_WRITE, 0);
+        let ring = self.avail_idx as usize % P9_DESCS;
+        // SAFETY: the entry is in this queue's available ring.
+        unsafe { write_volatile((self.avail + 4 + ring * 2) as *mut u16, head as u16) };
+        fence();
+        self.avail_idx = self.avail_idx.wrapping_add(1);
+        // SAFETY: the index field of the available ring.
+        unsafe { write_volatile((self.avail + 2) as *mut u16, self.avail_idx) };
+        dcache_clean(self.desc, 16 * P9_DESCS);
+        dcache_clean(self.avail, 4 + 2 * P9_DESCS + 2);
+        fence();
+        self.mmio.write(REG_QUEUE_NOTIFY, 0);
+        Ok(true)
+    }
+
+    /// The next reply the device has written, with its request's cookie.
+    /// Its slot is free again.
+    pub fn pop(&mut self) -> Option<(u64, Vec<u8>)> {
+        loop {
+            dcache_inval(self.used, 4 + 8 * P9_DESCS + 2);
+            // SAFETY: the index field of the used ring, just invalidated.
+            let idx = unsafe { read_volatile((self.used + 2) as *const u16) };
+            if idx == self.last_used {
+                return None;
+            }
+            let elem = self.used + 4 + (self.last_used as usize % P9_DESCS) * 8;
+            // SAFETY: the element is in the used ring.
+            let (head, len) = unsafe {
+                (
+                    read_volatile(elem as *const u32) as usize,
+                    read_volatile((elem + 4) as *const u32) as usize,
+                )
+            };
+            self.last_used = self.last_used.wrapping_add(1);
+            let slot = head / 2;
+            if head % 2 != 0 || slot >= P9_SLOTS || self.free & (1 << slot) != 0 {
+                continue;
+            }
+            let inb = self.in_buf(slot);
+            let len = len.min(self.msize);
+            dcache_inval(inb, len);
+            // SAFETY: the device wrote `len` bytes of this slot's reply
+            // buffer, and the slot stays ours until it is freed below.
+            let mut reply = unsafe { core::slice::from_raw_parts(inb as *const u8, len) }.to_vec();
+            // The 9P size is what counts; the device may report more.
+            if let Some(&[a, b, c, d]) = reply.get(..4) {
+                reply.truncate(u32::from_le_bytes([a, b, c, d]) as usize);
+            }
+            self.free |= 1 << slot;
+            return Some((self.cookies[slot], reply));
+        }
     }
 }
 
