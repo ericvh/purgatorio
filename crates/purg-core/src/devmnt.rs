@@ -295,21 +295,24 @@ impl DevMnt {
         noauth: bool,
         secret: impl Fn(&[u8]) -> Result<Vec<u8>>,
     ) -> Result<Chan> {
-        let session = self.start(fd, MAX_MSIZE)?;
-        let established = (|| {
-            let buf = session.rpc(Fcall::Tversion {
+        // The version exchange runs on the caller's thread, with `NOTAG`
+        // as version(5) requires: tags belong to the session it starts.
+        let msize = sync_rpc(
+            &fd,
+            MAX_MSIZE,
+            Fcall::Tversion {
                 msize: MAX_MSIZE,
                 version: VERSION,
-            })?;
-            match session.decode(&buf)? {
-                Fcall::Rversion { msize: m, version } if version == VERSION => {
-                    session.msize.store(m.max(IOHDRSZ), Ordering::Release);
-                    session
-                        .iounit
-                        .store(m.saturating_sub(IOHDRSZ), Ordering::Release);
+            },
+            |f| match f {
+                Fcall::Rversion { msize, version } if version == VERSION => {
+                    Ok(msize.clamp(IOHDRSZ, MAX_MSIZE))
                 }
-                _ => return Err(Error::new(BAD_VERSION)),
-            }
+                _ => Err(Error::new(BAD_VERSION)),
+            },
+        )?;
+        let session = self.start(fd, msize)?;
+        let established = (|| {
             let afid = if noauth {
                 NOFID
             } else {
