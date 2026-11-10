@@ -60,6 +60,7 @@ ok stream_pipe_file
 ok stream_file_pipe
 ok stream_short_write
 ok stream_kill
+m3: interrupted
 kernel: ok
 kernel: run /bin/test/net.wasm
 ok cs
@@ -86,6 +87,7 @@ kernel: rtc: read, set and put back
 eia0: this line went to /dev/eia0
 kernel: eia0: ctl, status and data ok
 @sh-corpus
+kernel: the tests left no threads or memory behind
 kernel: run ls /n/host
 /n/host/hello.txt
 /n/host/many
