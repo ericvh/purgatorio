@@ -92,12 +92,31 @@ pub fn exit_method(fdt: &Fdt<'_>, info: &BootInfo<'_>) -> ExitMethod {
     ExitMethod::Psci { smc }
 }
 
-/// The heap: the largest stretch of `ram` from `start` (the end of the
-/// image) on that overlaps none of `reserved` (the DTB, an initrd), with
-/// its base page-aligned. At most four reservations are honoured, and
-/// nothing is allocated: there is no heap yet.
+/// The most stretches [`free_regions`] returns.
+pub const FREE_REGIONS: usize = 4;
+
+/// The heap as one piece: the largest of [`free_regions`].
 pub fn heap_region(ram: Region, start: usize, reserved: &[Region]) -> Region {
     let mut best = Region { base: 0, size: 0 };
+    for r in free_regions(ram, start, reserved) {
+        if r.size > best.size {
+            best = r;
+        }
+    }
+    best
+}
+
+/// The free RAM: the stretches of `ram` from `start` (the end of the
+/// image) on that overlap none of `reserved` (the DTB, an initrd), each
+/// with its base page-aligned, in address order; unused entries are
+/// empty. At most four reservations are honoured, the smallest stretch is
+/// dropped if there are more than [`FREE_REGIONS`], and nothing is
+/// allocated: there is no heap yet.
+pub fn free_regions(ram: Region, start: usize, reserved: &[Region]) -> [Region; FREE_REGIONS] {
+    let none = Region { base: 0, size: 0 };
+    // Four cuts leave at most five stretches.
+    let mut found = [none; FREE_REGIONS + 1];
+    let mut count = 0;
     let mut base = start;
     let mut cuts = [Region { base: 0, size: 0 }; 4];
     let n = reserved.len().min(cuts.len());
@@ -112,15 +131,22 @@ pub fn heap_region(ram: Region, start: usize, reserved: &[Region]) -> Region {
             continue;
         }
         let top = r.base.min(ram.end());
-        if top > base && top - base > best.size {
-            best = Region {
+        if top > base {
+            found[count] = Region {
                 base,
                 size: top - base,
             };
+            count += 1;
         }
         base = base.max(r.end().next_multiple_of(PAGE_SIZE));
     }
-    best
+    if count > FREE_REGIONS {
+        let smallest = (0..count).min_by_key(|&i| found[i].size).unwrap_or(0);
+        found.copy_within(smallest + 1.., smallest);
+    }
+    let mut out = [none; FREE_REGIONS];
+    out.copy_from_slice(&found[..FREE_REGIONS]);
+    out
 }
 
 #[cfg(test)]
@@ -177,6 +203,47 @@ mod tests {
         assert_eq!(
             heap_region(ram, 0x4100_0000, &[r(0x5ff0_0000, 0x10_0000)]),
             r(0x4100_0000, 0x1ef0_0000)
+        );
+    }
+
+    #[test]
+    fn free_regions_are_every_stretch() {
+        let ram = r(0x4000_0000, 0x0200_0000);
+        let none = r(0, 0);
+        assert_eq!(
+            free_regions(ram, 0x40c0_0000, &[]),
+            [r(0x40c0_0000, 0x0140_0000), none, none, none]
+        );
+        // An initrd and a DTB after it, as QEMU places them in 32 MiB:
+        // the RAM on both sides is free.
+        assert_eq!(
+            free_regions(
+                ram,
+                0x40c0_0000,
+                &[r(0x4100_0000, 0x78_dc00), r(0x4180_0000, 0x10_0000)]
+            ),
+            [
+                r(0x40c0_0000, 0x40_0000),
+                r(0x4178_e000, 0x7_2000),
+                r(0x4190_0000, 0x70_0000),
+                none
+            ]
+        );
+        // Five stretches: the smallest is dropped.
+        let cuts = [
+            r(0x40d0_0000, 0x1000),
+            r(0x40e0_0000, 0x1000),
+            r(0x40e0_3000, 0x1000),
+            r(0x4100_0000, 0x1000),
+        ];
+        assert_eq!(
+            free_regions(ram, 0x40c0_0000, &cuts),
+            [
+                r(0x40c0_0000, 0x10_0000),
+                r(0x40d0_1000, 0xf_f000),
+                r(0x40e0_4000, 0x1f_c000),
+                r(0x4100_1000, 0xff_f000)
+            ]
         );
     }
 }

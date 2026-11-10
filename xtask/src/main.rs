@@ -10,7 +10,7 @@
 //!   `aarch64-unknown-none`, boot it in `qemu-system-aarch64` (or `$QEMU`)
 //!   under TCG (or, with `--kvm`, under KVM) and check its serial output
 //!   and exit status.
-//! - `kernel [--kvm] [--names]`: build `purg-kernel` for `aarch64-unknown-none` and
+//! - `kernel [--kvm] [--names] [--mem SIZE]`: build `purg-kernel` for `aarch64-unknown-none` and
 //!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
 //!   `--kvm`, once under KVM), checking each run's exit status and serial
 //!   output against `crates/purg-kernel/expected.out`. Each run types
@@ -22,9 +22,16 @@
 //!   also shares a fresh directory under `target/kernel-9p/` over
 //!   virtio-9p, which the kernel mounts on `/n/host` and works on, and
 //!   whose final contents are checked here.
+//!   `--mem` sets QEMU's `-m` (512M by default). `KERNEL_MEMSTAT=1` in
+//!   the environment adds `memstat` to the bootargs: the kernel then
+//!   prints `kernel: mem ...` lines about its memory use, which the
+//!   comparison skips.
 //! - `initrd [--names]`: `build-root`, then pack `root/bin` and `root/lib`
 //!   into a deterministic ustar archive at `target/initrd/root.tar`, the
 //!   kernel's root file system.
+//! - `size [--guests]`: build `purg-kernel` and print its section sizes,
+//!   its code by crate, and the sizes of the guests in `root/bin` (with
+//!   `--guests`, one line per module). See `docs/footprint.md`.
 //!
 //! The probe's and the kernel's images leave out the guests' `.names`
 //! files, except the test guests'; `--names` puts them all in, so that
@@ -33,6 +40,7 @@
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
 //!   `wasm32-wasip1`, denying warnings.
 
+mod size;
 mod tar;
 mod wasm;
 
@@ -673,10 +681,58 @@ fn elf_to_image(elf: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Options of `xtask kernel`.
+struct KernelOpts {
+    kvm: bool,
+    /// QEMU's `-m`.
+    mem: String,
+}
+
+impl KernelOpts {
+    /// `--mem SIZE`, and the flags [`image_flags`] takes.
+    fn parse(args: &[String]) -> Option<KernelOpts> {
+        let mut mem = String::from("512M");
+        let mut rest = Vec::new();
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
+            match a.as_str() {
+                "--mem" => mem = it.next()?.clone(),
+                _ => rest.push(a.clone()),
+            }
+        }
+        let kvm = image_flags(&rest, true)?;
+        Some(KernelOpts { kvm, mem })
+    }
+}
+
+/// The kernel's output as compared with the golden file: without the
+/// `memstat` lines, and with the size of the heap test's large block,
+/// which follows the RAM size, left out.
+fn kernel_normalize(serial: &str) -> String {
+    let mut out = String::new();
+    for l in serial.lines() {
+        if l.starts_with("kernel: mem ") {
+            continue;
+        }
+        match (l.strip_prefix("kernel: heap: "), l.find(" MiB block ok")) {
+            (Some(_), Some(end)) => {
+                let start = l[..end].rfind(' ').map_or(0, |i| i + 1);
+                out.push_str(&l[..start]);
+                out.push('N');
+                out.push_str(&l[end..]);
+            }
+            _ => out.push_str(l),
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Builds `purg-kernel` and boots it under each QEMU configuration (TCG,
 /// or KVM with `--kvm`), checking the exit status, the boot EL line and
 /// the rest of the serial output against `crates/purg-kernel/expected.out`.
-fn kernel(kvm: bool) -> Result<()> {
+fn kernel(opts: &KernelOpts) -> Result<()> {
+    let kvm = opts.kvm;
     let ws = workspace();
     let initrd = initrd()?;
     let initrd = initrd
@@ -702,7 +758,7 @@ fn kernel(kvm: bool) -> Result<()> {
     fs::write(&image, elf_to_image(&elf)?).map_err(|e| format!("{}: {e}", image.display()))?;
     let golden = ws.join("crates/purg-kernel/expected.out");
     let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
-    let want = expand_golden(&want, "kernel", &ws)?;
+    let want = kernel_normalize(&expand_golden(&want, "kernel", &ws)?);
     let runs: Vec<&KernelRun> = if kvm {
         if env::consts::ARCH != "aarch64" || !Path::new("/dev/kvm").exists() {
             eprintln!("kernel: skipping the KVM run: needs an aarch64 host with /dev/kvm");
@@ -749,7 +805,7 @@ fn kernel(kvm: bool) -> Result<()> {
             if memstat { " memstat" } else { "" }
         );
         let mut args: Vec<&str> = k.args.to_vec();
-        args.extend(["-m", "512M", "-nographic"]);
+        args.extend(["-m", &opts.mem, "-nographic"]);
         if k.initrd {
             args.extend(["-initrd", &initrd]);
         }
@@ -791,7 +847,7 @@ fn kernel(kvm: bool) -> Result<()> {
         let echo = format!("{}{KERNEL_ECHO}", KERNEL_INPUT[0].prompt);
         let echoed_typing = r.serial.contains(&echo);
         let shown = r.serial.replacen(&echo, KERNEL_INPUT[0].prompt, 1);
-        let rest: String = shown
+        let rest: String = kernel_normalize(&shown)
             .lines()
             .filter(|l| !l.starts_with("kernel: booted at EL") && !l.starts_with("kernel: root "))
             .filter(|l| !l.starts_with("kernel: mem "))
@@ -1067,6 +1123,33 @@ impl UdpEcho {
     }
 }
 
+/// Builds the kernel over the `root/` that is there and prints the size
+/// report (see [`size`]).
+fn size_report(args: &[String]) -> Result<()> {
+    let each = match args {
+        [] => false,
+        [a] if a == "--guests" => true,
+        _ => return Err(String::from("usage: cargo xtask size [--guests]")),
+    };
+    let ws = workspace();
+    run(cargo().current_dir(&ws).args([
+        "build",
+        "--quiet",
+        "-p",
+        "purg-kernel",
+        "--target",
+        PROBE_TARGET,
+        "--profile",
+        "kernel",
+    ]))?;
+    size::kernel(
+        &ws.join("target")
+            .join(PROBE_TARGET)
+            .join("kernel/purg-kernel"),
+    )?;
+    size::guests(&ws.join("root"), each)
+}
+
 fn check_wasm(files: &[String]) -> Result<()> {
     for f in files {
         let bytes = fs::read(f).map_err(|e| format!("{f}: {e}"))?;
@@ -1243,13 +1326,16 @@ fn main() -> ExitCode {
             Some(kvm) => probe(kvm).map(|()| ExitCode::SUCCESS),
             None => Err(String::from("usage: cargo xtask probe [--kvm] [--names]")),
         },
-        Some("kernel") => match image_flags(&rest, true) {
-            Some(kvm) => kernel(kvm).map(|()| ExitCode::SUCCESS),
-            None => Err(String::from("usage: cargo xtask kernel [--kvm] [--names]")),
+        Some("kernel") => match KernelOpts::parse(&rest) {
+            Some(o) => kernel(&o).map(|()| ExitCode::SUCCESS),
+            None => Err(String::from(
+                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE]",
+            )),
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
+        Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] [--names] | kernel [--kvm] [--names] | initrd [--names] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | size [--guests] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
