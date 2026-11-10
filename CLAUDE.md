@@ -30,7 +30,8 @@ cargo xtask clippy-guests        # lint the SDK and every guest for wasm32-wasip
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --target aarch64-unknown-none \
-  -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
+  -p purg-abi -p purg-styx -p purg-auth -p purg-platform -p purg-core -p purg-vm \
+  -p purg-vm-wasmi -p purg-aarch64
 RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \
   cargo test -p purg-core --features std --test loom --release
 ```
@@ -43,8 +44,8 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 
 ## Rules
 
-- **Shared crates are `no_std` + `alloc`:** `purg-abi`, `purg-styx`, `purg-aarch64`,
-  `purg-platform`, `purg-core`, `purg-vm`, `purg-vm-wasmi`. They must build for
+- **Shared crates are `no_std` + `alloc`:** `purg-abi`, `purg-styx`, `purg-auth`,
+  `purg-aarch64`, `purg-platform`, `purg-core`, `purg-vm`, `purg-vm-wasmi`. They must build for
   `aarch64-unknown-none` unchanged; the kernel reuses them. Only `purg-emu`
   and `purg-vm-wasmtime` use `std`.
 - **No `cfg(target_os)` outside `crates/purg-emu/src/host/`.** POSIX-common
@@ -105,7 +106,11 @@ named `<name>`, added to the workspace `members`.
   conflicts resolved at that point. The owner reviews `next` and promotes it
   by fast-forwarding `main` to it (`git push origin next:main`), so `main`
   and `next` share history. Never merge or push to `main` directly, and
-  never force-push `next`. Changes to shared core code (`purg-core`, the
+  never force-push `next`. Keep a branch current by rebasing onto `next`,
+  not by merging `next` into it: the repository only allows rebase merges,
+  and a branch with a merge commit cannot be landed. If a pushed branch must
+  be rebased and a force-push is not permitted, push the rebased commits as
+  a new branch and open a replacement pull request. Changes to shared core code (`purg-core`, the
   ABI, kernel locks and scheduling) are flagged for the owner's review
   before promotion.
 - Work moves through milestones without waiting for review between them.
