@@ -266,6 +266,33 @@ fn mash_console_history() {
     }
 }
 
+/// The authentication tools beyond the corpus's `auth.sh` flow
+/// (`docs/auth.md`): factotum, countersigning, keysrv and passwd, keyfs's
+/// sealed file, crypt, secstore and netkey. Each `/lib/test/auth/*.sh` is
+/// compared with its `.out` file. They run here only, not in the probe or
+/// the kernel, to keep the QEMU runs short.
+#[test]
+fn auth_tools() {
+    let dir = root().join("lib/test/auth");
+    let mut scripts: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".sh").map(String::from)
+        })
+        .collect();
+    scripts.sort();
+    assert_eq!(scripts, ["certs", "crypt", "login"]);
+    for vm in VMS {
+        for s in &scripts {
+            let want = std::fs::read_to_string(dir.join(format!("{s}.out"))).unwrap();
+            let o = emu(vm, &["sh", &format!("/lib/test/auth/{s}.sh")], b"");
+            assert_eq!(stdout(&o), want, "{vm} {s}.sh");
+            assert!(o.status.success(), "{vm} {s}.sh: {o:?}");
+        }
+    }
+}
+
 /// The plan's M2 session, typed at the login shell.
 #[test]
 fn interactive_session() {

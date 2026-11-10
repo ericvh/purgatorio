@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auth-keysrv"
+description = "auth/keysrv: change passwords over the network"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "keysrv"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true

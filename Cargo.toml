@@ -18,12 +18,25 @@ members = [
     "appl/cmd/install/proto2list",
     "appl/cmd/disk/mkext",
     "appl/cmd/disk/mkfs",
+    "appl/cmd/auth/changelogin",
+    "appl/cmd/auth/countersigner",
+    "appl/cmd/auth/createsignerkey",
+    "appl/cmd/auth/factotum",
+    "appl/cmd/auth/getpk",
+    "appl/cmd/auth/keyfs",
+    "appl/cmd/auth/keysrv",
+    "appl/cmd/auth/mkauthinfo",
+    "appl/cmd/auth/passwd",
+    "appl/cmd/auth/secstore",
+    "appl/cmd/auth/signer",
+    "appl/cmd/auth/verify",
     # Libraries shared by commands, outside the globbed directories.
     "appl/archive",
+    "appl/authlib",
     "xtask",
 ]
 # Matched by appl/cmd/* but hold crates, with no Cargo.toml of their own.
-exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk"]
+exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/auth"]
 
 [workspace.package]
 version = "0.1.0"
@@ -45,6 +58,7 @@ purg-aarch64 = { path = "crates/purg-aarch64" }
 purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
 appl-archive = { path = "appl/archive" }
+authlib = { package = "appl-authlib", path = "appl/authlib" }
 regexp = { package = "appl-lib-regexp", path = "appl/lib/regexp" }
 
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }

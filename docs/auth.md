@@ -174,12 +174,12 @@ tells an attacker nothing they do not already hold.
 
 The kernel's own mount (`mount` with `afd = -1`) and the SDK
 (`purgatorio::auth`, used by `mount`, `import` and `amount`) build the
-proof from the first source that has a key:
+proof from the authinfo named by `-k keyfile` on `mount` or `import`, or
+else from the first source that has a key:
 
 1. the guest factotum, `/mnt/factotum/rpc` (SDK only);
 2. `#¤`: its seed, plus the certificate loaded into it with `cert ...`;
-3. an authinfo: `-k keyfile` on `mount`/`import`, else
-   `/usr/<user>/keyring/default`;
+3. the authinfo `/usr/<user>/keyring/default`;
 4. `/usr/<user>/key`, then `/lib/test/auth.key` (direct key, kind 0).
 
 The ABI version goes from 0.5 to 0.6, since a guest can now write a v2
@@ -276,18 +276,18 @@ The Inferno page each one takes its role from is in brackets.
 | tool | role |
 |---|---|
 | `auth/createsignerkey [-f keyfile] [name]` | [createsignerkey(8)] Makes a signer seed (default `/keydb/signerkey`) and prints its public key as a key-list line `<hex> <name>`, ready to append to `lib/keys/signers`. |
-| `auth/getpk [file ...]` | [getpk(8)] Prints the public key of a seed file, a public key file or an authinfo, in hex. |
+| `auth/getpk file ...` | [getpk(8)] Prints the public key of a seed file, a public key file (named `*.pub`), an authinfo or a certificate, in hex. |
 | `auth/verify [-s signers] [-r revoked] [-u name] [-t time] file` | [verify(8)] Checks the certificate in a file (a certificate or an authinfo) against a signer list and a revocation list, and prints its name, key, expiry and signers. Exits with the error a server would give. |
 | `auth/mkauthinfo [-f signerkey] [-e expires] user keyfile` | [mkauthinfo(8)] Makes a user key and a certificate on the signer's machine and writes an authinfo. |
 | `auth/countersigner [-f key] file` | [countersigner(8)] Adds this key's signature to the certificate in a file and prints the result. |
 | `auth/keyfs [-m mntpt] [-C m,t] [keyfile]` | [keyfs(4)] Serves the key database (default `/keydb/keys` at `/mnt/keys`), sealed with ChaCha20-Poly1305 under an Argon2id key from the master password (read on standard input). Each user is a directory with `secret`, `expire` and `status`. `mkdir` adds a user, `rm` removes one, and every change rewrites the file. |
 | `auth/changelogin [-m mntpt] [-C m,t] [-e expires] user` | [changelogin(8)] Run on the signer: reads a password, makes the verifier record and writes the user's entry in keyfs. |
 | `auth/signer [-f signerkey] [-m mntpt] [-e days]` | [logind(8), signer(8)] The certificate server, for one conversation on fd 0 (run under `listen` or `styxlisten`). Checks the password with `pglogin1` and signs the client's key. The expiry is the account's, capped at `days` from now (default 365). |
-| `getauthinfo [-u user] [-e days] signer keyname` | [getauthinfo(8)] Reads the password, makes a key, gets it certified by `signer` (a dial string) and writes the authinfo `keyname` (a path, or a name under `/usr/<user>/keyring`). |
-| `auth/keysrv [-m mntpt]` | [keysrv(4)] The password-change server, for one conversation on fd 0. |
-| `auth/passwd [-u user] server` | [passwd(1)] Reads the old password and the new one twice, and changes it through `keysrv`. |
+| `getauthinfo [-s signer] [-u user] keyname` | [getauthinfo(8)] Reads the password, makes a key, gets it certified by the signer (a dial string, default `$signer`) and writes the authinfo `keyname` (a path, or a name under `/usr/<user>/keyring`). It checks that the certificate is for its key and name and is signed by the key the signer sent. |
+| `auth/keysrv [-f signerkey] [-m mntpt]` | [keysrv(4)] The password-change server, for one conversation on fd 0. The signer key only salts the answers for unknown users. |
+| `auth/passwd [-s server] [-u user]` | [passwd(1)] Reads the old password and the new one twice, and changes it through `keysrv` (default `$signer`). The new verifier is made on the client. |
 | `auth/factotum [-m mntpt] [authinfo ...]` | [factotum(4)] A guest agent with Plan 9's `ctl` and `rpc` files (below). |
-| `auth/secstore [-s dir] [-C m,t] [-g file \| -G file \| -p file \| -r file]` | [secstore(1)] Files encrypted under a password, kept in a store directory (default `/usr/<user>/secstore`, which can be an authenticated import). Without an option it lists the store. |
+| `auth/secstore [-s dir] [-C m,t] [-g file \| -G file \| -p file \| -r file]` | [secstore(1)] Files encrypted under a password, kept in a store directory (default `/usr/<user>/secstore`, which can be an authenticated import). `-g` gets a file into the current directory, `-G` prints it, `-p` puts one, `-r` removes one, and no option lists the store. |
 | `crypt [-d] [-C m,t] (-k secret \| -f secretfile)` | [crypt(1)] Encrypts or decrypts standard input to standard output with ChaCha20-Poly1305 in 64 KiB chunks, under an Argon2id key. |
 | `netkey` | [netkey(1)] Reads a password, then challenges, and prints each response: the first 8 hex digits of HMAC-SHA256 keyed with SHA-256 of the password. It replaces the DES SecureNet calculator; it is only useful with a server that computes the same. |
 
@@ -376,9 +376,41 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   its clients can write lets them add a signer. Export a subtree only when
   its `lib/keys` and `usr/*/key.pub` are not writable by its clients.
 - **Password guessing.** Online guessing is limited only by connection
-  rate; the signer does not lock accounts. The stored verifier is
+  rate; the signer does not lock accounts. The stand-in answer for an
+  unknown user uses the default Argon2id cost, so an account made with
+  another `-C` cost can be told apart from a missing one. The stored verifier is
   password-equivalent (see the scheme above); keyfs is the defence.
 - **Secrets in memory.** Seeds and verifiers are not zeroised after use.
+
+## Implementation and tests
+
+- `crates/purg-auth` (`no_std` + `alloc`): `cert`, `keys`, `attr`,
+  `proof` (the handshake and the server's check) and, behind the default
+  `login` feature, `login` (`pglogin1`, Argon2id, sealed files, `crypt`'s
+  chunks). The kernel (`purg-core`) uses it without `login`. It builds for
+  `aarch64-unknown-none` and `wasm32-wasip1`.
+- New dependencies, all MIT OR Apache-2.0, pure Rust, `no_std`, used with
+  default features off: `spake2` 0.4, `argon2` 0.5, `chacha20poly1305`
+  0.10, `hkdf` 0.12, `hmac` 0.12. They share `curve25519-dalek`, `sha2`
+  and `digest` with `ed25519-dalek`, which now has its `fast` feature (the
+  basepoint tables, built at compile time) for quicker signing in guests.
+- `purg-core`: `export.rs` reads the trust files per `Tauth` and checks
+  proofs with `purg_auth::proof::check`; `auth.rs` builds the kernel
+  mount's proof; `#¤` takes `cert`.
+- The SDK's `purgatorio::auth` builds proofs, talks to factotum and `#¤`,
+  and has the randomness, authinfo and stream helpers. `appl/authlib`
+  holds what the tools share: keyfs accounts, the `pglogin1` server and
+  client, and a small synthetic file server for keyfs and factotum.
+- Tests: unit tests in `purg-auth` (formats, the proof check, the exchange
+  over an in-memory pipe, sealing, a netkey test vector); `purg-core`'s
+  `m3` test mounts with a certificate from an authinfo and from `#¤`, and
+  is refused once the key is revoked; the sh corpus's `auth.sh` runs the
+  whole flow on loopback (keyfs, changelogin, signer, getauthinfo, an
+  authenticated export, expired, untrusted and revoked certificates, `-A`)
+  on both VMs, in the probe and in the kernel; `/lib/test/auth/*.sh`
+  (factotum, countersigning, keysrv and passwd, keyfs's sealed file, crypt,
+  secstore, netkey) run on both VMs in the emu only, to keep the QEMU runs
+  short.
 
 ## Open questions for the owner
 
