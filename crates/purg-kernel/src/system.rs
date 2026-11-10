@@ -35,6 +35,8 @@ use purg_vm::{Ctx, Engine};
 use purg_vm_wasmi::Wasmi;
 
 use crate::irq::SCHED;
+use crate::kernel::HEAP;
+use crate::memstat::{self, Meter};
 
 /// The booted system: an engine, the kernel and the boot namespace.
 pub struct System {
@@ -77,8 +79,10 @@ pub fn boot(
     for dc in natives {
         pgrp.bind(&format!("#{dc}"), "/dev", MAFTER)?;
     }
+    let engine = Arc::new(Wasmi::new()?);
+    memstat::report("booted");
     Ok(System {
-        engine: Arc::new(Wasmi::new()?),
+        engine,
         kernel,
         pgrp,
     })
@@ -205,7 +209,12 @@ impl System {
         let mut failed = 0;
         for &(argv, ok) in SCRIPT {
             self.say(&format!("kernel: run {}", argv.join(" ")));
-            let v = match (self.run(argv, None), ok) {
+            let meter = Meter::start();
+            let run = self.run(argv, None);
+            if let Some(m) = meter {
+                m.report(argv[0]);
+            }
+            let v = match (run, ok) {
                 (Ok(s), true) if s.is_empty() => Ok(String::from("ok")),
                 (Ok(s), false) if !s.is_empty() => Ok(format!("failed as expected: {s}")),
                 (Ok(s), _) => Err(format!("status {s:?}")),
@@ -227,7 +236,11 @@ impl System {
             let want = self
                 .read_file(&format!("{SH_CORPUS}/{base}.out"))
                 .unwrap_or_default();
+            let meter = Meter::start();
             let v = self.sh_script(&script, &want).map(|()| String::from("ok"));
+            if let Some(m) = meter {
+                m.report(base);
+            }
             self.verdict(&mut failed, v);
         }
         failed
@@ -235,6 +248,7 @@ impl System {
 
     /// Boots like the emu: `emuinit` runs `sh -l` on the console.
     pub fn interactive(&self) -> Result<String, Error> {
+        memstat::sampler();
         self.run(&["emuinit"], None)
     }
 }
@@ -266,7 +280,9 @@ pub fn start(
     let done = Rendez::new();
     let wake = done.clone();
     SCHED.spawn(Box::new(move || {
-        let platform = MetalPlatform::new(console, &SCHED, "purgatorio", rtc);
+        let platform = MetalPlatform::new(console, &SCHED, "purgatorio", rtc)
+            .with_heap(&HEAP)
+            .with_kproc_stack(crate::irq::KPROC_STACK_SIZE);
         let native = crate::devices::native(console, rtc, &platform.user());
         let p9 = host.and_then(host9p::open);
         let extra: Vec<Arc<dyn Dev>> = p9.iter().map(|d| d.clone() as Arc<dyn Dev>).collect();
@@ -291,6 +307,7 @@ pub fn start(
                 },
             },
         };
+        memstat::report("end");
         DONE.store(result, Ordering::Release);
         wake.wakeup();
     }));

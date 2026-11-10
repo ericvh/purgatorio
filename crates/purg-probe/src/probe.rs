@@ -37,9 +37,13 @@ mod embedded {
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-/// Stack for each kernel thread: wasmi and the host calls it makes need
-/// deep stacks. The guest's own stack is in its linear memory.
-const STACK_SIZE: usize = 2 << 20;
+/// Stack for each kernel thread, sized as in the kernel (see
+/// `purg-kernel`'s `irq.rs`): wasmi keeps the guest's stacks on the heap,
+/// and the deepest a thread went there was 22 KiB.
+const STACK_SIZE: usize = 256 << 10;
+
+/// Stack for the core's service kprocs (the mount readers).
+const KPROC_STACK_SIZE: usize = 64 << 10;
 
 static SCHED: Scheduler = Scheduler::new(STACK_SIZE);
 
@@ -317,7 +321,7 @@ extern "C" fn purg_main(dtb_phys: usize) -> ! {
     };
     // SAFETY: RAM after the image, clear of the DTB, is unused and
     // linear-mapped RW; this runs once, before any allocation.
-    unsafe { HEAP.init(heap_region(board().ram, boot::image_end(), &[dtb_region])) };
+    unsafe { HEAP.init(&[heap_region(board().ram, boot::image_end(), &[dtb_region])]) };
     exception::set_sync_handler(sync);
     exception::set_fatal_handler(fatal);
     irq::init(&info, &SCHED, TICK_HZ);
@@ -332,6 +336,8 @@ extern "C" fn purg_main(dtb_phys: usize) -> ! {
         "purg-probe",
         info.rtc.map(|r| r.base as usize),
     )
+    .with_heap(&HEAP)
+    .with_kproc_stack(KPROC_STACK_SIZE)
     .with_net(Box::new(net));
 
     // The script runs in a kernel thread (the boot stack is small); the

@@ -4,20 +4,31 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use purg_platform::net::Net;
-use purg_platform::{Console, Platform, Result, Rtc};
+use purg_platform::{Console, MemPool, Platform, Result, Rtc};
+
+use crate::heap::Heap;
 
 use crate::pl031::Pl031;
 use crate::sched::Scheduler;
 use crate::timer;
+
+/// The names `purg-core` gives the kprocs that serve a device and never
+/// run a prog: the mount driver's reader.
+pub const SERVICE_KPROCS: &[&str] = &["mnt"];
 
 pub struct MetalPlatform {
     console: &'static dyn Console,
     sched: &'static Scheduler,
     sysname: &'static str,
     net: Option<Box<dyn Net>>,
+    heap: Option<&'static Heap>,
+    /// Stack size for kprocs that run no prog; 0 means the scheduler's
+    /// default.
+    kproc_stack: usize,
     boot_epoch_ns: u64,
     boot_counter: u64,
     /// splitmix64 state for [`Platform::entropy`].
@@ -50,10 +61,25 @@ impl MetalPlatform {
             sched,
             sysname,
             net: None,
+            heap: None,
+            kproc_stack: 0,
             boot_epoch_ns: secs * 1_000_000_000,
             boot_counter,
             seed: AtomicU64::new(boot_counter ^ 0x9e37_79b9_7f4a_7c15),
         }
+    }
+
+    /// Reports `heap` in `#c/memory` and `#%`.
+    pub fn with_heap(mut self, heap: &'static Heap) -> MetalPlatform {
+        self.heap = Some(heap);
+        self
+    }
+
+    /// Gives the core's service kprocs ([`SERVICE_KPROCS`]), which run no
+    /// prog, stacks of `size` bytes instead of the scheduler's default.
+    pub fn with_kproc_stack(mut self, size: usize) -> MetalPlatform {
+        self.kproc_stack = size;
+        self
     }
 
     /// Serves `#I` from `net`.
@@ -106,9 +132,39 @@ impl Platform for MetalPlatform {
         self.sched.set_current_pid(pid);
     }
 
-    fn spawn_kproc(&self, _name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {
-        self.sched.spawn(f);
+    fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {
+        if self.kproc_stack != 0 && SERVICE_KPROCS.contains(&name) {
+            self.sched.spawn_sized(self.kproc_stack, f);
+        } else {
+            self.sched.spawn(f);
+        }
         Ok(())
+    }
+
+    fn memory(&self) -> (u64, u64) {
+        self.heap.map_or((0, 0), |h| {
+            let s = h.stats();
+            (s.used as u64, s.size as u64)
+        })
+    }
+
+    fn pools(&self) -> Vec<MemPool> {
+        let Some(heap) = self.heap else {
+            return Vec::new();
+        };
+        let s = heap.stats();
+        alloc::vec![MemPool {
+            name: "main",
+            cursize: s.used as u64,
+            maxsize: s.size as u64,
+            hw: s.high_water as u64,
+            nalloc: s.allocs,
+            nfree: s.frees,
+            nbrk: 1,
+            // The free bytes: a first-fit list does not track its largest
+            // hole.
+            max: (s.size - s.used) as u64,
+        }]
     }
 
     fn net(&self) -> Option<&dyn Net> {
