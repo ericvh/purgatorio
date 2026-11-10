@@ -18,14 +18,34 @@ use crate::names::{cleanname, elements, sh_quote, split_device};
 /// Devices a `NODEVS` namespace may still attach (Inferno's list).
 const NODEVS_ALLOWED: &[char] = &['e', 's', '|', 'M', '¤'];
 
+/// One entry of the mount table, as Inferno's `Mhead`.
+///
+/// The entry holds the Chan it was mounted on, so the file stays referenced
+/// (for a `#M` file, its fid stays live) as long as the mount does. A file
+/// server may forget a file nobody refers to and give its qid to another
+/// file; holding the Chan stops that from moving or aliasing the mount.
+///
+/// Lookups match a Chan against `from` as Inferno's `findmount` does: same
+/// device type, device instance and qid path, ignoring the qid version.
 #[derive(Clone)]
 struct Mount {
-    /// Identity of the mounted-on Chan.
-    key: (char, u32, u64),
-    /// Path the union is mounted on, for `/prog/n/ns`.
-    point: String,
-    /// Union members in search order.
+    /// The mounted-on Chan.
+    from: Arc<Chan>,
+    /// Union members in search order. For a union made with `MBEFORE` or
+    /// `MAFTER` on a directory not yet mounted on, one member is `from`
+    /// itself.
     to: Vec<Member>,
+}
+
+impl Mount {
+    fn matches(&self, c: &Chan) -> bool {
+        self.from.key() == c.key()
+    }
+
+    /// Whether `m` is the original directory of the union, not a bind.
+    fn is_original(&self, m: &Member) -> bool {
+        Arc::ptr_eq(&m.chan, &self.from)
+    }
 }
 
 /// A namespace: a root, a mount table and the current directory.
@@ -118,23 +138,27 @@ impl Pgrp {
         if flags & mount::MORDER != mount::MREPL && !from.is_dir() {
             return Err(Error::new("mount must be a directory to union"));
         }
-        let key = from.key();
         let to = Member {
             chan: Arc::new(to),
             flags,
         };
+        // Chans released by this bind are dropped after the lock: dropping a
+        // `#M` Chan clunks its fid, which waits for the file server.
+        let mut released: Vec<Member> = Vec::new();
         let mut mounts = self.mounts.write();
-        let idx = match mounts.iter().position(|m| m.key == key) {
+        let idx = match mounts.iter().position(|m| m.matches(&from)) {
             Some(i) => i,
             None => {
-                mounts.push(Mount {
-                    key,
-                    point: from.name.clone(),
-                    to: vec![Member {
-                        chan: Arc::new(from),
+                let from = Arc::new(from);
+                let to = if flags & mount::MORDER == mount::MREPL {
+                    Vec::new()
+                } else {
+                    vec![Member {
+                        chan: from.clone(),
                         flags: 0,
-                    }],
-                });
+                    }]
+                };
+                mounts.push(Mount { from, to });
                 mounts.len() - 1
             }
         };
@@ -142,8 +166,10 @@ impl Pgrp {
         match flags & mount::MORDER {
             mount::MBEFORE => m.to.insert(0, to),
             mount::MAFTER => m.to.push(to),
-            _ => m.to = vec![to],
+            _ => released = core::mem::replace(&mut m.to, vec![to]),
         }
+        drop(mounts);
+        drop(released);
         Ok(())
     }
 
@@ -151,7 +177,6 @@ impl Pgrp {
     /// everything mounted there when `name` is `None`.
     pub fn unmount(&self, name: Option<&str>, old: &str) -> Result<()> {
         let from = self.namec_unmounted(old)?;
-        let key = from.key();
         let target = match name {
             Some(n) => Some(self.namec_unmounted(n)?.key()),
             None => None,
@@ -159,35 +184,37 @@ impl Pgrp {
         let mut mounts = self.mounts.write();
         let i = mounts
             .iter()
-            .position(|m| m.key == key)
+            .position(|m| m.matches(&from))
             .ok_or(Error::new(error::EUNMOUNT))?;
-        match target {
-            None => {
-                mounts.remove(i);
-            }
+        // Dropped after the lock, as in `bind_chan`.
+        let released: (Option<Mount>, Option<Member>) = match target {
+            None => (Some(mounts.remove(i)), None),
             Some(t) => {
                 let m = &mut mounts[i];
                 let j =
                     m.to.iter()
                         .position(|x| x.chan.key() == t)
                         .ok_or(Error::new(error::EUNMOUNT))?;
-                m.to.remove(j);
-                let only_original = m.to.len() == 1 && m.to[0].chan.key() == key;
+                let gone = m.to.remove(j);
+                let only_original = m.to.len() == 1 && m.is_original(&m.to[0]);
                 if m.to.is_empty() || only_original {
-                    mounts.remove(i);
+                    (Some(mounts.remove(i)), Some(gone))
+                } else {
+                    (None, Some(gone))
                 }
             }
-        }
+        };
+        drop(mounts);
+        drop(released);
         Ok(())
     }
 
     /// Union members mounted on `c`, if any.
     fn mounted(&self, c: &Chan) -> Option<Vec<Member>> {
-        let key = c.key();
         self.mounts
             .read()
             .iter()
-            .find(|m| m.key == key)
+            .find(|m| m.matches(c))
             .map(|m| m.to.clone())
     }
 
@@ -313,11 +340,11 @@ impl Pgrp {
         let mut out = String::new();
         for m in mounts.iter() {
             for member in &m.to {
-                if member.chan.key() == m.key && member.flags == 0 {
+                if m.is_original(member) {
                     continue;
                 }
                 let new = sh_quote(&member.chan.name);
-                let old = sh_quote(&m.point);
+                let old = sh_quote(&m.from.name);
                 let fl = flag_text(member.flags);
                 let cmd = if member.chan.dev.dc() == 'M' {
                     let spec = sh_quote(&member.chan.dev.aname(&member.chan));
