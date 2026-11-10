@@ -128,7 +128,7 @@ impl System {
     }
 
     /// Kills the progs with pids from `first` on that are still running,
-    /// and waits for them to go, and for the kernel threads to be no more
+    /// removes those that are broken, and waits for them to go, and for the kernel threads to be no more
     /// than `threads`: the progs' own, and the readers of the mounts in
     /// their namespaces.
     ///
@@ -146,8 +146,9 @@ impl System {
                 return Ok(());
             }
             // Again each time round: a prog may have been spawned since.
-            for p in left().filter_map(|p| procs.get(p)) {
-                p.kill();
+            // A broken prog has no thread to end: the kill removes it.
+            for p in left() {
+                procs.kill(p);
             }
             r.tsleep(|| false, 10 * MS);
         }
