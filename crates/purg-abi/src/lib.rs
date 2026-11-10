@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.5";
+pub const ABI_VERSION: &str = "0.6";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -304,13 +304,21 @@ pub mod export {
 
 /// Mount authentication: an Ed25519 signature over a server challenge.
 /// After `fauth`, the client reads `CHALLENGE` bytes from the auth fd and
-/// writes `signature[SIGNATURE] || public_key[PUBLIC]` (`PROOF` bytes).
+/// writes a proof in one write: a version 1 proof, `signature[SIGNATURE] ||
+/// public_key[PUBLIC]` (`PROOF` bytes), or a versioned proof whose first
+/// byte is `PROOF_VERSION` (`docs/auth.md`).
 pub mod auth {
     pub const SEED: usize = 32;
     pub const SIGNATURE: usize = 64;
     pub const PUBLIC: usize = 32;
-    /// What the client writes to the auth fid.
+    /// The length of a version 1 proof. No later version has this length.
     pub const PROOF: usize = SIGNATURE + PUBLIC;
+    /// The first byte of a versioned proof.
+    pub const PROOF_VERSION: u8 = 2;
+    /// A versioned proof: the key's public half follows the signature.
+    pub const KIND_KEY: u8 = 0;
+    /// A versioned proof: a `pgcert1` certificate follows the signature.
+    pub const KIND_CERT: u8 = 1;
     /// Bytes the server asks the client to sign.
     pub const CHALLENGE: usize = 32;
 
@@ -318,6 +326,10 @@ pub mod auth {
     pub const REQUIRED: &str = "authentication required";
     pub const FAILED: &str = "authentication failed";
     pub const NO_KEY: &str = "no key";
+    pub const EXPIRED: &str = "certificate expired";
+    pub const REVOKED: &str = "certificate revoked";
+    pub const UNTRUSTED: &str = "untrusted signer";
+    pub const NAME_MISMATCH: &str = "certificate name mismatch";
 }
 
 /// Error strings, worded exactly as Inferno's.

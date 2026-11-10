@@ -221,9 +221,11 @@ impl Prog {
             self.kernel.mnt.mount_auth(&fd, &afd, aname, &user)?
         } else {
             let pgrp = self.pgrp.clone();
-            self.kernel.mnt.mount(fd, aname, &user, noauth, |msg| {
-                sign_mount(&pgrp, &user, msg)
-            })?
+            self.kernel
+                .mnt
+                .mount(fd, aname, &user, noauth, |challenge| {
+                    crate::auth::client_proof(&pgrp, &user, aname, challenge)
+                })?
         };
         let old = absolute(old, &self.dot());
         self.pgrp.bind_chan(root, &old, flags)
@@ -564,52 +566,6 @@ impl Prog {
         };
         Ok(Some((bytes, handles)))
     }
-}
-
-/// Signs `msg` with `#¤` when the agent holds a key, otherwise with a key
-/// file in the namespace.
-fn sign_mount(
-    pgrp: &crate::pgrp::Pgrp,
-    user: &str,
-    msg: &[u8],
-) -> Result<[u8; crate::auth::PROOF]> {
-    if let Some(proof) = factotum_sign(pgrp, msg) {
-        return Ok(proof);
-    }
-    let seed = client_secret(pgrp, user)?;
-    let signature = crate::auth::sign(&seed, msg);
-    let public = crate::auth::public_key(&seed);
-    let mut proof = [0u8; crate::auth::PROOF];
-    proof[..crate::auth::SIGNATURE].copy_from_slice(&signature);
-    proof[crate::auth::SIGNATURE..].copy_from_slice(&public);
-    Ok(proof)
-}
-
-/// Asks `#¤/rpc` to sign `msg`. `None` when the agent has no key.
-fn factotum_sign(pgrp: &crate::pgrp::Pgrp, msg: &[u8]) -> Option<[u8; crate::auth::PROOF]> {
-    let c = pgrp.namec("#¤/rpc", "/").ok()?;
-    let c = open(c, purg_abi::mode::ORDWR).ok()?;
-    if c.dev.write(&c, msg, 0).ok()? != msg.len() {
-        return None;
-    }
-    let mut buf = [0u8; crate::auth::PROOF];
-    let n = c.dev.read(&c, &mut buf, 0).ok()?;
-    (n == buf.len()).then_some(buf)
-}
-
-/// The caller's signing seed: `/usr/$user/key`, then the shared test fixture.
-fn client_secret(pgrp: &crate::pgrp::Pgrp, user: &str) -> Result<[u8; crate::auth::SEED]> {
-    let mut paths = Vec::new();
-    if !user.is_empty() && user != "." && user != ".." && !user.contains('/') {
-        paths.push(alloc::format!("/usr/{user}/key"));
-    }
-    paths.push(String::from("/lib/test/auth.key"));
-    for path in paths {
-        if let Some(key) = crate::export::read_key(pgrp, &path) {
-            return Ok(key);
-        }
-    }
-    Err(Error::new(crate::auth::NO_KEY))
 }
 
 /// Opens an unopened Chan in `omode`.
