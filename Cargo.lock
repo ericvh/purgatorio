@@ -110,6 +110,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-cron"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-cs"
 version = "0.1.0"
 dependencies = [
@@ -233,6 +240,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-logfile"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ls"
 version = "0.1.0"
 dependencies = [
@@ -269,6 +283,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-mntgen"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-mount"
 version = "0.1.0"
 dependencies = [
@@ -277,6 +298,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-mv"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ndb-query"
 version = "0.1.0"
 dependencies = [
  "purgatorio",

@@ -5,10 +5,13 @@ use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 
 use purg_abi::mode;
-use purg_styx::server::{MAX_MSIZE, StyxFs, dispatch};
+use purg_styx::server::{MAX_MSIZE, dispatch};
 use purg_styx::{DMDIR, Dir, Msg, QTDIR, QTFILE, Qid};
 
 use crate::Error;
+
+/// The operations a server implements; [`serve`] drives one.
+pub use purg_styx::server::{IOHDRSZ, StyxFs};
 
 struct Node {
     dir: bool,

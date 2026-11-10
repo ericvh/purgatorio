@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ndb-query"
+description = "ndb/query: look up entries in the network database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "query"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

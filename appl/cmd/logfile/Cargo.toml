@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-logfile"
+description = "logfile: a circular log buffer served with file2chan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "logfile"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

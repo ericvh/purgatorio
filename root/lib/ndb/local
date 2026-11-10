@@ -1,0 +1,21 @@
+# The local network database, in attrdb(6) format; see ndb(6).
+# The sh corpus (lib/test/sh/admin.sh) looks up these example entries.
+
+infernosite=
+	dnsdomain=example.org
+	FILESERVER=fs
+
+sys=fs dom=fs.example.org
+	ip=10.0.0.2 ether=00a0c9e1b2c3
+	tcp=styx port=6666
+
+sys=gate dom=gate.example.org
+	ip=10.0.0.1
+	ip=10.0.1.1 # a second interface
+	SIGNER=gate
+
+ipnet=lan ip=10.0.0.0 ipmask=255.255.255.0
+	ipgw=10.0.0.1
+	dns=10.0.0.1
+
+sys='a host' ip=10.0.0.9
