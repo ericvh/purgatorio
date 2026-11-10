@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-tcs"
+description = "tcs: translate character sets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tcs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

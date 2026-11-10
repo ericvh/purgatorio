@@ -553,6 +553,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-tcs"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-tee"
 version = "0.1.0"
 dependencies = [
@@ -610,6 +617,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-uniq"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-units"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
