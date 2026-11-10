@@ -7,6 +7,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use purg_abi::{error, mode};
 use purg_platform::net::{Conn, Listener, Net};
@@ -67,6 +68,9 @@ struct Conv {
     local: Mutex<String>,
     remote: Mutex<String>,
     status: Mutex<String>,
+    /// Open Chans on the conversation's files. When the last one closes
+    /// the conversation is hung up and forgotten, as in Inferno.
+    opens: AtomicU32,
 }
 
 impl Conv {
@@ -79,6 +83,7 @@ impl Conv {
             local: Mutex::new(String::new()),
             remote: Mutex::new(String::new()),
             status: Mutex::new(String::from("Init")),
+            opens: AtomicU32::new(0),
         }
     }
 }
@@ -224,7 +229,39 @@ impl Dev for DevIp {
             let conv = self.alloc(proto);
             c.qid = Self::qid(qconv(proto, conv.id, FCTL));
         }
+        if is_conv(c.qid.path) {
+            let conv = self
+                .find(conv_proto(c.qid.path), conv_id(c.qid.path))
+                .ok_or(Error::new(error::ENONEXIST))?;
+            conv.opens.fetch_add(1, Ordering::AcqRel);
+        }
         Ok(())
+    }
+
+    /// The last close of a conversation's files hangs it up and removes
+    /// it, so the peer sees the end and the platform's socket is freed. A
+    /// conversation a listener returned stays until it has been opened
+    /// and closed.
+    fn close(&self, c: &Chan) {
+        if !is_conv(c.qid.path) {
+            return;
+        }
+        let (proto, id) = (conv_proto(c.qid.path), conv_id(c.qid.path));
+        let gone = {
+            let mut convs = self.convs.lock();
+            let Some(i) = convs.iter().position(|v| v.proto == proto && v.id == id) else {
+                return;
+            };
+            if convs[i].opens.fetch_sub(1, Ordering::AcqRel) != 1 {
+                return;
+            }
+            convs.remove(i)
+        };
+        // Outside the table lock: hanging up may block in the platform.
+        if let Some(conn) = gone.conn.lock().take() {
+            conn.hangup();
+        }
+        gone.listener.lock().take();
     }
 
     fn read(&self, c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
