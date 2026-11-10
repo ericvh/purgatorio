@@ -110,7 +110,9 @@ jobs:
           cp -R root /tmp/cs/root
           test "$(target/debug/emu -r /tmp/cs/root cat /lib/probe/hello.txt)" = "hello from the probe root"
           if target/debug/emu -r /tmp/cs/root cat /LIB/probe/hello.txt; then exit 1; fi
-          hdiutil detach /tmp/cs
+          # A fresh volume can still be busy (Spotlight, disk arbitration)
+          # just after the checks; give it a moment, then force it.
+          hdiutil detach /tmp/cs || { sleep 3; hdiutil detach -force /tmp/cs; }
       - name: record guest module hashes
         shell: bash
         run: |
