@@ -1,0 +1,220 @@
+//! The kernel console: the PL011 as a [`purg_platform::Console`].
+//!
+//! Receive is interrupt-driven. The UART interrupt drains the receive FIFO
+//! into a ring buffer, and [`KernelConsole::read`] sleeps on a [`Rendez`]
+//! until the ring has bytes. The ring is shared with the interrupt
+//! handler, so it is a plain spinlock taken with IRQs masked, never a
+//! `purg_platform::sync` lock. Readers also drain the FIFO themselves, so
+//! input still arrives (at the tick rate) if the DTB names no interrupt.
+//!
+//! Input is cooked only as far as a terminal line needs: CR (what a
+//! terminal sends for Enter) and CR LF both become LF, as a tty's `icrnl`
+//! does on hosted. A UART has no end of file, so ^D (0x04) at the start of
+//! a line reads as end of input (`read` returns 0), as with Inferno's
+//! cooked console; elsewhere it is an ordinary byte. Nothing is echoed.
+//!
+//! Writes are serialised with a lock, so concurrent writers' buffers do not
+//! interleave.
+
+use core::fmt::{self, Write};
+
+use purg_aarch64::dtb::BootInfo;
+use purg_aarch64::exception::IrqGuard;
+use purg_aarch64::mmu;
+use purg_aarch64::pl011::Pl011;
+use purg_platform::Console;
+use purg_platform::sync::{Mutex, Rendez};
+use spin::Once;
+
+use crate::board::board;
+use crate::irq::{self, After};
+
+/// End of input at the start of a line.
+const EOF: u8 = 0x04;
+const RING: usize = 4096;
+
+struct Ring {
+    buf: [u8; RING],
+    head: usize,
+    len: usize,
+    /// The last byte received was CR, so a following LF is dropped.
+    after_cr: bool,
+    /// No byte has been read since the last LF.
+    line_start: bool,
+    /// Bytes dropped because the ring was full.
+    dropped: u64,
+}
+
+impl Ring {
+    const fn new() -> Ring {
+        Ring {
+            buf: [0; RING],
+            head: 0,
+            len: 0,
+            after_cr: false,
+            line_start: true,
+            dropped: 0,
+        }
+    }
+
+    fn push(&mut self, b: u8) {
+        let b = match (b, self.after_cr) {
+            (b'\n', true) => {
+                self.after_cr = false;
+                return;
+            }
+            (b'\r', _) => {
+                self.after_cr = true;
+                b'\n'
+            }
+            (b, _) => {
+                self.after_cr = false;
+                b
+            }
+        };
+        if self.len == RING {
+            self.dropped += 1;
+            return;
+        }
+        self.buf[(self.head + self.len) % RING] = b;
+        self.len += 1;
+    }
+
+    fn peek(&self) -> Option<u8> {
+        (self.len > 0).then(|| self.buf[self.head])
+    }
+
+    fn pop(&mut self) {
+        self.head = (self.head + 1) % RING;
+        self.len -= 1;
+    }
+}
+
+/// Taken only with IRQs masked.
+static RX: spin::Mutex<Ring> = spin::Mutex::new(Ring::new());
+
+pub struct KernelConsole {
+    uart: Pl011,
+    rx: Rendez,
+    wlock: Mutex<()>,
+}
+
+static CONSOLE: Once<KernelConsole> = Once::new();
+
+/// The PL011 through the high-half device window.
+fn uart() -> Pl011 {
+    // SAFETY: the high half maps the device window, which holds the PL011,
+    // as Device memory.
+    unsafe { Pl011::new(mmu::phys_to_virt(board().uart)) }
+}
+
+/// Moves whatever the receive FIFO holds into the ring. IRQs must be
+/// masked.
+fn drain(uart: &Pl011) {
+    let mut ring = RX.lock();
+    let mut tmp = [0u8; 32];
+    loop {
+        let n = uart.read(&mut tmp);
+        for &b in &tmp[..n] {
+            ring.push(b);
+        }
+        if n < tmp.len() {
+            break;
+        }
+    }
+}
+
+fn uart_irq() -> After {
+    let uart = uart();
+    drain(&uart);
+    uart.clear_rx_interrupt();
+    if let Some(c) = CONSOLE.get() {
+        c.rx.wakeup();
+    }
+    After::Return
+}
+
+/// Sets up the console and, if the DTB gives the UART's interrupt, routes
+/// it. Call after [`irq::init`].
+pub fn init(info: &BootInfo<'_>) -> &'static KernelConsole {
+    let c = CONSOLE.call_once(|| KernelConsole {
+        uart: uart(),
+        rx: Rendez::new(),
+        wlock: Mutex::new(()),
+    });
+    if let Some(intid) = info.uart_intid {
+        irq::register(intid, uart_irq);
+        c.uart.enable_rx_interrupt();
+    }
+    c
+}
+
+impl KernelConsole {
+    fn ready(&self) -> bool {
+        let _g = IrqGuard::new();
+        drain(&self.uart);
+        RX.lock().len > 0
+    }
+
+    /// Bytes dropped because nobody read them in time.
+    pub fn dropped(&self) -> u64 {
+        let _g = IrqGuard::new();
+        RX.lock().dropped
+    }
+}
+
+impl Console for KernelConsole {
+    fn read(&self, buf: &mut [u8]) -> purg_platform::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.rx.sleep(|| self.ready());
+        let _g = IrqGuard::new();
+        let mut ring = RX.lock();
+        let mut n = 0;
+        while n < buf.len() {
+            let Some(b) = ring.peek() else { break };
+            if b == EOF && ring.line_start {
+                if n == 0 {
+                    ring.pop();
+                }
+                break;
+            }
+            ring.pop();
+            buf[n] = b;
+            n += 1;
+            ring.line_start = b == b'\n';
+        }
+        Ok(n)
+    }
+
+    fn write(&self, buf: &[u8]) -> purg_platform::Result<usize> {
+        let _g = self.wlock.lock();
+        self.uart.write(buf);
+        Ok(buf.len())
+    }
+}
+
+/// The unlocked console, for early boot and for `fail`, which may run in
+/// an exception handler or with the console lock held.
+pub struct Raw;
+
+impl Write for Raw {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        uart().write(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Prints through the console lock once there is a console.
+pub fn print(args: fmt::Arguments<'_>) {
+    match CONSOLE.get() {
+        Some(c) => {
+            let _g = c.wlock.lock();
+            let _ = Raw.write_fmt(args);
+        }
+        None => {
+            let _ = Raw.write_fmt(args);
+        }
+    }
+}

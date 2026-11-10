@@ -806,6 +806,8 @@ pub struct BootInfo<'a> {
     /// The PL011 console: `/chosen` `stdout-path` when it names a PL011,
     /// else the first `arm,pl011`.
     pub uart: Region,
+    /// The console PL011's interrupt as a GIC INTID, if the DTB gives one.
+    pub uart_intid: Option<u32>,
     /// The PL031 RTC.
     pub rtc: Option<Region>,
     pub gic: GicInfo,
@@ -835,10 +837,10 @@ impl<'a> BootInfo<'a> {
             .and_then(|c| c.property_str("stdout-path"))
             .and_then(|p| fdt.find_path(p))
             .filter(|n| n.is_compatible("arm,pl011"));
-        let uart = stdout
+        let uart_node = stdout
             .or_else(|| fdt.find_compatible("arm,pl011").next())
-            .and_then(|n| n.reg().next())
             .ok_or(Error::Missing("arm,pl011"))?;
+        let uart = uart_node.reg().next().ok_or(Error::Missing("arm,pl011"))?;
 
         let rtc = fdt
             .find_compatible("arm,pl031")
@@ -856,6 +858,7 @@ impl<'a> BootInfo<'a> {
         };
 
         let icells = gic_interrupt_cells(fdt);
+        let uart_intid = interrupt_intid(&uart_node, icells, 0);
         let timer = fdt
             .find_compatible("arm,armv8-timer")
             .next()
@@ -872,6 +875,7 @@ impl<'a> BootInfo<'a> {
         Ok(BootInfo {
             ram,
             uart,
+            uart_intid,
             rtc,
             gic,
             timer_virt_intid,
@@ -951,6 +955,7 @@ mod tests {
         let bi = BootInfo::from_fdt(&fdt).unwrap();
         assert_eq!(bi.ram, r(0x4000_0000, 512 * MIB));
         assert_eq!(bi.uart, r(0x0900_0000, 0x1000));
+        assert_eq!(bi.uart_intid, Some(33));
         assert_eq!(bi.rtc, Some(r(0x0901_0000, 0x1000)));
         assert_eq!(
             bi.gic,
@@ -972,6 +977,7 @@ mod tests {
         let bi = BootInfo::from_fdt(&fdt).unwrap();
         assert_eq!(bi.ram, r(0x4000_0000, 512 * MIB));
         assert_eq!(bi.uart, r(0x0900_0000, 0x1000));
+        assert_eq!(bi.uart_intid, Some(33));
         assert_eq!(
             bi.gic,
             GicInfo {
@@ -1322,6 +1328,7 @@ mod tests {
         assert_eq!(bi.ram, r(0x4000_0000, 0x1000_0000));
         // stdout-path goes through the alias to the second UART.
         assert_eq!(bi.uart, r(0x2000, 0x100));
+        assert_eq!(bi.uart_intid, None);
         assert_eq!(bi.rtc, None);
         assert_eq!(bi.gic.version, GicVersion::V2);
         assert_eq!(bi.gic.cpu_or_redist, r(0x9000, 0x2000));
