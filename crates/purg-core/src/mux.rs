@@ -24,6 +24,8 @@ struct Slot {
 pub struct Mux {
     next: core::sync::atomic::AtomicU16,
     slots: Mutex<BTreeMap<u16, Slot>>,
+    /// Set by [`Mux::fail_all`]: no reply will ever arrive.
+    closed: core::sync::atomic::AtomicBool,
     wake: Rendez,
 }
 
@@ -32,13 +34,18 @@ impl Mux {
         Mux {
             next: core::sync::atomic::AtomicU16::new(0),
             slots: Mutex::new(BTreeMap::new()),
+            closed: core::sync::atomic::AtomicBool::new(false),
             wake: Rendez::new(),
         }
     }
 
-    /// Allocates a tag and records an empty slot for it.
+    /// Allocates a tag and records an empty slot for it. Fails with
+    /// [`error::EHUNGUP`] once the connection has closed.
     pub fn begin(&self) -> Result<u16> {
         let mut slots = self.slots.lock();
+        if self.closed.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(Error::new(error::EHUNGUP));
+        }
         if slots.len() >= 64 * 1024 - 1 {
             return Err(Error::new(error::EIO));
         }
@@ -63,7 +70,8 @@ impl Mux {
 
     /// Blocks until a reply is delivered or the tag is flushed. A killed prog
     /// gets [`error::EINTR`](purg_abi::error::EINTR) and the slot stays, so
-    /// the caller can [`Mux::flush`] it.
+    /// the caller can [`Mux::flush`] it. When the connection closed before
+    /// the reply came the error is [`error::EHUNGUP`].
     pub fn wait(&self, tag: u16) -> Result<Vec<u8>> {
         park(&self.wake, || {
             let slots = self.slots.lock();
@@ -77,6 +85,9 @@ impl Mux {
         };
         match slot.msg {
             Some(m) => Ok(m),
+            None if self.closed.load(core::sync::atomic::Ordering::Acquire) => {
+                Err(Error::new(error::EHUNGUP))
+            }
             None => Err(Error::new(error::EINTR)),
         }
     }
@@ -112,9 +123,12 @@ impl Mux {
         self.wake.wakeup();
     }
 
-    /// Fails every outstanding tag, as when the connection closes.
+    /// Fails every outstanding tag, and every later [`Mux::begin`], as when
+    /// the connection closes.
     pub fn fail_all(&self) {
         let mut slots = self.slots.lock();
+        self.closed
+            .store(true, core::sync::atomic::Ordering::Release);
         for slot in slots.values_mut() {
             if slot.msg.is_none() {
                 slot.flushed = true;

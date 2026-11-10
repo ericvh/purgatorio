@@ -105,9 +105,13 @@ impl Session {
         .encode() else {
             return;
         };
-        {
+        let sent = {
             let _g = self.write.lock();
-            let _ = write_full(&self.fd, &bytes);
+            write_full(&self.fd, &bytes)
+        };
+        if sent.is_err() {
+            // No `Rflush` will come for a request that was never sent.
+            self.mux.flush(ftag);
         }
         let _ = self.mux.wait(ftag);
     }
