@@ -9,6 +9,12 @@
 //! seen killed. That spare slice lets a guest that did see `interrupted`
 //! exit with its own status. The emu's wasmtime backend does the same
 //! with epoch interruption.
+//!
+//! wasmi cannot say which functions a guest is in. A traced prog
+//! (`docs/debug.md`) runs a module that keeps its own call stack
+//! (`purg_vm::trace`); the backend copies it into the prog before each
+//! host call, at the end of each slice, where it is also the profiler's
+//! sample, and after a trap.
 #![no_std]
 
 extern crate alloc;
@@ -22,10 +28,10 @@ use alloc::vec::Vec;
 
 use purg_abi::error::{EBADADDR, EBADEXEC};
 use purg_core::Error;
-use purg_vm::{Ctx, Mem, Stop};
+use purg_vm::{Ctx, Mem, Stop, trace};
 use wasmi::{
-    AsContextMut, Caller, Config, CustomFuelCosts, Engine, Extern, Instance, Linker, Module, Store,
-    TypedFunc, TypedResumableCall, WasmParams, WasmResults,
+    AsContextMut, Caller, Config, CustomFuelCosts, Engine, Extern, Instance, Linker, Memory,
+    Module, Store, TypedFunc, TypedResumableCall, WasmParams, WasmResults,
 };
 
 /// Fuel per slice: roughly the number of wasm instructions run between
@@ -99,6 +105,33 @@ fn memory<'c>(
     Ok(mem.data_and_store_mut(caller))
 }
 
+/// Records the call stack of the traced instance that exports `stack`
+/// (as `trace::STACK`) in its prog.
+fn record(mut store: impl AsContextMut<Data = Ctx>, stack: Option<Memory>, sample: bool) {
+    if let Some(stack) = stack {
+        let (data, ctx) = stack.data_and_store_mut(&mut store);
+        trace::record(&ctx.prog.proc, data, sample);
+    }
+}
+
+/// [`record`] for a host call's caller. Only the prog's command is
+/// traced: a call from a reactor leaves the stack as its `call` saw it.
+fn record_caller(caller: &mut Caller<'_, Ctx>) {
+    if !caller.data().prog.proc.debug.traced() {
+        return;
+    }
+    let stack = caller
+        .get_export(trace::STACK)
+        .and_then(Extern::into_memory);
+    record(caller, stack, false);
+}
+
+/// [`record`] for a prog's command instance.
+fn record_instance(mut store: impl AsContextMut<Data = Ctx>, instance: &Instance, sample: bool) {
+    let stack = instance.get_memory(&store, trace::STACK);
+    record(&mut store, stack, sample);
+}
+
 fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
     macro_rules! register {
         ($module:expr, $name:literal, $f:path, ($($a:ident : $t:ty),*) -> $r:ty) => {
@@ -106,6 +139,7 @@ fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
                 $module,
                 $name,
                 |mut caller: Caller<'_, Ctx>, $($a: $t),*| -> Result<$r, wasmi::Error> {
+                    record_caller(&mut caller);
                     let (data, ctx) = memory(&mut caller)?;
                     $f(ctx, &mut Mem(data), $($a),*).map_err(|s| wasmi::Error::host(HostStop(s)))
                 },
@@ -248,8 +282,13 @@ fn call_reactor(caller: &mut Caller<'_, Ctx>, modules: &Modules, call: Call) -> 
     let func = instance
         .get_typed_func::<(i32, i32), i32>(&*caller, &export)
         .map_err(|_| Error::from("export not found"))?;
-    let n = call_sliced(&mut *caller, &func, (base as i32, arguments.len() as i32))
-        .map_err(|e| Error::from(format!("trap: {e}")))?;
+    let n = call_sliced(
+        &mut *caller,
+        &func,
+        (base as i32, arguments.len() as i32),
+        None,
+    )
+    .map_err(|e| Error::from(format!("trap: {e}")))?;
     if n < 0 || call.olen < 0 || n as usize > PAGE || n as usize > call.olen as usize {
         return Err(Error::from("bad result length"));
     }
@@ -265,11 +304,14 @@ fn bad_exec(e: impl core::fmt::Display) -> Error {
 }
 
 /// Calls `func` a [`SLICE`] of fuel at a time, checking the prog's note
-/// between slices (see the crate docs).
+/// between slices (see the crate docs). `traced` is the prog's command
+/// instance when it keeps a call stack: each slice then ends by recording
+/// the stack, and a sample if the prog is profiled.
 fn call_sliced<P: WasmParams, R: WasmResults>(
     mut ctx: impl AsContextMut<Data = Ctx>,
     func: &TypedFunc<P, R>,
     params: P,
+    traced: Option<&Instance>,
 ) -> Result<R, wasmi::Error> {
     let mut seen_killed = false;
     let mut call = func.call_resumable(&mut ctx, params)?;
@@ -284,6 +326,9 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
                 });
             }
             TypedResumableCall::OutOfFuel(t) => {
+                if let Some(instance) = traced {
+                    record_instance(&mut ctx, instance, true);
+                }
                 if ctx.as_context().data().prog.proc.note.killed() {
                     if seen_killed {
                         let stop = Stop::Exit(String::from(KILLED));
@@ -311,11 +356,21 @@ impl Wasmi {
             .get_typed_func::<(), ()>(&*store, purg_abi::ENTRY)
             .map_err(bad_exec)?;
         store.set_fuel(SLICE).map_err(bad_exec)?;
-        Ok(match call_sliced(&mut *store, &entry, ()) {
+        let traced = store.data().prog.proc.debug.traced().then_some(&instance);
+        Ok(match call_sliced(&mut *store, &entry, (), traced) {
             Ok(()) => Stop::Exit(String::new()),
             Err(e) => match e.downcast_ref::<HostStop>() {
                 Some(stop) => stop.0.clone(),
-                None => Stop::Exit(format!("trap: {e}")),
+                None => {
+                    let status = format!("trap: {e}");
+                    // A traced prog that traps is broken: its stack at
+                    // the trap and the trap itself stay readable.
+                    if let Some(instance) = traced {
+                        record_instance(&mut *store, instance, false);
+                        store.data().prog.proc.debug.set_exception(&status);
+                    }
+                    Stop::Exit(status)
+                }
             },
         })
     }

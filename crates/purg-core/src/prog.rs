@@ -13,6 +13,7 @@ use purg_platform::sync::{Mutex, Rendez};
 use purg_platform::sync::Note;
 
 use crate::block::park;
+use crate::debug::Debug;
 use crate::dev::DevTab;
 use crate::devenv::Egrp;
 use crate::error::{Error, Result};
@@ -49,9 +50,25 @@ pub struct Proc {
     modpolicy: Mutex<ModPolicy>,
     /// The modules loaded into this prog: its command, then its reactors.
     modules: Mutex<Vec<Module>>,
+    /// Tracing, the last call stack and the profile (`docs/debug.md`).
+    pub debug: Debug,
 }
 
 impl Proc {
+    /// The name this prog's command was loaded by; empty before it is.
+    pub fn module_path(&self) -> String {
+        self.modules
+            .lock()
+            .first()
+            .map(|m| m.path.clone())
+            .unwrap_or_default()
+    }
+
+    /// This prog's profile with those of its exited children.
+    pub fn profile(&self) -> crate::debug::Profile {
+        self.debug.profile(&self.module_path())
+    }
+
     pub fn module_policy(&self) -> ModPolicy {
         self.modpolicy.lock().clone()
     }
@@ -127,9 +144,10 @@ impl Proc {
         self.note.kill();
     }
 
-    /// `running` until [`Proc::kill`], then `broken`.
+    /// `running` until [`Proc::kill`] or a trap under tracing, then
+    /// `broken`.
     pub fn state(&self) -> &'static str {
-        if self.note.killed() {
+        if self.note.killed() || self.debug.broken() {
             "broken"
         } else {
             "running"
@@ -237,18 +255,44 @@ impl Procs {
             wait_watchers: Mutex::new(Vec::new()),
             modpolicy: Mutex::new(modpolicy),
             modules: Mutex::new(Vec::new()),
+            debug: Debug::default(),
         });
         self.table.lock().insert(pid, p.clone());
         p
     }
 
-    /// Kills every prog in `group`.
+    /// Kills every prog in `group`, and removes its broken progs.
     pub fn kill_group(&self, group: u32) {
-        for p in self.table.lock().values() {
-            if p.group() == group {
-                p.kill();
+        let mut broken = Vec::new();
+        self.table.lock().retain(|_, p| {
+            if p.group() != group {
+                return true;
             }
-        }
+            p.kill();
+            if p.debug.broken() {
+                broken.push(p.clone());
+            }
+            !p.debug.broken()
+        });
+        // Dropped outside the table's lock.
+        drop(broken);
+    }
+
+    /// Kills `pid`. A broken prog has already stopped: it is removed from
+    /// the table.
+    pub fn kill(&self, pid: u32) {
+        let p = {
+            let mut table = self.table.lock();
+            match table.get(&pid) {
+                Some(p) if p.debug.broken() => table.remove(&pid),
+                Some(p) => {
+                    p.kill();
+                    None
+                }
+                None => None,
+            }
+        };
+        drop(p);
     }
 
     pub fn get(&self, pid: u32) -> Option<Arc<Proc>> {
@@ -266,14 +310,36 @@ impl Procs {
     }
 
     /// Removes `pid` and, given a status, tells its parent how it ended.
+    ///
+    /// A prog that trapped while traced is broken, as in Inferno: it
+    /// stays in the table, without its files, namespace and environment,
+    /// so that its `stack` and `exception` can be read, until it is
+    /// killed. Its parent is told at once all the same.
     fn exit(&self, pid: u32, status: Option<&str>) {
-        let Some(p) = self.table.lock().remove(&pid) else {
+        let Some(p) = self.get(pid) else {
             return;
         };
+        if p.debug.broken() && status.is_some() {
+            *p.egrp.lock() = Arc::new(Egrp::new());
+            p.set_fgrp(Arc::new(Fgrp::new()));
+            if let Ok(empty) = p.pgrp().newns() {
+                p.set_pgrp(empty);
+            }
+        } else {
+            self.table.lock().remove(&pid);
+        }
+        let parent = self.get(p.ppid);
+        // The samples of a profiled prog and of its children go to its
+        // parent, where `prof` reads them after the prog has gone.
+        if let Some(parent) = &parent
+            && parent.debug.profiling()
+        {
+            parent.debug.absorb(p.profile());
+        }
         let Some(status) = status else {
             return;
         };
-        if let Some(parent) = self.get(p.ppid) {
+        if let Some(parent) = parent {
             parent.post_wait(alloc::format!(
                 "{} {} {}",
                 pid,
@@ -428,6 +494,7 @@ impl Prog {
             self.pgrp.clone(),
             self.proc.module_policy(),
         );
+        proc.debug.inherit(&self.proc.debug);
         let mut child = Prog {
             pid: proc.pid,
             proc,

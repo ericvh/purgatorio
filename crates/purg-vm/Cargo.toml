@@ -13,6 +13,7 @@ purg-platform.workspace = true
 purg-styx.workspace = true
 
 [dev-dependencies]
+wasmi.workspace = true
 purg-auth.workspace = true
 
 [lints]

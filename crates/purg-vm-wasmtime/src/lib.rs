@@ -7,6 +7,12 @@
 //! after the one that first saw it killed. That spare tick lets a guest
 //! that did see `interrupted` exit with its own status. The wasmi backend
 //! does the same with fuel.
+//!
+//! A traced prog (`docs/debug.md`) runs a module that keeps its own call
+//! stack (`purg_vm::trace`), the same module wasmi runs, so that a stack
+//! reads the same on both engines. The backend copies it into the prog
+//! before each host call, at each tick, where it is also the profiler's
+//! sample, and after a trap.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -14,9 +20,10 @@ use std::time::Duration;
 
 use purg_abi::error::{EBADADDR, EBADEXEC};
 use purg_core::Error;
-use purg_vm::{Ctx, Mem, Stop};
+use purg_vm::{Ctx, Mem, Stop, trace};
 use wasmtime::{
-    AsContextMut, Caller, Config, Engine, Extern, Instance, Linker, Module, Store, UpdateDeadline,
+    AsContext, AsContextMut, Caller, Config, Engine, Extern, Instance, Linker, Memory, Module,
+    Store, UpdateDeadline,
 };
 
 /// Compiled modules kept for reuse; the cache is emptied when full.
@@ -84,6 +91,31 @@ fn memory<'c>(caller: &'c mut Caller<'_, Ctx>) -> wasmtime::Result<(&'c mut [u8]
     Ok(mem.data_and_store_mut(caller.as_context_mut()))
 }
 
+/// Records the call stack of the traced instance that exports `stack`
+/// (as `trace::STACK`) in its prog.
+fn record(store: &impl AsContext<Data = Ctx>, stack: Option<Memory>, sample: bool) {
+    if let Some(stack) = stack {
+        let proc = &store.as_context().data().prog.proc;
+        trace::record(proc, stack.data(store), sample);
+    }
+}
+
+/// [`record`] for a host call's caller. Only the prog's command is
+/// traced: a call from a reactor leaves the stack as its `call` saw it.
+fn record_caller(caller: &mut Caller<'_, Ctx>) {
+    if !caller.data().prog.proc.debug.traced() {
+        return;
+    }
+    let stack = caller
+        .get_export(trace::STACK)
+        .and_then(Extern::into_memory);
+    record(caller, stack, false);
+}
+
+/// The stack memory of a traced prog's command instance, for its store's
+/// tick callback.
+type Traced = Arc<Mutex<Option<Memory>>>;
+
 fn link(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
     macro_rules! register {
         ($module:expr, $name:literal, $f:path, ($($a:ident : $t:ty),*) -> $r:ty) => {
@@ -91,6 +123,7 @@ fn link(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
                 $module,
                 $name,
                 |mut caller: Caller<'_, Ctx>, $($a: $t),*| -> wasmtime::Result<$r> {
+                    record_caller(&mut caller);
                     let (data, ctx) = memory(&mut caller)?;
                     $f(ctx, &mut Mem(data), $($a),*).map_err(wasmtime::Error::new)
                 },
@@ -258,7 +291,7 @@ fn bad_exec(e: impl std::fmt::Display) -> Error {
 }
 
 impl Wasmtime {
-    fn call(&self, store: &mut Store<Ctx>, wasm: &[u8]) -> Result<Stop, Error> {
+    fn call(&self, store: &mut Store<Ctx>, wasm: &[u8], traced: &Traced) -> Result<Stop, Error> {
         let module = self.module(wasm)?;
         let instance = self
             .linker
@@ -267,11 +300,26 @@ impl Wasmtime {
         let entry = instance
             .get_typed_func::<(), ()>(&mut *store, purg_abi::ENTRY)
             .map_err(bad_exec)?;
+        let stack = if store.data().prog.proc.debug.traced() {
+            instance.get_memory(&mut *store, trace::STACK)
+        } else {
+            None
+        };
+        *traced.lock().unwrap_or_else(|e| e.into_inner()) = stack;
         Ok(match entry.call(&mut *store, ()) {
             Ok(()) => Stop::Exit(String::new()),
             Err(e) => match e.downcast_ref::<Stop>() {
                 Some(stop) => stop.clone(),
-                None => Stop::Exit(format!("trap: {}", e.root_cause())),
+                None => {
+                    let status = format!("trap: {}", e.root_cause());
+                    // A traced prog that traps is broken: its stack at
+                    // the trap and the trap itself stay readable.
+                    if stack.is_some() {
+                        record(&*store, stack, false);
+                        store.data().prog.proc.debug.set_exception(&status);
+                    }
+                    Stop::Exit(status)
+                }
             },
         })
     }
@@ -285,7 +333,13 @@ impl purg_vm::Engine for Wasmtime {
     fn run(&self, wasm: &[u8], ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
         let mut store = Store::new(&self.engine, ctx);
         let mut seen_killed = false;
+        let traced: Traced = Arc::new(Mutex::new(None));
+        let ticked = traced.clone();
         store.epoch_deadline_callback(move |state| {
+            // Each tick records a traced prog's stack, and a sample if
+            // the prog is profiled.
+            let stack = *ticked.lock().unwrap_or_else(|e| e.into_inner());
+            record(&state, stack, true);
             if state.data().prog.proc.note.killed() {
                 if seen_killed {
                     return Err(wasmtime::Error::new(Stop::Exit(String::from(KILLED))));
@@ -295,7 +349,7 @@ impl purg_vm::Engine for Wasmtime {
             Ok(UpdateDeadline::Continue(1))
         });
         store.set_epoch_deadline(1);
-        let res = self.call(&mut store, wasm);
+        let res = self.call(&mut store, wasm, &traced);
         (store.into_data(), res)
     }
 }

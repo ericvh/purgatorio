@@ -166,6 +166,30 @@ unchanged. It is all files:
   revoked`, `certificate expired` or `module revoked`, after the module's
   path.
 
+### Debugging files
+
+Call stacks and profiles (`docs/debug.md`) are also files and `ctl`
+messages. No host call is added and the ABI version is unchanged.
+
+- Writing `trace on` (or `trace off`) to `/prog/<pid>/ctl` sets whether
+  the commands that prog starts from then on keep a call stack. `prof on`
+  (or `prof off`) does the same for sampling, implies `trace on`, and
+  makes the prog collect the samples of its children as they exit. Both
+  are inherited by the progs started afterwards.
+- `/prog/<pid>/stack`: for a traced prog, a line `<function index>
+  <path>` per frame, the innermost first, as of its last host call or
+  check point; `... <n>` ends a stack with more than 256 frames. Reading
+  it for a prog that is not traced fails with `prog is not traced`.
+- `/prog/<pid>/exception`: the trap that broke the prog, or empty.
+- `/prog/<pid>/prof`: a line `<samples> <function index> <path>` per
+  sampled function of the prog and of its exited children.
+- A traced prog that traps stays in `/prog` with state `broken`, without
+  its files and namespace, until `kill` is written to its `ctl`. Its
+  parent gets the exit message when it traps.
+- A traced prog's command module is rewritten in memory before it runs:
+  it gets a second memory, exported as `purgatorio.stack`. A guest cannot
+  tell, except that it can nest calls half as deep.
+
 `load` and `call` (v0.4) are registered by each engine rather than in the
 shared host functions, because they need the engine's store. `load`
 instantiates a reactor module (no `_start`; loadable modules live in
