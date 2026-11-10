@@ -9,9 +9,11 @@ license.workspace = true
 [dependencies]
 purg-abi.workspace = true
 purg-core.workspace = true
+purg-platform.workspace = true
 purg-vm.workspace = true
 wasmi.workspace = true
 spin.workspace = true
+sha2 = { version = "0.10", default-features = false }
 
 [lints]
 workspace = true

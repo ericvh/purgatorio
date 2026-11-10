@@ -9,6 +9,15 @@
 //! seen killed. That spare slice lets a guest that did see `interrupted`
 //! exit with its own status. The emu's wasmtime backend does the same
 //! with epoch interruption.
+//!
+//! Modules are cached by the SHA-256 of their bytes ([`ModuleCache`]), so
+//! a command run twice is parsed, validated and translated once, and two
+//! progs running the same command share one translated copy. The cache is
+//! never emptied: wasmi's engine keeps every function it is given until
+//! the engine itself is dropped, so without the cache each run of a
+//! command would add another copy of its code to the heap for good. With
+//! it the engine holds at most one copy of each distinct module run since
+//! boot.
 #![no_std]
 
 extern crate alloc;
@@ -38,6 +47,28 @@ pub const KILLED: &str = "killed";
 pub struct Wasmi {
     engine: Engine,
     linker: Linker<Ctx>,
+    cache: ModuleCache,
+}
+
+/// The modules compiled so far, by the SHA-256 of their bytes (see the
+/// crate docs). A `Module` is a reference to data the engine owns, so a
+/// clone is cheap.
+#[derive(Clone, Default)]
+struct ModuleCache(Arc<purg_platform::sync::Mutex<BTreeMap<[u8; 32], Module>>>);
+
+impl ModuleCache {
+    /// The module for `wasm`, compiled now if it has not been seen before.
+    fn module(&self, engine: &Engine, wasm: &[u8]) -> Result<Module, Error> {
+        use sha2::{Digest, Sha256};
+        let key: [u8; 32] = Sha256::digest(wasm).into();
+        if let Some(m) = self.0.lock().get(&key) {
+            return Ok(m.clone());
+        }
+        // Compiled outside the lock; if another prog got there first its
+        // module is the one kept and used.
+        let module = Module::new(engine, wasm).map_err(bad_exec)?;
+        Ok(self.0.lock().entry(key).or_insert(module).clone())
+    }
 }
 
 impl Wasmi {
@@ -54,9 +85,14 @@ impl Wasmi {
         });
         let engine = Engine::new(&config);
         let mut linker = Linker::new(&engine);
+        let cache = ModuleCache::default();
         link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-        register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-        Ok(Wasmi { engine, linker })
+        register_modules(&mut linker, &cache).map_err(|e| Error::from(format!("{e}")))?;
+        Ok(Wasmi {
+            engine,
+            linker,
+            cache,
+        })
     }
 }
 
@@ -101,7 +137,8 @@ fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
     Ok(())
 }
 
-fn register_modules(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
+fn register_modules(linker: &mut Linker<Ctx>, cache: &ModuleCache) -> Result<(), wasmi::Error> {
+    let cache = cache.clone();
     let modules: Modules = Arc::new(spin::Mutex::new(BTreeMap::new()));
     let loading = modules.clone();
     let calling = modules;
@@ -109,7 +146,7 @@ fn register_modules(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
         purg_abi::MODULE,
         purg_abi::sys::LOAD,
         move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> i32 {
-            match load_reactor(&mut caller, &loading, path, plen) {
+            match load_reactor(&mut caller, &loading, &cache, path, plen) {
                 Ok(handle) => handle,
                 Err(e) => {
                     caller.data_mut().prog.set_error(&e);
@@ -171,6 +208,7 @@ fn guest_str(caller: &mut Caller<'_, Ctx>, ptr: i32, len: i32) -> Result<String,
 fn load_reactor(
     caller: &mut Caller<'_, Ctx>,
     modules: &Modules,
+    cache: &ModuleCache,
     path: i32,
     plen: i32,
 ) -> Result<i32, Error> {
@@ -180,10 +218,11 @@ fn load_reactor(
         purg_vm::load_module(&mut ctx.prog, &path)?
     };
     let engine = caller.engine().clone();
-    let module = Module::new(&engine, &wasm).map_err(bad_exec)?;
+    let module = cache.module(&engine, &wasm)?;
+    drop(wasm);
     let mut linker = Linker::new(&engine);
     link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-    register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
+    register_modules(&mut linker, cache).map_err(|e| Error::from(format!("{e}")))?;
     // A start function runs unsliced: it cannot be resumed.
     let fuel = caller.get_fuel().unwrap_or(SLICE);
     let _ = caller.set_fuel(u64::MAX);
@@ -288,7 +327,7 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
 
 impl Wasmi {
     fn call(&self, store: &mut Store<Ctx>, wasm: &[u8]) -> Result<Stop, Error> {
-        let module = Module::new(&self.engine, wasm).map_err(bad_exec)?;
+        let module = self.cache.module(&self.engine, wasm)?;
         // A start function runs unsliced: it cannot be resumed.
         store.set_fuel(u64::MAX).map_err(bad_exec)?;
         let instance = self
