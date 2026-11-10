@@ -219,6 +219,18 @@ fn boots_to_login_shell() {
     }
 }
 
+/// A prog killed in a sleep dies at once, not when the sleep ends.
+#[test]
+fn kill_ends_a_sleep() {
+    let script = "sleep 60 &\np=$apid\nsleep 0.2\nkill $p\nwait\necho killed";
+    for vm in VMS {
+        let start = std::time::Instant::now();
+        let o = emu(vm, &["sh", "-c", script], b"");
+        assert_eq!(stdout(&o), "killed\n", "{vm}: {o:?}");
+        assert!(start.elapsed().as_secs() < 30, "{vm}: the sleep ran on");
+    }
+}
+
 /// Runs every `/lib/test/sh/*.sh` and compares its output with the `.out`
 /// file next to it.
 #[test]
