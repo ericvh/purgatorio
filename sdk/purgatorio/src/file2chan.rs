@@ -112,25 +112,37 @@ impl FileIO {
     /// Blocks until the next read, write, or truncate. `Ok(None)` means the
     /// file's channels have hung up.
     pub fn recv(&self) -> Result<Option<Request>, Error> {
-        let ops = [2i32, self.read, 2, self.write];
-        let which = unsafe { sys::wait(ops.as_ptr(), 2, -1) };
-        if which < 0 {
-            return Err(Error::last());
-        }
-        let h = if which == 0 { self.read } else { self.write };
-        let mut buf = vec![0u8; 64 * 1024];
-        let mut handles = [-1i32; 4];
-        let n = unsafe { sys::chan_recv(h, buf.as_mut_ptr(), buf.len(), handles.as_mut_ptr(), 0) };
-        if n < 0 {
-            let err = Error::last();
-            if err.0 == purg_abi::error::EHUNGUP {
-                return Ok(None);
-            }
-            return Err(err);
-        }
-        buf.truncate(n as usize);
-        decode(&buf).map(Some)
+        Ok(recv_any(&[self])?.map(|(_, r)| r))
     }
+}
+
+/// Blocks until the next request on any of `files`, and returns it with the
+/// index of its file. `Ok(None)` means that file's channels have hung up.
+pub fn recv_any(files: &[&FileIO]) -> Result<Option<(usize, Request)>, Error> {
+    let ops: Vec<i32> = files.iter().flat_map(|f| [2, f.read, 2, f.write]).collect();
+    let which = unsafe { sys::wait(ops.as_ptr(), ops.len() / 2, -1) };
+    if which < 0 {
+        return Err(Error::last());
+    }
+    let which = which as usize;
+    let f = files[which / 2];
+    let h = if which.is_multiple_of(2) {
+        f.read
+    } else {
+        f.write
+    };
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut handles = [-1i32; 4];
+    let n = unsafe { sys::chan_recv(h, buf.as_mut_ptr(), buf.len(), handles.as_mut_ptr(), 0) };
+    if n < 0 {
+        let err = Error::last();
+        if err.0 == purg_abi::error::EHUNGUP {
+            return Ok(None);
+        }
+        return Err(err);
+    }
+    buf.truncate(n as usize);
+    decode(&buf).map(|r| Some((which / 2, r)))
 }
 
 fn decode(buf: &[u8]) -> Result<Request, Error> {
