@@ -1,0 +1,16 @@
+[package]
+name = "appl-lib-regexp"
+description = "regexp: Plan 9 regular expressions (regexp(6)) for grep, sed and sh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "regexp"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

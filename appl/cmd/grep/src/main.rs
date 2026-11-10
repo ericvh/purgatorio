@@ -1,8 +1,10 @@
-//! grep [-inv] pattern [file...]: print lines that contain a literal pattern.
+//! grep [-cinv] pattern [file...]: print lines that match a regular
+//! expression, in the syntax of regexp(6).
 
 use std::io::{BufRead, Write};
 
 use purgatorio::{Context, Error};
+use regexp::Regex;
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -18,19 +20,20 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                 'v' => invert = true,
                 'i' => ignore = true,
                 'c' => count = true,
-                _ => return Err(Error::from("usage: grep [-inv] pattern [file...]")),
+                _ => return Err(Error::from("usage: grep [-cinv] pattern [file...]")),
             }
         }
         i += 1;
     }
     let pat = args
         .get(i)
-        .ok_or_else(|| Error::from("usage: grep [-inv] pattern [file...]"))?;
+        .ok_or_else(|| Error::from("usage: grep [-cinv] pattern [file...]"))?;
     let pat = if ignore {
         pat.to_lowercase()
     } else {
         pat.clone()
     };
+    let re = Regex::new(&pat).map_err(|e| Error(format!("{pat}: {e}")))?;
     let files: Vec<String> = args.iter().skip(i + 1).cloned().collect();
     let opts = Scan {
         ignore,
@@ -40,11 +43,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         multi: files.len() > 1,
     };
     if files.is_empty() {
-        scan("-", &pat, &opts, &mut std::io::stdin().lock())?;
+        scan("-", &re, &opts, &mut std::io::stdin().lock())?;
     } else {
         for f in &files {
             let file = std::fs::File::open(f).map_err(|_| Error::last())?;
-            scan(f, &pat, &opts, &mut std::io::BufReader::new(file))?;
+            scan(f, &re, &opts, &mut std::io::BufReader::new(file))?;
         }
     }
     Ok(())
@@ -58,7 +61,7 @@ struct Scan {
     multi: bool,
 }
 
-fn scan(name: &str, pat: &str, opts: &Scan, input: &mut impl BufRead) -> Result<(), Error> {
+fn scan(name: &str, re: &Regex, opts: &Scan, input: &mut impl BufRead) -> Result<(), Error> {
     let mut out = std::io::stdout().lock();
     let mut n = 0u64;
     let mut hits = 0u64;
@@ -69,12 +72,13 @@ fn scan(name: &str, pat: &str, opts: &Scan, input: &mut impl BufRead) -> Result<
             break;
         }
         n += 1;
-        let hay = if opts.ignore {
-            line.to_lowercase()
+        let body = line.strip_suffix('\n').unwrap_or(&line);
+        let hit = if opts.ignore {
+            re.is_match(&body.to_lowercase())
         } else {
-            line.clone()
+            re.is_match(body)
         };
-        if hay.contains(pat) == !opts.invert {
+        if hit == !opts.invert {
             hits += 1;
             if opts.count {
                 continue;
