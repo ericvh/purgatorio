@@ -42,6 +42,7 @@ repository = "https://github.com/ericvh/purgatorio"
 
 [workspace.dependencies]
 purg-abi = { path = "crates/purg-abi" }
+purg-auth = { path = "crates/purg-auth", default-features = false }
 purg-styx = { path = "crates/purg-styx" }
 purg-platform = { path = "crates/purg-platform" }
 purg-core = { path = "crates/purg-core" }
