@@ -564,8 +564,19 @@ impl Prog {
     }
 }
 
+/// Without the `auth` feature there is nothing to sign with.
+#[cfg(not(feature = "auth"))]
+fn sign_mount(
+    _pgrp: &crate::pgrp::Pgrp,
+    _user: &str,
+    _msg: &[u8],
+) -> Result<[u8; crate::auth::PROOF]> {
+    Err(Error::new(crate::auth::NO_KEY))
+}
+
 /// Signs `msg` with `#¤` when the agent holds a key, otherwise with a key
 /// file in the namespace.
+#[cfg(feature = "auth")]
 fn sign_mount(
     pgrp: &crate::pgrp::Pgrp,
     user: &str,
@@ -584,6 +595,7 @@ fn sign_mount(
 }
 
 /// Asks `#¤/rpc` to sign `msg`. `None` when the agent has no key.
+#[cfg(feature = "auth")]
 fn factotum_sign(pgrp: &crate::pgrp::Pgrp, msg: &[u8]) -> Option<[u8; crate::auth::PROOF]> {
     let c = pgrp.namec("#¤/rpc", "/").ok()?;
     let c = open(c, purg_abi::mode::ORDWR).ok()?;
@@ -596,6 +608,7 @@ fn factotum_sign(pgrp: &crate::pgrp::Pgrp, msg: &[u8]) -> Option<[u8; crate::aut
 }
 
 /// The caller's signing seed: `/usr/$user/key`, then the shared test fixture.
+#[cfg(feature = "auth")]
 fn client_secret(pgrp: &crate::pgrp::Pgrp, user: &str) -> Result<[u8; crate::auth::SEED]> {
     let mut paths = Vec::new();
     if !user.is_empty() && user != "." && user != ".." && !user.contains('/') {

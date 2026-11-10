@@ -4,7 +4,11 @@
 //!
 //! The client writes `signature[64] || public_key[32]`. The server accepts
 //! the signature only when that public key is one it already holds.
+//!
+//! The signatures need the `auth` feature. Without it nothing can be
+//! signed and no proof verifies, so only unauthenticated mounts work.
 
+#[cfg(feature = "auth")]
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 
 pub use purg_abi::auth::{
@@ -15,14 +19,22 @@ pub use purg_abi::auth::{
 /// fixture, shared by the emu and the probe, not a secret to deploy.
 pub const FIXTURE: u8 = 0x42;
 
+#[cfg(feature = "auth")]
 pub fn public_key(seed: &[u8; SEED]) -> [u8; PUBLIC] {
     SigningKey::from_bytes(seed).verifying_key().to_bytes()
 }
 
+#[cfg(feature = "auth")]
 pub fn sign(seed: &[u8; SEED], message: &[u8]) -> [u8; SIGNATURE] {
     SigningKey::from_bytes(seed).sign(message).to_bytes()
 }
 
+#[cfg(not(feature = "auth"))]
+pub fn verify(_public: &[u8; PUBLIC], _message: &[u8], _signature: &[u8; SIGNATURE]) -> bool {
+    false
+}
+
+#[cfg(feature = "auth")]
 pub fn verify(public: &[u8; PUBLIC], message: &[u8], signature: &[u8; SIGNATURE]) -> bool {
     let Ok(key) = VerifyingKey::from_bytes(public) else {
         return false;
@@ -47,7 +59,7 @@ pub fn accept(allowed: &[[u8; PUBLIC]], challenge: &[u8], proof: &[u8]) -> bool 
     allowed.contains(&public) && verify(&public, challenge, &signature)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "auth"))]
 mod tests {
     extern crate std;
     use super::*;

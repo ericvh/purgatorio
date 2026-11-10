@@ -34,7 +34,7 @@ use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 
 use purg_platform::Result;
 use purg_platform::net::{Conn, Listener, Net, UdpDemux};
-use purg_platform::sync::{Mutex, MutexGuard, Rendez, current_note};
+use purg_platform::sync::{Mutex, MutexGuard, Rendez};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp::{self, State};
 use smoltcp::socket::udp;
@@ -45,7 +45,7 @@ use spin::Once;
 use crate::dtb::Fdt;
 use crate::irq::{self, After};
 use crate::timer;
-use crate::virtio::{self, Mmio, VirtioNet};
+use crate::virtio::{self, Mmio, VirtioNet, sleep};
 
 /// The longest a waiting operation sleeps before polling again.
 pub const MAX_WAIT_MS: u64 = 10;
@@ -94,47 +94,6 @@ fn card_irq() -> After {
         r.wakeup();
     }
     After::Return
-}
-
-fn interrupted() -> Cow<'static, str> {
-    Cow::Borrowed(purg_abi::error::EINTR)
-}
-
-/// Sleeps on `r` until `cond` holds or `timeout_ms` passes (`None`: no
-/// limit), ending early with `interrupted` if the current prog is killed.
-pub(crate) fn sleep(
-    r: &Rendez,
-    mut cond: impl FnMut() -> bool,
-    timeout_ms: Option<u64>,
-) -> Result<bool> {
-    let note = current_note();
-    let killed = || note.as_ref().is_some_and(|n| n.killed());
-    if cond() {
-        return Ok(true);
-    }
-    if killed() {
-        return Err(interrupted());
-    }
-    if let Some(n) = &note {
-        n.arm(r);
-    }
-    let mut c = || killed() || cond();
-    match timeout_ms {
-        Some(ms) => {
-            r.tsleep(&mut c, ms.saturating_mul(1_000_000));
-        }
-        None => r.sleep(&mut c),
-    }
-    if let Some(n) = &note {
-        n.disarm();
-    }
-    if cond() {
-        Ok(true)
-    } else if killed() {
-        Err(interrupted())
-    } else {
-        Ok(false)
-    }
 }
 
 fn now() -> Instant {

@@ -36,11 +36,14 @@ repository = "https://github.com/ericvh/purgatorio"
 purg-abi = { path = "crates/purg-abi" }
 purg-styx = { path = "crates/purg-styx" }
 purg-platform = { path = "crates/purg-platform" }
-purg-core = { path = "crates/purg-core" }
+# Without default features: the kernel can be built without them (its
+# `auth`, `tls` and `net` features; docs/footprint.md). The emu and the
+# probe name the ones they use.
+purg-core = { path = "crates/purg-core", default-features = false }
 purg-vm = { path = "crates/purg-vm" }
 purg-vm-wasmtime = { path = "crates/purg-vm-wasmtime" }
 purg-vm-wasmi = { path = "crates/purg-vm-wasmi" }
-purg-aarch64 = { path = "crates/purg-aarch64" }
+purg-aarch64 = { path = "crates/purg-aarch64", default-features = false }
 purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
 appl-archive = { path = "appl/archive" }

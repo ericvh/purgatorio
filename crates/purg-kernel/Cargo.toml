@@ -13,6 +13,19 @@ path = "src/main.rs"
 test = false
 bench = false
 
+# A small build leaves these out (`--no-default-features`); the test mode
+# needs all of them. docs/footprint.md has the sizes.
+[features]
+default = ["auth", "tls", "net", "p9"]
+# Mount authentication (Ed25519) and the `#¤` key agent.
+auth = ["purg-core/auth"]
+# `#D`, the TLS client device.
+tls = ["purg-core/tls"]
+# `#I` over virtio-net and smoltcp.
+net = ["purg-aarch64/net"]
+# `#9`, a host directory over virtio-9p, mounted on `/n/host`.
+p9 = ["purg-aarch64/p9"]
+
 [dependencies]
 purg-aarch64.workspace = true
 
