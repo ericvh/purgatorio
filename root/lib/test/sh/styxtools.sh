@@ -25,9 +25,9 @@ nexttag 20
 Tclunk 2' > cmds
 styxchat -v {memfs --serve} < cmds
 # styxchat as a server: mount's version and attach, answered by hand.
-echo 'Rversion 0 8192 9P2000
-Rattach 1 5.0.d' > replies
-styxchat -s {mount -A 0 n} < replies | sed 's/Attach\(1,1,4294967295,"[^"]*"/Attach(1,1,4294967295,"user"/'
+echo 'Rversion 65535 8192 9P2000
+Rattach 0 5.0.d' > replies
+styxchat -s {mount -A 0 n} < replies | sed 's/Attach\(0,1,4294967295,"[^"]*"/Attach(0,1,4294967295,"user"/'
 unmount n
 # styxmon between styxchat and memfs; messages on its standard error.
 echo 'Tversion 8192 9P2000
