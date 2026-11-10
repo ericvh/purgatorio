@@ -313,6 +313,20 @@ reader 3 KiB, so 64 KiB keeps more than three times the worst. Mount
 readers are now reported on their own under `memstat`; before, the
 6 KiB above was the deepest of all kprocs that ran no prog.
 
+Traced progs (#107: `trace`, `stack`, `prof`) run a rewritten module
+whose thunks add a frame for every call, and keep their call stack in a
+second one-page memory, `purgatorio.stack`. The thunks deepen wasmi's
+own call stack, which is on the heap, not the kernel thread's or the
+guest's shadow stack. Measured with `trace sh /lib/test/sh/depth.sh`
+(100 nested blocks) and `trace test/debug trap` on the kernel, and the
+corpus's `debug.sh` in the test mode, the deepest prog thread is still
+23 KiB, and `depth.sh` gives the same output traced as untraced on both
+VMs: the 256 KiB shadow stack holds. One limit does show: `trace mash
+ctl.mash` on wasmi stops with `call stack exhausted`, because the
+doubled frames reach wasmi's default call depth before `mash`'s own
+nesting limit; on wasmtime it reaches `mash`'s limit as untraced. That
+limit is wasmi's (`StackLimits`), unchanged by this work.
+
 With #104 the kernel's text grew by about 100 KiB on `next` at
 `opt-level` 3 (1,948 to 2,050 KiB with the other work that landed
 meanwhile); with this branch's profile it is 1,522 KiB, and the
