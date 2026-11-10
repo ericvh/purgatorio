@@ -39,7 +39,7 @@ struct Guest {
     package: String,
     bin: String,
     /// Install directory under `root/`.
-    dir: &'static str,
+    dir: String,
 }
 
 /// First `name = "..."` value after the `[section]` header in a manifest.
@@ -70,27 +70,53 @@ fn guests(ws: &Path) -> Result<Vec<Guest>> {
             .collect();
         entries.sort();
         for path in entries {
-            let Ok(manifest) = fs::read_to_string(path.join("Cargo.toml")) else {
-                continue;
-            };
-            // appl/lib also holds plain libraries linked into commands
-            // (regexp); only reactor modules are installed.
-            if sub == "appl/lib"
-                && !manifest
-                    .lines()
-                    .any(|l| l.trim_start().starts_with("crate-type") && l.contains("cdylib"))
-            {
+            if path.join("Cargo.toml").is_file() {
+                // appl/lib also holds plain libraries linked into commands
+                // (regexp); only reactor modules are installed.
+                if sub == "appl/lib" && !is_reactor(&path)? {
+                    continue;
+                }
+                out.push(guest(&path, String::from(dir))?);
                 continue;
             }
-            let package = manifest_name(&manifest, "[package]")
-                .ok_or_else(|| format!("{}: no package name", path.display()))?;
-            let bin = manifest_name(&manifest, "[[bin]]")
-                .or_else(|| manifest_name(&manifest, "[lib]"))
-                .unwrap_or_else(|| package.clone());
-            out.push(Guest { package, bin, dir });
+            // A directory of crates, such as appl/cmd/ndb, installs into a
+            // subdirectory: appl/cmd/ndb/query is /bin/ndb/query.wasm.
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Ok(sub) = fs::read_dir(&path) else {
+                continue;
+            };
+            let mut inner: Vec<_> = sub.filter_map(|e| e.ok().map(|e| e.path())).collect();
+            inner.sort();
+            for p in inner {
+                if p.join("Cargo.toml").is_file() {
+                    out.push(guest(&p, format!("{dir}/{name}"))?);
+                }
+            }
         }
     }
     Ok(out)
+}
+
+/// Whether the crate at `path` builds a `cdylib`, i.e. a loadable reactor.
+fn is_reactor(path: &Path) -> Result<bool> {
+    let manifest = fs::read_to_string(path.join("Cargo.toml"))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(manifest
+        .lines()
+        .any(|l| l.trim_start().starts_with("crate-type") && l.contains("cdylib")))
+}
+
+fn guest(path: &Path, dir: String) -> Result<Guest> {
+    let manifest = fs::read_to_string(path.join("Cargo.toml"))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let package = manifest_name(&manifest, "[package]")
+        .ok_or_else(|| format!("{}: no package name", path.display()))?;
+    let bin = manifest_name(&manifest, "[[bin]]")
+        .or_else(|| manifest_name(&manifest, "[lib]"))
+        .unwrap_or_else(|| package.clone());
+    Ok(Guest { package, bin, dir })
 }
 
 fn cargo() -> Command {
@@ -152,7 +178,7 @@ fn build_root() -> Result<()> {
         let src = out_dir.join(format!("{}.wasm", g.bin));
         let bytes = fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
         wasm::check(&bytes, true).map_err(|e| format!("{}: {e}", src.display()))?;
-        let dest_dir = ws.join("root").join(g.dir);
+        let dest_dir = ws.join("root").join(&g.dir);
         fs::create_dir_all(&dest_dir).map_err(|e| format!("{}: {e}", dest_dir.display()))?;
         let dest = dest_dir.join(format!("{}.wasm", g.bin));
         fs::write(&dest, &bytes).map_err(|e| format!("{}: {e}", dest.display()))?;
