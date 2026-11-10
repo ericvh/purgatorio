@@ -292,16 +292,37 @@ once more with whatever is left at the end. It stops at end of file, at a
 failed read or write, or when the prog is killed. It returns the number of
 bytes written to `dst`. This follows Inferno's `stream`:
 
-- An error or a kill is not an error of the call. The count is still
-  returned, and the errstr is set to the read or write error, or to
-  `interrupted`.
+- An error is not an error of the call. The count is still returned,
+  and the errstr is set to the read or write error.
 - A write of a full buffer that fails or is short ends the copy. That
   buffer is not counted. (Inferno counts the final partial buffer even if
   its write fails. Here only what `dst` accepted is counted.)
-- A prog blocked reading in `stream` is interrupted by a kill, as a blocked
-  `read` is.
+- A prog blocked reading in `stream` is ended by a kill, as one blocked in
+  a `read` is (see Killed progs below). What it had written stays
+  written.
 - `bufsiz = 0` copies nothing and returns 0. A negative `bufsiz` or a bad
   fd returns -1.
+
+## Killed progs
+
+A kill (`kill` or `killgrp` on `/prog/<pid>/ctl`, or `proc_raise`) ends
+the prog, as in Inferno. It is not an error handed back for the guest to
+handle:
+
+- A host call the prog is blocked in (a read, `wait`, a sleep in
+  `poll_oneoff`, `spawn_prog` loading a module, and so on) is interrupted
+  and does not return to the guest: the guest is unwound there.
+- A killed prog makes no further host call: the next one unwinds it
+  instead of running.
+- A prog that computes without host calls is stopped at the VM's next
+  check of the kill, every 10 ms under wasmtime (epoch interruption) and
+  every 2^20 units of fuel under wasmi.
+
+Its parent's exit message has the status `killed`: `pid name killed`. A
+child that a killed `spawn_prog` had not yet started is not started.
+
+There is no handler a guest can install to catch a kill. A guest still
+sees `interrupted` from a call when a file server returns that error.
 
 ## WASI p1 functions implemented
 
@@ -324,12 +345,7 @@ M5: the rest of preview 1, so stock `wasm32-wasip1` binaries link and run.
 file to cover the range. `fd_fdstat_set_rights` accepts any open fd, since
 rights are not tracked. `path_link` and `path_symlink` return `NOTSUP`
 (Inferno has no links). `clock_res_get` reports the clock resolution.
-`proc_raise` kills the prog's note, so its next blocking call returns
-`EINTR`. A prog killed while `poll_oneoff` only sleeps (no fd
-subscriptions) ends there with status `killed`. A killed prog that keeps computing without a host call is stopped
-with status `killed`. Both VMs check the note periodically, every 10 ms
-under wasmtime (epoch interruption) and every 2^20 units of fuel under
-wasmi, and stop the prog at the check after the one that first sees it
-killed, so a prog that saw `EINTR` has time to exit with its own status. `sock_accept` on an Inferno `listen` file returns the new
+`proc_raise` kills the prog, as a kill from outside does (see Killed
+progs). `sock_accept` on an Inferno `listen` file returns the new
 conversation's `data` fd, and `sock_recv`, `sock_send` and `sock_shutdown`
 work on such fds.

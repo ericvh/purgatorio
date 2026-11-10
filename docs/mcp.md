@@ -171,8 +171,8 @@ long build, an interactive program.
   helper prog writes it as the job reads, in order. `eof` closes the
   input after the data. Writing to a job that has exited, or after `eof`,
   fails.
-- `job_kill` kills the job's process group. A killed sh reports an
-  interrupted wait as its status (`fail:lost`) rather than `killed`.
+- `job_kill` kills the job's process group. Its status is then
+  `killed`.
 - Exited jobs stay in `job_list` and can be read until more than 32 have
   exited; the oldest go first. `reset` and the end of the session kill
   every job.

@@ -3,10 +3,8 @@
 //!
 //! Guest code is interrupted every [`TICK`] (epoch interruption) to check
 //! the prog's note: a prog killed while computing, with no host call to
-//! return `interrupted` from, is stopped with status `killed` at the tick
-//! after the one that first saw it killed. That spare tick lets a guest
-//! that did see `interrupted` exit with its own status. The wasmi backend
-//! does the same with fuel.
+//! end it at (see [`purg_vm::host_call`]), is stopped there with status
+//! `killed`. The wasmi backend does the same with fuel.
 //!
 //! A traced prog (`docs/debug.md`) runs a module that keeps its own call
 //! stack (`purg_vm::trace`), the same module wasmi runs, so that a stack
@@ -32,8 +30,8 @@ const CACHED_MODULES: usize = 64;
 /// How often running guests check their note.
 pub const TICK: Duration = Duration::from_millis(10);
 
-/// The status of a prog stopped by the [`TICK`] checks after a kill.
-pub const KILLED: &str = "killed";
+/// The status of a killed prog.
+pub use purg_vm::KILLED;
 
 pub struct Wasmtime {
     engine: Engine,
@@ -125,7 +123,8 @@ fn link(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
                 |mut caller: Caller<'_, Ctx>, $($a: $t),*| -> wasmtime::Result<$r> {
                     record_caller(&mut caller);
                     let (data, ctx) = memory(&mut caller)?;
-                    $f(ctx, &mut Mem(data), $($a),*).map_err(wasmtime::Error::new)
+                    purg_vm::host_call(ctx, |ctx| $f(ctx, &mut Mem(data), $($a),*))
+                        .map_err(wasmtime::Error::new)
                 },
             )?;
         };
@@ -143,14 +142,17 @@ fn register_modules(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
     linker.func_wrap(
         purg_abi::MODULE,
         purg_abi::sys::LOAD,
-        move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> i32 {
-            match load_reactor(&mut caller, &loading, path, plen) {
+        move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> wasmtime::Result<i32> {
+            killed(&caller)?;
+            let r = match load_reactor(&mut caller, &loading, path, plen) {
                 Ok(handle) => handle,
                 Err(e) => {
                     caller.data_mut().prog.set_error(&e);
                     -1
                 }
-            }
+            };
+            killed(&caller)?;
+            Ok(r)
         },
     )?;
     linker.func_wrap(
@@ -164,8 +166,9 @@ fn register_modules(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
               alen: i32,
               out: i32,
               olen: i32|
-              -> i32 {
-            match call_reactor(
+              -> wasmtime::Result<i32> {
+            killed(&caller)?;
+            let r = match call_reactor(
                 &mut caller,
                 &calling,
                 Call {
@@ -183,9 +186,20 @@ fn register_modules(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
                     caller.data_mut().prog.set_error(&e);
                     -1
                 }
-            }
+            };
+            killed(&caller)?;
+            Ok(r)
         },
     )?;
+    Ok(())
+}
+
+/// Ends a killed prog at `load` or `call`, as [`purg_vm::host_call`] does
+/// at the other host calls.
+fn killed(caller: &Caller<'_, Ctx>) -> wasmtime::Result<()> {
+    if caller.data().prog.proc.note.killed() {
+        return Err(wasmtime::Error::new(Stop::killed()));
+    }
     Ok(())
 }
 
@@ -333,7 +347,6 @@ impl purg_vm::Engine for Wasmtime {
 
     fn run(&self, wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
         let mut store = Store::new(&self.engine, ctx);
-        let mut seen_killed = false;
         let traced: Traced = Arc::new(Mutex::new(None));
         let ticked = traced.clone();
         store.epoch_deadline_callback(move |state| {
@@ -342,10 +355,7 @@ impl purg_vm::Engine for Wasmtime {
             let stack = *ticked.lock().unwrap_or_else(|e| e.into_inner());
             record(&state, stack, true);
             if state.data().prog.proc.note.killed() {
-                if seen_killed {
-                    return Err(wasmtime::Error::new(Stop::Exit(String::from(KILLED))));
-                }
-                seen_killed = true;
+                return Err(wasmtime::Error::new(Stop::killed()));
             }
             Ok(UpdateDeadline::Continue(1))
         });
