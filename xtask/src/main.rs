@@ -1188,7 +1188,16 @@ fn small() -> Result<()> {
         cmd.current_dir(ws.join("appl/small"))
             .args(["build", "--release", "--target", triple])
             .env("CARGO_TARGET_DIR", &target)
-            .env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags(&ws));
+            // The `std` module gets the guests' stack size; the `no_std`
+            // ones set their own in their build scripts.
+            .env(
+                "CARGO_ENCODED_RUSTFLAGS",
+                if *triple == GUEST_TARGET {
+                    guest_rustflags(&ws)?
+                } else {
+                    reproducible_rustflags(&ws)
+                },
+            );
         for p in *packages {
             cmd.args(["-p", p]);
         }

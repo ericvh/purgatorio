@@ -182,20 +182,26 @@ pub fn kernel(path: &Path) -> Result<()> {
     let mut rows: Vec<(&str, usize)> = by_crate.into_iter().collect();
     rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     println!("  code by crate ({} KiB of text):", kib(text));
-    for (krate, size) in rows {
+    let row = |name: &str, size: usize| {
         println!(
             "  {:<28} {:>8} {:>5.1}%",
-            krate,
+            name,
             kib(size),
             100.0 * size as f64 / text.max(1) as f64
         );
+    };
+    // Crates under 4 KiB are one line.
+    const SMALL: usize = 4096;
+    let mut rest = 0;
+    for (krate, size) in rows {
+        if size >= SMALL {
+            row(krate, size);
+        } else {
+            rest += size;
+        }
     }
-    println!(
-        "  {:<28} {:>8} {:>5.1}%",
-        "(no symbol: asm, padding)",
-        kib(text.saturating_sub(named)),
-        100.0 * text.saturating_sub(named) as f64 / text.max(1) as f64
-    );
+    row("(crates under 4 KiB)", rest);
+    row("(no symbol: asm, padding)", text.saturating_sub(named));
     Ok(())
 }
 
