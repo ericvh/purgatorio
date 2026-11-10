@@ -13,7 +13,10 @@
 //!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
 //!   `--kvm`, once under KVM), checking each run's exit status and serial
 //!   output against `crates/purg-kernel/expected.out`. Each run types
-//!   `hello` and ^D on the serial console for the console self-test.
+//!   `hello` and ^D on the serial console for the console self-test, and
+//!   has a virtio-net card on QEMU user networking: the kernel mounts a
+//!   hosted emu's `styxlisten` export and pings a UDP echo server on this
+//!   host, and this host mounts the kernel's `tcp!*!6666` export.
 //! - `initrd`: `build-root`, then pack `root/bin` and `root/lib` into a
 //!   deterministic ustar archive at `target/initrd/root.tar`, the kernel's
 //!   root file system.
@@ -233,8 +236,36 @@ fn run_emu(args: &[String]) -> Result<ExitCode> {
 
 const PROBE_TARGET: &str = "aarch64-unknown-none";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
-/// Host port forwarded to the probe's `tcp!*!6666` export.
-const PROBE_NET_PORT: u16 = 17666;
+/// The port the probe and the kernel export `/` on; QEMU forwards a free
+/// host port to it.
+const GUEST_EXPORT_PORT: u16 = 6666;
+/// The MAC address of the virtio-net card.
+const GUEST_MAC: &str = "52:54:00:12:34:56";
+
+/// A TCP port on 127.0.0.1 that is free now. Another process may take it
+/// before it is used, but each run asking for its own means concurrent
+/// runs (TCG and KVM, or two worktrees) do not collide.
+fn free_port() -> Result<u16> {
+    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bind: {e}"))?;
+    l.local_addr()
+        .map(|a| a.port())
+        .map_err(|e| format!("bind: {e}"))
+}
+
+/// QEMU arguments for a virtio-net card on user networking, with host port
+/// `fwd` forwarded to the guest's export port.
+fn net_args(fwd: u16) -> Vec<String> {
+    [
+        "-netdev",
+        &format!("user,id=net0,hostfwd=tcp:127.0.0.1:{fwd}-:{GUEST_EXPORT_PORT}"),
+        "-global",
+        "virtio-mmio.force-legacy=off",
+        "-device",
+        &format!("virtio-net-device,netdev=net0,mac={GUEST_MAC}"),
+    ]
+    .map(String::from)
+    .to_vec()
+}
 
 /// A finished QEMU run.
 struct QemuRun {
@@ -402,7 +433,8 @@ fn probe(kvm: bool) -> Result<()> {
     let bytes = fs::read(&elf).map_err(|e| format!("{}: {e}", elf.display()))?;
     let image = elf.with_extension("img");
     fs::write(&image, elf_to_image(&bytes)?).map_err(|e| format!("{}: {e}", image.display()))?;
-    let fwd = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{PROBE_NET_PORT}-:6666");
+    let fwd = free_port()?;
+    let net = net_args(fwd);
     let mut args: Vec<&str> = if kvm {
         vec!["-accel", "kvm", "-cpu", "host", "-M", "virt,gic-version=3"]
     } else {
@@ -414,21 +446,14 @@ fn probe(kvm: bool) -> Result<()> {
     } else {
         args.push("-semihosting");
     }
-    args.extend([
-        "-netdev",
-        &fwd,
-        "-global",
-        "virtio-mmio.force-legacy=off",
-        "-device",
-        "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56",
-        "-kernel",
-    ]);
+    args.extend(net.iter().map(String::as_str));
+    args.push("-kernel");
     eprintln!("probe: qemu-system-aarch64 {}", args.join(" "));
     let mut mounted = false;
     let r = run_qemu(&args, &image, PROBE_TIMEOUT, None, |text| {
         if !mounted && text.contains("probe: net ready\n") {
             mounted = true;
-            mount_probe(&ws)?;
+            mount_guest(&ws, fwd, "probe")?;
         }
         Ok(())
     })?;
@@ -609,6 +634,7 @@ fn kernel(kvm: bool) -> Result<()> {
         .to_str()
         .ok_or("initrd path is not UTF-8")?
         .to_owned();
+    run(cargo().current_dir(&ws).args(["build", "-p", "purg-emu"]))?;
     run(cargo().current_dir(&ws).args([
         "build",
         "-p",
@@ -639,23 +665,50 @@ fn kernel(kvm: bool) -> Result<()> {
     };
     let mut failed = Vec::new();
     for k in runs {
+        // The network peers on this host: an emu exporting its root, a
+        // UDP echo server, and a free port QEMU forwards to the kernel's
+        // export.
+        let (host, echo, fwd) = match (HostExport::start(&ws), UdpEcho::start(), free_port()) {
+            (Ok(h), Ok(e), Ok(f)) => (h, e, f),
+            (h, e, f) => {
+                let e = h.err().or(e.err()).or(f.err()).unwrap_or_default();
+                eprintln!("kernel: {}: {e}", k.name);
+                failed.push(k.name);
+                continue;
+            }
+        };
+        let net = net_args(fwd);
+        // `test` runs the conformance guests, the sh corpus and the
+        // network checks instead of an interactive shell.
+        let bootargs = format!(
+            "{}test hostexport={} udpecho={} netexport",
+            if kvm { "exit=psci " } else { "" },
+            host.port,
+            echo.port
+        );
         let mut args: Vec<&str> = k.args.to_vec();
         args.extend(["-m", "512M", "-nographic"]);
         if k.initrd {
             args.extend(["-initrd", &initrd]);
         }
-        // `test` runs the conformance guests and the sh corpus instead of
-        // an interactive shell.
-        if kvm {
-            args.extend(["-append", "exit=psci test"]);
-        } else {
-            args.extend(["-semihosting", "-append", "test"]);
+        if !kvm {
+            args.push("-semihosting");
         }
+        args.extend(["-append", &bootargs]);
+        args.extend(net.iter().map(String::as_str));
         args.push("-kernel");
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
-        let r = match run_qemu(&args, &image, KERNEL_TIMEOUT, Some(&KERNEL_INPUT), |_| {
+        let mut mounted = false;
+        let r = run_qemu(&args, &image, KERNEL_TIMEOUT, Some(&KERNEL_INPUT), |text| {
+            if !mounted && text.contains("kernel: net ready\n") {
+                mounted = true;
+                mount_guest(&ws, fwd, "kernel")?;
+            }
             Ok(())
-        }) {
+        });
+        drop(host);
+        let echoed = echo.stop();
+        let r = match r {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("kernel: {}: {e}", k.name);
@@ -687,6 +740,12 @@ fn kernel(kvm: bool) -> Result<()> {
                 "output differs from {}; expected (less the EL line):\n{want}",
                 golden.display()
             ))
+        } else if !mounted {
+            Some(format!(
+                "no `kernel: net ready`: tcp!*!{GUEST_EXPORT_PORT} was not exported"
+            ))
+        } else if echoed == 0 {
+            Some(String::from("the UDP echo server heard nothing"))
         } else {
             None
         };
@@ -709,11 +768,13 @@ fn kernel(kvm: bool) -> Result<()> {
     }
 }
 
-/// Mounts the probe's export from this host and reads a file through it.
-fn mount_probe(ws: &Path) -> Result<()> {
+/// Mounts the export of the guest (`who`: the probe or the kernel) from
+/// this host, through QEMU's forward of host port `port`, and reads a file
+/// through it.
+fn mount_guest(ws: &Path, port: u16, who: &str) -> Result<()> {
     let emu = ws.join("target/debug/emu");
     let script = format!(
-        "mkdir -p /tmp/probe-mnt; mount tcp!127.0.0.1!{PROBE_NET_PORT} /tmp/probe-mnt; cat /tmp/probe-mnt/lib/probe/hello.txt"
+        "mkdir -p /tmp/{who}-mnt; mount tcp!127.0.0.1!{port} /tmp/{who}-mnt; cat /tmp/{who}-mnt/lib/probe/hello.txt"
     );
     let mut child = Command::new(&emu)
         .arg("-r")
@@ -732,7 +793,7 @@ fn mount_probe(ws: &Path) -> Result<()> {
         if started.elapsed() > Duration::from_secs(20) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(String::from("probe export mount timed out"));
+            return Err(format!("{who} export mount timed out"));
         }
         std::thread::sleep(Duration::from_millis(20));
     };
@@ -744,13 +805,104 @@ fn mount_probe(ws: &Path) -> Result<()> {
     if let Some(mut err) = child.stderr.take() {
         let _ = err.read_to_string(&mut stderr);
     }
-    let out_status = status;
     if stdout.trim() != "hello from the probe root" {
         return Err(format!(
-            "probe export mount failed ({out_status})\n{stdout}{stderr}"
+            "{who} export mount failed ({status})\n{stdout}{stderr}"
         ));
     }
     Ok(())
+}
+
+/// A hosted emu serving its root with `styxlisten -A tcp!127.0.0.1!0
+/// export /` for the kernel to mount; killed when dropped.
+struct HostExport {
+    child: std::process::Child,
+    port: u16,
+}
+
+impl HostExport {
+    fn start(ws: &Path) -> Result<HostExport> {
+        let emu = ws.join("target/debug/emu");
+        let mut child = Command::new(&emu)
+            .arg("-r")
+            .arg(ws.join("root"))
+            .args(["styxlisten", "-A", "tcp!127.0.0.1!0", "export", "/"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("{}: {e}", emu.display()))?;
+        // The guest's fd 2 is the emu's console, its stdout.
+        let out = child.stdout.take().expect("piped stdout");
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Reads the announced address, then keeps draining the console.
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines() {
+                let Ok(line) = line else { break };
+                if let Some(addr) = line.strip_prefix("styxlisten: ") {
+                    let _ = tx.send(addr.to_owned());
+                } else {
+                    eprintln!("host emu: {line}");
+                }
+            }
+        });
+        let mut host = HostExport { child, port: 0 };
+        let addr = rx.recv_timeout(Duration::from_secs(20)).map_err(|_| {
+            let status = host.child.try_wait().ok().flatten();
+            format!("the host emu did not announce its export (exit status {status:?})")
+        })?;
+        host.port = addr
+            .rsplit('!')
+            .next()
+            .and_then(|p| p.parse().ok())
+            .ok_or_else(|| format!("styxlisten announced {addr:?}"))?;
+        Ok(host)
+    }
+}
+
+impl Drop for HostExport {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// A UDP echo server on 127.0.0.1 for the kernel's UDP check.
+struct UdpEcho {
+    port: u16,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<usize>,
+}
+
+impl UdpEcho {
+    fn start() -> Result<UdpEcho> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let sock = std::net::UdpSocket::bind(("127.0.0.1", 0)).map_err(|e| format!("udp: {e}"))?;
+        let port = sock.local_addr().map_err(|e| format!("udp: {e}"))?.port();
+        sock.set_read_timeout(Some(Duration::from_millis(100)))
+            .map_err(|e| format!("udp: {e}"))?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let mut echoed = 0;
+            let mut buf = [0u8; 2048];
+            while !stopped.load(Ordering::Acquire) {
+                if let Ok((n, from)) = sock.recv_from(&mut buf)
+                    && sock.send_to(&buf[..n], from).is_ok()
+                {
+                    echoed += 1;
+                }
+            }
+            echoed
+        });
+        Ok(UdpEcho { port, stop, thread })
+    }
+
+    /// Stops the server; returns how many datagrams it echoed.
+    fn stop(self) -> usize {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.thread.join().unwrap_or(0)
+    }
 }
 
 fn check_wasm(files: &[String]) -> Result<()> {
