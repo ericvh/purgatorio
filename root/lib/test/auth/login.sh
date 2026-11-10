@@ -5,9 +5,9 @@
 load std
 d=/tmp/auth-login
 rm -rf $d
-mkdir -p $d/keys $d/srv/lib/keys $d/n
+mkdir -p $d/keys $d/srv $d/lib/keys $d/n
 u=`{cat /dev/user}
-auth/createsignerkey -f $d/sk > $d/srv/lib/keys/signers
+auth/createsignerkey -f $d/sk > $d/lib/keys/signers
 echo master | auth/keyfs -m $d/keys -C 8,1 $d/keydb
 echo secret | auth/changelogin -m $d/keys -C 8,1 $u
 ls $d/keys | wc -l
@@ -18,6 +18,7 @@ spid=$apid
 styxlisten tcp!127.0.0.1!0 /bin/auth/keysrv.wasm -f $d/sk -m $d/keys >[2] $d/kl &
 kpid=$apid
 echo hello > $d/srv/file
+bind $d/lib /lib
 styxlisten tcp!127.0.0.1!0 export $d/srv >[2] $d/el &
 epid=$apid
 while {! test -s $d/sl} {sleep 0}
@@ -27,7 +28,7 @@ signer=tcp!`{sed 's/styxlisten: //' $d/sl}
 keysrv=tcp!`{sed 's/styxlisten: //' $d/kl}
 srv=tcp!`{sed 's/styxlisten: //' $d/el}
 echo secret | getauthinfo -s $signer $d/info && echo got
-auth/verify -s $d/srv/lib/keys/signers -u $u $d/info > /dev/null && echo verified
+auth/verify -s $d/lib/keys/signers -u $u $d/info > /dev/null && echo verified
 mount -k $d/info $srv $d/n && cat $d/n/file && unmount $d/n
 echo wrong | getauthinfo -s $signer $d/info2
 echo secret | getauthinfo -u nobody -s $signer $d/info2
@@ -40,6 +41,7 @@ echo ok > $d/keys/$u/status
 echo 1 > $d/keys/$u/expire
 echo newpw | getauthinfo -s $signer $d/info2
 kill $spid $kpid $epid
+unmount $d/lib /lib
 # The key file survives keyfs and needs the master password.
 unmount $d/keys
 echo wrong | auth/keyfs -m $d/keys $d/keydb

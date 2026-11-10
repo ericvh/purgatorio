@@ -1,5 +1,6 @@
 //! export [-A] [dir]: serve `dir` (default `/`) as 9P on file descriptor 0.
-//! `-A` does not authenticate, even when the tree holds a public key.
+//! `-A` does not authenticate, even when this namespace trusts a key or a
+//! signer (`/lib/keys/signers`, `/usr/<user>/key.pub`; `docs/auth.md`).
 
 use purgatorio::abi::mount;
 use purgatorio::{Context, Error};

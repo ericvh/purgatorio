@@ -165,9 +165,10 @@ Inferno peers mount with `-A`. `docs/auth.md` has the formats, the tools
 and a security review.
 
 - The server trusts keys it holds directly (the 32-byte
-  `usr/<uname>/key.pub` and `lib/test/auth.key.pub` under the exported
-  tree) and certificates from the signers listed in `lib/keys/signers`,
-  unless a key is in `lib/keys/revoked`. With no key and no signer it
+  `/usr/<uname>/key.pub` and `/lib/test/auth.key.pub`) and certificates
+  from the signers listed in `/lib/keys/signers`, unless a key is in
+  `/lib/keys/revoked`. These are read in the exporter's own namespace,
+  never from under the exported tree. With no key and no signer there it
   answers `Tauth` with "authentication not required", as Inferno does.
 - The client writes its proof to the auth fid in one write. A version 1
   proof is exactly 96 bytes, `signature[64] || public_key[32]` over the raw

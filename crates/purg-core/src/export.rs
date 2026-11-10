@@ -24,9 +24,9 @@ struct Fid {
 
 /// Serves `root` (a path in `pgrp`) as 9P2000 on `fd` until the client hangs up.
 ///
-/// When `noauth` is false and the exported tree trusts a key or a signer
-/// (`docs/auth.md`), `Tattach` is accepted only after a proof over a
-/// challenge from `platform`.
+/// When `noauth` is false and `pgrp` (the exporter's namespace) trusts a
+/// key or a signer (`docs/auth.md`), `Tattach` is accepted only after a
+/// proof over a challenge from `platform`.
 pub fn serve(
     pgrp: Arc<Pgrp>,
     root: &str,
@@ -66,7 +66,7 @@ struct Afid {
     ok: bool,
 }
 
-/// What the exported tree trusts for one user: keys it holds directly,
+/// What the exporter trusts for one user: keys it holds directly,
 /// signers, and revoked keys (`None` when that list does not parse).
 struct Trust {
     keys: Vec<[u8; crate::auth::PUBLIC]>,
@@ -76,12 +76,18 @@ struct Trust {
 
 /// The longest key list read.
 const MAX_LIST: usize = 64 * 1024;
+/// Trusted signers and revoked keys, in the exporter's namespace.
+const SIGNERS: &str = "/lib/keys/signers";
+const REVOKED: &str = "/lib/keys/revoked";
 
+/// Reads the trust material for `uname` from the exporter's own namespace
+/// (`fs.pgrp`), at absolute paths. Nothing is read from under the exported
+/// tree, so a client that can write there cannot add a key or a signer.
 fn trust(fs: &Export, uname: &str) -> Trust {
     let mut keys = Vec::new();
-    let mut paths = alloc::vec![under(&fs.root, "lib/test/auth.key.pub")];
+    let mut paths = alloc::vec![String::from("/lib/test/auth.key.pub")];
     if crate::auth::safe_user(uname) {
-        paths.push(under(&fs.root, &alloc::format!("usr/{uname}/key.pub")));
+        paths.push(alloc::format!("/usr/{uname}/key.pub"));
     }
     for path in paths {
         if let Some(key) = crate::auth::read_key(&fs.pgrp, &path)
@@ -90,12 +96,14 @@ fn trust(fs: &Export, uname: &str) -> Trust {
             keys.push(key);
         }
     }
-    let list = |rel: &str| crate::auth::read_file(&fs.pgrp, &under(&fs.root, rel), MAX_LIST);
-    let signers = list("lib/keys/signers")
+    let signers = crate::auth::read_file(&fs.pgrp, SIGNERS, MAX_LIST)
         .map(|t| purg_auth::keys::parse_list_lenient(&t))
         .unwrap_or_default();
-    let revoked = match list("lib/keys/revoked") {
+    // A missing list revokes nothing. One that is there but cannot be read
+    // or parsed fails closed.
+    let revoked = match crate::auth::read_file(&fs.pgrp, REVOKED, MAX_LIST) {
         Some(t) => purg_auth::keys::parse_list(&t),
+        None if fs.pgrp.namec(REVOKED, "/").is_ok() => None,
         None => Some(Vec::new()),
     };
     Trust {
@@ -117,14 +125,6 @@ impl Trust {
 
     fn required(&self) -> bool {
         self.policy(0).requires_auth()
-    }
-}
-
-fn under(root: &str, rel: &str) -> String {
-    if root == "/" {
-        alloc::format!("/{rel}")
-    } else {
-        alloc::format!("{root}/{rel}")
     }
 }
 
