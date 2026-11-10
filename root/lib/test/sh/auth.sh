@@ -1,16 +1,19 @@
 # Signer certificates on loopback (docs/auth.md): keyfs holds the
 # password, getauthinfo gets a certificate from auth/signer after a
 # SPAKE2 password check, and an export that trusts the signer accepts it.
-# Expired, untrusted and revoked certificates are refused, and -A gets
-# "authentication required". The rest of the tools are tested in
-# /lib/test/auth, on the emu only.
+# The exporter reads /lib/keys in its own namespace (bound here from a
+# scratch directory); a signer list planted in the exported tree is
+# ignored. Expired, untrusted and revoked certificates are refused, and
+# -A gets "authentication required". The rest of the tools are tested
+# in /lib/test/auth, on the emu only.
 load std
 d=/tmp/sh-auth
 rm -rf $d
-mkdir -p $d/keys $d/srv/lib/keys $d/n
+mkdir -p $d/keys $d/srv/lib/keys $d/lib/keys $d/n
 u=`{cat /dev/user}
-auth/createsignerkey -f $d/sk one > $d/srv/lib/keys/signers
-auth/createsignerkey -f $d/sk2 two > /dev/null
+auth/createsignerkey -f $d/sk one > $d/lib/keys/signers
+auth/createsignerkey -f $d/sk2 two > $d/srv/lib/keys/signers
+bind $d/lib /lib
 echo master | auth/keyfs -m $d/keys -C 8,1 $d/keydb
 echo secret | auth/changelogin -m $d/keys -C 8,1 $u
 cat $d/keys/$u/status
@@ -30,10 +33,11 @@ auth/mkauthinfo -f $d/sk -e 1 $u $d/old
 mount -k $d/old $srv $d/n
 auth/mkauthinfo -f $d/sk2 $u $d/other
 mount -k $d/other $srv $d/n
-auth/getpk $d/info > $d/srv/lib/keys/revoked
+auth/getpk $d/info > $d/lib/keys/revoked
 mount -k $d/info $srv $d/n
-rm $d/srv/lib/keys/revoked
+rm $d/lib/keys/revoked
 mount -A $srv $d/n
 kill $spid $epid
 unmount $d/keys
+unmount $d/lib /lib
 rm -rf $d

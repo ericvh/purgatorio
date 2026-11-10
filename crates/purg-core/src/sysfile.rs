@@ -291,8 +291,8 @@ impl Prog {
     }
 
     /// `sys->export`: serve `dir` on `fd` until the client closes.
-    /// `MNOAUTH` serves the tree even when it contains a public key;
-    /// `export::RDONLY` refuses every change to it.
+    /// `MNOAUTH` serves the tree even when the caller's namespace trusts a
+    /// key or a signer; `export::RDONLY` refuses every change to it.
     pub fn export(&self, fd: i32, dir: &str, flags: u32) -> Result<()> {
         let fd = self.fgrp.get(fd)?;
         let dir = absolute(dir, &self.dot());
