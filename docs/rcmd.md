@@ -127,11 +127,12 @@ in its own prog on the client.
 
 - No encryption after the handshake (above).
 - The remote command runs as the server's user.
-- The kernel's `export` serves one request at a time (#69). A remote
-  read of a client file that blocks (`/n/client/dev/cons` under `cpu`,
-  say) holds up every other use of `/n/client` until it returns. The
-  command's standard input and output do not go through the export, so
-  they are not affected, and the session itself cannot deadlock on it.
+- The client's namespace is served by the kernel's `export`, which
+  serves requests concurrently, so a remote read that blocks (of
+  `/n/client/dev/cons` under `cpu`, say) does not hold up other use of
+  `/n/client`. The design does not depend on that: the command's
+  standard input and output do not go through the export, and the
+  session cannot deadlock on it.
 - `rcmd` reads its standard input whether or not the remote command
   does, as `ssh` does. Give it `</dev/null` in a script that has input
   of its own.
