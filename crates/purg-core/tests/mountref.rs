@@ -428,3 +428,14 @@ fn a_forked_namespace_shares_the_mounted_on_chan() {
     forked.pctl(pctl::NEWNS, &[]).unwrap();
     assert!(names(&mut p, "#R/mnt").is_empty());
 }
+
+/// The current directory is a held Chan (issue #55): a name that only a
+/// prog's `dot` refers to stays alive on the server.
+#[test]
+fn the_current_directory_keeps_its_name_alive() {
+    let mut p = setup(Paths::Fresh);
+    p.chdir("#R/mnt/x").unwrap();
+    assert_eq!(names(&mut p, "#R/mnt"), ["x"]);
+    p.chdir("/").unwrap();
+    assert_eq!(names(&mut p, "#R/mnt"), Vec::<String>::new());
+}
