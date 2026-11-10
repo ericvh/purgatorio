@@ -11,6 +11,8 @@ publish = false
 purg-abi.workspace = true
 purg-auth.workspace = true
 purg-vm.workspace = true
+wasmobj.workspace = true
+rustc-demangle = "0.1"
 
 [dev-dependencies]
 purg-core.workspace = true

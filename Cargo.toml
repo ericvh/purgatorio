@@ -71,6 +71,7 @@ appl-archive = { path = "appl/archive" }
 authlib = { package = "appl-authlib", path = "appl/authlib" }
 filepat = { package = "appl-lib-filepat", path = "appl/lib/filepat" }
 regexp = { package = "appl-lib-regexp", path = "appl/lib/regexp" }
+wasmobj = { package = "appl-lib-wasmobj", path = "appl/lib/wasmobj" }
 ndb = { package = "appl-lib-ndb", path = "appl/lib/ndb" }
 
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }
@@ -109,10 +110,14 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 panic = "abort"
-# The name section records the output file name, which carries a Cargo hash
-# of the build host; stripping it keeps guest modules byte-identical across
-# hosts.
-strip = "symbols"
+# The linker keeps the name section so that `cargo xtask build-root` can
+# write each guest's function names to a `.names` file for `stack` and
+# `prof`. That section also records the output file name, which carries a
+# Cargo hash of the build host, so `build-root` removes it (with the
+# `producers` and `target_features` sections) from the module it installs:
+# the installed modules are what `strip = "symbols"` would give, and stay
+# byte-identical across hosts.
+strip = "debuginfo"
 
 [profile.probe]
 inherits = "release"

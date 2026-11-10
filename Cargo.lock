@@ -1056,6 +1056,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-wasmdep"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-wasmobj",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-wasmdump"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-wasmobj",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-wc"
 version = "0.1.0"
 dependencies = [
@@ -1141,6 +1157,10 @@ dependencies = [
  "purg-styx",
  "purgatorio",
 ]
+
+[[package]]
+name = "appl-lib-wasmobj"
+version = "0.1.0"
 
 [[package]]
 name = "appl-test-abi"
@@ -3474,10 +3494,12 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "appl-lib-wasmobj",
  "purg-abi",
  "purg-auth",
  "purg-core",
  "purg-vm",
+ "rustc-demangle",
 ]
 
 [[package]]
