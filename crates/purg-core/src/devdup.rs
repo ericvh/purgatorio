@@ -142,12 +142,8 @@ impl Dev for DevDup {
             let text = format!("{} {}\n", u.name, mode_name(u.mode));
             return Ok(read_str(text.as_bytes(), buf, offset));
         }
-        let state = c.state.lock();
-        let u = state
-            .as_ref()
-            .and_then(|s| s.downcast_ref::<Arc<Chan>>())
-            .ok_or(Error::new(error::EBADUSEFD))?;
-        u.dev.read(u, buf, offset)
+        let u = opened(c)?;
+        u.dev.read(&u, buf, offset)
     }
 
     fn dirread(&self, c: &Chan) -> Result<Vec<Dir>> {
@@ -192,13 +188,21 @@ impl Dev for DevDup {
             return Err(Error::new(error::EPERM));
         }
         let _ = fd;
-        let state = c.state.lock();
-        let u = state
-            .as_ref()
-            .and_then(|s| s.downcast_ref::<Arc<Chan>>())
-            .ok_or(Error::new(error::EBADUSEFD))?;
-        u.dev.write(u, buf, offset)
+        let u = opened(c)?;
+        u.dev.write(&u, buf, offset)
     }
+}
+
+/// The file an open `#d/n` is a dup of. The Chan's state lock is released
+/// before the caller does I/O: a read that blocks must not hold up a write
+/// on the same open file.
+fn opened(c: &Chan) -> Result<Arc<Chan>> {
+    c.state
+        .lock()
+        .as_ref()
+        .and_then(|s| s.downcast_ref::<Arc<Chan>>())
+        .cloned()
+        .ok_or(Error::new(error::EBADUSEFD))
 }
 
 fn mode_name(m: u8) -> &'static str {
