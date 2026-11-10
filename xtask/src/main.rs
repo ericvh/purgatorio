@@ -666,6 +666,9 @@ fn kernel(kvm: bool) -> Result<()> {
     } else {
         KERNEL_TCG_RUNS.iter().collect()
     };
+    // `KERNEL_MEMSTAT=1 cargo xtask kernel` adds the `memstat` boot
+    // argument: a `kernel: mem ...` line after each test, not compared.
+    let memstat = env::var_os("KERNEL_MEMSTAT").is_some();
     let mut failed = Vec::new();
     for k in runs {
         // The network peers on this host: an emu exporting its root, a
@@ -693,10 +696,11 @@ fn kernel(kvm: bool) -> Result<()> {
         // `test` runs the conformance guests, the sh corpus and the
         // network checks instead of an interactive shell.
         let bootargs = format!(
-            "{}test hostexport={} udpecho={} netexport",
+            "{}test hostexport={} udpecho={} netexport{}",
             if kvm { "exit=psci " } else { "" },
             host.port,
-            echo.port
+            echo.port,
+            if memstat { " memstat" } else { "" }
         );
         let mut args: Vec<&str> = k.args.to_vec();
         args.extend(["-m", "512M", "-nographic"]);
@@ -740,6 +744,7 @@ fn kernel(kvm: bool) -> Result<()> {
             .serial
             .lines()
             .filter(|l| !l.starts_with("kernel: booted at EL") && !l.starts_with("kernel: root "))
+            .filter(|l| !l.starts_with("kernel: mem "))
             .flat_map(|l| [l, "\n"])
             .collect();
         let problem = if !r.status.success() {
