@@ -32,7 +32,7 @@
 //! - `size [--guests] [--small]`: build `purg-kernel` and print its section
 //!   sizes, its code by crate, and the sizes of the guests in `root/bin`
 //!   (with `--guests`, one line per module). `--small` builds the kernel
-//!   without its optional features (TLS, mount authentication,
+//!   without its optional features (TLS, mount authentication, virtio-9p,
 //!   networking). `size --elf FILE` reports on a kernel built earlier.
 //!   See `docs/footprint.md`.
 //! - `small`: build the experimental `no_std` and multi-call guests in
@@ -1216,7 +1216,7 @@ fn size_report(args: &[String]) -> Result<()> {
     ]);
     if small {
         build.arg("--no-default-features");
-        println!("kernel built with --no-default-features: no auth, tls or net");
+        println!("kernel built with --no-default-features: no auth, tls, net or p9");
     }
     run(&mut build)?;
     size::kernel(
