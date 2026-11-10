@@ -436,6 +436,14 @@ impl System {
     }
 }
 
+/// What [`find`] returns.
+pub type Host = Host9p;
+
+/// `#9` for the device table, if there is one.
+pub fn devs(dev: Option<&Arc<Dev9p>>) -> Vec<Arc<dyn Dev>> {
+    dev.map(|d| d.clone() as Arc<dyn Dev>).into_iter().collect()
+}
+
 /// The first virtio-9p device in the DTB, brought up with buffers for
 /// [`MAX_MSIZE`] messages and its interrupt routed (so after `irq::init`).
 pub fn find(fdt: &purg_aarch64::dtb::Fdt<'_>) -> Option<Host9p> {

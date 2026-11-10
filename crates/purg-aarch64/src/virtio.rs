@@ -20,12 +20,19 @@
 //! Interrupts: the device raises its SPI when it uses a buffer. The driver
 //! never needs it (everything is polled), but a sleeper can wait for it
 //! instead of a timer: register a handler that calls [`Mmio::ack`].
+//!
+//! The card's driver is used with the `net` feature and the 9P transport
+//! with `p9`; with only one of them the other's code is unused.
+#![cfg_attr(not(all(feature = "net", feature = "p9")), allow(dead_code))]
 
 use alloc::alloc::{Layout, alloc_zeroed};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::arch::asm;
 use core::ptr::{read_volatile, write_volatile};
+
+use alloc::borrow::Cow;
+use purg_platform::sync::{Rendez, current_note};
 
 use crate::dtb::{self, Fdt};
 use crate::mmu;
@@ -427,6 +434,7 @@ pub struct TxToken<'a> {
     q: &'a mut Queue,
 }
 
+#[cfg(feature = "net")]
 impl smoltcp::phy::Device for VirtioNet {
     type RxToken<'a>
         = RxToken<'a>
@@ -466,6 +474,7 @@ impl smoltcp::phy::Device for VirtioNet {
     }
 }
 
+#[cfg(feature = "net")]
 impl smoltcp::phy::RxToken for RxToken<'_> {
     fn consume<R, F>(self, f: F) -> R
     where
@@ -480,6 +489,7 @@ impl smoltcp::phy::RxToken for RxToken<'_> {
     }
 }
 
+#[cfg(feature = "net")]
 impl smoltcp::phy::TxToken for TxToken<'_> {
     fn consume<R, F>(self, len: usize, f: F) -> R
     where
@@ -697,6 +707,43 @@ impl Virtio9p {
             self.free |= 1 << slot;
             return Some((self.cookies[slot], reply));
         }
+    }
+}
+
+/// Sleeps on `r` until `cond` holds or `timeout_ms` passes (`None`: no
+/// limit), ending early with `interrupted` if the current prog is killed.
+pub(crate) fn sleep(
+    r: &Rendez,
+    mut cond: impl FnMut() -> bool,
+    timeout_ms: Option<u64>,
+) -> purg_platform::Result<bool> {
+    let note = current_note();
+    let killed = || note.as_ref().is_some_and(|n| n.killed());
+    if cond() {
+        return Ok(true);
+    }
+    if killed() {
+        return Err(Cow::Borrowed(purg_abi::error::EINTR));
+    }
+    if let Some(n) = &note {
+        n.arm(r);
+    }
+    let mut c = || killed() || cond();
+    match timeout_ms {
+        Some(ms) => {
+            r.tsleep(&mut c, ms.saturating_mul(1_000_000));
+        }
+        None => r.sleep(&mut c),
+    }
+    if let Some(n) = &note {
+        n.disarm();
+    }
+    if cond() {
+        Ok(true)
+    } else if killed() {
+        Err(Cow::Borrowed(purg_abi::error::EINTR))
+    } else {
+        Ok(false)
     }
 }
 
