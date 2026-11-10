@@ -7,7 +7,7 @@ use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::{self, Write};
 
-use purg_aarch64::board::{board, exit_method, has_bootarg, heap_region};
+use purg_aarch64::board::{FREE_REGIONS, board, exit_method, free_regions, has_bootarg};
 use purg_aarch64::boot::{self, DtbError, find_dtb};
 use purg_aarch64::console::{self, Input, Raw};
 use purg_aarch64::dtb::{self, BootInfo, Fdt};
@@ -103,17 +103,26 @@ fn check_sections() {
 }
 
 /// Checks that the DTB agrees with the fixed map the boot tables were built
-/// from: the RAM they map must be RAM, and the console must be the PL011
-/// they reach.
-fn check_board(info: &BootInfo<'_>) {
+/// from: RAM must start where they map it and hold the image, and the
+/// console must be the PL011 they reach. Returns the machine's RAM. It may
+/// be smaller or larger than the boot map's window: the heap and the
+/// runtime tables are sized from it.
+fn check_board(info: &BootInfo<'_>) -> Region {
     let b = board();
-    let ram = info.ram;
+    let ram = Region {
+        base: info.ram.base as usize,
+        size: info.ram.size as usize,
+    };
     check!(
-        ram.base as usize <= b.ram.base && b.ram.end() <= ram.end() as usize,
-        "boot maps RAM {:#x}..{:#x} but the DTB has {:#x}..{:#x}",
+        ram.base == b.ram.base,
+        "boot maps RAM at {:#x} but the DTB has it at {:#x}",
         b.ram.base,
-        b.ram.end(),
-        ram.base,
+        ram.base
+    );
+    check!(
+        boot::image_end() <= ram.end(),
+        "the image ends at {:#x}, past the end of RAM at {:#x}",
+        boot::image_end(),
         ram.end()
     );
     check!(
@@ -128,20 +137,39 @@ fn check_board(info: &BootInfo<'_>) {
         "the GIC is outside the device window"
     );
     println!("kernel: dtb agrees with the boot memory map");
+    ram
 }
 
-/// The heap is the largest stretch of RAM after the image that holds
+/// The part of `ram` the boot tables map.
+fn boot_mapped(ram: Region) -> Region {
+    Region {
+        base: ram.base,
+        size: ram.size.min(board().ram.size),
+    }
+}
+
+/// The heap is the RAM after the image that holds
 /// nothing the kernel still needs: the initrd, whose pages the RAM root
 /// borrows for good, and the DTB, which `BootInfo` borrows from.
-fn init_heap(reserved: &[Region]) -> Region {
-    let heap = heap_region(board().ram, boot::image_end(), reserved);
+///
+/// It starts inside the boot map; [`grow_heap`] adds RAM beyond it once the
+/// runtime tables map that.
+fn init_heap(ram: Region, reserved: &[Region]) -> [Region; FREE_REGIONS] {
+    let heap = free_regions(boot_mapped(ram), boot::image_end(), reserved);
+    let size: usize = heap.iter().map(|r| r.size).sum();
+    check!(
+        size >= MIN_HEAP,
+        "no room for a heap: {} KiB of RAM is free after the image",
+        size >> 10
+    );
     // SAFETY: RAM after the image, clear of the DTB and initrd, is unused
     // and linear-mapped RW; this runs once, before any allocation.
-    unsafe { HEAP.init(heap) };
+    unsafe { HEAP.init(&heap) };
     heap
 }
 
-fn heap_test(heap: Region) {
+fn heap_test(heap: &[Region]) {
+    let largest = heap.iter().map(|r| r.size).max().unwrap_or(0);
     let mut v: Vec<u64> = (0..10_000).collect();
     v.retain(|x| x % 3 == 0);
     check!(v.len() == 3334 && v[3333] == 9999, "vec");
@@ -156,8 +184,9 @@ fn heap_test(heap: Region) {
         "btreemap"
     );
     // A large block, touched a page at a time, proves the heap reaches far
-    // past the image through the linear map.
-    let big = 64 << 20;
+    // past the image through the linear map: 64 MiB, or a quarter of a
+    // small heap.
+    let big = (64 << 20).min(largest / 4).max(1 << 20) & !((1 << 20) - 1);
     let mut l: Vec<u8> = alloc::vec![0; big];
     for i in (0..big).step_by(PAGE_SIZE) {
         l[i] = (i >> 12) as u8;
@@ -168,40 +197,103 @@ fn heap_test(heap: Region) {
     );
     let end = l.as_ptr() as usize + big;
     check!(
-        end <= mmu::phys_to_virt(heap.end()),
+        heap.iter()
+            .any(|r| end > mmu::phys_to_virt(r.base) && end <= mmu::phys_to_virt(r.end())),
         "heap block {end:#x} is outside the heap"
     );
     drop(l);
-    println!("kernel: heap: vec, box, btreemap, 64 MiB block ok");
+    println!(
+        "kernel: heap: vec, box, btreemap, {} MiB block ok",
+        big >> 20
+    );
 }
 
-/// Rebuilds the kernel map in heap pages with the runtime API and switches
-/// to it.
-fn rebuild_tables() {
-    const PAGES: usize = 64;
-    let layout = Layout::from_size_align(PAGES * PAGE_SIZE, PAGE_SIZE).expect("layout");
-    // SAFETY: a non-zero-size layout. The pages are never freed: the
-    // tables in them stay live.
-    let pool = unsafe { alloc::alloc::alloc(layout) };
-    check!(!pool.is_null(), "no memory for page tables");
+/// The least heap the kernel will start with.
+const MIN_HEAP: usize = 1 << 20;
+
+/// Builds the kernel map over `ram` in `pages` fresh heap pages. Returns
+/// the map, the pool's virtual address and the pages left over.
+fn build_tables(ram: Region, pages: usize) -> (mmu::KernelMap, *mut u8, usize) {
+    let layout = Layout::from_size_align(pages * PAGE_SIZE, PAGE_SIZE).expect("layout");
+    // SAFETY: a non-zero-size layout.
+    let va = unsafe { alloc::alloc::alloc(layout) };
+    check!(!va.is_null(), "no memory for page tables");
     let pool = Region {
-        base: mmu::virt_to_phys(pool as usize),
-        size: PAGES * PAGE_SIZE,
+        base: mmu::virt_to_phys(va as usize),
+        size: pages * PAGE_SIZE,
     };
     // SAFETY: the pool is ours and writable through the linear map.
     let mut alloc = unsafe { TableAlloc::new(pool, KERNEL_VBASE) };
-    let map = match boot::kernel_map(&mut alloc) {
-        Ok(m) => m,
+    match boot::kernel_map_for(&mut alloc, ram) {
+        Ok(m) => (m, va, alloc.remaining()),
         Err(e) => fail(format_args!("runtime page tables: {}", e.as_str())),
-    };
+    }
+}
+
+/// Rebuilds the kernel map in heap pages with the runtime API, over the
+/// RAM the DTB reports, and switches to it.
+fn rebuild_tables(ram: Region) {
+    // A first build in a generous pool counts the pages the tables need;
+    // the tables that stay are then built in exactly that many.
+    const PAGES: usize = 64;
+    let (_, va, left) = build_tables(ram, PAGES);
+    check!(left < PAGES, "no tables were built");
+    let layout = Layout::from_size_align(PAGES * PAGE_SIZE, PAGE_SIZE).expect("layout");
+    // SAFETY: allocated in `build_tables` with this layout; the tables in
+    // it were never loaded.
+    unsafe { alloc::alloc::dealloc(va, layout) };
+    // The pages are never freed: the tables in them stay live.
+    let (map, _, left) = build_tables(ram, PAGES - left);
+    check!(left == 0, "the second table build differed from the first");
     // SAFETY: the new tables map the image, stack, heap and devices at the
     // same addresses as the boot tables.
     unsafe { mmu::switch(&map) };
     check!(mmu::ttbr1() == map.ttbr1, "TTBR1 did not switch");
     let probe = Box::new(0x5a5a_u32);
     check!(*probe == 0x5a5a, "heap after the switch");
-    check!(alloc.remaining() < PAGES, "no tables were built");
     println!("kernel: page tables rebuilt at runtime");
+}
+
+/// Gives the heap the RAM past the boot map's window, which the runtime
+/// tables now map, when the heap ends at the window's end and nothing is
+/// reserved beyond it. Returns the bytes added.
+fn grow_heap(ram: Region, reserved: &[Region]) -> usize {
+    let mapped = boot_mapped(ram).end();
+    if ram.end() <= mapped {
+        return 0;
+    }
+    if reserved.iter().any(|r| r.size > 0 && r.end() > mapped) {
+        return 0;
+    }
+    let by = ram.end() - mapped;
+    // SAFETY: RAM from the DTB, directly after a heap region (or `extend`
+    // does nothing), mapped by the runtime tables and clear of every
+    // reservation.
+    if unsafe { HEAP.extend(mapped, by) } {
+        by
+    } else {
+        0
+    }
+}
+
+/// The byte the boot stack is painted with in `memstat` mode.
+const PAINT: u8 = 0xa5;
+
+/// Paints the unused part of the boot stack, below this frame.
+fn paint_boot_stack() {
+    let lo = mmu::phys_to_virt(boot::image().stack.base);
+    let hi = current_sp() - 256;
+    // SAFETY: the boot stack below the live frames is unused.
+    unsafe { core::ptr::write_bytes(lo as *mut u8, PAINT, hi - lo) };
+}
+
+/// Bytes of the boot stack used since [`paint_boot_stack`].
+pub(crate) fn boot_stack_used() -> usize {
+    let stack = boot::image().stack;
+    let lo = mmu::phys_to_virt(stack.base);
+    // SAFETY: the boot stack is mapped read-write for good.
+    let s = unsafe { core::slice::from_raw_parts(lo as *const u8, stack.size) };
+    stack.size - s.iter().take_while(|&&b| b == PAINT).count()
 }
 
 /// The kernel entry point, called by `purg_aarch64::boot` in the high half
@@ -242,7 +334,12 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         "not in the high half: pc {pc:#x} sp {sp:#x} kernel_main {main:#x}"
     );
     println!("kernel: running in the high half");
-    check_board(&info);
+    // `memstat` reports where the memory goes (see `crate::memstat`).
+    let memstat = has_bootarg(&info, "memstat");
+    if memstat {
+        paint_boot_stack();
+    }
+    let ram = check_board(&info);
     check_sections();
     let initrd = info.initrd.map(|r| Region {
         base: r.base as usize,
@@ -253,9 +350,24 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         size: dtb.len(),
     };
     let none = Region { base: 0, size: 0 };
-    let heap = init_heap(&[initrd.unwrap_or(none), dtb_region]);
-    heap_test(heap);
-    rebuild_tables();
+    let reserved = [initrd.unwrap_or(none), dtb_region];
+    let heap = init_heap(ram, &reserved);
+    heap_test(&heap);
+    rebuild_tables(ram);
+    let grown = grow_heap(ram, &reserved);
+    if memstat {
+        crate::memstat::enable();
+        let img = boot::image();
+        println!(
+            "kernel: mem ram {} KiB; image: text {} rodata {} data+bss {} stack {} KiB; heap {} KiB",
+            ram.size >> 10,
+            img.text.size >> 10,
+            img.rodata.size >> 10,
+            img.data.size >> 10,
+            img.stack.size >> 10,
+            (heap.iter().map(|r| r.size).sum::<usize>() + grown) >> 10
+        );
+    }
     irq::init(&info);
     irq::wait_ticks(10);
     println!("kernel: timer interrupts at {} Hz", irq::TICK_HZ);
