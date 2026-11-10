@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-calc"
+description = "calc: calculator language"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "calc"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

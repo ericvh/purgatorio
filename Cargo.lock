@@ -110,6 +110,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-calc"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-cat"
 version = "0.1.0"
 dependencies = [
