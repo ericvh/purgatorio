@@ -260,7 +260,7 @@ jobs:
       - name: licenses, bans and sources
         run: cargo deny check licenses bans sources
       - name: licenses, bans and sources of the fuzz targets
-        run: cargo deny --manifest-path fuzz/Cargo.toml check --config deny.toml licenses bans sources
+        run: cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml check licenses bans sources
       - name: fuzz targets compile
         run: cargo check --manifest-path fuzz/Cargo.toml
       # The advisory database changes under us, so a new advisory must not
