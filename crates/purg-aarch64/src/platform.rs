@@ -16,8 +16,12 @@ use crate::sched::Scheduler;
 use crate::timer;
 
 /// The names `purg-core` gives the kprocs that serve a device and never
-/// run a prog: the mount driver's reader.
-pub const SERVICE_KPROCS: &[&str] = &["mnt"];
+/// run a prog: the mount driver's reader, and the export workers that
+/// carry out one Styx request each through the exporting prog's
+/// namespace (a walk, an open, a read or write through a device or a
+/// mount). They run kernel code only; a guest's file server answers on
+/// its own thread.
+pub const SERVICE_KPROCS: &[&str] = &["mnt", "export"];
 
 pub struct MetalPlatform {
     console: &'static dyn Console,

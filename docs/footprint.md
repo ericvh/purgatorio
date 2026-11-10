@@ -29,7 +29,8 @@ at `e56c3b6`, and say so.
 | Heap in use after the test mode | 6.70 MiB | 0.86 MiB |
 | Peak kernel threads, test mode / idle `sh` | 23 / 3 | 23 / 3 |
 | Kernel thread stack: size / deepest use | 2,048 / 23 KiB | 256 / 21 KiB |
-| Service kproc stack: size / deepest use | 2,048 / 6 KiB | 64 / 6 KiB |
+| Mount reader stack: size / deepest use | 2,048 / 6 KiB | 64 / 6 KiB |
+| Export worker stack: size / deepest use | 2,048 / - | 64 / 18 KiB |
 | Boot stack: size / deepest use | 256 / 4 KiB | 64 / 4 KiB |
 | Initial linear memory of a `std` guest | 1,088 KiB | 320 KiB (`mash` 576 KiB) |
 | RAM for one `echo` (thread, memory, module) | about 3.3 MiB | about 0.8 MiB |
@@ -46,7 +47,7 @@ bit `next`'s. The rest of the "before" column is `next` itself.
 What changed, in order of effect:
 
 1. **Kernel thread stacks went from 2 MiB to 256 KiB**, and 64 KiB for the
-   mount readers, from measured depths (Section 3).
+   mount readers and export workers, from measured depths (Section 3).
 2. **Guests are linked with a 256 KiB shadow stack** instead of the
    linker's 1 MiB (Section 6).
 3. **The heap and page tables are sized from the DTB**, and the heap uses
@@ -265,8 +266,20 @@ Across the whole test mode:
 | Stack | Was | Deepest use | Now |
 |---|---|---|---|
 | A thread that runs a prog (wasmi and the host calls under it) | 2 MiB | 21 KiB | 256 KiB |
-| A service kproc (the mount driver's reader) | 2 MiB | 6 KiB | 64 KiB |
+| A mount reader (the mount driver's reader kproc) | 2 MiB | 6 KiB | 64 KiB |
+| An export worker (one Styx request through a device or a mount) | 2 MiB | 18 KiB | 64 KiB |
 | The boot stack (in the image) | 256 KiB | 4 KiB | 64 KiB |
+
+Export workers came with `next`'s concurrent export (#97): an exporting
+prog hands each request to a kproc named `export`, which walks, opens,
+reads or writes through the exporting prog's namespace and replies. They
+run kernel code only; a request for a guest's own file server waits on
+that server's thread. The deepest went 18 KiB over the test mode (the
+Styx, mcpd and network scripts export, and mount exports through
+`styxlisten`), so they get the mount readers' 64 KiB, more than three
+times that. The count is a measurement, not a bound: a request that
+crosses several mounts and unions goes deeper, and the stack check below
+is what would catch it.
 
 wasmi keeps the guest's call stack and value stack on the heap, so deep
 recursion in a guest (`depth.sh`) does not deepen the kernel thread's
