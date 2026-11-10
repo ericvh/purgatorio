@@ -63,6 +63,8 @@ imports! {
         alen: usize
     ) -> i32;
     fn export(fd: i32, dir: *const u8, dlen: usize, flags: u32) -> i32;
+    fn fauth(fd: i32, aname: *const u8, alen: usize) -> i32;
+    fn stream(src: i32, dst: i32, bufsiz: i32) -> i32;
     fn fversion(fd: i32, msize: i32, ver: *mut u8, vlen: usize) -> i32;
     fn file2chan(
         dir: *const u8,

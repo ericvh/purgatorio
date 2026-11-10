@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.4";
+pub const ABI_VERSION: &str = "0.5";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -292,6 +292,24 @@ pub mod mount {
     /// A server that has a key rejects the attach; one that does not
     /// accepts it.
     pub const MNOAUTH: u32 = 0x8000_0000;
+}
+
+/// Mount authentication: an Ed25519 signature over a server challenge.
+/// After `fauth`, the client reads `CHALLENGE` bytes from the auth fd and
+/// writes `signature[SIGNATURE] || public_key[PUBLIC]` (`PROOF` bytes).
+pub mod auth {
+    pub const SEED: usize = 32;
+    pub const SIGNATURE: usize = 64;
+    pub const PUBLIC: usize = 32;
+    /// What the client writes to the auth fid.
+    pub const PROOF: usize = SIGNATURE + PUBLIC;
+    /// Bytes the server asks the client to sign.
+    pub const CHALLENGE: usize = 32;
+
+    pub const NOT_REQUIRED: &str = "authentication not required";
+    pub const REQUIRED: &str = "authentication required";
+    pub const FAILED: &str = "authentication failed";
+    pub const NO_KEY: &str = "no key";
 }
 
 /// Error strings, worded exactly as Inferno's.

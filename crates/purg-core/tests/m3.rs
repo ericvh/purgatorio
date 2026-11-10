@@ -358,3 +358,116 @@ fn kill_interrupts_a_blocked_read() {
     join.join().unwrap();
     let _ = (w, p);
 }
+
+/// fauth, the exchange done by the caller on the auth fd, then a mount
+/// that attaches with it.
+#[cfg(feature = "std")]
+#[test]
+fn fauth_then_mount_with_the_afd() {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, mock, "#R");
+    let afd = p.fauth(b, "").unwrap();
+    let mut challenge = [0u8; purg_core::auth::CHALLENGE];
+    assert_eq!(p.read(afd, &mut challenge).unwrap(), challenge.len());
+    let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
+    let mut proof = purg_core::auth::sign(&seed, &challenge).to_vec();
+    proof.extend_from_slice(&purg_core::auth::public_key(&seed));
+    assert_eq!(p.write(afd, &proof).unwrap(), proof.len());
+    p.mount(
+        b,
+        afd,
+        "#R/mnt",
+        purg_abi::mount::MREPL | purg_abi::mount::MCREATE,
+        "",
+    )
+    .unwrap();
+    p.close(afd).unwrap();
+    p.close(b).unwrap();
+    let mut buf = [0u8; 64];
+    let fd = p.open("#R/mnt/lib/test/auth.key.pub", mode::OREAD).unwrap();
+    assert_eq!(p.read(fd, &mut buf).unwrap(), purg_core::auth::PUBLIC);
+    p.close(fd).unwrap();
+    p.unmount(None, "#R/mnt").unwrap();
+    server.join().unwrap();
+}
+
+/// An afd that never authenticated does not get the attach in, and a
+/// server without a key answers fauth with "authentication not required".
+#[cfg(feature = "std")]
+#[test]
+fn fauth_failures() {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, mock.clone(), "#R");
+    let afd = p.fauth(b, "").unwrap();
+    let err = p.mount(b, afd, "#R/mnt", 0, "").unwrap_err();
+    assert_eq!(err.as_str(), purg_core::auth::REQUIRED);
+    let err = p.mount(afd, afd, "#R/mnt", 0, "").unwrap_err();
+    assert_eq!(err.as_str(), purg_abi::error::EBADUSEFD);
+    p.close(afd).unwrap();
+    p.close(b).unwrap();
+    server.join().unwrap();
+
+    let (server, b) = spawn_export(&mut p, mock, "#R/box");
+    let err = p.fauth(b, "").unwrap_err();
+    assert_eq!(err.as_str(), purg_core::auth::NOT_REQUIRED);
+    p.mount(b, -1, "#R/mnt", purg_abi::mount::MREPL, "")
+        .unwrap();
+    p.close(b).unwrap();
+    p.unmount(None, "#R/mnt").unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn stream_copies_through_a_small_buffer() {
+    let (mut p, _) = setup();
+    let data = b"stream through a seven byte buffer";
+    let [r, w] = p.pipe().unwrap();
+    assert_eq!(p.write(w, data).unwrap(), data.len());
+    p.close(w).unwrap();
+    let out = p.create("#R/box/out", mode::ORDWR, 0o644).unwrap();
+    let (n, failed) = p.stream(r, out, 7).unwrap();
+    assert_eq!(n, data.len() as u64);
+    assert!(failed.is_none());
+    let mut buf = [0u8; 64];
+    let n = p.pread(out, &mut buf, 0).unwrap();
+    assert_eq!(&buf[..n], data);
+
+    // A failed write ends the copy and that buffer is not counted.
+    let src = p.open("#R/box/out", mode::OREAD).unwrap();
+    let (n, failed) = p.stream(src, src, 4).unwrap();
+    assert_eq!(n, 0);
+    assert_eq!(failed.unwrap().as_str(), purg_abi::error::EBADUSEFD);
+    assert!(p.stream(r, out, -1).is_err());
+}
+
+/// A prog blocked reading in stream is interrupted by kill, writes out what
+/// it holds, and returns the count.
+#[cfg(feature = "std")]
+#[test]
+fn kill_interrupts_a_blocked_stream() {
+    let (mut p, _) = setup();
+    let [r, w] = p.pipe().unwrap();
+    let out = p.create("#R/box/killed", mode::ORDWR, 0o644).unwrap();
+    let mut child = p.spawn(0, &[(r, 0), (out, 1)]).unwrap();
+    child.started();
+    let pid = child.pid;
+    let join = thread::spawn(move || {
+        purg_platform::sync::set_current_note(Some(child.proc.note.clone()));
+        child.stream(0, 1, 4).unwrap()
+    });
+    assert_eq!(p.write(w, b"full").unwrap(), 4);
+    // A full buffer goes straight to the file. Once it is there, the child
+    // is in (or about to enter) its next read.
+    let mut buf = [0u8; 8];
+    while p.pread(out, &mut buf, 0).unwrap() < 4 {
+        thread::yield_now();
+    }
+    p.kernel.procs.get(pid).unwrap().kill();
+    let (n, failed) = join.join().unwrap();
+    assert_eq!(n, 4);
+    assert_eq!(failed.unwrap().as_str(), purg_abi::error::EINTR);
+    assert_eq!(&buf[..4], b"full");
+    let _ = w;
+}

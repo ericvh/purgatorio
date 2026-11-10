@@ -207,22 +207,85 @@ impl Prog {
         }
     }
 
-    /// `sys->mount`. `afd >= 0` (a separate auth fd) is not used; the
-    /// conversation on `fd` carries `Tauth` unless `MNOAUTH` is set.
+    /// `sys->mount`. With `afd >= 0` (an fd from [`Prog::fauth`] on which
+    /// the caller has already authenticated) the attach uses that auth fid.
+    /// With `afd = -1` the mount authenticates by itself through `Tauth`,
+    /// unless `MNOAUTH` is set.
     pub fn mount(&self, fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<()> {
-        if afd >= 0 {
-            return Err(Error::new(error::ENOTIMPL));
-        }
         let noauth = flags & purg_abi::mount::MNOAUTH != 0;
         let flags = flags & !purg_abi::mount::MNOAUTH;
         let fd = self.fgrp.get(fd)?;
-        let pgrp = self.pgrp.clone();
         let user = String::from(self.kernel.procs.user());
-        let root = self.kernel.mnt.mount(fd, aname, &user, noauth, |msg| {
-            sign_mount(&pgrp, &user, msg)
-        })?;
+        let root = if afd >= 0 {
+            let afd = self.fgrp.get(afd)?;
+            self.kernel.mnt.mount_auth(&fd, &afd, aname, &user)?
+        } else {
+            let pgrp = self.pgrp.clone();
+            self.kernel.mnt.mount(fd, aname, &user, noauth, |msg| {
+                sign_mount(&pgrp, &user, msg)
+            })?
+        };
         let old = absolute(old, &self.dot());
         self.pgrp.bind_chan(root, &old, flags)
+    }
+
+    /// `sys->fauth`: starts authentication on the 9P conversation on `fd`
+    /// for attach name `aname`. Returns an fd on the auth file. A server
+    /// that does not authenticate fails with "authentication not required".
+    pub fn fauth(&mut self, fd: i32, aname: &str) -> Result<i32> {
+        let fd = self.fgrp.get(fd)?;
+        let user = String::from(self.kernel.procs.user());
+        let afd = self.kernel.mnt.auth(fd, aname, &user)?;
+        self.fgrp.alloc(Arc::new(afd))
+    }
+
+    /// `sys->stream`: copies `src` to `dst` until end of file, an error or
+    /// a kill. Data is read into a `bufsiz` buffer, which is written out
+    /// whenever it is full and once more at the end. Returns the bytes
+    /// `dst` accepted. A failed read or write (or a kill) ends the copy and
+    /// is returned as the second value, for the errstr; it is not an error
+    /// of the call. A short write of a full buffer ends the copy, and that
+    /// buffer is not counted.
+    pub fn stream(&mut self, src: i32, dst: i32, bufsiz: i32) -> Result<(u64, Option<Error>)> {
+        let bufsiz = usize::try_from(bufsiz).map_err(|_| Error::new(error::EBADARG))?;
+        self.fgrp.get(src)?;
+        self.fgrp.get(dst)?;
+        let mut buf = alloc::vec![0u8; bufsiz.min(STREAM_MAX)];
+        let (mut total, mut held) = (0u64, 0usize);
+        let mut failed = None;
+        while !buf.is_empty() {
+            if crate::block::interrupted() {
+                failed = Some(Error::new(error::EINTR));
+                break;
+            }
+            match self.read(src, &mut buf[held..]) {
+                Ok(0) => break,
+                Ok(n) => held += n,
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
+            }
+            if held == buf.len() {
+                let wrote = self.write(dst, &buf);
+                held = 0;
+                match wrote {
+                    Ok(n) if n == buf.len() => total += n as u64,
+                    Ok(_) => break,
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+            }
+        }
+        if held != 0 {
+            match self.write(dst, &buf[..held]) {
+                Ok(n) => total += n as u64,
+                Err(e) => failed = failed.or(Some(e)),
+            }
+        }
+        Ok((total, failed))
     }
 
     /// `sys->export`: serve `dir` on `fd` until the client closes.
@@ -361,6 +424,9 @@ impl Prog {
         Ok(())
     }
 }
+
+/// The largest buffer `stream` allocates; a larger `bufsiz` is clamped.
+const STREAM_MAX: usize = 1 << 20;
 
 /// The arm that completed, its bytes, and any handles it received.
 pub type AltDone = (usize, Vec<u8>, Vec<i32>);

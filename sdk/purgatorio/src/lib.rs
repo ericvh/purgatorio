@@ -16,6 +16,7 @@
 //! ```
 
 pub mod arg;
+pub mod auth;
 pub mod bufio;
 pub mod daytime;
 pub mod dial;
@@ -276,8 +277,10 @@ pub fn bind(name: &str, old: &str, flags: u32) -> Result<(), Error> {
     check(unsafe { sys::bind(name.as_ptr(), name.len(), old.as_ptr(), old.len(), flags) }).map(drop)
 }
 
-/// `sys->mount`. `afd` is -1 until authentication exists. `aname` is the
-/// attach name, often empty.
+/// `sys->mount`. `afd` is -1, so the mount authenticates by itself (or not
+/// at all with `abi::mount::MNOAUTH`), or an fd from [`fauth`] on which the
+/// caller has already authenticated (see [`auth`]). `aname` is the attach
+/// name, often empty.
 pub fn mount(fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<(), Error> {
     check(unsafe {
         sys::mount(
@@ -291,6 +294,23 @@ pub fn mount(fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<()
         )
     })
     .map(drop)
+}
+
+/// `sys->fauth`: starts authentication on the 9P conversation on `fd` for
+/// attach name `aname`, returning the auth fd to pass to [`mount`]. A server
+/// that does not authenticate fails with
+/// [`abi::auth::NOT_REQUIRED`]; [`auth::amount`] handles that case.
+pub fn fauth(fd: i32, aname: &str) -> Result<OwnedFd, Error> {
+    self::fd(unsafe { sys::fauth(fd, aname.as_ptr(), aname.len()) })
+}
+
+/// `sys->stream`: copies `src` to `dst` in the kernel until end of file, an
+/// error or a kill, through a `bufsiz` buffer. Returns the bytes written.
+/// When the copy stopped on an error, the count is still returned and
+/// [`errstr`] says why.
+pub fn stream(src: i32, dst: i32, bufsiz: usize) -> Result<usize, Error> {
+    let bufsiz = i32::try_from(bufsiz).unwrap_or(i32::MAX);
+    check(unsafe { sys::stream(src, dst, bufsiz) })
 }
 
 /// `sys->export`: serve `dir` on `fd` until the client closes the connection.

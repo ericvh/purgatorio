@@ -270,6 +270,8 @@ macro_rules! for_each_import {
         $m!($crate::PURGATORIO, "spawn_prog", $crate::purgatorio::spawn_prog, (path: i32, plen: i32, argv: i32, alen: i32, flags: i32, fdmap: i32, n: i32) -> i32);
         $m!($crate::PURGATORIO, "mount", $crate::purgatorio::mount, (fd: i32, afd: i32, old: i32, olen: i32, flags: i32, aname: i32, alen: i32) -> i32);
         $m!($crate::PURGATORIO, "export", $crate::purgatorio::export, (fd: i32, dir: i32, dlen: i32, flags: i32) -> i32);
+        $m!($crate::PURGATORIO, "fauth", $crate::purgatorio::fauth, (fd: i32, aname: i32, alen: i32) -> i32);
+        $m!($crate::PURGATORIO, "stream", $crate::purgatorio::stream, (src: i32, dst: i32, bufsiz: i32) -> i32);
         $m!($crate::PURGATORIO, "fversion", $crate::purgatorio::fversion, (fd: i32, msize: i32, ver: i32, vlen: i32) -> i32);
         $m!($crate::PURGATORIO, "file2chan", $crate::purgatorio::file2chan, (dir: i32, dlen: i32, name: i32, nlen: i32, handles: i32) -> i32);
         $m!($crate::PURGATORIO, "chan_new", $crate::purgatorio::chan_new, (cap: i32) -> i32);
