@@ -450,7 +450,8 @@ Decided by the owner:
   encrypted, authenticated channel over the 9P conversation, as Inferno's
   `ssl` push does. Until then the conversation after the attach is in the
   clear.
-- **Module signing (#33)** will reuse `pgcert1` and the signer lists.
+- **Module signing (#33)** reuses `pgcert1`, the key-list format and the
+  revocation list. The design is in `docs/signing.md`.
 - **Mutual authentication** (the server proving it holds a certificate
   from a signer the client trusts): maybe later.
 
