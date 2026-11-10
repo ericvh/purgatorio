@@ -11,12 +11,14 @@
 //! - `netexport`: announce `tcp!*!6666` and export `/` to the first
 //!   connection, which the host mounts through a QEMU `hostfwd`.
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 
 use purg_aarch64::board::{bootarg, has_bootarg};
 use purg_aarch64::dtb::{BootInfo, Fdt};
 use purg_aarch64::net::{Ipv4Config, NetStack};
+use purg_aarch64::platform::MetalPlatform;
 use purg_abi::mode;
 use purg_core::{Error, Prog};
 
@@ -35,6 +37,14 @@ pub struct Checks {
     host_export: Option<u16>,
     udp_echo: Option<u16>,
     export: bool,
+}
+
+/// The network stack `open` returns.
+pub type Stack = NetStack;
+
+/// Serves `#I` from `stack`.
+pub fn attach(platform: MetalPlatform, stack: Stack) -> MetalPlatform {
+    platform.with_net(Box::new(stack))
 }
 
 /// Brings up the network (after `irq::init`, which routes the card's

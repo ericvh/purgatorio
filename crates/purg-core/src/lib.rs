@@ -25,6 +25,7 @@ pub mod devram;
 pub mod devroot;
 pub mod devrtc;
 pub mod devsrv;
+#[cfg(feature = "tls")]
 pub mod devssl;
 pub mod error;
 pub mod export;
@@ -64,12 +65,13 @@ pub struct Portable {
     pub mnt: Arc<DevMnt>,
 }
 
-/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C`, `#¤` and `#D`.
-/// Embedders add `#/` and their own devices.
+/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C`, `#¤`, and
+/// with the `tls` feature `#D`. Embedders add `#/` and their own devices.
 pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Portable {
     let srv = Arc::new(devsrv::DevSrv::new(procs.user()));
     let mnt = Arc::new(devmnt::DevMnt::new(platform.clone()));
-    let devs: Vec<Arc<dyn Dev>> = alloc::vec![
+    #[cfg_attr(not(feature = "tls"), allow(unused_mut))]
+    let mut devs: Vec<Arc<dyn Dev>> = alloc::vec![
         Arc::new(devcons::DevCons::new(platform.clone())),
         Arc::new(devenv::DevEnv::new(procs.clone())),
         Arc::new(devpipe::DevPipe::new(procs.user())),
@@ -81,7 +83,11 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
         Arc::new(devip::DevIp::new(platform.clone())),
         Arc::new(devcmd::DevCmd::new(platform.clone())),
         Arc::new(devfactotum::DevFactotum::new(platform.clone())),
-        Arc::new(devssl::DevSsl::new(platform.clone(), procs.clone())),
     ];
+    #[cfg(feature = "tls")]
+    devs.push(Arc::new(devssl::DevSsl::new(
+        platform.clone(),
+        procs.clone(),
+    )));
     Portable { devs, srv, mnt }
 }
