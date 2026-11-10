@@ -131,6 +131,9 @@ version = "0.1.0"
 [[package]]
 name = "purg-styx"
 version = "0.1.0"
+dependencies = [
+ "purg-abi",
+]
 
 [[package]]
 name = "purgatorio"
