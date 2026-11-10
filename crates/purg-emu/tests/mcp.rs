@@ -45,12 +45,19 @@ struct Mcp {
 impl Mcp {
     /// Starts a server without the handshake.
     fn raw(vm: &'static str, args: &[&str]) -> Mcp {
+        let mut argv = vec!["mcpd"];
+        argv.extend_from_slice(args);
+        Mcp::launch(vm, &argv)
+    }
+
+    /// Starts the emu running `argv`, which must end up serving MCP on its
+    /// standard input and output.
+    fn launch(vm: &'static str, argv: &[&str]) -> Mcp {
         let mut child = Command::new(env!("CARGO_BIN_EXE_emu"))
             .arg("-r")
             .arg(root())
             .arg(format!("--vm={vm}"))
-            .arg("mcpd")
-            .args(args)
+            .args(argv)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -811,6 +818,150 @@ fn the_session_is_confined() {
     }
 }
 
+/// The status line of prog `pid` as `(pid, ppid, group)`, read by `run`.
+fn status_of(m: &mut Mcp, pid: i64) -> (i64, i64, i64) {
+    let r = m.run(&format!("cat /prog/{pid}/status"));
+    let f: Vec<i64> = r
+        .stdout
+        .split_whitespace()
+        .take(3)
+        .map(|w| w.parse().unwrap_or(-1))
+        .collect();
+    assert_eq!(f.len(), 3, "{}: {r:?}", m.vm);
+    (f[0], f[1], f[2])
+}
+
+#[test]
+fn sessions_see_only_their_own_progs() {
+    for vm in VMS {
+        // Session A runs in the background with a job; session B, on the
+        // test's pipes, is told A's job's pid through its environment.
+        let dir = HostTemp::new("progs", vm);
+        std::fs::create_dir_all(&dir.path).unwrap();
+        // One request, so the one line A writes is its answer.
+        let job = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"job_start","arguments":{"argv":["sleep","1000"]},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"a","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}}}"#;
+        std::fs::write(dir.path.join("a.in"), format!("{job}\n")).unwrap();
+        let d = format!("/tmp/{}", dir.name);
+        std::fs::write(
+            dir.path.join("run.sh"),
+            format!(
+                "load std
+d={d}
+{{cat $d/a.in; sleep 1000}} | mcpd > $d/a.out &
+while {{! test -s $d/a.out}} {{sleep 0}}
+other=`{{sed 's/.*\"pid\":([0-9]+).*/\\1/' $d/a.out}}
+mcpd
+test -d /prog/$other && echo other session alive
+"
+            ),
+        )
+        .unwrap();
+        let mut m = Mcp::launch(vm, &["sh", &format!("{d}/run.sh")]);
+        let r = m.request(
+            "initialize",
+            r#"{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"b","version":"0"}}"#,
+        );
+        assert!(r.get("protocolVersion").is_some(), "{vm}");
+
+        // The session prog leads its group and sees itself; its parent,
+        // the front end, does not exist for it.
+        let job = int_of(&m.ok("job_start", r#"{"argv":["sleep","1000"]}"#), "pid");
+        let (_, sh_parent, _) = status_of(&mut m, job);
+        let (_, front, group) = status_of(&mut m, sh_parent);
+        assert_eq!(group, sh_parent, "{vm}: the session prog leads its group");
+        let other = m.run("echo $other").stdout.trim().parse::<i64>().unwrap();
+        for (who, pid) in [
+            ("front end", front),
+            ("other session", other),
+            ("first prog", 1),
+        ] {
+            let r = m.run(&format!(
+                "ls /prog/{pid}; echo kill > /prog/{pid}/ctl; echo killgrp > /prog/{pid}/ctl; kill {pid}"
+            ));
+            assert_eq!(
+                r.stderr,
+                format!(
+                    "ls: /prog/{pid}: file does not exist\n\
+                     sh: /prog/{pid}/ctl: file does not exist\n\
+                     sh: /prog/{pid}/ctl: file does not exist\n\
+                     kill: file does not exist\n"
+                ),
+                "{vm} {who}"
+            );
+            let e = m.fails("read_file", &format!(r#"{{"path":"/prog/{pid}/status"}}"#));
+            assert_eq!(
+                e,
+                format!("/prog/{pid}/status: file does not exist"),
+                "{vm}"
+            );
+            let e = m.fails(
+                "write_file",
+                &format!(r#"{{"path":"/prog/{pid}/ctl","content":"kill","mode":"append"}}"#),
+            );
+            assert!(e.ends_with("file does not exist"), "{vm} {who}: {e}");
+        }
+        // Every prog the session sees is its own: its group, or below it.
+        let ls = m.run("ls /prog").stdout;
+        let pids: Vec<i64> = ls
+            .lines()
+            .map(|l| l.trim_start_matches("/prog/").parse().unwrap())
+            .collect();
+        assert!(
+            pids.contains(&sh_parent) && pids.contains(&job),
+            "{vm}: {ls}"
+        );
+        assert!(
+            !pids.contains(&front) && !pids.contains(&other),
+            "{vm}: {ls}"
+        );
+        // Its own job can still be killed.
+        let r = m.run(&format!("kill {job} && echo killed"));
+        assert_eq!(r.stdout, "killed\n", "{vm}: {r:?}");
+
+        drop(m.stdin.take());
+        let line = m
+            .lines
+            .recv_timeout(REPLY)
+            .unwrap_or_else(|e| panic!("{vm}: {e}"));
+        assert_eq!(line, "other session alive", "{vm}");
+    }
+}
+
+#[test]
+fn a_file_tool_that_blocks_is_abandoned() {
+    for vm in VMS {
+        let mut m = Mcp::start(vm, &["-t", "2000"]);
+        m.ok("write_file", r#"{"path":"keep","content":"kept"}"#);
+        let job = int_of(&m.ok("job_start", r#"{"argv":["sleep","100000"]}"#), "pid");
+        // A prog's wait file blocks until a child exits; sleep has none.
+        let start = Instant::now();
+        let e = m.fails("read_file", &format!(r#"{{"path":"/prog/{job}/wait"}}"#));
+        assert!(e.starts_with("timed out after 2000 ms"), "{vm}: {e}");
+        assert!(start.elapsed() < Duration::from_secs(30), "{vm}");
+        // The session goes on: its files and its job are still there.
+        let v = m.ok("read_file", r#"{"path":"keep"}"#);
+        assert_eq!(str_of(&v, "content"), "kept", "{vm}");
+        let jobs = m.ok("job_list", "{}");
+        assert!(
+            jobs.encode().contains(r#""running":true"#),
+            "{vm}: {}",
+            jobs.encode()
+        );
+        // Calls sent behind it wait for it, then go on.
+        let a = m.send_tool("read_file", &format!(r#"{{"path":"/prog/{job}/wait"}}"#));
+        let b = m.send_tool("stat", r#"{"path":"keep"}"#);
+        let v = m.recv_id(a);
+        assert!(
+            v.encode().contains("timed out after"),
+            "{vm}: {}",
+            v.encode()
+        );
+        let v = m.tool_result(b);
+        assert_eq!(int_of(&v, "size"), 4, "{vm}");
+        m.finish();
+    }
+}
+
 #[test]
 fn a_namespace_file_grants_a_workspace() {
     for vm in VMS {
@@ -878,10 +1029,11 @@ fn reset_and_recovery() {
         assert_eq!(r.get("reset"), Some(&Value::Bool(true)), "{vm}");
         let after = m.run("ls /tmp; echo $#v; ns | grep -c '/tmp/u /n'; ps | grep sleep | wc -l");
         assert_eq!(after.stdout, "0\n0\n      0\n", "{vm}: {after:?}");
-        // The old session's progs are gone: the front end, its relay, one
-        // session prog, two memfs, two exports, and this command.
+        // The old session's progs are gone. The session sees only its
+        // own (#pdomain): one session prog, two memfs, two exports, and
+        // this command; not the front end or its relay.
         let ps = m.run("ps").stdout;
-        assert_eq!(ps.matches("mcpd\n").count(), 3, "{vm}:\n{ps}");
+        assert_eq!(ps.matches("mcpd\n").count(), 1, "{vm}:\n{ps}");
         assert_eq!(ps.matches("memfs\n").count(), 2, "{vm}:\n{ps}");
         assert_eq!(ps.matches("export\n").count(), 2, "{vm}:\n{ps}");
 

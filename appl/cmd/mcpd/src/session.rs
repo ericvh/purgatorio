@@ -17,8 +17,8 @@
 //!    them, and the only way to reach those trees is through that mount.
 //! 3. `/dev` holds `null`, `random`, `time`, `user`, `sysname`, `pid`,
 //!    `memory` and `drivers` from `#c`, and a `cons` that is `#c/null`: the
-//!    real console is the MCP connection. `/env` is `#e`, `/prog` is `#p`
-//!    and `/fd` is `#d`.
+//!    real console is the MCP connection. `/env` is `#e`, `/prog` is `#pdomain`
+//!    (only the progs of this session) and `/fd` is `#d`.
 //! 4. `/tmp` is a second `memfs`, private to the session.
 //! 5. The namespace file, if one was given, is applied by `nsbuild`. This
 //!    is where a policy grants more: `bind -c '#U/work' /n/work`,
@@ -35,8 +35,15 @@
 //! `n` bytes it reads, which is how the front end knows the request pipe
 //! has room and never blocks writing to it.
 //!
-//! Requests are begun in order, one at a time: a `run` or a `mount` holds
-//! up the ones behind it until it ends. A `job_read` that waits does not;
+//! File tools run in a worker prog per call (`mcpd --file`), which shares
+//! this namespace and environment but none of this prog's descriptors: a
+//! tool that names `/fd/1` reaches the worker's output, not the front end,
+//! and only `result` or `error` is taken from what the worker writes. A
+//! worker that takes longer than the file tool limit is killed and its
+//! call fails, and the session goes on.
+//!
+//! Requests are begun in order, one at a time: a `run`, a `mount` or a
+//! file tool holds up the ones behind it until it ends. A `job_read` that waits does not;
 //! it is answered when output comes, the job exits or the wait is over.
 //! Meanwhile the session keeps reading every job's output.
 
@@ -57,6 +64,10 @@ use crate::procs::{Job, Kind, Proc, feed, start_feeder};
 use crate::tooldefs::{DEFAULT_OUTPUT, DEFAULT_TIMEOUT_MS, JOB_BUFFER, MAX_JOBS, MOUNT_TIMEOUT_MS};
 
 const SH: &str = "/bin/sh.wasm";
+const SELF: &str = "/bin/mcpd.wasm";
+/// The most a file worker's reply is read: a 1 MiB read as base64, and
+/// then some.
+const FILE_REPLY: usize = 4 << 20;
 /// Where relative names start and where commands start by default.
 pub const HOME: &str = "/tmp";
 /// Mount points in the new root. `net`, `chan`, `n` and `mnt` are empty
@@ -142,6 +153,8 @@ pub struct Session {
     /// Feeders writing to jobs' input: (feeder pid, job id).
     feeders: Vec<(u32, u32)>,
     parked: Vec<Parked>,
+    /// How long a file tool may take before its worker is abandoned.
+    file_ms: u64,
 }
 
 impl Session {
@@ -220,7 +233,7 @@ impl Session {
 
     /// Builds the sandbox described at the top of this file. `policy` is the
     /// text of the namespace file.
-    pub fn build(policy: Option<&str>) -> Result<Session, String> {
+    pub fn build(policy: Option<&str>, file_ms: u64) -> Result<Session, String> {
         let me = purgatorio::pid();
         let wait =
             purgatorio::open(&format!("#p/{me}/wait"), OREAD).map_err(|e| err("wait file", e))?;
@@ -233,6 +246,7 @@ impl Session {
             next_job: 1,
             feeders: Vec::new(),
             parked: Vec::new(),
+            file_ms,
         };
         // Any directory will do to hold the new root while it is built; the
         // namespace it is in is about to be thrown away.
@@ -264,7 +278,7 @@ impl Session {
         for (new, old, flags) in [
             ("#c/null", "/dev/cons", MREPL),
             ("#e", "/env", MREPL | MCREATE),
-            ("#p", "/prog", MREPL),
+            ("#pdomain", "/prog", MREPL),
             ("#d", "/fd", MREPL),
         ] {
             purgatorio::bind(new, old, flags).map_err(|e| err(&format!("bind {old}"), e))?;
@@ -412,10 +426,7 @@ impl Session {
     fn tick(&mut self) {
         let now = Instant::now();
         for p in &mut self.procs {
-            if let Kind::Call { deadline, .. } = p.kind
-                && p.status.is_none()
-                && now >= deadline
-            {
+            if p.overdue(now) {
                 p.kill(now);
             }
         }
@@ -440,6 +451,10 @@ impl Session {
                 Kind::Call { .. } => {
                     let p = self.procs.remove(i);
                     self.finish_call(p);
+                }
+                Kind::File { .. } => {
+                    let p = self.procs.remove(i);
+                    self.finish_file(p);
                 }
             }
         }
@@ -480,7 +495,7 @@ impl Session {
         p.wait_gone();
         let (tag, mount) = match &p.kind {
             Kind::Call { tag, mount, .. } => (tag.clone(), *mount),
-            Kind::Job(_) => return,
+            _ => return,
         };
         self.busy = false;
         let killed = p.killed_at.is_some();
@@ -511,12 +526,64 @@ impl Session {
         self.reply(tag, outcome, Some(p.pid));
     }
 
+    /// Answers a file tool with what its worker wrote. Only `result` or
+    /// `error` is taken from it: the worker runs the tool, and the tool
+    /// can write to the worker's standard output, so the reply carries
+    /// nothing the session or the front end acts on.
+    fn finish_file(&mut self, mut p: Proc) {
+        p.wait_gone();
+        let Kind::File { tag, .. } = &p.kind else {
+            return;
+        };
+        let tag = tag.clone();
+        self.busy = false;
+        let reply = p.streams[0].text();
+        let outcome = if p.killed_at.is_some() {
+            Err(format!(
+                "timed out after {} ms (a file that blocks when read or written?); \
+                 the tool was abandoned and the session goes on",
+                self.file_ms
+            ))
+        } else {
+            match worker_reply(&reply).map(json::parse) {
+                Some(Ok(v)) => match (v.get("result"), v.get("error")) {
+                    (Some(r), _) => Ok(r.clone()),
+                    (None, Some(Value::Str(e))) => Err(e.clone()),
+                    _ => Err(String::from("the file tool sent a bad reply")),
+                },
+                _ => Err(format!(
+                    "the file tool failed: {}",
+                    p.status.as_deref().unwrap_or("killed")
+                )),
+            }
+        };
+        self.reply(tag, outcome, None);
+    }
+
+    /// Starts a file worker for request `r`: `mcpd --file`, in this
+    /// namespace and environment, reading the request on its standard
+    /// input. It has none of this prog's descriptors, so a tool that names
+    /// `/fd/1` reaches the worker's reply, not the front end.
+    fn start_file(&mut self, r: &Request) -> Result<(), String> {
+        let mut req = obj([
+            ("name", r.name.as_str().into()),
+            ("arguments", r.args.clone()),
+        ])
+        .encode();
+        req.push('\n');
+        let kind = Kind::File {
+            tag: r.tag.clone(),
+            deadline: Instant::now() + Duration::from_millis(self.file_ms.max(1)),
+        };
+        let argv = ["mcpd", "--file"].map(String::from);
+        let p = Proc::start(SELF, &argv, feed(&req)?, FILE_REPLY, kind)?;
+        self.procs.push(p);
+        Ok(())
+    }
+
     /// Begins a request.
     fn begin(&mut self, r: Request) {
         self.send(obj([("start", r.tag.clone())]));
-        // Tools name files from /tmp, whatever a command did to the
-        // working directory the progs of a namespace share.
-        let _ = purgatorio::chdir(HOME).or_else(|_| purgatorio::chdir("/"));
         let args = &r.args;
         let outcome = match r.name.as_str() {
             "run" | "mount" => match self.start_call(&r) {
@@ -559,13 +626,20 @@ impl Session {
             "job_write" => self.job_write(args),
             "job_kill" => self.job_kill(args),
             "job_list" => Ok(self.job_list()),
-            name => call(name, args),
+            _ => match self.start_file(&r) {
+                Ok(()) => {
+                    self.busy = true;
+                    return;
+                }
+                Err(e) => Err(e),
+            },
         };
         self.reply(r.tag, outcome, None);
     }
 
     /// Starts the program of a `run` or a `mount`.
     fn start_call(&mut self, r: &Request) -> Result<(), String> {
+        home();
         let args = &r.args;
         let s = |k: &str| args.get(k).and_then(Value::as_str);
         let (argv, cmd, stdin, timeout, cap) = if r.name == "mount" {
@@ -660,6 +734,7 @@ impl Session {
                 ));
             }
         };
+        home();
         if let Some(cwd) = args.get("cwd").and_then(Value::as_str) {
             purgatorio::chdir(cwd).map_err(|e| err(cwd, e))?;
         }
@@ -825,11 +900,56 @@ impl Session {
                     ("stdout_bytes", p.streams[0].end().into()),
                     ("stderr_bytes", p.streams[1].end().into()),
                 ])),
-                Kind::Call { .. } => None,
+                _ => None,
             })
             .collect();
         obj([("jobs", Value::Array(jobs))])
     }
+}
+
+/// Tools name files from /tmp, whatever a command did to the working
+/// directory the progs of a namespace share.
+fn home() {
+    let _ = purgatorio::chdir(HOME).or_else(|_| purgatorio::chdir("/"));
+}
+
+/// `mcpd --file`: runs the one file tool request on standard input and
+/// writes `{"result"}` or `{"error"}` on standard output. The session
+/// starts one per call, so a call that blocks holds up only its worker,
+/// which the session kills at the limit.
+pub fn file_worker() {
+    // SAFETY: fds 0 and 1 are the pipes the session gave this prog.
+    let (mut input, mut output) = unsafe { (File::from_raw_fd(0), File::from_raw_fd(1)) };
+    let mut text = String::new();
+    let outcome = match input.read_to_string(&mut text) {
+        Ok(_) => match json::parse(text.trim_end()) {
+            Ok(req) => {
+                home();
+                let name = req.get("name").and_then(Value::as_str).unwrap_or("");
+                let empty = Value::Object(Vec::new());
+                call(name, req.get("arguments").unwrap_or(&empty))
+            }
+            Err(e) => Err(format!("bad request: {e}")),
+        },
+        Err(e) => Err(err("request", Error::from(e))),
+    };
+    drop(input);
+    let reply = match outcome {
+        Ok(v) => obj([("result", v)]),
+        Err(e) => obj([("error", e.into())]),
+    };
+    // The reply goes last, followed by its length, so that whatever the
+    // tool itself wrote to this prog's standard output is passed over.
+    let body = reply.encode();
+    let _ = output.write_all(format!("\n{body}\n{}\n", body.len()).as_bytes());
+}
+
+/// The reply at the end of what a file worker wrote: the last `len` bytes
+/// before a last line holding `len`.
+fn worker_reply(out: &str) -> Option<&str> {
+    let (body, len) = out.strip_suffix('\n')?.rsplit_once('\n')?;
+    let len: usize = len.parse().ok()?;
+    body.get(body.len().checked_sub(len)?..)
 }
 
 fn is_job(p: &Proc) -> bool {
@@ -961,5 +1081,24 @@ fn make_mount_points(text: &str) {
                 let _ = purgatorio::create(&at, OREAD, DMDIR | 0o777);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::worker_reply;
+
+    #[test]
+    fn a_worker_reply_is_found_after_what_the_tool_wrote() {
+        assert_eq!(
+            worker_reply("\n{\"result\":1}\n12\n"),
+            Some("{\"result\":1}")
+        );
+        // A tool that wrote a reply of its own, with or without a newline.
+        let forged = "{\"result\":2}\n9\n{\"result\":3}";
+        let out = format!("{forged}\n{{\"result\":1}}\n12\n");
+        assert_eq!(worker_reply(&out), Some("{\"result\":1}"));
+        assert_eq!(worker_reply("{\"result\":1}"), None);
+        assert_eq!(worker_reply("\nab\n99\n"), None);
     }
 }

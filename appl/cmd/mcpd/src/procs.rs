@@ -113,8 +113,21 @@ pub enum Kind {
         deadline: Instant,
         mount: bool,
     },
+    /// Answer request `tag` with what a file worker (`mcpd --file`)
+    /// writes; it is killed at `deadline`.
+    File { tag: Value, deadline: Instant },
     /// Keep it for the job tools.
     Job(Job),
+}
+
+impl Kind {
+    /// When a call's program is killed, if it is a call.
+    fn limit(&self) -> Option<Instant> {
+        match self {
+            Kind::Call { deadline, .. } | Kind::File { deadline, .. } => Some(*deadline),
+            Kind::Job(_) => None,
+        }
+    }
 }
 
 pub struct Job {
@@ -173,7 +186,7 @@ impl Proc {
         )
         .map_err(|e| err(&argv[0], e))?;
         drop((stdin, out_w, err_w));
-        let ring = matches!(kind, Kind::Job(_));
+        let ring = matches!(kind, Kind::Job(_) | Kind::File { .. });
         Ok(Proc {
             pid,
             ctl: purgatorio::open(&format!("/prog/{pid}/ctl"), OWRITE).ok(),
@@ -183,6 +196,11 @@ impl Proc {
             killed_at: None,
             kind,
         })
+    }
+
+    /// Whether the program is a call that has run past its limit.
+    pub fn overdue(&self, now: Instant) -> bool {
+        self.status.is_none() && self.kind.limit().is_some_and(|d| now >= d)
     }
 
     pub fn kill(&mut self, now: Instant) {
@@ -213,11 +231,8 @@ impl Proc {
             self.killed_at.map(|t| t + KILL_GRACE),
             None,
         ];
-        if let Kind::Call { deadline, .. } = self.kind
-            && self.status.is_none()
-            && self.killed_at.is_none()
-        {
-            due[2] = Some(deadline);
+        if self.status.is_none() && self.killed_at.is_none() {
+            due[2] = self.kind.limit();
         }
         due.into_iter().flatten().min()
     }
@@ -305,10 +320,20 @@ pub fn start_feeder(data: &[u8], to: RawFd) -> Result<u32, String> {
     Ok(pid)
 }
 
+/// What a pipe surely holds: up to this much is written straight into
+/// it, with no feeder.
+const PIPE_ROOM: usize = 16 * 1024;
+
 /// A pipe whose read end gives `text` and then end of file.
 pub fn feed(text: &str) -> Result<OwnedFd, String> {
     let [in_r, in_w] = purgatorio::pipe().map_err(|e| err("pipe", e))?;
-    start_feeder(text.as_bytes(), in_w.as_raw_fd())?;
+    if text.len() <= PIPE_ROOM {
+        File::from(in_w)
+            .write_all(text.as_bytes())
+            .map_err(|e| err("pipe", Error::from(e)))?;
+    } else {
+        start_feeder(text.as_bytes(), in_w.as_raw_fd())?;
+    }
     Ok(in_r)
 }
 

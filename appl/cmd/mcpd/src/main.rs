@@ -1,4 +1,4 @@
-//! mcpd [-l logfile] [-n nsfile]: a Model Context Protocol server on
+//! mcpd [-l logfile] [-n nsfile] [-t filetimeout]: a Model Context Protocol server on
 //! standard input and output, for driving a sandboxed Purgatorio session
 //! from an LLM client.
 //!
@@ -13,7 +13,8 @@
 //! copies the client's input to a pipe, which, unlike the console, can be
 //! waited on together with the session. The session prog (`mcpd
 //! --session`) builds the sandbox namespace, confines itself to it and
-//! answers the calls. Calls finish out of order, so the front end matches
+//! answers the calls, file tools through a worker prog per call (`mcpd
+//! --file`, limited by `-t`). Calls finish out of order, so the front end matches
 //! answers to requests by tag. `reset`, and a session that dies, are
 //! handled by killing the session's progs and starting another.
 //!
@@ -44,11 +45,16 @@ use json::Value;
 use session::{ms_until, wait_readable};
 
 const SELF: &str = "/bin/mcpd.wasm";
+const USAGE: &str = "mcpd [-l logfile] [-n nsfile] [-t filetimeout]";
 /// A longer request line is refused; it bounds the memory a client can make
 /// the server hold.
 const MAX_LINE: usize = 16 << 20;
-/// How long a file tool may take before the session is given up on.
-const FILE_TOOL_MS: i64 = 60_000;
+/// How long a file tool may take by default before the session abandons
+/// it (`-t`).
+const FILE_TOOL_MS: i64 = 30_000;
+/// What the front end allows the session beyond a call's own limit before
+/// it gives up on the session.
+const SESSION_SLACK_MS: i64 = 15_000;
 /// What a command may take beyond its own timeout: killing it and
 /// collecting its output.
 const RUN_SLACK_MS: i64 = 15_000;
@@ -88,6 +94,8 @@ struct Pending {
 
 struct Front {
     nsfile: Option<String>,
+    /// The session's limit on a file tool, in milliseconds (`-t`).
+    file_ms: i64,
     /// The session, or why it could not be built. A failure is reported by
     /// every tool call rather than by exiting, so the client is told.
     worker: Result<Worker, String>,
@@ -156,13 +164,14 @@ fn log_call(call: &rpc::Call, status: &str, received: Instant) {
 }
 
 /// How long the session may take over a call once it has begun it.
-fn limit(call: &rpc::Call) -> i64 {
+/// `file_ms` is the session's own limit on a file tool.
+fn limit(call: &rpc::Call, file_ms: i64) -> i64 {
     let arg = |k: &str| call.args.get(k).and_then(Value::as_i64);
     match call.name.as_str() {
         "run" => arg("timeout_ms").unwrap_or(tooldefs::DEFAULT_TIMEOUT_MS) + RUN_SLACK_MS,
         "mount" => arg("timeout_ms").unwrap_or(tooldefs::MOUNT_TIMEOUT_MS) + RUN_SLACK_MS,
-        "job_read" => arg("wait_ms").unwrap_or(0) + FILE_TOOL_MS,
-        _ => FILE_TOOL_MS,
+        "job_read" => arg("wait_ms").unwrap_or(0) + SESSION_SLACK_MS,
+        _ => file_ms + SESSION_SLACK_MS,
     }
 }
 
@@ -172,12 +181,16 @@ fn waits(call: &rpc::Call) -> bool {
 }
 
 impl Front {
-    fn start(nsfile: Option<&str>) -> Result<Worker, String> {
+    fn start(nsfile: Option<&str>, file_ms: i64) -> Result<Worker, String> {
         let pipe = || purgatorio::pipe().map_err(|e| format!("pipe: {e}"));
         let [req_r, req_w] = pipe()?;
         let [resp_r, resp_w] = pipe()?;
         let null = purgatorio::open("/dev/null", OWRITE).map_err(|e| format!("/dev/null: {e}"))?;
-        let mut argv = vec![String::from("mcpd"), String::from("--session")];
+        let mut argv = vec![
+            String::from("mcpd"),
+            String::from("--session"),
+            file_ms.to_string(),
+        ];
         argv.extend(nsfile.map(String::from));
         // The session gets copies of the namespace and the environment and
         // a process group of its own. Its fd 2 is not the log, which it
@@ -271,7 +284,7 @@ impl Front {
     fn restart(&mut self, why: &str) {
         self.end();
         self.fail_pending(why);
-        self.worker = Front::start(self.nsfile.as_deref());
+        self.worker = Front::start(self.nsfile.as_deref(), self.file_ms);
         match &self.worker {
             Ok(w) => log(&format!("session start {}", w.pid)),
             Err(e) => log(&format!("session failed {e}")),
@@ -463,7 +476,7 @@ impl Front {
             }
             if let Some(tag) = v.get("start").and_then(Value::as_i64) {
                 if let Some(p) = self.pending.get_mut(&(tag as u64)) {
-                    let ms = limit(&p.call).max(0) as u64;
+                    let ms = limit(&p.call, self.file_ms).max(0) as u64;
                     p.deadline = Some(Instant::now() + std::time::Duration::from_millis(ms));
                 }
                 continue;
@@ -495,7 +508,7 @@ impl Front {
         let now = Instant::now();
         if self.next_deadline().is_some_and(|d| now >= d) {
             self.restart(
-                "the tool did not finish in time (a file that blocks when read or written?); \
+                "the session did not answer in time; \
                  a new session has been started, with an empty /tmp and a fresh namespace",
             );
         }
@@ -533,14 +546,15 @@ fn relay() -> Result<File, Error> {
     Ok(File::from(r))
 }
 
-fn serve(nsfile: Option<String>) -> Result<(), Error> {
+fn serve(nsfile: Option<String>, file_ms: i64) -> Result<(), Error> {
     let wait = purgatorio::open(&format!("#p/{}/wait", purgatorio::pid()), OREAD)
         .ok()
         .map(File::from);
     let mut input = relay()?;
     let mut front = Front {
-        worker: Front::start(nsfile.as_deref()),
+        worker: Front::start(nsfile.as_deref(), file_ms),
         nsfile,
+        file_ms,
         groups: BTreeSet::new(),
         wait,
         pending: BTreeMap::new(),
@@ -633,13 +647,21 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             procs::relay();
             return Ok(());
         }
+        Some("--file") => {
+            session::file_worker();
+            return Ok(());
+        }
         Some("--session") => {
-            let policy = args.get(2).map(|path| {
+            let file_ms = args
+                .get(2)
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(FILE_TOOL_MS as u64);
+            let policy = args.get(3).map(|path| {
                 std::fs::read_to_string(path).map_err(|e| format!("{path}: {}", Error::from(e)))
             });
             let built = policy
                 .transpose()
-                .and_then(|p| session::Session::build(p.as_deref()));
+                .and_then(|p| session::Session::build(p.as_deref(), file_ms));
             return match built {
                 Ok(mut s) => s.serve(),
                 Err(e) => {
@@ -654,18 +676,26 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
         _ => {}
     }
-    let mut arg = Arg::new(args, "mcpd [-l logfile] [-n nsfile]");
-    let (mut log, mut nsfile) = (None, None);
+    let mut arg = Arg::new(args, USAGE);
+    let (mut log, mut nsfile, mut file_ms) = (None, None, FILE_TOOL_MS);
     while let Some(c) = arg.opt() {
         match c {
             'l' => log = Some(arg.earg()?),
             'n' => nsfile = Some(arg.earg()?),
+            't' => {
+                file_ms = arg
+                    .earg()?
+                    .parse()
+                    .ok()
+                    .filter(|&t| t > 0)
+                    .ok_or_else(|| Error(format!("usage: {USAGE}")))?;
+            }
             _ => return Err(arg.usage()),
         }
     }
     if !arg.argv().is_empty() {
-        return Err(Error::from("usage: mcpd [-l logfile] [-n nsfile]"));
+        return Err(Error(format!("usage: {USAGE}")));
     }
     redirect_stderr(log.as_deref())?;
-    serve(nsfile)
+    serve(nsfile, file_ms)
 }
