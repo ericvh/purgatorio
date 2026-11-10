@@ -34,8 +34,10 @@ members = [
     "appl/cmd/auth/keyfs",
     "appl/cmd/auth/keysrv",
     "appl/cmd/auth/mkauthinfo",
+    "appl/cmd/auth/modpolicy",
     "appl/cmd/auth/passwd",
     "appl/cmd/auth/secstore",
+    "appl/cmd/auth/sign",
     "appl/cmd/auth/signer",
     "appl/cmd/auth/verify",
     # Libraries shared by commands, outside the globbed directories.

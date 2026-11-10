@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Purgatorio build tasks: build-root, run-emu, probe, initrd, check-wasm"
+description = "Purgatorio build tasks: build-root, run-emu, probe, initrd, check-wasm, sign"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 purg-abi.workspace = true
+purg-auth.workspace = true
 purg-vm.workspace = true
 
 [dev-dependencies]

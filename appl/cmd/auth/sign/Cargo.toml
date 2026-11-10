@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auth-sign"
+description = "auth/sign: sign a module"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sign"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true

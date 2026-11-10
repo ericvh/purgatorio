@@ -45,7 +45,13 @@ impl DevFactotum {
     }
 
     fn set_key(&self, data: &[u8]) -> Result<()> {
-        let data = trim_ascii(data);
+        // A raw seed is taken whole: its first or last byte may happen to
+        // be white space.
+        let data = if data.len() == auth::SEED {
+            data
+        } else {
+            trim_ascii(data)
+        };
         if data == b"delkey" {
             *self.key.lock() = None;
             *self.cert.lock() = None;
