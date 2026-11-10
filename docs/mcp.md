@@ -4,7 +4,7 @@
 Model Context Protocol (MCP). It is an ordinary guest command
 (`/bin/mcpd.wasm`). It speaks MCP on its standard input and output, so an
 MCP client starts it by starting `emu`. The plan and its later stages are
-in issue #70. This page describes stages 1 and 2.
+in issue #70. This page describes stages 1 to 3.
 
 ## Running it
 
@@ -47,6 +47,8 @@ Options, after `mcpd`:
   the emu's standard output: the protocol stream. See "The audit log".
 - `-n nsfile` grants the session more than the default, with a
   namespace(6) file. See below.
+- `-t ms` is how long a file tool may take before it is abandoned
+  (default 30000). See "Protocol".
 
 You can try it by hand:
 
@@ -64,11 +66,15 @@ one message per line, nothing else on standard output. It exits when its
 input ends.
 
 - 2026-07-28 has no handshake. Each request carries
-  `io.modelcontextprotocol/protocolVersion` and
-  `io.modelcontextprotocol/clientCapabilities` in `params._meta`. `mcpd`
-  answers `server/discover`, `tools/list`, `tools/call` and the three
-  resource methods, and every result has `resultType`. A request without the metadata gets `-32602`;
-  another version gets `-32022` with the supported list.
+  `io.modelcontextprotocol/protocolVersion`,
+  `io.modelcontextprotocol/clientInfo` (an object with a `name` and a
+  `version`) and `io.modelcontextprotocol/clientCapabilities` in
+  `params._meta`. `mcpd` answers `server/discover`, `tools/list`,
+  `tools/call` and the three resource methods, and every result has
+  `resultType`. A request without the metadata, or with a `clientInfo`
+  that lacks either string, gets `-32602`; another version gets `-32022`
+  with the supported list. Clients of the earlier revisions need none of
+  this.
 - A client of 2025-11-25, 2025-06-18, 2025-03-26 or 2024-11-05 sends
   `initialize` first. `mcpd` answers with the client's version if it is
   one of those, and with 2025-11-25 otherwise. After that, requests need
@@ -82,9 +88,14 @@ input ends.
   failures of a tool are results with `isError: true`, so the model sees
   them. Their text is Inferno's error string, such as
   `/tmp/x: file does not exist`.
-- A file tool that gets no answer within 60 seconds (a read of a file
-  that blocks, such as a pipe nobody writes) fails, and the session is
-  replaced as by `reset`.
+- Each file tool (`read_file`, `write_file`, `list_dir`, `stat`,
+  `remove`, `ns`, `bind`, `unmount` and the resource methods) runs in a
+  worker prog of its own, in the session's namespace. One that takes
+  longer than `-t` (30 seconds by default), such as a read of a pipe
+  nobody writes, fails with `timed out after 30000 ms ...`; its worker is
+  killed, and the session, its files and its jobs go on. Only if the
+  session prog itself stops answering for 15 seconds past a call's limit
+  is it replaced as by `reset`.
 - A client may send requests without waiting for answers. The session
   begins them in order, one at a time: a `run` or `mount` holds up the
   calls after it until it ends. The one exception is a `job_read` with
@@ -245,7 +256,7 @@ policy file binds it there.
 
 ## The sandbox
 
-`mcpd` is three progs. The front end speaks the protocol, writes the log
+`mcpd` is three progs, and a worker per file tool. The front end speaks the protocol, writes the log
 and touches no file a tool names. A relay copies the client's input to a
 pipe, because the front end must wait on the client and the session at
 once and the console cannot be waited on. The front end starts a session
@@ -254,8 +265,30 @@ group. The front end writes to the session only as much as the session
 has acknowledged reading, so neither can block the other with a large
 request and a large reply at once. The session prog builds the
 namespace below, gives up the right to attach devices, and only then
-serves tool calls. Every tool runs in that prog, so no tool can name
-anything outside the session's namespace.
+serves tool calls. Every tool runs in that prog or in a prog it starts,
+so no tool can name anything outside the session's namespace.
+
+File tools run in a worker (`mcpd --file`) that the session prog starts
+for each call, sharing its namespace and environment but none of its
+file descriptors. The worker reads the request on its standard input
+and writes the answer, followed by its length, as the last thing on its
+standard output. A tool that writes `/fd/1` therefore writes into its
+own worker's output, ahead of the real answer, and the session reads
+only that answer and only its `result` or `error`. The session prog's
+own pipes to the front end are not reachable from any tool or command,
+so a session cannot forge a reply or claim a process group for the
+front end to kill.
+
+### The session's `/prog`
+
+`/prog` is `#pdomain` (`docs/abi.md`), bound by the session prog before
+it gives up devices. It shows the session prog, its file servers, and
+every command, job and worker it starts, with their descendants, in
+whatever process group. Nothing else exists there: `ls /prog/<pid>`,
+`kill <pid>` and a write to `/prog/<pid>/ctl` for the front end, its
+relay, another session or any other prog fail with `file does not
+exist`. Under `NODEVS` the session cannot attach `#p` again to see the
+whole table.
 
 The default namespace:
 
@@ -265,7 +298,7 @@ The default namespace:
 | `/tmp` | A second `memfs`, private to the session and empty at the start. |
 | `/bin`, `/lib` | The server's own `/bin` and `/lib`, mounted from `export -r`: a read-only export. |
 | `/dev` | `null`, `random`, `time`, `user`, `sysname`, `pid`, `memory` and `drivers` from `#c`. `cons` is `#c/null`. The real console, `consctl`, `kprint` and `sysctl` are absent. |
-| `/env`, `/prog`, `/fd` | `#e` (the session's own copy of the environment), `#p`, `#d`. |
+| `/env`, `/prog`, `/fd` | `#e` (the session's own copy of the environment), `#pdomain`, `#d`. `/prog` shows only the session's own progs; see below. |
 | `/net`, `/chan`, `/n`, `/mnt` | Empty directories. |
 
 After building it the session prog calls `pctl(NODEVS)`. From then on
@@ -288,12 +321,9 @@ when the client closes the connection, and `mcpd` then exits.
 
 Limits of this stage, stated plainly:
 
-- **`/prog` shows every prog in the system**, and a session can kill any
-  of them, including its own server. If it kills the session prog, the
-  call in progress fails and a new session starts. If it kills the front
-  end, the emu exits. On an emu that runs only `mcpd` nothing else is
-  exposed. A kernel that serves several users needs `/prog` filtered per
-  session before `mcpd` is offered there (stage 3).
+- A session can still kill its own progs, the session prog and its file
+  servers among them. If it kills the session prog, the call in progress
+  fails and a new session starts.
 - `NODEVS` still allows `#e`, `#s`, `#|`, `#M` and `#¤`, as in Inferno.
   `#s` is the system-wide `file2chan` registry and `#¤` is the factotum.
   A session can therefore reach a service another prog posted in `#s`,
@@ -303,7 +333,14 @@ Limits of this stage, stated plainly:
   with what is written to them, and a command can use a core until its
   timeout.
 - A prog that leaves its process group and whose parent has exited is not
-  found when the session ends. No command in `/bin` does this.
+  found when the session ends. No command in `/bin` does this. (Such a
+  prog is still in the session's domain, so the session sees it; the
+  front end's own view does not say which domain a prog is in.)
+- The session prog itself still does a little that names files: it
+  changes to `/tmp` (or `cwd`) before it starts a command or job, and
+  the spawn looks up the command. A session that mounts a server that
+  never answers on `/tmp` can stall those, and then the front end
+  replaces the session.
 - Guest modules run with the engine's normal isolation; module signing
   (#33) is not applied.
 
@@ -396,14 +433,3 @@ From issue #70:
    the transport is done, above.)
 5. Fuel and memory limits per session.
 
-Notes for stage 3 from stage 2:
-
-- The session prog's own fds are visible to its file tools through
-  `/fd`: `/fd/0` and `/fd/1` are its pipes to the front end. A tool that
-  writes `/fd/1` can forge lines the front end reads. The front end only
-  matches them to calls it made, so a session can confuse its own
-  answers, but nothing outside it. A remote front end serving several
-  sessions should still not trust them, or the session prog should keep
-  its pipes out of `/fd`.
-- 2026-07-28 requires `io.modelcontextprotocol/clientInfo` in every
-  request's `_meta`; `mcpd` does not check for it.

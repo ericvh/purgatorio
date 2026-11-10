@@ -5,7 +5,8 @@
 //!
 //! Specification followed: Model Context Protocol revision 2026-07-28, the
 //! stdio transport. That revision has no handshake: every request carries
-//! its protocol version and the client's capabilities in `params._meta`,
+//! its protocol version, the client's capabilities and its name and
+//! version (`clientInfo`) in `params._meta`,
 //! and `server/discover` describes the server. Clients of the earlier
 //! revisions (2025-11-25, 2025-06-18, 2025-03-26, 2024-11-05) open with
 //! `initialize` instead; the specification lets a server answer both, and
@@ -26,6 +27,7 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
 const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
 
 /// How long a client may cache `server/discover`, `tools/list` and
@@ -480,12 +482,26 @@ impl Server {
                     });
                 }
                 match meta.and_then(|m| m.get(META_CAPABILITIES)) {
-                    Some(c) if c.is_object() => Ok(true),
-                    _ => Err(RpcError::new(
-                        INVALID_PARAMS,
-                        format!("Invalid params: _meta.{META_CAPABILITIES} is required"),
-                    )),
+                    Some(c) if c.is_object() => {}
+                    _ => {
+                        return Err(RpcError::new(
+                            INVALID_PARAMS,
+                            format!("Invalid params: _meta.{META_CAPABILITIES} is required"),
+                        ));
+                    }
                 }
+                // An Implementation: name and version are required.
+                let info = meta.and_then(|m| m.get(META_CLIENT_INFO));
+                let field = |k: &str| info.and_then(|i| i.get(k)).and_then(Value::as_str);
+                if field("name").is_none() || field("version").is_none() {
+                    return Err(RpcError::new(
+                        INVALID_PARAMS,
+                        format!(
+                            "Invalid params: _meta.{META_CLIENT_INFO} with a name and a version is required"
+                        ),
+                    ));
+                }
+                Ok(true)
             }
             None if self.legacy.is_some() => Ok(false),
             None => Err(RpcError::new(
@@ -691,7 +707,7 @@ mod tests {
         }
     }
 
-    const META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}}"#;
+    const META: &str = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"t","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}}"#;
 
     fn ask(s: &mut Server, h: &mut Fake, line: &str) -> Value {
         let out = s.handle(line, h).expect("a reply");
@@ -994,6 +1010,22 @@ mod tests {
                 .encode()
                 .contains("2026-07-28")
         );
+        // So is clientInfo, with a name and a version.
+        for info in [
+            "",
+            r#","io.modelcontextprotocol/clientInfo":{"name":"t"}"#,
+            r#","io.modelcontextprotocol/clientInfo":"t""#,
+        ] {
+            let v = ask(
+                &mut s,
+                &mut h,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{{"_meta":{{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{{}}{info}}}}}}}"#
+                ),
+            );
+            assert_eq!(code(&v), INVALID_PARAMS, "{info}");
+            assert!(v.encode().contains("clientInfo"), "{info}");
+        }
         // Capabilities are required with the version.
         let v = ask(
             &mut s,
