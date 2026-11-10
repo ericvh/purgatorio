@@ -1,0 +1,40 @@
+match one
+match all
+match some no match
+match no args
+match alternation
+apple cherry banana
+date
+bbb
+0
+[bob@host]
+[bob]
+[host]
+[]
+1 22 333
+[]
+f0 b0 bar
+f00 b00 bar
+bacd
+a<b\>c
+[-abc]
+XX
+color colour
+sh.wasm x.wasm
+1a3
+sh: usage: re (g|v|s|sg|m|mg|M) arg...
+fail:usage: re (g|v|s|sg|m|mg|M) arg...
+sh: usage: re (g|v|s|sg|m|mg|M) arg...
+sh: usage: re m regex arg
+sh: usage: re m regex arg
+sh: usage: re s regex subs [arg...]
+sh: usage: re g regex [arg...]
+sh: bad regex "(": unmatched left paren
+sh: bad regex "a)": unmatched right paren
+sh: bad regex "*a": missing operand for *
+sh: bad regex "[z-a]": malformed `[]'
+sh: usage: match regexp [arg...]
+fail:usage: match regexp [arg...]
+sh: bad regex "[": malformed `[]'
+fail:bad regex "[": malformed `[]'
+done

@@ -38,7 +38,9 @@ a `; ` prompt.
 | WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
 | App ABI v0.4: all of WASI preview 1 plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)). Stock Rust `std` programs with no SDK run and see the namespace | done |
 | `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, builtins `cd exit run wait load` | done |
-| `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`. `load expr`: postfix `${expr}` | done |
+| `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`, `${hd}` `${tl}` `${index}` `${quote}` `${unquote}`. `load expr`: postfix `${expr}` | done |
+| `load string`: the sh-string(1) builtins (`prefix`, `in`, `${splitl}`, `${slice}`, `${fields}`, `${padl}`, ...). `load regex`: `match` and `${re g\|v\|s\|sg\|m\|mg\|M}` | done |
+| Plan 9 regular expressions (regexp(6)) in one shared crate, `appl/lib/regexp`, used by `grep`, `sed` and `load regex` | done |
 | `load` and `call` of reactor modules from `/bin/lib` (the shell's `load add` gives `${add 20 22}`) | done |
 | `#M` mount, `export`, `#s` file2chan, `#d`, `#%`, kernel channels | done |
 | `#I` (`/net/tcp`, `/net/udp`, `/net/cs`) on host sockets, `#C` host commands; `dial`, `announce` and `listen` are file operations in the SDK | done |
@@ -71,6 +73,7 @@ sdk/
   purgatorio-macros/         #[purgatorio::main]
 appl/cmd/<name>/             commands (sh, ls, ...), built to root/bin/<name>.wasm
 appl/lib/<name>/             loadable reactor modules, built to root/bin/lib/<name>.wasm
+appl/lib/regexp/             Plan 9 regular expressions, a library linked into grep, sed and sh
 appl/test/{abi,procs,m3,net,wasi}/  conformance guests, built to root/bin/test/<name>.wasm
 root/                        the file tree emu serves as #U (build-root adds root/tmp)
   lib/sh/profile             run by sh -l at boot

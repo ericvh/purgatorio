@@ -87,6 +87,10 @@ pub struct Shell {
     std: bool,
     /// `load expr` has installed `${expr}`.
     expr: bool,
+    /// `load string` has installed `prefix`, `in` and its `${}` builtins.
+    string: bool,
+    /// `load regex` has installed `match` and `${re}`.
+    regex: bool,
     /// Function bodies from `fn name {body}`, including the braces.
     fns: HashMap<String, String>,
 }
@@ -117,6 +121,8 @@ impl Shell {
             status: String::new(),
             std: false,
             expr: false,
+            string: false,
+            regex: false,
             fns: HashMap::new(),
             mods: HashMap::new(),
         }
@@ -375,6 +381,17 @@ impl Shell {
                 if self.std_name(&argv[0]) {
                     return self.std_cmd(&argv);
                 }
+                if self.mod_name(&argv[0]) {
+                    let res = if argv[0] == "match" {
+                        crate::regex::match_cmd(&argv)
+                    } else {
+                        crate::string::cmd(&argv)
+                    };
+                    return Ok(res.unwrap_or_else(|e| {
+                        io.write(2, &format!("sh: {e}\n"));
+                        format!("fail:{e}")
+                    }));
+                }
                 self.builtin(&argv, &io)
             }
         }
@@ -534,7 +551,15 @@ impl Shell {
     }
 
     fn runs_name(&self, name: &str) -> bool {
-        is_builtin(name) || self.fns.contains_key(name) || self.std_name(name)
+        is_builtin(name)
+            || self.fns.contains_key(name)
+            || self.std_name(name)
+            || self.mod_name(name)
+    }
+
+    /// Commands added by `load string` and `load regex`.
+    fn mod_name(&self, name: &str) -> bool {
+        (self.string && crate::string::is_cmd(name)) || (self.regex && name == "match")
     }
 
     fn std_name(&self, name: &str) -> bool {
@@ -553,6 +578,8 @@ impl Shell {
             match name.as_str() {
                 "std" => self.std = true,
                 "expr" => self.expr = true,
+                "string" => self.string = true,
+                "regex" => self.regex = true,
                 other => {
                     let path = format!("/bin/lib/{other}.wasm");
                     let handle = purgatorio::load(&path)
@@ -586,6 +613,15 @@ impl Shell {
             }
             return Ok(vec![eval_expr(&argv[1..])?]);
         }
+        if self.std && is_std_subst(name) {
+            return std_subst(&argv);
+        }
+        if self.string && crate::string::is_subst(name) {
+            return crate::string::subst(&argv);
+        }
+        if self.regex && name == "re" {
+            return crate::regex::re(&argv);
+        }
         if let Some(&handle) = self.mods.get(name) {
             let args = argv[1..].join(" ");
             let out = purgatorio::call(handle, name, args.as_bytes())
@@ -593,9 +629,7 @@ impl Shell {
             let text = String::from_utf8_lossy(&out);
             return Ok(text.split_whitespace().map(String::from).collect());
         }
-        Err(Error(format!(
-            "{name}: only expr is a ${{}} builtin; use it as a command"
-        )))
+        Err(Error(format!("{name}: unknown ${{}} builtin")))
     }
 
     fn std_cmd(&mut self, argv: &[String]) -> Flow<String> {
@@ -770,6 +804,70 @@ fn concat(a: Vec<String>, b: Vec<String>) -> Result<Vec<String>, Error> {
     })
 }
 
+fn is_std_subst(name: &str) -> bool {
+    matches!(name, "hd" | "tl" | "index" | "quote" | "unquote")
+}
+
+/// The list builtins of `load std`: `${hd list}`, `${tl list}`,
+/// `${index n list}`, `${quote list}` and `${unquote arg}`.
+fn std_subst(argv: &[String]) -> Result<Vec<String>, Error> {
+    let list = &argv[1..];
+    Ok(match argv[0].as_str() {
+        "hd" => list.first().cloned().into_iter().collect(),
+        "tl" => list.iter().skip(1).cloned().collect(),
+        "index" => {
+            let n = list
+                .first()
+                .and_then(|n| n.parse::<usize>().ok())
+                .ok_or_else(|| Error::from("usage: index number list"))?;
+            n.checked_sub(1)
+                .and_then(|i| list[1..].get(i))
+                .cloned()
+                .into_iter()
+                .collect()
+        }
+        "quote" => {
+            let q: Vec<String> = list.iter().map(|w| quote(w)).collect();
+            vec![q.join(" ")]
+        }
+        _ => {
+            let [arg] = list else {
+                return Err(Error::from("usage: unquote arg"));
+            };
+            unquote(arg)
+        }
+    })
+}
+
+/// Splits `s` into words at white space, honouring `'quotes'` as `quote`
+/// writes them.
+fn unquote(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut c = s.chars().peekable();
+    loop {
+        while c.next_if(|c| c.is_whitespace()).is_some() {}
+        if c.peek().is_none() {
+            return words;
+        }
+        let mut w = String::new();
+        while let Some(ch) = c.next_if(|c| !c.is_whitespace()) {
+            if ch != '\'' {
+                w.push(ch);
+                continue;
+            }
+            loop {
+                match c.next() {
+                    None => break,
+                    Some('\'') if c.next_if_eq(&'\'').is_some() => w.push('\''),
+                    Some('\'') => break,
+                    Some(ch) => w.push(ch),
+                }
+            }
+        }
+        words.push(w);
+    }
+}
+
 fn is_builtin(name: &str) -> bool {
     matches!(name, "cd" | "exit" | "run" | "wait" | "load")
 }
@@ -869,5 +967,11 @@ mod tests {
         assert_eq!(quote("plain"), "plain");
         assert_eq!(quote(""), "''");
         assert_eq!(quote("it's here"), "'it''s here'");
+        assert_eq!(unquote("a 'b c' '' 'it''s'x"), ["a", "b c", "", "it'sx"]);
+        assert_eq!(
+            std_subst(&v(&["index", "2", "a", "b", "c"])).unwrap(),
+            ["b"]
+        );
+        assert!(std_subst(&v(&["index", "4", "a"])).unwrap().is_empty());
     }
 }
