@@ -2,11 +2,15 @@
 //!
 //! Decoding is zero-copy over `&[u8]` and uses only little-endian byte
 //! accessors, so it is alignment-agnostic on every target.
+//!
+//! [`dotu`] translates a 9P2000 conversation to 9P2000.u for servers that
+//! speak only that (QEMU's virtio-9p).
 #![no_std]
 
 extern crate alloc;
 
 mod dir;
+pub mod dotu;
 mod fcall;
 pub mod server;
 mod wire;

@@ -63,7 +63,7 @@ a `; ` prompt.
 ```
 crates/
   purg-abi/          no_std  ABI constants shared by host and guest
-  purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec
+  purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec; a 9P2000.u translator
   purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam)
   purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree, Styx mount/export;
                              #/ #c #e #| #p #s #d #% #M #I #C #D #¤
@@ -72,8 +72,8 @@ crates/
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
   purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/
   purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt, on purg-aarch64
-  purg-aarch64/      no_std  aarch64 support: boot, DTB, GICv2/v3, timer, vectors, MMU, PL011, scheduler, virtio-net, smoltcp
-  purg-kernel/       no_std  the native kernel for QEMU virt (Phase K)
+  purg-aarch64/      no_std  aarch64 support: boot, DTB, GICv2/v3, timer, vectors, MMU, PL011, scheduler, virtio-net, smoltcp, virtio-9p
+  purg-kernel/       no_std  the native kernel for QEMU virt (Phase K); #9 (virtio-9p)
 sdk/
   purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
   purgatorio-macros/         #[purgatorio::main]
@@ -126,6 +126,14 @@ seconds to set it), and `#t` serves the console UART as `/dev/eia0`, with
 is still killed: wasmi runs guests on fuel and checks the prog's note between
 slices, as the emu's wasmtime backend does with epoch interruption.
 
+K3 storage, first pass: a host directory over virtio-9p. `#9/<tag>` is the
+device's one 9P conversation as a file (writes take T-messages, reads give
+R-messages), and the kernel mounts it with `#M` on `/n/host` at boot. QEMU
+speaks only 9P2000.u and .L, so a translator (`purg_styx::dotu`) sits
+between `#M`, which speaks 9P2000, and the device. In test mode the kernel
+lists, reads, writes, renames, chmods and removes files there, and `xtask`
+checks the host side.
+
 ```sh
 cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on cortex-a72 and max
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
@@ -134,6 +142,8 @@ cargo xtask initrd          # target/initrd/root.tar, the same archive the kerne
 qemu-system-aarch64 -accel kvm -cpu host -M virt,gic-version=3 -m 512M -nographic \
   -netdev user,id=net0 -global virtio-mmio.force-legacy=off \
   -device virtio-net-device,netdev=net0 \
+  -fsdev local,id=host,path=$HOME,security_model=none \
+  -device virtio-9p-device,fsdev=host,mount_tag=host \
   -append exit=psci -kernel target/aarch64-unknown-none/kernel/purg-kernel.img
 ```
 

@@ -8,8 +8,11 @@
 //! before `/dev`, and `#e`, `#p`, `#s`, `#d` are on `/env`, `/prog`,
 //! `/chan` and `/fd`, `#I` (smoltcp over virtio-net, see [`net`]) is on
 //! `/net`, and the kernel's devices (`#r`, `#t`; see [`crate::devices`])
-//! are after `/dev`. There is no host file system and no host commands.
+//! are after `/dev`. A host directory over virtio-9p (`#9`, see
+//! [`host9p`]) is mounted on `/n/host` when QEMU has one. There are no
+//! host commands.
 
+pub mod host9p;
 pub mod net;
 
 use alloc::boxed::Box;
@@ -41,10 +44,12 @@ pub struct System {
 }
 
 /// Builds the emu's boot namespace over a RAM root that `seed` fills,
-/// with the kernel's `native` devices.
+/// with the kernel's `native` devices (bound after `/dev`) and `extra`
+/// devices (in the device table only, such as `#9`).
 pub fn boot(
     platform: MetalPlatform,
     native: Vec<Arc<dyn Dev>>,
+    extra: Vec<Arc<dyn Dev>>,
     seed: impl FnOnce(&RamTree) -> Result<(), Error>,
 ) -> Result<System, Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform);
@@ -52,6 +57,7 @@ pub fn boot(
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
     let portable = purg_core::portable_devices(&platform, &procs);
     devs.extend(portable.devs);
+    devs.extend(extra);
     let root = RamTree::new('U', "ramfs", procs.user(), platform.clone());
     seed(&root)?;
     root.add_dir("/tmp");
@@ -251,6 +257,7 @@ pub fn start(
     console: &'static dyn Console,
     rtc: Option<usize>,
     (stack, checks): (NetStack, net::Checks),
+    host: Option<purg_aarch64::p9::Host9p>,
     mode: Mode,
 ) -> usize {
     use core::sync::atomic::AtomicUsize;
@@ -261,13 +268,17 @@ pub fn start(
     SCHED.spawn(Box::new(move || {
         let platform = MetalPlatform::new(console, &SCHED, "purgatorio", rtc);
         let native = crate::devices::native(console, rtc, &platform.user());
-        let result = match boot(platform.with_net(Box::new(stack)), native, |root| {
+        let p9 = host.and_then(host9p::open);
+        let extra: Vec<Arc<dyn Dev>> = p9.iter().map(|d| d.clone() as Arc<dyn Dev>).collect();
+        let result = match boot(platform.with_net(Box::new(stack)), native, extra, |root| {
             root.add_tar(initrd).map(|_| ())
         }) {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
-            Ok(sys) => match mode {
-                Mode::Test => sys.run_tests() + sys.net_tests(&checks),
-                Mode::Interactive => match sys.interactive() {
+            Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref())) {
+                (Mode::Test, host) => {
+                    sys.run_tests() + sys.host9p_tests(host) + sys.net_tests(&checks)
+                }
+                (Mode::Interactive, _) => match sys.interactive() {
                     Ok(s) if s.is_empty() => 0,
                     Ok(s) => {
                         sys.say(&format!("kernel: emuinit: {s}"));

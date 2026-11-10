@@ -16,7 +16,10 @@
 //!   `hello` and ^D on the serial console for the console self-test, and
 //!   has a virtio-net card on QEMU user networking: the kernel mounts a
 //!   hosted emu's `styxlisten` export and pings a UDP echo server on this
-//!   host, and this host mounts the kernel's `tcp!*!6666` export.
+//!   host, and this host mounts the kernel's `tcp!*!6666` export. Each run
+//!   also shares a fresh directory under `target/kernel-9p/` over
+//!   virtio-9p, which the kernel mounts on `/n/host` and works on, and
+//!   whose final contents are checked here.
 //! - `initrd`: `build-root`, then pack `root/bin` and `root/lib` into a
 //!   deterministic ustar archive at `target/initrd/root.tar`, the kernel's
 //!   root file system.
@@ -678,6 +681,15 @@ fn kernel(kvm: bool) -> Result<()> {
             }
         };
         let net = net_args(fwd);
+        // The directory the kernel mounts on /n/host over virtio-9p.
+        let shared = match SharedDir::create(&ws, k.name).and_then(|d| d.args().map(|a| (d, a))) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("kernel: {}: {e}", k.name);
+                failed.push(k.name);
+                continue;
+            }
+        };
         // `test` runs the conformance guests, the sh corpus and the
         // network checks instead of an interactive shell.
         let bootargs = format!(
@@ -696,6 +708,7 @@ fn kernel(kvm: bool) -> Result<()> {
         }
         args.extend(["-append", &bootargs]);
         args.extend(net.iter().map(String::as_str));
+        args.extend(shared.1.iter().map(String::as_str));
         args.push("-kernel");
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
         let mut mounted = false;
@@ -746,6 +759,8 @@ fn kernel(kvm: bool) -> Result<()> {
             ))
         } else if echoed == 0 {
             Some(String::from("the UDP echo server heard nothing"))
+        } else if let Err(e) = shared.0.check() {
+            Some(format!("the shared directory: {e}"))
         } else {
             None
         };
@@ -864,6 +879,94 @@ impl Drop for HostExport {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// A directory on this host that a kernel run shares with the guest over
+/// virtio-9p (`-fsdev local` and `virtio-9p-device`, mount tag `host`),
+/// with the files the kernel's checks expect. Removed when dropped.
+struct SharedDir {
+    path: PathBuf,
+}
+
+/// What the kernel writes to `kept.txt` (see `purg-kernel`'s `host9p`).
+const SHARED_WRITTEN: &str = "written by the kernel\n";
+/// Files in `many/`, enough for several directory reads.
+const SHARED_MANY: usize = 300;
+
+impl SharedDir {
+    fn create(ws: &Path, run: &str) -> Result<SharedDir> {
+        let name: String = run
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let path = ws
+            .join("target/kernel-9p")
+            .join(format!("{}-{name}", std::process::id()));
+        let io = |e: std::io::Error| format!("{}: {e}", path.display());
+        if path.exists() {
+            fs::remove_dir_all(&path).map_err(io)?;
+        }
+        fs::create_dir_all(path.join("sub")).map_err(io)?;
+        fs::create_dir_all(path.join("many")).map_err(io)?;
+        fs::write(path.join("hello.txt"), "hello from the host\n").map_err(io)?;
+        fs::write(path.join("sub/inner.txt"), "inner file\n").map_err(io)?;
+        for i in 0..SHARED_MANY {
+            fs::write(path.join(format!("many/f{i:03}")), "").map_err(io)?;
+        }
+        Ok(SharedDir { path })
+    }
+
+    fn args(&self) -> Result<Vec<String>> {
+        let path = self.path.to_str().ok_or("shared directory is not UTF-8")?;
+        if path.contains(',') {
+            return Err(format!("{path}: QEMU options cannot hold a comma"));
+        }
+        Ok([
+            "-fsdev",
+            &format!("local,id=host,path={path},security_model=none"),
+            "-device",
+            "virtio-9p-device,fsdev=host,mount_tag=host",
+        ]
+        .map(String::from)
+        .to_vec())
+    }
+
+    /// Checks what the kernel left: `kept.txt` written, renamed and made
+    /// mode 600, `newdir` made, and the files it removed or renamed gone.
+    fn check(&self) -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let p = |n: &str| self.path.join(n);
+        let kept = fs::read_to_string(p("kept.txt")).map_err(|e| format!("kept.txt: {e}"))?;
+        if kept != SHARED_WRITTEN {
+            return Err(format!("kept.txt holds {kept:?}, not {SHARED_WRITTEN:?}"));
+        }
+        let mode = fs::metadata(p("kept.txt"))
+            .map_err(|e| format!("kept.txt: {e}"))?
+            .permissions()
+            .mode();
+        if mode & 0o777 != 0o600 {
+            return Err(format!("kept.txt has mode {:o}, not 600", mode & 0o777));
+        }
+        if !p("newdir").is_dir() {
+            return Err(String::from("newdir was not made"));
+        }
+        for gone in ["new.txt", "big.wasm", "renamed.txt"] {
+            if p(gone).exists() {
+                return Err(format!("{gone} is still there"));
+            }
+        }
+        let hello = fs::read_to_string(p("hello.txt")).map_err(|e| format!("hello.txt: {e}"))?;
+        if hello != "hello from the host\n" || !p("sub/inner.txt").exists() {
+            return Err(String::from("hello.txt or sub/inner.txt changed"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SharedDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 

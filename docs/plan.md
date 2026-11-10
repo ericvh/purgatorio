@@ -211,7 +211,7 @@ Dynamically loaded devices (`devdynld`) are dropped. File servers in WASM cover 
   1. In the kernel by `export` (`sys->export(fd, dir, flags)`, the `exportfs.c` equivalent), which serves a namespace subtree over an fd.
   2. Compiled into guests via the SDK (`purgatorio::styx`), so user-level file servers (memfs, ramfile, styxlisten targets) are ordinary WASM programs.
 - **Client:** used by `#M` (the multiplexer in the kernel) and available in the SDK for apps that want to speak 9P directly.
-- **Compatibility:** 9P2000 only. Version string `"9P2000"`. Inferno's Styx is 9P2000. No 9P2000.u or .L at first (open decision D8).
+- **Compatibility:** 9P2000 only. Version string `"9P2000"`. Inferno's Styx is 9P2000. No 9P2000.u or .L at first (open decision D8). One exception, at the edge: `purg_styx::dotu` translates a 9P2000 conversation to 9P2000.u for a server that speaks nothing else (QEMU's virtio-9p answers `Tversion "9P2000"` with `"unknown"`). The kernel's `#9` transport uses it, so `#M` above it still speaks 9P2000.
 - **Auth:** M5 implements `fauth` and the `Tauth` path. Inferno's signed-certificate auth (`keyring`, `auth`, `login`) is replaced by a modern scheme (open decision D9).
 
 ### 5.4 file2chan
@@ -472,7 +472,7 @@ All columns are required checks for merge, except where marked optional.
 - **Allocation:** `alloc` everywhere. The kernel provides a global allocator (e.g. `talc` or `linked_list_allocator` over RAM from the DTB).
 - **Networking:** `#I` is a shared device front-end with a `NetStack` trait backend. Hosted uses host sockets (`std::net`/`socket2`). The kernel uses `smoltcp` over virtio-net.
 - **Probe-to-kernel continuity:** `purg-probe`'s boot stub (exception vectors, PL011, semihosting, a heap over a static region) is the seed of `purg-kernel`'s boot code. It is kept in a shared `purg-aarch64` module once Phase K starts.
-- **Storage:** hosted uses `#U` (host fs). The kernel uses virtio-blk plus a Rust filesystem served as a Styx server (`kfs`-like or FAT via `fatfs`; open decision D7), or virtio-9p for development.
+- **Storage:** hosted uses `#U` (host fs). The kernel uses virtio-blk plus a Rust filesystem served as a Styx server (`kfs`-like or FAT via `fatfs`; open decision D7), or virtio-9p for development. The virtio-9p path exists (K3, first pass): `#9/<mount tag>` is the transport as a file, one 9P conversation, which the kernel mounts with `#M` on `/n/host` at boot.
 
 ### 10.1 Hosted platform notes: Linux and macOS
 
@@ -592,8 +592,8 @@ Because `purg-probe` has run every milestone's portable subset on aarch64 bare m
 | D4 | Intra-app `spawn` semantics | Guest async tasks (recommended) / wasm threads + shared memory for true shared-heap progs | Guest tasks now. Revisit threads after K3 |
 | D5 | Typed cross-module calls (`load`) | Byte-serialized `call` (postcard) / WASM Component Model + WIT for Inferno modules | Byte-serialized `call` in M5. Evaluate the component model once wasmi and `no_std` support it |
 | D6 | Kernel WASM execution | wasmi interpreter only / wasmtime `no_std` + host-AOT `.cwasm` / Pulley; set performance targets | wasmi first. Decide on AOT at K4 with benchmarks |
-| D7 | Native kernel filesystem | Custom `kfs`-like log fs / FAT (`fatfs`) / ext2 read-only / virtio-9p to host only | virtio-9p for development, then a simple native Rust fs served as a Styx server |
-| D8 | 9P dialect | 9P2000 only / also 9P2000.u or .L for Linux v9fs niceties | 9P2000 only |
+| D7 | Native kernel filesystem | **DECIDED (first pass): virtio-9p** to a host directory, mounted through `#M`; then a simple native Rust fs served as a Styx server. | Done for virtio-9p: `#9/<tag>` (a file that carries one 9P conversation) on `/n/host`, with a 9P2000.u shim because QEMU speaks only .u and .L (see D8). The native fs over virtio-blk is still open |
+| D8 | 9P dialect | 9P2000 only / also 9P2000.u or .L for Linux v9fs niceties | 9P2000 only. The client, the servers and the codec speak 9P2000; the one .u code is a translator (`purg_styx::dotu`) between `#M` and QEMU's virtio-9p, which refuses plain 9P2000 |
 | D9 | Authentication | Re-implement Inferno keyring/`auth` protocol (compat with real Inferno signer) / Plan 9 p9sk1/dp9ik + factotum-like / modern (TLS + Ed25519 keys via `#D`) | Modern Ed25519 + TLS with a factotum-like agent. Interop with real Inferno only unauthenticated (`-A`) |
 | D10 | Tk strategy | Faithful `libtk` port with the Tk command-string API / native Rust guest toolkit / both | Guest-side Rust toolkit over `/dev/draw` with an optional Tk-string compatibility layer |
 | D11 | Compatibility target | Behavior-compatible with Inferno (errstrs, `ns` format, man pages as spec) vs. "Inferno-inspired" freedom | Behavior-compatible for the Sys API, devices, and core commands. Free elsewhere |

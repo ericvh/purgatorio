@@ -1,10 +1,13 @@
 [package]
 name = "purg-styx"
-description = "Styx (9P2000) message, Qid and Dir codec"
+description = "Styx (9P2000) message, Qid and Dir codec, and a 9P2000.u translator"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+
+[dependencies]
+purg-abi.workspace = true
 
 [lints]
 workspace = true

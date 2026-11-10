@@ -102,7 +102,11 @@ fn interrupted() -> Cow<'static, str> {
 
 /// Sleeps on `r` until `cond` holds or `timeout_ms` passes (`None`: no
 /// limit), ending early with `interrupted` if the current prog is killed.
-fn sleep(r: &Rendez, mut cond: impl FnMut() -> bool, timeout_ms: Option<u64>) -> Result<bool> {
+pub(crate) fn sleep(
+    r: &Rendez,
+    mut cond: impl FnMut() -> bool,
+    timeout_ms: Option<u64>,
+) -> Result<bool> {
     let note = current_note();
     let killed = || note.as_ref().is_some_and(|n| n.killed());
     if cond() {
