@@ -8,6 +8,10 @@
 //! - `probe`: `build-root`, build `purg-probe` for `aarch64-unknown-none`,
 //!   boot it in `qemu-system-aarch64` (or `$QEMU`) and check its serial
 //!   output and semihosting exit code.
+//! - `kernel [--kvm]`: build `purg-kernel` for `aarch64-unknown-none` and
+//!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
+//!   `--kvm`, once under KVM), checking each run's exit status and serial
+//!   output against `crates/purg-kernel/expected.out`.
 //! - `check-wasm <file.wasm>...`: check modules without building.
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
 //!   `wasm32-wasip1`, denying warnings.
@@ -191,46 +195,28 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 /// Host port forwarded to the probe's `tcp!*!6666` export.
 const PROBE_NET_PORT: u16 = 17666;
 
-/// Builds `purg-probe` over a fresh `root/`, boots it in QEMU and compares
-/// its serial output with `crates/purg-probe/expected.out`.
-fn probe() -> Result<()> {
-    build_root()?;
-    let ws = workspace();
-    run(cargo().current_dir(&ws).args(["build", "-p", "purg-emu"]))?;
-    run(cargo().current_dir(&ws).args([
-        "build",
-        "-p",
-        "purg-probe",
-        "--target",
-        PROBE_TARGET,
-        "--profile",
-        "probe",
-    ]))?;
-    let image = ws
-        .join("target")
-        .join(PROBE_TARGET)
-        .join("probe/purg-probe");
+/// A finished QEMU run.
+struct QemuRun {
+    status: std::process::ExitStatus,
+    /// The serial output, with `\r` removed.
+    serial: String,
+    elapsed: Duration,
+}
+
+/// Boots `image` with `qemu-system-aarch64` (or `$QEMU`) and `args` (which
+/// must end with `-kernel`), collecting the serial console from stdout.
+/// Every 20 ms `watch` sees the output so far; an error from it, or the
+/// run outliving `timeout`, kills QEMU, prints the output and fails.
+fn run_qemu(
+    args: &[&str],
+    image: &Path,
+    timeout: Duration,
+    mut watch: impl FnMut(&str) -> Result<()>,
+) -> Result<QemuRun> {
     let qemu = env::var("QEMU").unwrap_or_else(|_| String::from("qemu-system-aarch64"));
-    let fwd = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{PROBE_NET_PORT}-:6666");
     let mut child = Command::new(&qemu)
-        .args([
-            "-M",
-            "virt",
-            "-cpu",
-            "cortex-a72",
-            "-m",
-            "512M",
-            "-nographic",
-            "-semihosting",
-            "-netdev",
-            &fwd,
-            "-global",
-            "virtio-mmio.force-legacy=off",
-            "-device",
-            "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56",
-            "-kernel",
-        ])
-        .arg(&image)
+        .args(args)
+        .arg(image)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .spawn()
@@ -250,48 +236,89 @@ fn probe() -> Result<()> {
             }
         }
     });
+    let text = || String::from_utf8_lossy(&serial.lock().expect("serial")).replace('\r', "");
     let start = Instant::now();
-    let mut mounted = false;
     let status = loop {
-        if !mounted {
-            let text = String::from_utf8_lossy(&serial.lock().expect("serial")).replace('\r', "");
-            if text.contains("probe: net ready\n") {
-                mounted = true;
-                if let Err(e) = mount_probe(&ws) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = reader.join();
-                    let got =
-                        String::from_utf8_lossy(&serial.lock().expect("serial")).replace('\r', "");
-                    eprint!("{got}");
-                    return Err(e);
-                }
+        let err = match watch(&text()) {
+            Err(e) => Some(e),
+            Ok(()) if start.elapsed() > timeout => {
+                Some(format!("QEMU did not exit within {timeout:?}"))
             }
-        }
-        if let Some(s) = child.try_wait().map_err(|e| format!("{qemu}: {e}"))? {
-            break s;
-        }
-        if start.elapsed() > PROBE_TIMEOUT {
+            Ok(()) => None,
+        };
+        if let Some(e) = err {
             let _ = child.kill();
             let _ = child.wait();
             let _ = reader.join();
-            let out = serial.lock().expect("serial").clone();
-            eprint!("{}", String::from_utf8_lossy(&out));
-            return Err(format!("probe did not exit within {PROBE_TIMEOUT:?}"));
+            eprint!("{}", text());
+            return Err(e);
+        }
+        if let Some(s) = child.try_wait().map_err(|e| format!("{qemu}: {e}"))? {
+            break s;
         }
         std::thread::sleep(Duration::from_millis(20));
     };
     let elapsed = start.elapsed();
     let _ = reader.join();
-    let out = serial.lock().expect("serial").clone();
-    let got = String::from_utf8_lossy(&out).replace('\r', "");
-    print!("{got}");
+    Ok(QemuRun {
+        status,
+        serial: text(),
+        elapsed,
+    })
+}
+
+/// Builds `purg-probe` over a fresh `root/`, boots it in QEMU and compares
+/// its serial output with `crates/purg-probe/expected.out`.
+fn probe() -> Result<()> {
+    build_root()?;
+    let ws = workspace();
+    run(cargo().current_dir(&ws).args(["build", "-p", "purg-emu"]))?;
+    run(cargo().current_dir(&ws).args([
+        "build",
+        "-p",
+        "purg-probe",
+        "--target",
+        PROBE_TARGET,
+        "--profile",
+        "probe",
+    ]))?;
+    let image = ws
+        .join("target")
+        .join(PROBE_TARGET)
+        .join("probe/purg-probe");
+    let fwd = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{PROBE_NET_PORT}-:6666");
+    let args = [
+        "-M",
+        "virt",
+        "-cpu",
+        "cortex-a72",
+        "-m",
+        "512M",
+        "-nographic",
+        "-semihosting",
+        "-netdev",
+        &fwd,
+        "-global",
+        "virtio-mmio.force-legacy=off",
+        "-device",
+        "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56",
+        "-kernel",
+    ];
+    let mut mounted = false;
+    let r = run_qemu(&args, &image, PROBE_TIMEOUT, |text| {
+        if !mounted && text.contains("probe: net ready\n") {
+            mounted = true;
+            mount_probe(&ws)?;
+        }
+        Ok(())
+    })?;
+    print!("{}", r.serial);
     let golden = ws.join("crates/purg-probe/expected.out");
     let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
-    if !status.success() {
-        return Err(format!("probe exited with {status}"));
+    if !r.status.success() {
+        return Err(format!("probe exited with {}", r.status));
     }
-    if got != want {
+    if r.serial != want {
         return Err(format!(
             "probe output differs from {}; expected:\n{want}",
             golden.display()
@@ -300,8 +327,155 @@ fn probe() -> Result<()> {
     if !mounted {
         return Err(String::from("probe finished without announcing tcp!*!6666"));
     }
-    eprintln!("probe: passed in {:.2}s", elapsed.as_secs_f64());
+    eprintln!("probe: passed in {:.2}s", r.elapsed.as_secs_f64());
     Ok(())
+}
+
+const KERNEL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// One QEMU configuration `xtask kernel` boots: a name, the machine
+/// arguments before `-kernel`, and the exception level the kernel must
+/// report booting at.
+struct KernelRun {
+    name: &'static str,
+    args: &'static [&'static str],
+    el: u32,
+}
+
+/// The TCG runs: GICv2 and GICv3 at EL1, and GICv3 with EL2
+/// (`virtualization=on`), which exercises the EL2-to-EL1 path, on a
+/// Cortex-A72 and on `-cpu max` (every feature QEMU has, to catch
+/// assumptions about ID registers). They exit through semihosting.
+const KERNEL_TCG_RUNS: &[KernelRun] = &[
+    KernelRun {
+        name: "tcg cortex-a72 gicv2",
+        args: &["-M", "virt,gic-version=2", "-cpu", "cortex-a72"],
+        el: 1,
+    },
+    KernelRun {
+        name: "tcg cortex-a72 gicv3",
+        args: &["-M", "virt,gic-version=3", "-cpu", "cortex-a72"],
+        el: 1,
+    },
+    KernelRun {
+        name: "tcg cortex-a72 gicv3 el2",
+        args: &[
+            "-M",
+            "virt,gic-version=3,virtualization=on",
+            "-cpu",
+            "cortex-a72",
+        ],
+        el: 2,
+    },
+    KernelRun {
+        name: "tcg max gicv3 el2",
+        args: &["-M", "virt,gic-version=3,virtualization=on", "-cpu", "max"],
+        el: 2,
+    },
+];
+
+/// The KVM run (aarch64 Linux hosts with /dev/kvm). KVM has no
+/// semihosting, GICv2 emulation or nested EL2 here, so the kernel exits
+/// through PSCI `SYSTEM_OFF` (`exit=psci`), QEMU's status is 0 either way,
+/// and pass/fail comes from the serial output.
+const KERNEL_KVM_RUN: KernelRun = KernelRun {
+    name: "kvm host gicv3",
+    args: &[
+        "-accel",
+        "kvm",
+        "-cpu",
+        "host",
+        "-M",
+        "virt,gic-version=3",
+        "-append",
+        "exit=psci",
+    ],
+    el: 1,
+};
+
+/// Builds `purg-kernel` and boots it under each QEMU configuration (TCG,
+/// or KVM with `--kvm`), checking the exit status, the boot EL line and
+/// the rest of the serial output against `crates/purg-kernel/expected.out`.
+fn kernel(kvm: bool) -> Result<()> {
+    let ws = workspace();
+    run(cargo().current_dir(&ws).args([
+        "build",
+        "-p",
+        "purg-kernel",
+        "--target",
+        PROBE_TARGET,
+        "--profile",
+        "kernel",
+    ]))?;
+    let image = ws
+        .join("target")
+        .join(PROBE_TARGET)
+        .join("kernel/purg-kernel");
+    let golden = ws.join("crates/purg-kernel/expected.out");
+    let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
+    let runs: Vec<&KernelRun> = if kvm {
+        if env::consts::ARCH != "aarch64" || !Path::new("/dev/kvm").exists() {
+            eprintln!("kernel: skipping the KVM run: needs an aarch64 host with /dev/kvm");
+            return Ok(());
+        }
+        vec![&KERNEL_KVM_RUN]
+    } else {
+        KERNEL_TCG_RUNS.iter().collect()
+    };
+    let mut failed = Vec::new();
+    for k in runs {
+        let mut args: Vec<&str> = k.args.to_vec();
+        args.extend(["-m", "512M", "-nographic"]);
+        if !kvm {
+            args.push("-semihosting");
+        }
+        args.push("-kernel");
+        eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
+        let r = match run_qemu(&args, &image, KERNEL_TIMEOUT, |_| Ok(())) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("kernel: {}: {e}", k.name);
+                failed.push(k.name);
+                continue;
+            }
+        };
+        print!("{}", r.serial);
+        let el_line = format!("kernel: booted at EL{}", k.el);
+        let rest: String = r
+            .serial
+            .lines()
+            .filter(|l| !l.starts_with("kernel: booted at EL"))
+            .flat_map(|l| [l, "\n"])
+            .collect();
+        let problem = if !r.status.success() {
+            Some(format!("QEMU exited with {}", r.status))
+        } else if !r.serial.lines().any(|l| l == el_line) {
+            Some(format!("no `{el_line}` line"))
+        } else if rest != want {
+            Some(format!(
+                "output differs from {}; expected (less the EL line):\n{want}",
+                golden.display()
+            ))
+        } else {
+            None
+        };
+        match problem {
+            Some(p) => {
+                eprintln!("kernel: {}: FAILED: {p}", k.name);
+                failed.push(k.name);
+            }
+            None => eprintln!(
+                "kernel: {}: passed in {:.2}s",
+                k.name,
+                r.elapsed.as_secs_f64()
+            ),
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("kernel runs failed: {}", failed.join(", ")))
+    }
 }
 
 /// Mounts the probe's export from this host and reads a file through it.
@@ -426,9 +600,14 @@ fn main() -> ExitCode {
         }
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
         Some("probe") => probe().map(|()| ExitCode::SUCCESS),
+        Some("kernel") => match rest.as_slice() {
+            [] => kernel(false).map(|()| ExitCode::SUCCESS),
+            [f] if f == "--kvm" => kernel(true).map(|()| ExitCode::SUCCESS),
+            _ => Err(String::from("usage: cargo xtask kernel [--kvm]")),
+        },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe | clippy-guests | check-wasm file.wasm...",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe | kernel [--kvm] | clippy-guests | check-wasm file.wasm...",
         )),
     };
     match res {
