@@ -29,7 +29,7 @@ at `e56c3b6`, and say so.
 | Heap in use after the test mode | 6.70 MiB | 0.86 MiB |
 | Peak kernel threads, test mode / idle `sh` | 23 / 3 | 23 / 3 |
 | Kernel thread stack: size / deepest use | 2,048 / 23 KiB | 256 / 21 KiB |
-| Mount reader stack: size / deepest use | 2,048 / 6 KiB | 64 / 6 KiB |
+| Mount reader stack: size / deepest use | 2,048 / 6 KiB | 64 / 3 to 6 KiB |
 | Export worker stack: size / deepest use | 2,048 / - | 64 / 18 KiB |
 | Boot stack: size / deepest use | 256 / 4 KiB | 64 / 4 KiB |
 | Initial linear memory of a `std` guest | 1,088 KiB | 320 KiB (`mash` 576 KiB) |
@@ -289,7 +289,7 @@ Across the whole test mode:
 | Stack | Was | Deepest use | Now |
 |---|---|---|---|
 | A thread that runs a prog (wasmi and the host calls under it) | 2 MiB | 21 KiB | 256 KiB |
-| A mount reader (the mount driver's reader kproc) | 2 MiB | 6 KiB | 64 KiB |
+| A mount reader (the mount driver's reader kproc) | 2 MiB | 3 to 6 KiB | 64 KiB |
 | An export worker (one Styx request through a device or a mount) | 2 MiB | 18 KiB | 64 KiB |
 | The boot stack (in the image) | 256 KiB | 4 KiB | 64 KiB |
 
@@ -303,6 +303,20 @@ Styx, mcpd and network scripts export, and mount exports through
 times that. The count is a measurement, not a bound: a request that
 crosses several mounts and unions goes deeper, and the stack check below
 is what would catch it.
+
+Styx session encryption (#104: an X25519 handshake, then
+ChaCha20-Poly1305 records) runs on these same threads: the export reader
+and whichever thread drains the reply queue, and the `#M` reader kproc.
+Measured again with it on (`styxcrypt.sh` and the m3 guest's `crypt_*`
+checks), the deepest export worker is still 18 KiB and the deepest mount
+reader 3 KiB, so 64 KiB keeps more than three times the worst. Mount
+readers are now reported on their own under `memstat`; before, the
+6 KiB above was the deepest of all kprocs that ran no prog.
+
+With #104 the kernel's text grew by about 100 KiB on `next` at
+`opt-level` 3 (1,948 to 2,050 KiB with the other work that landed
+meanwhile); with this branch's profile it is 1,522 KiB, and the
+smallest build 866 KiB.
 
 wasmi keeps the guest's call stack and value stack on the heap, so deep
 recursion in a guest (`depth.sh`) does not deepen the kernel thread's
