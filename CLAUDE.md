@@ -24,6 +24,7 @@ cargo xtask run-emu -- sh -c 'ls /bin | wc -l'
 cargo xtask probe                # bare-metal aarch64 image in QEMU (qemu-system-aarch64)
 cargo xtask kernel               # purg-kernel under QEMU TCG: GICv2, GICv3, EL2 boot
 cargo xtask kernel --kvm         # the same under KVM (aarch64 host, GICv3 only, PSCI exit)
+cargo xtask initrd               # the kernel's root as target/initrd/root.tar
 cargo xtask clippy-guests        # lint the SDK and every guest for wasm32-wasip1
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
