@@ -36,21 +36,28 @@ a `; ` prompt.
 | Namespace: `namec`, `bind` with `MREPL`/`MBEFORE`/`MAFTER`/`MCREATE` unions, `unmount`, `chdir`, lexical `..` | done |
 | Progs: `spawn_prog`, `pctl` (`NEWFD FORKFD NEWNS FORKNS NEWPGRP NODEVS NEWENV FORKENV`), wait messages; `Rendez` and qio checked with loom | done |
 | WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
-| App ABI v0.5: all of WASI preview 1 plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)). Stock Rust `std` programs with no SDK run and see the namespace | done |
-| `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, builtins `cd exit run wait load` | done |
+| App ABI v0.6: all of WASI preview 1 plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)). Stock Rust `std` programs with no SDK run and see the namespace | done |
+| `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, builtins `cd exit run wait load`; file-name patterns (`*`, `?`, `[class]`) | done |
 | `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`, `${hd}` `${tl}` `${index}` `${quote}` `${unquote}`. `load expr`: postfix `${expr}` | done |
 | `load string`: the sh-string(1) builtins (`prefix`, `in`, `${splitl}`, `${slice}`, `${fields}`, `${padl}`, ...). `load regex`: `match` and `${re g\|v\|s\|sg\|m\|mg\|M}` | done |
+| The rest of the sh modules: `load arg`, `csv`, `echo`, `file2chan`, `mload`, `mpexpr` (arbitrary precision), `sexprs`, `test` | done |
+| `mash`, Inferno's other shell, with its built-in make (`load make`), history and `serve` | done |
 | Plan 9 regular expressions (regexp(6)) in one shared crate, `appl/lib/regexp`, used by `grep`, `sed` and `load regex` | done |
 | `load` and `call` of reactor modules from `/bin/lib` (the shell's `load add` gives `${add 20 22}`) | done |
 | `#M` mount, `export`, `#s` file2chan, `#d`, `#%`, kernel channels | done |
 | `#I` (`/net/tcp`, `/net/udp`, `/net/cs`) on host sockets, `#C` host commands; `dial`, `announce` and `listen` are file operations in the SDK | done |
-| Authenticated mount: the server checks an Ed25519 signature over a challenge before `Tattach`; `-A` skips it. `#¤` signs for the client so its seed need not be readable | done |
+| Authenticated mount: the server checks an Ed25519 proof over a challenge before `Tattach`, from a key it holds or a certificate from a signer it trusts; `-A` skips it. `#¤` or a guest factotum signs for the client. See [docs/auth.md](docs/auth.md) | done |
+| Auth tools: `auth/createsignerkey signer keyfs keysrv passwd changelogin factotum secstore countersigner mkauthinfo verify getpk`, `getauthinfo`, `crypt`, `netkey`; password login is SPAKE2 | done |
 | `#D`: TLS 1.3 client with a pinned P-256 server key | done |
 | W1 commands: `bind cat cp date echo emuinit env ls mkdir mv pwd rm sleep unmount wc` | done |
 | W2 commands: `cmp diff du fc grep kill md5sum memfs mount ns ps ramfile sed tail tee xd` | done |
 | W3 commands: `cs dial export import listen netstat os styxlisten` | done |
 | W4 archive commands: `gettar gunzip gzip lstar puttar tar` (ustar and gzip code in `appl/archive`) | done |
 | Admin commands: `cron logfile mntgen ndb/query`; `mount {command}` | done |
+| Namespace and Styx tools: `styxchat styxmon iostats nsbuild lockfs trfs fcp tarfs archfs` | done |
+| Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd` | done |
+| System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext` | done |
+| `mcpd`: an MCP server that gives an LLM client a sandboxed session (`run` and file tools) in its own namespace. See [docs/mcp.md](docs/mcp.md) | stage 1 |
 | Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
 | File and script tools: `basename cleanname touch chmod chgrp dd newer read test time xargs` | done |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
@@ -64,6 +71,7 @@ a `; ` prompt.
 crates/
   purg-abi/          no_std  ABI constants shared by host and guest
   purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec; a 9P2000.u translator
+  purg-auth/         no_std  certificates, mount proofs, password login (SPAKE2), sealing
   purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam)
   purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree, Styx mount/export;
                              #/ #c #e #| #p #s #d #% #M #I #C #D #¤
@@ -78,7 +86,8 @@ sdk/
   purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
   purgatorio-macros/         #[purgatorio::main]
 appl/cmd/<name>/             commands (sh, ls, ...), built to root/bin/<name>.wasm
-appl/lib/<name>/             loadable reactor modules, built to root/bin/lib/<name>.wasm
+appl/lib/<name>/             loadable reactor modules, built to root/bin/lib/<name>.wasm; plain
+                             libraries shared by commands (regexp, filepat, ndb, styxserv, ...)
 appl/archive/                ustar and gzip library shared by the archive commands
 appl/lib/regexp/             Plan 9 regular expressions, a library linked into grep, sed and sh
 appl/test/{abi,procs,m3,net,wasi}/  conformance guests, built to root/bin/test/<name>.wasm
@@ -191,7 +200,8 @@ Inferno exit status is empty and 1 otherwise.
 cargo xtask build-root    # acceptance tests run the built apps
 cargo test --workspace
 cargo build --target aarch64-unknown-none \
-  -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
+  -p purg-abi -p purg-styx -p purg-auth -p purg-platform -p purg-core -p purg-vm \
+  -p purg-vm-wasmi -p purg-aarch64
 cargo xtask probe         # needs qemu-system-aarch64
 cargo xtask probe --kvm   # the same under KVM on an aarch64 Linux host with /dev/kvm
 RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \
