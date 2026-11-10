@@ -1,0 +1,49 @@
+tcp!10.0.0.2!6666
+tcp!*!7
+/net/tcp/clone 10.0.0.2!6666
+/net/tcp/clone 10.0.0.2!6666
+/net/tcp/clone 10.0.0.1!80
+/net/tcp/clone 10.0.1.1!80
+/net/udp/clone 10.1.2.3!69
+/net/tcp/clone 80
+/net/tcp/clone 10.0.0.2
+/net/tcp/clone 10.0.0.2!564
+csquery: tcp!fs!nosuch: cs: can't translate service
+csquery: ipx!fs!1: network unavailable ipx
+sys=gate dom=gate.example.org
+	ip=10.0.0.1
+	ip=10.0.1.1
+	SIGNER=gate
+sys=fs dom=fs.example.org
+	ip=10.0.0.2 ether=00a0c9e1b2c3
+	tcp=styx port=6666
+tcp=styx port=6666
+fail:errors
+> /net/tcp/clone 10.0.0.1!6666
+/net/tcp/clone 10.0.1.1!6666
+> 
+/net/tcp/clone 10.0.0.2!6666
+www.example.test ip 10.1.2.3
+www.example.test ip 10.1.2.4
+here.example.test ip 10.9.9.9
+3.2.1.10.in-addr.arpa ptr www.example.test
+10.9.9.9 ptr here.example.test
+dnsquery: nosuch.example.test: dns: name does not exist
+fail:errors
+> example.test mx 10 mail.example.test
+> www.example.test ip 10.1.2.3
+> alias.example.test cname www.example.test
+> example.test txt 'hello world'
+> example.test ns ns.example.test
+> dnsquery: www.example.test mx: dns: resource does not exist
+> here.example.test sys here
+here.example.test ip 10.9.9.9
+> dnsquery: silent.example.test: dns: no response from name server
+> 
+/net/tcp/clone 10.1.2.3!80
+/net/tcp/clone 10.1.2.4!80
+/net/udp/clone 10.1.2.5!53
+/net/cs
+/net/tcp
+/net/udp
+tcp!10.0.0.2!6666

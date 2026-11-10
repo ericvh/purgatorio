@@ -1,0 +1,37 @@
+# Well-known services, in attrdb(6) format. ndb/cs reads this file after
+# /lib/ndb/local when local names no database= files of its own.
+
+tcp=echo port=7
+udp=echo port=7
+tcp=discard port=9
+udp=discard port=9
+tcp=daytime port=13
+udp=daytime port=13
+tcp=ftp port=21
+tcp=ssh port=22
+tcp=telnet port=23
+tcp=smtp port=25
+udp=time port=37
+tcp=time port=37
+tcp=whois port=43
+udp=dns port=53
+udp=domain port=53
+tcp=domain port=53
+udp=bootps port=67
+udp=bootpc port=68
+udp=tftp port=69
+tcp=finger port=79
+tcp=http port=80
+tcp=www port=80
+tcp=pop3 port=110
+udp=ntp port=123
+tcp=imap port=143
+tcp=https port=443
+tcp=submission port=587
+tcp=styx port=6666
+tcp=9fs port=564
+tcp=rstyx port=6668
+tcp=registry port=6675
+tcp=infsigner port=6671
+tcp=infcsigner port=6672
+tcp=inflogin port=6673

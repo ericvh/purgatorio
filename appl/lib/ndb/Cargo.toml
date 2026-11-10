@@ -1,0 +1,19 @@
+[package]
+name = "appl-lib-ndb"
+description = "ndb: the attribute database (attrdb(6)) shared by the ndb and ip commands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "ndb"
+path = "src/lib.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

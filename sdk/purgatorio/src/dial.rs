@@ -2,7 +2,10 @@
 //!
 //! An address is `net!host!port`, `host!port` (TCP) or a bare port
 //! (`tcp!*!port`). `/net/cs` translates names; `/net/tcp/clone` opens a
-//! conversation.
+//! conversation. The kernel's `/net/cs` answers `tcp!10.0.0.2!80`; the
+//! guest connection server, `ndb/cs`, answers as Inferno's does, one
+//! `/net/tcp/clone 10.0.0.2!80` line per address, and [`dial`] tries each
+//! in turn.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -27,10 +30,24 @@ pub fn netmkaddr(addr: &str) -> String {
     }
 }
 
-/// Connects to `addr` and returns the conversation.
+/// Connects to `addr` and returns the conversation. Each translation
+/// `/net/cs` gives is tried in turn; the last failure is returned.
 pub fn dial(addr: &str) -> Result<Connection, Error> {
-    let addr = translate(&netmkaddr(addr))?;
-    let (net, host, port) = three(&addr)?;
+    let mut last = Error::from("cs: can't translate address");
+    for t in translate(&netmkaddr(addr))? {
+        match dial_translated(&t) {
+            Ok(c) => return Ok(c),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// Connects to `net!host!port` without asking `/net/cs`: `host` must be
+/// numeric. A server that `/net/cs` itself consults (`ndb/dns`) dials this
+/// way.
+pub fn dial_translated(addr: &str) -> Result<Connection, Error> {
+    let (net, host, port) = three(addr)?;
     let (id, mut ctl) = clone(&net)?;
     write_ctl(&mut ctl, &format!("connect {host}!{port}"))?;
     let data = open_rw(&format!("/net/{net}/{id}/data"))?;
@@ -80,17 +97,92 @@ pub fn local(dir: &str) -> Result<String, Error> {
     Ok(text.trim().to_string())
 }
 
-fn translate(addr: &str) -> Result<String, Error> {
+/// Asks `/net/cs` for the translations of `addr`, as `net!host!port`.
+pub fn translate(addr: &str) -> Result<Vec<String>, Error> {
     let mut cs = open_rw("/net/cs")?;
     cs.write_all(addr.as_bytes()).map_err(io)?;
     cs.seek(SeekFrom::Start(0)).map_err(io)?;
     let mut buf = String::new();
     cs.read_to_string(&mut buf).map_err(io)?;
-    let line = buf.lines().next().unwrap_or("").trim();
-    if line.is_empty() {
-        Err(Error::from("cs: no translation"))
+    let out: Vec<String> = buf.lines().filter_map(cs_line).collect();
+    if out.is_empty() {
+        Err(Error::from("cs: can't translate address"))
     } else {
-        Ok(line.to_string())
+        Ok(out)
+    }
+}
+
+/// One line of a `/net/cs` reply as `net!host!port`: either that already
+/// (the kernel's), or Inferno's `/net/tcp/clone host!port`.
+pub fn cs_line(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let Some((clone, addr)) = line.split_once(' ') else {
+        return Some(line.to_string());
+    };
+    let net = clone.strip_suffix("/clone")?.rsplit('/').next()?;
+    let addr = addr.trim();
+    Some(match addr.split_once('!') {
+        Some(_) => format!("{net}!{addr}"),
+        None => format!("{net}!*!{addr}"),
+    })
+}
+
+/// One read of at most `max` bytes from `fd`, a UDP conversation's data
+/// file say, that gives up after `ms` milliseconds: `Ok(None)` then.
+///
+/// A read on `#I` has no timeout of its own, so, as Inferno's commands do
+/// with a timer process, the read is made by a child prog (`read`) that a
+/// second one (`sh -c 'sleep; kill'`) kills when the time is up.
+pub fn read_timeout(fd: i32, max: usize, ms: u64) -> Result<Option<Vec<u8>>, Error> {
+    let [r, w] = crate::pipe()?;
+    let reader = crate::spawn(
+        "/bin/read.wasm",
+        &[String::from("read"), max.to_string()],
+        crate::abi::pctl::NEWFD,
+        &[(fd, 0), (std::os::fd::AsRawFd::as_raw_fd(&w), 1)],
+    )?;
+    drop(w);
+    let alarm = alarm(reader, ms)?;
+    let mut buf = Vec::new();
+    let got = File::from(r).read_to_end(&mut buf);
+    drop(alarm);
+    got.map_err(io)?;
+    Ok(if buf.is_empty() { None } else { Some(buf) })
+}
+
+/// Kills prog `pid` after `ms` milliseconds unless dropped first.
+pub struct Alarm(u32);
+
+/// Starts an [`Alarm`].
+pub fn alarm(pid: u32, ms: u64) -> Result<Alarm, Error> {
+    let script = format!(
+        "sleep {}.{:03}; echo kill > /prog/{pid}/ctl",
+        ms / 1000,
+        ms % 1000
+    );
+    // sh wants standard files; give it /dev/null.
+    let null = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")
+        .map_err(io)?;
+    let n = std::os::fd::AsRawFd::as_raw_fd(&null);
+    let id = crate::spawn(
+        "/bin/sh.wasm",
+        &[String::from("sh"), String::from("-c"), script],
+        crate::abi::pctl::NEWFD,
+        &[(n, 0), (n, 1), (n, 2)],
+    )?;
+    Ok(Alarm(id))
+}
+
+impl Drop for Alarm {
+    fn drop(&mut self) {
+        // The alarm may have gone off and exited already.
+        let _ = std::fs::write(format!("/prog/{}/ctl", self.0), "kill");
     }
 }
 
