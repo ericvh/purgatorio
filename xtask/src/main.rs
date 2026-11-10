@@ -26,12 +26,19 @@
 //! - `initrd`: `build-root`, then pack `root/bin` and `root/lib` into a
 //!   deterministic ustar archive at `target/initrd/root.tar`, the kernel's
 //!   root file system.
-//! - `size [--guests]`: build `purg-kernel` and print its section sizes,
-//!   its code by crate, and the sizes of the guests in `root/bin` (with
-//!   `--guests`, one line per module). See `docs/footprint.md`.
+//! - `size [--guests] [--small]`: build `purg-kernel` and print its section
+//!   sizes, its code by crate, and the sizes of the guests in `root/bin`
+//!   (with `--guests`, one line per module). `--small` builds the kernel
+//!   without its optional features (TLS, mount authentication,
+//!   networking). `size --elf FILE` reports on a kernel built earlier.
+//!   See `docs/footprint.md`.
+//! - `small`: build the experimental `no_std` and multi-call guests in
+//!   `appl/small` (its own workspace) and compare their sizes with the
+//!   `std` commands in `root/bin`.
 //! - `check-wasm <file.wasm>...`: check modules without building.
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
-//!   `wasm32-wasip1`, denying warnings.
+//!   `wasm32-wasip1`, and on the experimental guests in `appl/small`,
+//!   denying warnings.
 
 mod size;
 mod tar;
@@ -47,6 +54,18 @@ use std::time::{Duration, Instant};
 
 const GUEST_TARGET: &str = "wasm32-wasip1";
 const GUEST_PROFILE: &str = "wasm";
+
+/// The guests' shadow stack, in bytes: the part of a module's linear
+/// memory its compiled code uses as a stack. The linker's default is
+/// 1 MiB, which every running prog then pays for. The sh corpus passes
+/// with 128 KiB, and all of it but `gzip` and the deepest nesting `sh`
+/// accepts with 16 KiB, so this leaves at least twice what anything is
+/// known to need. The stack is below the data, so running out of it is a
+/// trap, not corruption. A crate that needs more can say so in a build
+/// script (`cargo:rustc-link-arg-bins=-zstack-size=N`, for wasm targets
+/// only), which wins over this. `PURG_GUEST_STACK` in the environment
+/// overrides it, for measuring (docs/footprint.md).
+const GUEST_STACK: u32 = 256 << 10;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -172,6 +191,21 @@ fn reproducible_rustflags(ws: &Path) -> String {
     flags.join("\x1f")
 }
 
+/// The rustflags for guest builds: the reproducible ones, and the guests'
+/// shadow stack size (see [`GUEST_STACK`]).
+fn guest_rustflags(ws: &Path) -> Result<String> {
+    let stack = match env::var("PURG_GUEST_STACK") {
+        Ok(v) => v
+            .parse::<u32>()
+            .map_err(|_| format!("PURG_GUEST_STACK={v}: not a number of bytes"))?,
+        Err(_) => GUEST_STACK,
+    };
+    Ok(format!(
+        "{}\x1f-Clink-arg=-zstack-size={stack}",
+        reproducible_rustflags(ws)
+    ))
+}
+
 fn build_root() -> Result<()> {
     let ws = workspace();
     let guests = guests(&ws)?;
@@ -184,7 +218,7 @@ fn build_root() -> Result<()> {
             "--profile",
             GUEST_PROFILE,
         ])
-        .env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags(&ws))
+        .env("CARGO_ENCODED_RUSTFLAGS", guest_rustflags(&ws)?)
         .env(WRAPPER_ENV, "1")
         .env(
             "RUSTC_WORKSPACE_WRAPPER",
@@ -223,8 +257,35 @@ fn clippy_guests() -> Result<()> {
     for g in guests(&ws)? {
         cmd.args(["-p", &g.package]);
     }
-    run(cmd.args(["--", "-D", "warnings"]))
+    run(cmd.args(["--", "-D", "warnings"]))?;
+    // The experimental guests are a workspace of their own.
+    for (triple, packages) in SMALL_BUILDS {
+        let mut cmd = cargo();
+        cmd.current_dir(ws.join("appl/small"))
+            .args(["clippy", "--target", triple])
+            .env("CARGO_TARGET_DIR", ws.join("target/small"));
+        for p in *packages {
+            cmd.args(["-p", p]);
+        }
+        run(cmd.args(["--", "-D", "warnings"]))?;
+    }
+    Ok(())
 }
+
+/// The packages of `appl/small`, by the target each is built for.
+const SMALL_BUILDS: &[(&str, &[&str])] = &[
+    (
+        "wasm32-unknown-unknown",
+        &[
+            "small-rt",
+            "small-echo",
+            "small-cat",
+            "small-sleep",
+            "small-multi",
+        ],
+    ),
+    (GUEST_TARGET, &["small-multi-std"]),
+];
 
 fn run_emu(args: &[String]) -> Result<ExitCode> {
     build_root()?;
@@ -1071,13 +1132,24 @@ impl UdpEcho {
 /// Builds the kernel over the `root/` that is there and prints the size
 /// report (see [`size`]).
 fn size_report(args: &[String]) -> Result<()> {
-    let each = match args {
-        [] => false,
-        [a] if a == "--guests" => true,
-        _ => return Err(String::from("usage: cargo xtask size [--guests]")),
-    };
+    let (mut each, mut small) = (false, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match (a.as_str(), it.as_slice()) {
+            ("--guests", _) => each = true,
+            ("--small", _) => small = true,
+            // Report on a kernel built earlier instead.
+            ("--elf", [path, ..]) => return size::kernel(Path::new(path)),
+            _ => {
+                return Err(String::from(
+                    "usage: cargo xtask size [--guests] [--small] | size --elf FILE",
+                ));
+            }
+        }
+    }
     let ws = workspace();
-    run(cargo().current_dir(&ws).args([
+    let mut build = cargo();
+    build.current_dir(&ws).args([
         "build",
         "--quiet",
         "-p",
@@ -1086,13 +1158,41 @@ fn size_report(args: &[String]) -> Result<()> {
         PROBE_TARGET,
         "--profile",
         "kernel",
-    ]))?;
+    ]);
+    if small {
+        build.arg("--no-default-features");
+        println!("kernel built with --no-default-features: no auth, tls or net");
+    }
+    run(&mut build)?;
     size::kernel(
         &ws.join("target")
             .join(PROBE_TARGET)
             .join("kernel/purg-kernel"),
     )?;
     size::guests(&ws.join("root"), each)
+}
+
+/// Builds the experimental guests in `appl/small` into `target/small` and
+/// prints how they compare with the commands `build-root` installed.
+fn small() -> Result<()> {
+    let ws = workspace();
+    let target = ws.join("target/small");
+    for (triple, packages) in SMALL_BUILDS {
+        let mut cmd = cargo();
+        cmd.current_dir(ws.join("appl/small"))
+            .args(["build", "--release", "--target", triple])
+            .env("CARGO_TARGET_DIR", &target)
+            .env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags(&ws));
+        for p in *packages {
+            cmd.args(["-p", p]);
+        }
+        run(&mut cmd)?;
+    }
+    size::small(
+        &ws.join("root"),
+        &target.join("wasm32-unknown-unknown/release"),
+        &target.join(GUEST_TARGET).join("release"),
+    )
 }
 
 fn check_wasm(files: &[String]) -> Result<()> {
@@ -1186,8 +1286,9 @@ fn main() -> ExitCode {
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
+        Some("small") => small().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] | kernel [--kvm] [--mem SIZE] [--memstat] | initrd | size [--guests] | clippy-guests | check-wasm file.wasm...",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] | kernel [--kvm] [--mem SIZE] [--memstat] | initrd | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm...",
         )),
     };
     match res {

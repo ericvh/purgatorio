@@ -1,0 +1,18 @@
+[package]
+name = "small-multi-std"
+description = "Sixteen std commands in one module (experiment)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "multi-std"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio = { path = "../../../sdk/purgatorio" }
+
+[lints]
+workspace = true

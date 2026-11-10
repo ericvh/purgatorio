@@ -87,6 +87,9 @@ jobs:
         run: cargo xtask build-root
       - name: unit and acceptance tests (wasmtime and wasmi)
         run: cargo test --workspace
+      - name: experimental no_std and multi-call guests (docs/footprint.md)
+        if: runner.os == 'Linux'
+        run: cargo xtask small
       - name: xtask run-emu smoke test
         shell: bash
         run: |
@@ -181,8 +184,14 @@ jobs:
         run: >
           cargo clippy -p purg-kernel -p purg-aarch64
           --target aarch64-unknown-none --profile kernel -- -D warnings
+      - name: clippy (small build, without auth, tls and net)
+        run: >
+          cargo clippy -p purg-kernel -p purg-aarch64
+          --target aarch64-unknown-none --profile kernel --no-default-features -- -D warnings
       - name: xtask kernel (TCG, GICv2, GICv3, EL2)
         run: cargo xtask kernel
+      - name: size report (docs/footprint.md)
+        run: cargo xtask size
 
   loom:
     name: loom models (Rendez, qio)
