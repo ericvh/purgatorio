@@ -1,0 +1,48 @@
+n/0
+n/1
+n/2
+n/new
+first
+record
+third
+first
+record
+
+changed
+
+third
+n/0
+n/1
+n/2
+n/3
+n/new
+a new one
+n/1
+n/2
+n/3
+n/new
+changed
+
+third
+
+a new one
+echo: empty line in record
+third
+cat: n/nosuch: file does not exist
+rm: n/new: permission denied
+mkdir: n/dir: mounted directory forbids creation
+third
+
+a new one
+n/0
+n/1
+n/new
+third
+third
+sh: n/0: permission denied
+sh: n/new: permission denied
+rm: n/0: permission denied
+dbfs: /tmp/sh-dbfs/nodb: file does not exist
+n/new
+made
+dbfs: usage: dbfs [-abcer] file mountpoint
