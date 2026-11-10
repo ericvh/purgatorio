@@ -10,6 +10,7 @@ members = [
     "crates/purg-vm-wasmi",
     "crates/purg-emu",
     "crates/purg-probe",
+    "crates/purg-aarch64",
     "sdk/purgatorio",
     "sdk/purgatorio-macros",
     "appl/lib/add",
@@ -76,6 +77,7 @@ purg-core = { path = "crates/purg-core" }
 purg-vm = { path = "crates/purg-vm" }
 purg-vm-wasmtime = { path = "crates/purg-vm-wasmtime" }
 purg-vm-wasmi = { path = "crates/purg-vm-wasmi" }
+purg-aarch64 = { path = "crates/purg-aarch64" }
 purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
 
