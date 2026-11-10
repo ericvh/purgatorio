@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-newer"
+description = "newer: compare file modification times"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "newer"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

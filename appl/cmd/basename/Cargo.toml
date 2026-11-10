@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-basename"
+description = "basename: strip file name affixes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "basename"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
