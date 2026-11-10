@@ -17,7 +17,8 @@ wasmdump -ie /lib/test/tiny.wasm /lib/test/tiny.wasm | grep -v '^	'
 echo built modules
 wasmdump -e /bin/lib/add.wasm | sed 's/func [0-9]+ add/func N add/'
 wasmdump -h /bin/lib/add.wasm | sed 's/^(size|digest|abi) .*/\1 ok/'
-# A stripped module is named from the .names file beside it.
+# A stripped module is named from the .names file beside it, or from its
+# exports where that is left out (the kernel and the probe).
 wasmdump -f /bin/lib/add.wasm | grep ' add$' | sed 's/^func [0-9]+ [0-9]+/func N N/'
 
 echo dep

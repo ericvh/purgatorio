@@ -16,7 +16,7 @@
 //!   its key and the names in its certificates;
 //! - `-f` every function with its index, type, body size and name. Names
 //!   come from the module's `name` section, or from the `.names` file
-//!   beside a stripped module.
+//!   beside a stripped module, or from its exports.
 //!
 //! A file that is not a module is an error that names the offset of the
 //! fault; the other files are still printed.
@@ -243,10 +243,18 @@ fn custom(wasm: &[u8], m: &Module<'_>) {
 }
 
 fn funcs(file: &str, m: &Module<'_>) {
+    // The module's own names, then the .names file beside it (which the
+    // kernel's and the probe's images leave out), then its exports.
     let names = m.names().unwrap_or_else(|| {
         std::fs::read_to_string(wasmobj::names_path(file))
             .map(|t| Names::from_text(&t))
-            .unwrap_or_default()
+            .unwrap_or_else(|_| {
+                let mut text = String::new();
+                for e in m.exports.iter().filter(|e| e.kind == Kind::Func) {
+                    text.push_str(&format!("{} {}\n", e.index, e.name));
+                }
+                Names::from_text(&text)
+            })
     });
     let nimp = m.imported(Kind::Func);
     let mut imported = m.imports.iter().filter(|i| i.ty.kind() == Kind::Func);
