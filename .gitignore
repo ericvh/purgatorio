@@ -1,4 +1,6 @@
 /target
 /root/bin/
 /root/tmp/
+# Mount points the tests make at run time (/mnt/factotum).
+/root/mnt/
 /.claude/worktrees/

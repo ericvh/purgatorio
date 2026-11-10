@@ -1,6 +1,8 @@
-//! mount [-abrcA] fd-or-addr mtpt [spec]: mount a 9P connection at `mtpt`.
-//! `fd-or-addr` is a file descriptor, a dial string (`tcp!host!port`) or a
-//! `{command}` block, which is run by sh with a pipe as its fds 0 and 1.
+//! mount [-abrcA] [-k keyfile] fd-or-addr mtpt [spec]: mount a 9P
+//! connection at `mtpt`. `fd-or-addr` is a file descriptor, a dial string
+//! (`tcp!host!port`) or a `{command}` block, which is run by sh with a pipe
+//! as its fds 0 and 1. The mount authenticates when the server asks, with
+//! the authinfo `keyfile` if given (`docs/auth.md`); `-A` skips that.
 
 use std::os::fd::AsRawFd;
 
@@ -11,8 +13,9 @@ use purgatorio::{Context, Error};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut arg = Arg::new(args, "mount [-abrcA] fd-or-addr mtpt [spec]");
+    let mut arg = Arg::new(args, "mount [-abrcA] [-k keyfile] fd-or-addr mtpt [spec]");
     let (mut order, mut create, mut noauth) = (mount::MREPL, 0, 0);
+    let mut keyfile = None;
     while let Some(c) = arg.opt() {
         match c {
             'a' => order = mount::MAFTER,
@@ -20,12 +23,15 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'r' => order = mount::MREPL,
             'c' => create = mount::MCREATE,
             'A' => noauth = mount::MNOAUTH,
+            'k' => keyfile = Some(arg.earg()?),
             _ => return Err(arg.usage()),
         }
     }
     let rest = arg.argv();
     if rest.len() < 2 || rest.len() > 3 {
-        return Err(Error::from("usage: mount [-abrcA] fd-or-addr mtpt [spec]"));
+        return Err(Error::from(
+            "usage: mount [-abrcA] [-k keyfile] fd-or-addr mtpt [spec]",
+        ));
     }
     let spec = rest.get(2).map(String::as_str).unwrap_or("");
     // A dial string has a `!`. The connection has to stay open for the mount.
@@ -56,8 +62,16 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         pipe = None;
         rest[0].parse().map_err(|_| Error::from("bad fd"))?
     };
-    purgatorio::mount(fd, -1, &rest[1], order | create | noauth, spec)
-        .map_err(|e| Error(format!("mount: {e}")))?;
+    let flags = order | create | noauth;
+    // The kernel authenticates a plain mount itself, in one conversation.
+    // A keyfile or a guest factotum means the proof is built here, with
+    // fauth first.
+    if keyfile.is_some() || purgatorio::auth::have_factotum() {
+        purgatorio::auth::amount_key(fd, &rest[1], flags, spec, keyfile.as_deref())
+    } else {
+        purgatorio::mount(fd, -1, &rest[1], flags, spec)
+    }
+    .map_err(|e| Error(format!("mount: {e}")))?;
     // The mount's session holds the conversation. Dropping `conn` closes this
     // prog's descriptor and leaves the session's reference in place.
     drop(conn);

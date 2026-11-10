@@ -12,9 +12,9 @@ std = ["purg-platform/std"]
 
 [dependencies]
 purg-abi.workspace = true
+purg-auth.workspace = true
 purg-styx.workspace = true
 purg-platform.workspace = true
-ed25519-dalek = { version = "2", default-features = false }
 embedded-tls = { version = "0.19", default-features = false, features = ["alloc"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8"] }
 sha2 = { version = "0.10", default-features = false }

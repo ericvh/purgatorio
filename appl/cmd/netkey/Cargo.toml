@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-netkey"
+description = "netkey: answer challenges with a password"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "netkey"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true

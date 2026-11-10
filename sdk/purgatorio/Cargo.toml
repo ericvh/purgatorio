@@ -7,8 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-ed25519-dalek = { version = "2", default-features = false }
 purg-abi.workspace = true
+purg-auth = { workspace = true, features = ["login"] }
+rand_core = { version = "0.6", default-features = false }
 purg-styx.workspace = true
 purgatorio-macros.workspace = true
 

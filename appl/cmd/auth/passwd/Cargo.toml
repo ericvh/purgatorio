@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auth-passwd"
+description = "auth/passwd: change a password through keysrv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "passwd"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true

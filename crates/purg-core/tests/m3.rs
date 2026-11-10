@@ -443,6 +443,9 @@ fn fauth_failures() {
     p.close(b).unwrap();
     server.join().unwrap();
 
+    // The exporter's namespace decides, not the exported tree: with the
+    // key gone from `/lib/test`, nothing is trusted and nothing is asked.
+    p.remove("/lib/test/auth.key.pub").unwrap();
     let (server, b) = spawn_export(&mut p, mock, "#R/box");
     let err = p.fauth(b, "").unwrap_err();
     assert_eq!(err.as_str(), purg_core::auth::NOT_REQUIRED);
@@ -576,4 +579,112 @@ fn wait_file_is_pollable() {
     assert!(n > 0);
     assert_eq!(p.wait_ops(&[(0, fd)], 0).unwrap(), None);
     t.join().unwrap();
+}
+
+fn write_file(p: &mut Prog, path: &str, bytes: &[u8]) {
+    let fd = p.create(path, mode::OWRITE, 0o644).unwrap();
+    assert_eq!(p.write(fd, bytes).unwrap(), bytes.len());
+    p.close(fd).unwrap();
+}
+
+/// A server that trusts a signer takes a certificate from the client's
+/// authinfo or from `#¤`, and refuses it once the key is revoked. The
+/// trust files are the ones in the exporter's namespace (`/lib/keys`):
+/// a signer list or a key planted inside the exported tree is ignored.
+#[cfg(feature = "std")]
+#[test]
+fn certificate_mount() {
+    use purg_auth::cert::Cert;
+    use purg_auth::keys::{AuthInfo, list_line};
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    p.remove("/lib/test/auth.key").unwrap();
+    let signer = [5u8; 32];
+    let user = [6u8; 32];
+    let mut cert = Cert::new("inferno", purg_auth::public_key(&user), 0).unwrap();
+    cert.sign(&signer).unwrap();
+    for dir in [
+        "/box/lib",
+        "/box/lib/keys",
+        "/box/usr",
+        "/box/usr/inferno",
+        "/lib/keys",
+        "/usr",
+        "/usr/inferno",
+        "/usr/inferno/keyring",
+    ] {
+        let fd = p
+            .create(&format!("#R{dir}"), mode::OREAD, purg_styx::DMDIR)
+            .unwrap();
+        p.close(fd).unwrap();
+    }
+    let signers = list_line(&purg_auth::public_key(&signer), "test");
+    // Planted in the exported tree: a signer list and the user's key.
+    write_file(&mut p, "#R/box/lib/keys/signers", signers.as_bytes());
+    write_file(
+        &mut p,
+        "#R/box/usr/inferno/key.pub",
+        &purg_auth::public_key(&user),
+    );
+    let info = AuthInfo {
+        seed: user,
+        signer: purg_auth::public_key(&signer),
+        cert: cert.clone(),
+    };
+    write_file(
+        &mut p,
+        "/usr/inferno/keyring/default",
+        info.encode().as_bytes(),
+    );
+
+    let mount = |p: &mut Prog, mock: Arc<Mock>| {
+        let (server, b) = spawn_export(p, mock, "#R/box");
+        let r = p.mount(b, -1, "#R/mnt", purg_abi::mount::MREPL, "");
+        p.close(b).unwrap();
+        if r.is_ok() {
+            p.unmount(None, "#R/mnt").unwrap();
+        }
+        server.join().unwrap();
+        r.map_err(|e| String::from(e.as_str()))
+    };
+    assert_eq!(
+        mount(&mut p, mock.clone()),
+        Err(String::from(purg_core::auth::UNTRUSTED))
+    );
+    // The same list where the exporter looks.
+    write_file(&mut p, "/lib/keys/signers", signers.as_bytes());
+    assert_eq!(mount(&mut p, mock.clone()), Ok(()));
+
+    // A revocation planted in the tree does nothing either.
+    let revoked = list_line(&purg_auth::public_key(&user), "");
+    write_file(&mut p, "#R/box/lib/keys/revoked", revoked.as_bytes());
+    assert_eq!(mount(&mut p, mock.clone()), Ok(()));
+    write_file(&mut p, "/lib/keys/revoked", revoked.as_bytes());
+    assert_eq!(
+        mount(&mut p, mock.clone()),
+        Err(String::from(purg_core::auth::REVOKED))
+    );
+    p.remove("/lib/keys/revoked").unwrap();
+
+    // The same key and certificate held by #¤ instead of a file.
+    p.remove("/usr/inferno/keyring/default").unwrap();
+    assert_eq!(
+        mount(&mut p, mock.clone()),
+        Err(String::from(purg_core::auth::NO_KEY))
+    );
+    let fd = p.open("#¤/ctl", mode::OWRITE).unwrap();
+    p.write(fd, &user).unwrap();
+    let line = format!("cert {}", cert.encode());
+    p.write(fd, line.as_bytes()).unwrap();
+    p.close(fd).unwrap();
+    assert_eq!(mount(&mut p, mock.clone()), Ok(()));
+
+    // Without the certificate, #¤'s key alone is not trusted.
+    let fd = p.open("#¤/ctl", mode::OWRITE).unwrap();
+    p.write(fd, &user).unwrap();
+    p.close(fd).unwrap();
+    assert_eq!(
+        mount(&mut p, mock),
+        Err(String::from(purg_core::auth::FAILED))
+    );
 }

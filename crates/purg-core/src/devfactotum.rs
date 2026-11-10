@@ -1,6 +1,9 @@
-//! `#¤`: a factotum-like agent. It holds one Ed25519 seed and signs whatever
-//! a prog writes to `rpc`. The seed never has to sit in a file the guest
-//! can read.
+//! `#¤`: a factotum-like agent. It holds one Ed25519 seed, and optionally a
+//! certificate for it, and signs whatever a prog writes to `rpc`. The seed
+//! never has to sit in a file the guest can read.
+//!
+//! `ctl` takes `key <hex>`, a bare 32-byte seed, `cert <pgcert1 line>` or
+//! `delkey`, and reads as `key <public hex>` and the certificate line.
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -28,6 +31,8 @@ pub struct DevFactotum {
     platform: Arc<dyn Platform>,
     /// `None` until `ctl` is given a seed.
     key: Mutex<Option<[u8; auth::SEED]>>,
+    /// A certificate for the key, loaded with `cert ...`.
+    cert: Mutex<Option<String>>,
 }
 
 impl DevFactotum {
@@ -35,6 +40,7 @@ impl DevFactotum {
         DevFactotum {
             platform,
             key: Mutex::new(None),
+            cert: Mutex::new(None),
         }
     }
 
@@ -42,6 +48,16 @@ impl DevFactotum {
         let data = trim_ascii(data);
         if data == b"delkey" {
             *self.key.lock() = None;
+            *self.cert.lock() = None;
+            return Ok(());
+        }
+        if let Some(line) = data.strip_prefix(b"cert ") {
+            let seed = self.key.lock().ok_or(Error::new(auth::NO_KEY))?;
+            let cert = auth::Cert::parse(line).map_err(|_| Error::new(error::EBADARG))?;
+            if cert.key != auth::public_key(&seed) {
+                return Err(Error::new(error::EBADARG));
+            }
+            *self.cert.lock() = Some(cert.encode());
             return Ok(());
         }
         let seed = if data.len() == auth::SEED {
@@ -54,6 +70,7 @@ impl DevFactotum {
             return Err(Error::new(error::EBADARG));
         };
         *self.key.lock() = Some(seed);
+        *self.cert.lock() = None;
         Ok(())
     }
 
@@ -182,6 +199,10 @@ impl Dev for DevFactotum {
                             s.push_str(&alloc::format!("{b:02x}"));
                         }
                         s.push('\n');
+                        if let Some(cert) = self.cert.lock().as_ref() {
+                            s.push_str(cert);
+                            s.push('\n');
+                        }
                         s
                     }
                     None => String::from("no key\n"),

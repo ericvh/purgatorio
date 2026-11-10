@@ -1,6 +1,7 @@
 //! export [-A] [-r] [dir]: serve `dir` (default `/`) as 9P on file
-//! descriptor 0. `-A` does not authenticate, even when the tree holds a
-//! public key. `-r` serves the tree read-only (an addition; Plan 9's
+//! descriptor 0. `-A` does not authenticate, even when this namespace
+//! trusts a key or a signer (`/lib/keys/signers`, `/usr/<user>/key.pub`;
+//! `docs/auth.md`). `-r` serves the tree read-only (an addition; Plan 9's
 //! `exportfs -R`).
 
 use purgatorio::abi::{export, mount};

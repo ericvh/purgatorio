@@ -135,7 +135,7 @@ impl Session {
         &self,
         user: &str,
         aname: &str,
-        secret: impl Fn(&[u8]) -> Result<[u8; auth::PROOF]>,
+        secret: impl Fn(&[u8]) -> Result<Vec<u8>>,
     ) -> Result<Option<u32>> {
         const AFID: u32 = AUTH_FID;
         let buf = self.rpc(Fcall::Tauth {
@@ -293,7 +293,7 @@ impl DevMnt {
         aname: &str,
         user: &str,
         noauth: bool,
-        secret: impl Fn(&[u8]) -> Result<[u8; auth::PROOF]>,
+        secret: impl Fn(&[u8]) -> Result<Vec<u8>>,
     ) -> Result<Chan> {
         let session = self.start(fd, MAX_MSIZE)?;
         let established = (|| {
