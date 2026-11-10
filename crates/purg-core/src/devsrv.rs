@@ -17,7 +17,7 @@ use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 use crate::chan::Chan;
 use crate::dev::{Dev, Walked};
 use crate::error::{Error, Result};
-use crate::kchan::{KChan, KMsg};
+use crate::kchan::{KChan, KMsg, Kgrp};
 use crate::prog::Proc;
 
 const QROOT: u64 = 0;
@@ -27,7 +27,11 @@ struct SrvFile {
     name: String,
     read: Arc<KChan>,
     write: Arc<KChan>,
-    server: Arc<Proc>,
+    /// The pid and channel table of the prog that serves the file. Not
+    /// the `Proc`: that would keep the server's fds and namespace alive
+    /// for as long as the file is listed.
+    pid: u32,
+    server: Arc<Kgrp>,
     next_fid: AtomicU32,
 }
 
@@ -78,12 +82,39 @@ impl DevSrv {
             name: String::from(name),
             read,
             write,
-            server: proc.clone(),
+            pid: proc.pid,
+            server: proc.kgrp.clone(),
             next_fid: AtomicU32::new(1),
         });
         self.files.lock().insert(id, file);
         self.by_name.lock().insert(String::from(name), id);
         Ok((rh, wh))
+    }
+
+    /// Removes the files prog `pid` serves, when it exits, and closes
+    /// their channels: a client's read or write then fails with `i/o on
+    /// hungup channel` instead of waiting for an answer that cannot come,
+    /// and the name is free again. (Inferno removes a file2chan file when
+    /// its server's channels are collected.)
+    pub fn remove_server(&self, pid: u32) {
+        let gone: Vec<Arc<SrvFile>> = {
+            let mut files = self.files.lock();
+            let ids: Vec<u64> = files
+                .values()
+                .filter(|f| f.pid == pid)
+                .map(|f| f.id)
+                .collect();
+            ids.iter().filter_map(|id| files.remove(id)).collect()
+        };
+        if gone.is_empty() {
+            return;
+        }
+        let mut names = self.by_name.lock();
+        for f in &gone {
+            names.remove(&f.name);
+            f.read.close();
+            f.write.close();
+        }
     }
 
     fn file(&self, c: &Chan) -> Result<Arc<SrvFile>> {
@@ -120,7 +151,7 @@ impl DevSrv {
         offset: u64,
     ) -> Result<usize> {
         let reply_chan = Arc::new(KChan::new(1));
-        let handle = file.server.kgrp.alloc(reply_chan.clone())?;
+        let handle = file.server.alloc(reply_chan.clone())?;
         let bytes = if write {
             let mut v = pack_write_hdr(offset, fid, handle).to_vec();
             if data.is_empty() && offset == u64::MAX {
@@ -144,21 +175,21 @@ impl DevSrv {
             })
         };
         if let Err(e) = sent {
-            let _ = file.server.kgrp.close(handle);
+            let _ = file.server.close(handle);
             return Err(e);
         }
         let rep = match reply_chan.recv() {
             Ok(Some(m)) => m,
             Ok(None) => {
-                let _ = file.server.kgrp.close(handle);
+                let _ = file.server.close(handle);
                 return Err(Error::new(error::EHUNGUP));
             }
             Err(e) => {
-                let _ = file.server.kgrp.close(handle);
+                let _ = file.server.close(handle);
                 return Err(e);
             }
         };
-        let _ = file.server.kgrp.close(handle);
+        let _ = file.server.close(handle);
         if rep.bytes.is_empty() {
             return Err(Error::new(error::EIO));
         }
