@@ -398,6 +398,7 @@ impl Drop for Prog {
         // Close fds first so a parent reading a pipe from this prog sees end
         // of file no later than the exit message.
         self.fgrp = Arc::new(Fgrp::new());
+        self.kernel.srv.remove_server(self.pid);
         self.kernel
             .procs
             .exit(self.pid, self.report.then_some(&*self.status));

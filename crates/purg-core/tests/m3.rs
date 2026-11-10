@@ -128,6 +128,30 @@ fn file2chan_serves_a_read() {
     server.join().unwrap();
 }
 
+/// A file2chan file goes when its server exits: the name is free, a
+/// client that was using it is told, and the file no longer holds the
+/// server's namespace.
+#[test]
+fn file2chan_file_goes_with_its_server() {
+    let (mut p, _) = setup();
+    let mut server = p.spawn(purg_abi::pctl::FORKNS, &[]).unwrap();
+    server.started();
+    let ns = Arc::downgrade(&server.pgrp);
+    server.file2chan("#s", "gone").unwrap();
+    let fd = p.open("#s/gone", mode::OREAD).unwrap();
+    drop(server);
+    let mut buf = [0u8; 8];
+    let e = p.read(fd, &mut buf).unwrap_err();
+    assert_eq!(e.as_str(), purg_abi::error::ENONEXIST);
+    let e = p.open("#s/gone", mode::OREAD).unwrap_err();
+    assert_eq!(e.as_str(), purg_abi::error::ENONEXIST);
+    assert!(
+        ns.upgrade().is_none(),
+        "the dead server's namespace is held"
+    );
+    p.file2chan("#s", "gone").unwrap();
+}
+
 #[cfg(feature = "std")]
 #[test]
 fn pipe_between_progs() {
