@@ -1,11 +1,16 @@
 hello
 /tmp/sh-tools/a:1:hello
+/tmp/sh-tools/a:1
+/tmp/sh-tools/c:1
+/tmp/sh-tools/c:world
 same
 5d41402abc4b2a76b9719d911017c592  -
 world
 hi
 bar
 bar bar
+<foo>foo.c <bar>bar.c
+a|b
 hello
 6	/tmp/sh-tools/a
 00000000  68 69                                            hi

@@ -73,6 +73,15 @@ fn guests(ws: &Path) -> Result<Vec<Guest>> {
             let Ok(manifest) = fs::read_to_string(path.join("Cargo.toml")) else {
                 continue;
             };
+            // appl/lib also holds plain libraries linked into commands
+            // (regexp); only reactor modules are installed.
+            if sub == "appl/lib"
+                && !manifest
+                    .lines()
+                    .any(|l| l.trim_start().starts_with("crate-type") && l.contains("cdylib"))
+            {
+                continue;
+            }
             let package = manifest_name(&manifest, "[package]")
                 .ok_or_else(|| format!("{}: no package name", path.display()))?;
             let bin = manifest_name(&manifest, "[[bin]]")

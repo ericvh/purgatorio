@@ -13,6 +13,7 @@ members = [
     "sdk/purgatorio",
     "sdk/purgatorio-macros",
     "appl/lib/add",
+    "appl/lib/regexp",
     "appl/cmd/bind",
     "appl/cmd/cmp",
     "appl/cmd/cat",
@@ -78,6 +79,7 @@ purg-vm-wasmtime = { path = "crates/purg-vm-wasmtime" }
 purg-vm-wasmi = { path = "crates/purg-vm-wasmi" }
 purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
+regexp = { package = "appl-lib-regexp", path = "appl/lib/regexp" }
 
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }
 libc = "0.2"
