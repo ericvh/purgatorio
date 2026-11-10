@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-timestamp"
+description = "timestamp: prefix lines with the time since start"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "timestamp"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

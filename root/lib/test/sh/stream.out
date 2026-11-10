@@ -1,0 +1,17 @@
+hello stream
+hello stream
+hello stream
+
+hello stream
+stream: cannot open /tmp/streamtest/nosuch: file does not exist
+fail:cannot open /tmp/streamtest/nosuch: file does not exist
+stream: usage: stream [-a] [-b bufsize] file1 [file2]
+stream: usage: stream [-a] [-b bufsize] file1 [file2]
+eg start
+eg one
+eg two
+start
+plain
+dddddddddd
+dddddddddd
+paused

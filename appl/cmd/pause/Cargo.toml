@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-pause"
+description = "pause: never return"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pause"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
