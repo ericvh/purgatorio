@@ -27,6 +27,16 @@
 //! an interrupt arrives, so the next blocker waits for one with `wfi`. The
 //! 100 Hz tick bounds that wait, so `tsleep` deadlines still pass on time.
 //!
+//! Stacks: a new stack is filled with [`PAINT`], so the deepest a thread
+//! went is where the paint ends. [`Scheduler::stats`] reports the deepest
+//! stack, separately for threads that ran a prog (wasmi and the host calls
+//! under it) and for those that did not (the mount readers, the boot-time
+//! workers). Exited threads are only scanned once
+//! [`Scheduler::measure_stacks`] has been called. The stacks are heap
+//! blocks with no guard page, so every switch checks that the lowest word
+//! of the outgoing thread's stack is still paint and panics if it is not:
+//! a tripwire for an overflow, not a guarantee.
+//!
 //! [`Rendez`]: purg_platform::sync::Rendez
 
 use alloc::boxed::Box;
@@ -58,10 +68,40 @@ struct Context {
     d: [u64; 8],
 }
 
+/// The byte a new stack is filled with.
+const PAINT: u8 = 0xa5;
+
+/// Bytes of `stack` used at its deepest: everything above the lowest word
+/// that is no longer paint.
+fn stack_used(stack: &[u8]) -> usize {
+    const WORD: usize = core::mem::size_of::<u64>();
+    let paint = [PAINT; WORD];
+    let (words, _) = stack.as_chunks::<WORD>();
+    let clean = words.iter().take_while(|w| **w == paint).count();
+    stack.len() - clean * WORD
+}
+
+/// What the scheduler has seen, for the footprint reports.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SchedStats {
+    /// Threads that exist now, including the boot thread.
+    pub threads: usize,
+    /// The most threads that existed at once.
+    pub peak_threads: usize,
+    /// Threads ever started.
+    pub spawned: u64,
+    /// The default stack size.
+    pub stack_size: usize,
+    /// The deepest stack, in bytes, of a thread that ran a prog.
+    pub prog_stack: usize,
+    /// The deepest stack of a thread that ran no prog.
+    pub kproc_stack: usize,
+}
+
 struct Thread {
     ctx: Context,
     /// Owns the stack; `None` for the boot thread.
-    _stack: Option<Vec<u8>>,
+    stack: Option<Vec<u8>>,
     entry: Option<Box<dyn FnOnce() + Send>>,
     /// What the thread is for, for reports.
     name: String,
@@ -76,7 +116,7 @@ impl Thread {
     fn new(ctx: Context, stack: Option<Vec<u8>>, entry: Option<Box<dyn FnOnce() + Send>>) -> Self {
         Thread {
             ctx,
-            _stack: stack,
+            stack,
             entry,
             name: String::new(),
             pid: 0,
@@ -96,9 +136,22 @@ struct Threads {
     dead: Vec<usize>,
     /// Number of switches, for tests and `/dev/sysstat`-like reporting.
     switches: u64,
+    peak: usize,
+    spawned: u64,
+    /// The deepest stacks of exited threads: those that ran a prog, and
+    /// the rest.
+    deepest: [usize; 2],
 }
 
 impl Threads {
+    /// Records how deep `th`'s stack went.
+    fn measure(&mut self, th: &Thread) {
+        if let Some(stack) = &th.stack {
+            let class = usize::from(th.pid == 0);
+            self.deepest[class] = self.deepest[class].max(stack_used(stack));
+        }
+    }
+
     fn current_mut(&mut self) -> &mut Thread {
         let cur = self.current;
         self.all[cur].as_mut().expect("current thread exists")
@@ -119,6 +172,8 @@ pub struct Scheduler {
     deferred: AtomicU64,
     /// Times the CPU waited for an interrupt with nothing to run.
     idles: AtomicU64,
+    /// Whether exited threads' stacks are scanned (see the module docs).
+    measure: AtomicBool,
 }
 
 unsafe extern "C" {
@@ -199,6 +254,9 @@ impl Scheduler {
                 ready: VecDeque::new(),
                 dead: Vec::new(),
                 switches: 0,
+                peak: 0,
+                spawned: 0,
+                deepest: [0; 2],
             }),
             stack_size,
             preempt_count: AtomicU32::new(0),
@@ -206,6 +264,7 @@ impl Scheduler {
             blocked_run: AtomicUsize::new(0),
             deferred: AtomicU64::new(0),
             idles: AtomicU64::new(0),
+            measure: AtomicBool::new(false),
         }
     }
 
@@ -230,8 +289,23 @@ impl Scheduler {
 
     /// [`Scheduler::spawn`], with a name for [`Scheduler::threads`].
     pub fn spawn_named(&'static self, name: &str, f: Box<dyn FnOnce() + Send>) {
-        let mut stack = vec![0u8; self.stack_size];
-        let top = (stack.as_mut_ptr() as usize + self.stack_size) & !15;
+        self.spawn_named_sized(name, self.stack_size, f);
+    }
+
+    /// [`Scheduler::spawn`] with a stack of `stack_size` bytes.
+    pub fn spawn_sized(&'static self, stack_size: usize, f: Box<dyn FnOnce() + Send>) {
+        self.spawn_named_sized("", stack_size, f);
+    }
+
+    /// [`Scheduler::spawn_named`] with a stack of `stack_size` bytes.
+    pub fn spawn_named_sized(
+        &'static self,
+        name: &str,
+        stack_size: usize,
+        f: Box<dyn FnOnce() + Send>,
+    ) {
+        let mut stack = vec![PAINT; stack_size];
+        let top = (stack.as_mut_ptr() as usize + stack_size) & !15;
         let mut ctx = Context::default();
         ctx.x[0] = self as *const Scheduler as u64;
         ctx.x[11] = purg_aarch64_thread_start as *const () as u64;
@@ -251,7 +325,38 @@ impl Scheduler {
             }
         };
         t.ready.push_back(id);
+        t.spawned += 1;
+        t.peak = t.peak.max(t.all.iter().flatten().count());
         self.blocked_run.store(0, Ordering::Relaxed);
+    }
+
+    /// Scans the stack of every thread that exits from now on, for
+    /// [`Scheduler::stats`]. The scan runs with IRQs masked and reads the
+    /// unused part of the stack, so it is off unless asked for.
+    pub fn measure_stacks(&self) {
+        self.measure.store(true, Ordering::Relaxed);
+    }
+
+    /// Thread counts and the deepest stacks: of the live threads, and of
+    /// those that exited since [`Scheduler::measure_stacks`].
+    pub fn stats(&self) -> SchedStats {
+        let _g = IrqGuard::new();
+        let t = self.threads.lock();
+        let mut deepest = t.deepest;
+        for th in t.all.iter().flatten() {
+            if let Some(stack) = &th.stack {
+                let class = usize::from(th.pid == 0);
+                deepest[class] = deepest[class].max(stack_used(stack));
+            }
+        }
+        SchedStats {
+            threads: t.all.iter().flatten().count(),
+            peak_threads: t.peak.max(1),
+            spawned: t.spawned,
+            stack_size: self.stack_size,
+            prog_stack: deepest[0],
+            kproc_stack: deepest[1],
+        }
     }
 
     /// Switches to the next ready thread, if any, and returns once this
@@ -264,8 +369,10 @@ impl Scheduler {
             for id in dead {
                 if id == cur {
                     t.dead.push(id);
-                } else {
-                    t.all[id] = None;
+                } else if let Some(th) = t.all[id].take()
+                    && self.measure.load(Ordering::Relaxed)
+                {
+                    t.measure(&th);
                 }
             }
             let Some(next) = t.ready.pop_front() else {
@@ -273,6 +380,11 @@ impl Scheduler {
             };
             let count = self.preempt_count.load(Ordering::Relaxed);
             let th = t.current_mut();
+            if let Some(stack) = &th.stack
+                && stack.first_chunk() != Some(&[PAINT; 8])
+            {
+                panic!("kernel thread stack overflow (pid {})", th.pid);
+            }
             th.preempt = count;
             if th.done {
                 t.dead.push(cur);

@@ -204,9 +204,16 @@ impl Dev for DevCons {
             QUSER => self.platform.user(),
             QTIME => format!("{}", self.platform.now_ns() / 1000),
             QJIT => String::from("0\n"),
+            // Inferno's format: one line per pool.
             QMEMORY => {
-                let (used, total) = self.platform.memory();
-                format!("{used} {total}\n")
+                let mut text = String::new();
+                for p in self.platform.pools() {
+                    text.push_str(&format!(
+                        "{:11} {:11} {:11} {:11} {:11} {:11} {:11} {}\n",
+                        p.cursize, p.maxsize, p.hw, p.nalloc, p.nfree, p.nbrk, p.max, p.name
+                    ));
+                }
+                text
             }
             QSYSCTL => String::from("purgatorio\n"),
             _ => return Err(Error::new(error::EISDIR)),
