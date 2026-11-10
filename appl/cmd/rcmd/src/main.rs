@@ -6,9 +6,10 @@
 //! several words are one command and arrive as they were given.
 //!
 //! The connection is authenticated as a mount is (`docs/auth.md`), with
-//! the authinfo `keyfile` if given (`-f` is Inferno's name for `-k`); `-A`
-//! skips that. `-e` names an algorithm for the connection; the only one
-//! here is `none`. The protocol is in `docs/rcmd.md`.
+//! the authinfo `keyfile` if given (`-f` is Inferno's name for `-k`), and
+//! then encrypted; `-A` skips both. `-e` names the algorithm: the one
+//! cipher, `chacha20poly1305`, or `none` with `-A`. The protocol is in
+//! `docs/rcmd.md`.
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
@@ -27,19 +28,18 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         module: "/bin/rcmd.wasm",
         ..Opts::default()
     };
+    let mut alg = None;
     while let Some(c) = arg.opt() {
         match c {
             'A' => o.noauth = true,
             'k' | 'f' => o.keyfile = Some(arg.earg()?),
             'x' => o.export = Some(arg.earg()?),
-            'e' => {
-                let alg = arg.earg()?;
-                if alg != "none" && alg != "clear" {
-                    return Err(Error(format!("unknown algorithm {alg}")));
-                }
-            }
+            'e' => alg = Some(arg.earg()?),
             _ => return Err(arg.usage()),
         }
+    }
+    if let Some(alg) = alg {
+        client::check_alg(&alg, o.noauth)?;
     }
     let rest = arg.argv();
     let Some((host, cmd)) = rest.split_first() else {

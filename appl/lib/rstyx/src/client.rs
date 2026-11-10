@@ -13,18 +13,23 @@ use std::fs::File;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 
+use purgatorio::abi::auth::{FAILED, NO_SESSION};
 use purgatorio::abi::pctl::NEWFD;
+use purgatorio::auth::fmt::proof::OFFER;
+use purgatorio::auth::fmt::session;
 use purgatorio::{Error, auth, dial};
 
 use crate::io::{Children, Fd, kill, read_some, wait_readable};
-use crate::proto::{self, Decoder, EHUNGUP, EPROTO, frame, kind};
+use crate::link::Link;
+use crate::proto::{self, EHUNGUP, EPROTO, frame, kind};
 
 /// How a client connects.
 #[derive(Default)]
 pub struct Opts {
     /// The calling command's module, which is run again as each pump.
     pub module: &'static str,
-    /// `-A`: prove nothing, and ask no proof of the server.
+    /// `-A`: prove nothing, ask no proof of the server, and speak in the
+    /// clear. Without it the connection must be encrypted.
     pub noauth: bool,
     /// `-k`: the authinfo to make the proof from.
     pub keyfile: Option<String>,
@@ -32,12 +37,34 @@ pub struct Opts {
     pub export: Option<String>,
 }
 
+/// The one cipher, the name `-e` and `-C` take for it.
+pub const CIPHER: &str = "chacha20poly1305";
+
+/// Checks an algorithm named with `-e` or `-C`. An authenticated
+/// connection is always encrypted, so `none` (or `clear`) goes only with
+/// `-A`.
+pub fn check_alg(alg: &str, noauth: bool) -> Result<(), Error> {
+    match alg {
+        CIPHER => Ok(()),
+        "none" | "clear" if noauth => Ok(()),
+        "none" | "clear" => Err(Error::from(
+            "an authenticated connection is always encrypted; use -A for none",
+        )),
+        _ => Err(Error(format!("unknown algorithm {alg}"))),
+    }
+}
+
 fn text(d: &[u8]) -> String {
     String::from_utf8_lossy(d).into_owned()
 }
 
-/// Runs the opening exchange on `net` and sends `cmd`.
-fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<(), Error> {
+/// Runs the opening exchange on `net`, sends `cmd`, and returns the link
+/// the rest of the session goes over.
+///
+/// Without `-A` the server must ask for a proof and offer a session key:
+/// a server that asks for none, or offers only a challenge, is refused
+/// with `no session key offered` rather than spoken to in the clear.
+fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<Link, Error> {
     let user = auth::user();
     net.write_all(&frame(
         kind::HELLO,
@@ -48,10 +75,23 @@ fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<(), Error> {
         (kind::ERR, d) => return Err(Error(text(&d))),
         _ => return Err(Error::from(EPROTO)),
     };
-    let proof = if challenge.is_empty() || o.noauth {
-        Vec::new()
+    let (proof, keys) = if o.noauth {
+        (Vec::new(), None)
     } else {
-        auth::proof_for(&challenge, &user, proto::ANAME, o.keyfile.as_deref())?
+        let offer: &[u8; OFFER] = challenge
+            .as_slice()
+            .try_into()
+            .map_err(|_| Error::from(NO_SESSION))?;
+        let mut random = [0u8; 32];
+        auth::Rng::fill(&mut random);
+        let client = session::Client::new(offer, random).ok_or_else(|| Error::from(FAILED))?;
+        let proof = auth::proof_for(&client.signed, &user, proto::ANAME, o.keyfile.as_deref())?;
+        // A proof from an agent that does not make version 3 carries no
+        // key: refuse rather than go on in the clear.
+        let keys = client
+            .keys(&user, proto::ANAME, &proof)
+            .ok_or_else(|| Error::from(NO_SESSION))?;
+        (proof, Some(keys))
     };
     net.write_all(&frame(kind::PROOF, &proof))?;
     match proto::read_frame(net)? {
@@ -59,10 +99,11 @@ fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<(), Error> {
         (kind::ERR, d) => return Err(Error(text(&d))),
         _ => return Err(Error::from(EPROTO)),
     }
+    let mut link = keys.as_ref().map_or_else(Link::clear, Link::client);
     let mut exec = vec![if o.noauth { proto::NOAUTH } else { 0 }];
     exec.extend_from_slice(cmd.as_bytes());
-    net.write_all(&frame(kind::EXEC, &exec))?;
-    Ok(())
+    net.write_all(&link.wire(kind::EXEC, &exec).map_err(Error::from)?)?;
+    Ok(link)
 }
 
 /// Runs `cmd` at `host` and returns its exit status (empty for success).
@@ -77,7 +118,7 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
         .ok_or_else(|| Error::from("no connection"))?
         .as_raw_fd();
     let mut net = Fd(data);
-    hello(&mut net, o, cmd)?;
+    let mut link = hello(&mut net, o, cmd)?;
 
     let mut children = Children::new();
     let pump = [String::from("pump"), String::from(crate::io::PUMP)];
@@ -113,7 +154,7 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
     )?;
     drop(exp_far);
 
-    let result = mux(&mut net, net_r, in_r, File::from(exp));
+    let result = mux(&mut net, &mut link, net_r, in_r, File::from(exp));
     // The export ends when its pipe closed (in `mux`); the pumps are
     // blocked in reads that only a kill ends.
     kill(netpump);
@@ -125,6 +166,7 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
 
 fn mux(
     net: &mut Fd,
+    link: &mut Link,
     net_r: std::os::fd::OwnedFd,
     in_r: std::os::fd::OwnedFd,
     exp: File,
@@ -132,13 +174,16 @@ fn mux(
     let mut exp = Some(exp);
     let mut stdin = Some(in_r);
     let mut credit = proto::WINDOW;
-    let mut dec = Decoder::default();
     // A failed write means the server has closed its end. Its last frames,
     // the status among them, may still be on their way in: stop sending
     // and read on.
     let mut sending = true;
-    let send = |net: &mut Fd, sending: &mut bool, bytes: &[u8]| {
-        if *sending && net.write_all(bytes).is_err() {
+    let send = |net: &mut Fd, link: &mut Link, sending: &mut bool, k: u8, d: &[u8]| {
+        let Ok(bytes) = link.wire(k, d) else {
+            *sending = false;
+            return;
+        };
+        if *sending && net.write_all(&bytes).is_err() {
             *sending = false;
         }
     };
@@ -158,8 +203,8 @@ fn mux(
             if bytes.is_empty() {
                 return Err(Error::from(EHUNGUP));
             }
-            dec.push(&bytes);
-            while let Some((k, d)) = dec.take()? {
+            link.push(&bytes);
+            while let Some((k, d)) = link.take()? {
                 match k {
                     kind::STYX => {
                         if exp.as_mut().is_some_and(|e| e.write_all(&d).is_err()) {
@@ -170,7 +215,13 @@ fn mux(
                         // A closed output loses the bytes, as it would
                         // lose a local command's.
                         let _ = Fd(if k == kind::OUT { 1 } else { 2 }).write_all(&d);
-                        send(net, &mut sending, &proto::window(k, d.len()));
+                        send(
+                            net,
+                            link,
+                            &mut sending,
+                            kind::WIN,
+                            &proto::win_data(k, d.len()),
+                        );
                     }
                     kind::WIN => match proto::parse_window(&d) {
                         Some((kind::IN, n)) => credit = credit.saturating_add(n),
@@ -185,12 +236,12 @@ fn mux(
             if bytes.is_empty() {
                 exp = None;
             } else {
-                send(net, &mut sending, &frame(kind::STYX, &bytes));
+                send(net, link, &mut sending, kind::STYX, &bytes);
             }
         } else if which.is_some() && which == in_at {
             let bytes = read_some(fds[which.unwrap_or(0)], credit.min(proto::CHUNK));
             credit -= bytes.len();
-            send(net, &mut sending, &frame(kind::IN, &bytes));
+            send(net, link, &mut sending, kind::IN, &bytes);
             if bytes.is_empty() {
                 stdin = None;
             }

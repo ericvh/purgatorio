@@ -8,7 +8,12 @@
 //! The client proves who it is as a mounter does (`docs/auth.md`): the
 //! keys and signers this namespace trusts are the ones an `export` here
 //! would trust, and a client with no proof is refused when there are any.
-//! `-A` asks for no proof. The client's export in turn asks this side for
+//! `-A` asks for no proof. After a proof the connection is encrypted with
+//! the keys the version 3 handshake agrees (`rstyx::link`); with `-A`, or
+//! when this namespace trusts nothing, it stays in the clear, and a client
+//! that did not ask for that with `-A` itself goes away. A version 1 or 2
+//! proof, which carries no key, is refused. The client's export in turn
+//! asks this side for
 //! a proof when the client's namespace trusts anything; it is made from
 //! the authinfo `keyfile`, or else from this user's default keys. The
 //! client's command then runs under `sh -c`
@@ -29,14 +34,17 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 
+use purgatorio::abi::auth::NO_SESSION;
 use purgatorio::abi::mode::OWRITE;
 use purgatorio::abi::pctl::{FORKENV, FORKNS, NEWFD, NEWPGRP};
 use purgatorio::arg::Arg;
 use purgatorio::auth::fmt::keys::{parse_list, parse_list_lenient};
 use purgatorio::auth::fmt::proof::{Policy, check};
+use purgatorio::auth::fmt::session::Server as Offer;
 use purgatorio::{Context, Error, auth};
 use rstyx::io::{Children, Fd, kill, read_some, wait_readable};
-use rstyx::proto::{self, Decoder, EPROTO, frame, kind};
+use rstyx::link::Link;
+use rstyx::proto::{self, EPROTO, frame, kind};
 
 const SELF: &str = "/bin/auxi/rstyxd.wasm";
 const USAGE: &str = "auxi/rstyxd [-A] [-k keyfile]";
@@ -85,9 +93,10 @@ fn trust(uname: &str) -> Trust {
     }
 }
 
-/// The opening exchange. Returns the EXEC flags and the command, or the
-/// reason the client was refused (already sent to it).
-fn hello(net: &mut Fd, noauth: bool) -> Result<(u8, String), String> {
+/// The opening exchange. Returns the EXEC flags, the command and the link
+/// the rest goes over, or the reason the client was refused (already sent
+/// to it).
+fn hello(net: &mut Fd, noauth: bool) -> Result<(u8, String, Link), String> {
     let refuse = |net: &mut Fd, why: &str| {
         let _ = net.write_all(&frame(kind::ERR, why.as_bytes()));
         String::from(why)
@@ -105,32 +114,42 @@ fn hello(net: &mut Fd, noauth: bool) -> Result<(u8, String), String> {
         revoked: t.revoked.as_deref(),
         now: auth::now(),
     };
-    let mut challenge = Vec::new();
-    if !noauth && policy.requires_auth() {
-        challenge = vec![0u8; 32];
+    // The offer: a challenge and an ephemeral X25519 key.
+    let offer = (!noauth && policy.requires_auth()).then(|| {
+        let (mut challenge, mut random) = ([0u8; 32], [0u8; 32]);
         auth::Rng::fill(&mut challenge);
-    }
-    net.write_all(&frame(kind::CHAL, &challenge))
+        auth::Rng::fill(&mut random);
+        Offer::new(challenge, random)
+    });
+    let chal = offer.as_ref().map_or(&[][..], |o| &o.offer[..]);
+    net.write_all(&frame(kind::CHAL, chal))
         .map_err(|_| String::from(proto::EHUNGUP))?;
     let (k, proof) = proto::read_frame(net)?;
     if k != kind::PROOF {
         return Err(refuse(net, EPROTO));
     }
-    if !challenge.is_empty() {
+    let mut link = Link::clear();
+    if let Some(offer) = &offer {
         if proof.is_empty() {
             return Err(refuse(net, purgatorio::abi::auth::REQUIRED));
         }
-        if let Err(e) = check(&policy, &challenge, uname, proto::ANAME, &proof) {
+        if let Err(e) = check(&policy, &offer.offer, uname, proto::ANAME, &proof) {
             return Err(refuse(net, e));
         }
+        // Only a version 3 proof carries the client's key.
+        let Some(keys) = offer.keys(uname, proto::ANAME, &proof) else {
+            return Err(refuse(net, NO_SESSION));
+        };
+        link = Link::server(&keys);
     }
     net.write_all(&frame(kind::OK, &[]))
         .map_err(|_| String::from(proto::EHUNGUP))?;
-    match proto::read_frame(net)? {
+    match link.read(net)? {
         (kind::EXEC, d) if !d.is_empty() => {
-            Ok((d[0], String::from_utf8_lossy(&d[1..]).into_owned()))
+            Ok((d[0], String::from_utf8_lossy(&d[1..]).into_owned(), link))
         }
-        _ => Err(refuse(net, EPROTO)),
+        // A refusal now would be in the clear on a sealed link; just go.
+        _ => Err(String::from(EPROTO)),
     }
 }
 
@@ -182,7 +201,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         return Err(Error(format!("usage: {USAGE}")));
     }
     let mut net = Fd(0);
-    let Ok((flags, cmd)) = hello(&mut net, noauth) else {
+    let Ok((flags, cmd, mut link)) = hello(&mut net, noauth) else {
         // The client has the reason; a refused client is not an error here.
         return Ok(());
     };
@@ -243,6 +262,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 
     let status = mux(
         &mut net,
+        &mut link,
         &net_r,
         File::from(feed_w),
         ack_r,
@@ -253,7 +273,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             Stream::new(err_r, kind::ERRS),
         ],
     );
-    let sent = status.is_some_and(|s| net.write_all(&frame(kind::STATUS, s.as_bytes())).is_ok());
+    let sent = status.is_some_and(|s| {
+        link.wire(kind::STATUS, s.as_bytes())
+            .is_ok_and(|f| net.write_all(&f).is_ok())
+    });
     if let Ok(mut ctl) = ctl {
         let _ = ctl.write_all(b"killgrp");
     }
@@ -272,8 +295,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 
 /// Carries the session until the command's status is known and its
 /// output sent. `None` when the client went away first.
+#[allow(clippy::too_many_arguments)]
 fn mux(
     net: &mut Fd,
+    link: &mut Link,
     net_r: &OwnedFd,
     feed: File,
     ack: OwnedFd,
@@ -285,7 +310,10 @@ fn mux(
     let mut ack = Some(ack);
     let mut styx = Some(styx);
     let mut status: Option<String> = None;
-    let mut dec = Decoder::default();
+    // A frame for the client, sealed when the link is; false when the
+    // client has gone.
+    let mut send =
+        |link: &mut Link, k: u8, d: &[u8]| link.wire(k, d).is_ok_and(|f| net.write_all(&f).is_ok());
     #[derive(Clone, Copy, PartialEq)]
     enum Src {
         Net,
@@ -333,9 +361,9 @@ fn mux(
                 if bytes.is_empty() {
                     return None;
                 }
-                dec.push(&bytes);
+                link.push(&bytes);
                 loop {
-                    let (k, d) = match dec.take() {
+                    let (k, d) = match link.take() {
                         Ok(Some(f)) => f,
                         Ok(None) => break,
                         Err(_) => return None,
@@ -372,7 +400,7 @@ fn mux(
                     .unwrap_or_default();
                 if bytes.is_empty() {
                     styx = None;
-                } else if net.write_all(&frame(kind::STYX, &bytes)).is_err() {
+                } else if !send(link, kind::STYX, &bytes) {
                     return None;
                 }
             }
@@ -384,8 +412,8 @@ fn mux(
                     ack = None;
                     continue;
                 }
-                let w = proto::window(kind::IN, u32::from_le_bytes(n) as usize);
-                if net.write_all(&w).is_err() {
+                let w = proto::win_data(kind::IN, u32::from_le_bytes(n) as usize);
+                if !send(link, kind::WIN, &w) {
                     return None;
                 }
             }
@@ -406,7 +434,7 @@ fn mux(
                     s.fd = None;
                 } else {
                     s.credit -= bytes.len();
-                    if net.write_all(&frame(s.kind, &bytes)).is_err() {
+                    if !send(link, s.kind, &bytes) {
                         return None;
                     }
                 }
