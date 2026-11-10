@@ -160,6 +160,35 @@ impl Dev for DevProg {
         Ok(crate::dev::read_str(text.as_bytes(), buf, offset))
     }
 
+    /// A `wait` file is readable when an exit message is queued; the other
+    /// files never block.
+    fn ready(&self, c: &Chan, write: bool) -> bool {
+        let (pid, kind) = split(c);
+        if kind != QWAIT || write {
+            return true;
+        }
+        self.procs.get(pid).is_none_or(|p| p.wait_ready())
+    }
+
+    fn watch(&self, c: &Chan, write: bool, w: &purg_platform::sync::Rendez) {
+        let (pid, kind) = split(c);
+        if kind == QWAIT
+            && !write
+            && let Some(p) = self.procs.get(pid)
+        {
+            p.watch_wait(w);
+        }
+    }
+
+    fn unwatch(&self, c: &Chan, w: &purg_platform::sync::Rendez) {
+        let (pid, kind) = split(c);
+        if kind == QWAIT
+            && let Some(p) = self.procs.get(pid)
+        {
+            p.unwatch_wait(w);
+        }
+    }
+
     fn dirread(&self, c: &Chan) -> Result<Vec<Dir>> {
         let (pid, kind) = split(c);
         Ok(match kind {

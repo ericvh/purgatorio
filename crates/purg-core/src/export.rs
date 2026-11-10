@@ -24,6 +24,8 @@ struct Fid {
 
 /// Serves `root` (a path in `pgrp`) as 9P2000 on `fd` until the client hangs up.
 ///
+/// With `rdonly`, nothing in the tree can be changed through the connection.
+///
 /// When `noauth` is false and the exported tree holds a public key, `Tattach`
 /// is accepted only after a signature over a challenge from `platform`.
 pub fn serve(
@@ -32,8 +34,10 @@ pub fn serve(
     fd: &Chan,
     platform: &dyn Platform,
     noauth: bool,
+    rdonly: bool,
 ) -> KResult<()> {
     let mut fs = Export::new(pgrp, root)?;
+    fs.rdonly = rdonly;
     let mut pubs = Vec::new();
     if !noauth {
         push_key(
@@ -211,6 +215,8 @@ struct Export {
     root: String,
     fids: BTreeMap<u32, Fid>,
     iounit: u32,
+    /// Refuse every request that would change the tree.
+    rdonly: bool,
 }
 
 impl Export {
@@ -224,6 +230,7 @@ impl Export {
             pgrp,
             fids: BTreeMap::new(),
             iounit: 8192,
+            rdonly: false,
         })
     }
 
@@ -253,6 +260,15 @@ impl Export {
             cleanname(&s)
         };
         self.pgrp.namec(&next, "/")
+    }
+
+    /// Fails a request that changes the tree when the export is read-only.
+    fn writable(&self) -> Result<(), String> {
+        if self.rdonly {
+            Err(String::from(error::EPERM))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -317,6 +333,12 @@ impl StyxFs for Export {
     }
 
     fn open(&mut self, fid: u32, mode: u8) -> Result<(Qid, u32), String> {
+        let access = mode & mode::ACCESS;
+        if (access != mode::OREAD && access != mode::OEXEC)
+            || mode & (mode::OTRUNC | mode::ORCLOSE) != 0
+        {
+            self.writable()?;
+        }
         let f = self
             .fids
             .get_mut(&fid)
@@ -328,6 +350,7 @@ impl StyxFs for Export {
     }
 
     fn create(&mut self, fid: u32, name: &str, perm: u32, mode: u8) -> Result<(Qid, u32), String> {
+        self.writable()?;
         let path = {
             let f = self
                 .fids
@@ -379,6 +402,7 @@ impl StyxFs for Export {
     }
 
     fn write(&mut self, fid: u32, offset: u64, data: &[u8]) -> Result<u32, String> {
+        self.writable()?;
         let f = self
             .fids
             .get(&fid)
@@ -399,10 +423,12 @@ impl StyxFs for Export {
     }
 
     fn remove(&mut self, fid: u32) -> Result<(), String> {
+        // Tremove clunks the fid even when the remove is refused.
         let f = self
             .fids
             .remove(&fid)
             .ok_or_else(|| String::from("unknown fid"))?;
+        self.writable()?;
         f.chan.dev.remove(&f.chan).map_err(|e| e.to_string())
     }
 
@@ -416,6 +442,7 @@ impl StyxFs for Export {
     }
 
     fn wstat(&mut self, fid: u32, stat: &[u8]) -> Result<(), String> {
+        self.writable()?;
         let d = Dir::unpack(stat)
             .map(|(d, _)| d)
             .map_err(|e| e.to_string())?;

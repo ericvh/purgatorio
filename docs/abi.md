@@ -176,6 +176,18 @@ Inferno peers mount with `-A`.
   the exchange with `fauth` (below) and pass the auth fd to `mount`.
   `MNOAUTH` is ignored when an `afd` is given.
 
+### Read-only `export`
+
+`export(fd, dir, dlen, flags)` takes `MNOAUTH` and `RDONLY`
+(`0x4000_0000`, `purg_abi::export::RDONLY`). A read-only export serves
+walks, stats and reads. It answers `permission denied` to an open for
+writing, with `OTRUNC` or with `ORCLOSE`, and to create, write, remove and
+wstat. The `export` command sets it with `-r`. This is how `mcpd` shows
+`/bin` and `/lib` to a session without letting it change them.
+
+`purgatorio.wait` accepts a fd open on `/prog/<pid>/wait` as a read
+operation: it is ready when an exit message is queued.
+
 ### `fauth` (v0.5)
 
 `fauth(fd, aname, alen)` versions the 9P conversation on `fd` and sends

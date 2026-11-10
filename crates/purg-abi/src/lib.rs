@@ -294,6 +294,14 @@ pub mod mount {
     pub const MNOAUTH: u32 = 0x8000_0000;
 }
 
+/// `export` flags, beside [`mount::MNOAUTH`].
+pub mod export {
+    /// Serve the tree read-only: opens for writing, truncation or
+    /// remove-on-close, and create, write, remove and wstat, fail with
+    /// `permission denied`. (Plan 9's `exportfs -R`.)
+    pub const RDONLY: u32 = 0x4000_0000;
+}
+
 /// Mount authentication: an Ed25519 signature over a server challenge.
 /// After `fauth`, the client reads `CHALLENGE` bytes from the auth fd and
 /// writes `signature[SIGNATURE] || public_key[PUBLIC]` (`PROOF` bytes).

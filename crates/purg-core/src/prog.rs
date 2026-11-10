@@ -41,6 +41,9 @@ pub struct Proc {
     pub kgrp: Arc<Kgrp>,
     waits: Mutex<VecDeque<String>>,
     waitr: Rendez,
+    /// Rendezvous registered by `purgatorio.wait` on this prog's `wait`
+    /// file.
+    wait_watchers: Mutex<Vec<Rendez>>,
 }
 
 impl Proc {
@@ -102,6 +105,25 @@ impl Proc {
             w.push_back(msg);
         }
         self.waitr.wakeup();
+        let watchers = self.wait_watchers.lock().clone();
+        for w in watchers {
+            w.wakeup();
+        }
+    }
+
+    /// Whether an exit message is waiting, so [`Proc::wait`] would not
+    /// block.
+    pub fn wait_ready(&self) -> bool {
+        !self.waits.lock().is_empty()
+    }
+
+    /// Wakes `w` when an exit message arrives.
+    pub fn watch_wait(&self, w: &Rendez) {
+        self.wait_watchers.lock().push(w.clone());
+    }
+
+    pub fn unwatch_wait(&self, w: &Rendez) {
+        self.wait_watchers.lock().retain(|x| !x.same(w));
     }
 
     /// Blocks until a child has exited and returns its exit message:
@@ -160,6 +182,7 @@ impl Procs {
             kgrp: Arc::new(Kgrp::new()),
             waits: Mutex::new(VecDeque::new()),
             waitr: Rendez::new(),
+            wait_watchers: Mutex::new(Vec::new()),
         });
         self.table.lock().insert(pid, p.clone());
         p
