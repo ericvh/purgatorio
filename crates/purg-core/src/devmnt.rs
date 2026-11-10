@@ -111,9 +111,17 @@ impl Session {
         };
         if sent.is_err() {
             // No `Rflush` will come for a request that was never sent.
-            self.mux.flush(ftag);
+            self.mux.forget(ftag);
+            self.mux.forget(tag);
+            return;
         }
-        let _ = self.mux.wait(ftag);
+        // The flushed tag is taken until the `Rflush` arrives. A killed
+        // prog does not wait for it: the reader frees both tags then.
+        match self.mux.wait(ftag) {
+            Ok(_) => self.mux.forget(tag),
+            Err(e) if e.as_str() == error::EINTR => self.mux.abandon(ftag, tag),
+            Err(_) => {}
+        }
     }
 
     fn decode<'a>(&self, buf: &'a [u8]) -> Result<Fcall<'a>> {
