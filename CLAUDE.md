@@ -93,6 +93,12 @@ named `<name>`, added to the workspace `members`.
 
 - Work moves through milestones without waiting for review between them.
   Keep each milestone or sub-feature a separate, reviewable commit or PR.
+- Feature PRs do not edit `docs/roadmap.md`. Say in the PR description which
+  item the PR closes; the roadmap is updated separately after merges. (Many
+  parallel branches ticking items is what caused most merge conflicts.)
+  Likewise a new crate needs no `Cargo.toml` edit (members are globs), and a
+  new sh corpus script needs no `expected.out` edit (`@sh-corpus` expands to
+  the scripts on disk).
 - Commit subjects are prefixed with the milestone (`M5: add a TLS 1.3 client
   device`, `K1: ...`). Subjects and bodies are short, plain sentences that say
   what changed and why.
