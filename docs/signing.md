@@ -250,7 +250,7 @@ stays 0.6.
 |---|---|
 | `cargo xtask sign <module> --key <seed file> [--cert <file>]... [-o <out>]` | Signs on the build host. `--cert` gives the chain, first the certificate for the key. Rewrites the module in place without `-o`. An existing entry by the same key is replaced; other entries stay (countersigning). |
 | `auth/sign [-k keyfile] [-c certfile]... [-o out] module` | The same inside the system. With `-k` the key is a seed file or an authinfo (whose certificate is used). Without it the signature comes from the guest factotum, then from `#¤`, so the private key need not be a readable file. |
-| `auth/verify -m [-s modules] [-r revoked] [-t time] module` | Prints the module's digest and ABI version, and each entry's signing key, certificate names and standing (`trusted`, `untrusted`, `revoked`, `expired`, `bad`). Exits with the error the loader would give under `require`. Without `-m` it checks a certificate, as before. |
+| `auth/verify -m [-s modules] [-r revoked] [-t time] module` | Prints the module's digest and ABI version, and for each entry its signing key, its standing (`trusted`, `untrusted`, `revoked`, `expired`, `bad`) and the names in its certificates. Exits with the error the loader would give under `require`. It reads the lists in its own namespace (or the ones named), so it is a check for people, not the loader's verdict. Without `-m` it checks a certificate, as before. |
 | `auth/modpolicy warn\|require cmd [arg ...]` | Sets its own module policy, then runs `cmd` under it. |
 
 Signing through an agent:
@@ -330,12 +330,20 @@ host and compares the hashes with the rest.
   kernel.
 - Tests: unit tests in `purg-auth` (digest with the section first, in the
   middle and last, several entries, chains, every truncation of a signed
-  module and of a section, a fixed test vector); loader tests in `purg-vm`
-  for each level and each error; emu tests for `--modules`; the sh corpus
-  script `modsig.sh`, which signs a module in the system, runs it under
-  `require`, and shows an unsigned module, a changed one, an untrusted
-  signer and a revoked signer refused, on both VMs, the probe and the
-  kernel.
+  module and of a section, a fixed test vector); loader tests in
+  `crates/purg-vm/tests/modsig.rs` for each level and each error, the
+  tighten-only rule, inheritance and the pinned namespace; emu tests in
+  `crates/purg-emu/tests/modsig.rs` for `--modules`, a first prog signed
+  on the host and signing through the guest factotum; the sh corpus
+  script `modsig.sh`, which signs a module in the system through `#¤`,
+  runs it under `require`, and shows an unsigned module, a changed one,
+  an untrusted signer and a revoked signer refused, on both VMs, the
+  probe and the kernel.
+- Three faults found on the way are fixed: the SDK read `#¤/ctl` through
+  wasi-libc, which cannot resolve a device name, and read the signature
+  at the offset its own write had left, so a guest could not use `#¤`
+  itself (the kernel's mount could); and `#¤` trimmed white space from a
+  raw seed.
 
 ## Decisions and open questions
 

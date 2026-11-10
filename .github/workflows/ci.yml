@@ -118,7 +118,11 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/wasm" && cp -R root/bin "$RUNNER_TEMP/wasm/"
+          # Signing is a separate step and deterministic: one module signed
+          # with the public test key must also hash the same on every host.
+          cargo xtask sign root/bin/echo.wasm --key root/lib/test/auth.key -o "$RUNNER_TEMP/wasm/signed-echo.wasm"
           cd root && find bin -name '*.wasm' | sort | xargs shasum -a 256 > "$RUNNER_TEMP/wasm/wasm-sha256.txt"
+          (cd "$RUNNER_TEMP/wasm" && shasum -a 256 signed-echo.wasm) >> "$RUNNER_TEMP/wasm/wasm-sha256.txt"
           cat "$RUNNER_TEMP/wasm/wasm-sha256.txt"
       - uses: actions/upload-artifact@v4
         with:

@@ -295,7 +295,8 @@ The Inferno page each one takes its role from is in brackets.
 |---|---|
 | `auth/createsignerkey [-f keyfile] [name]` | [createsignerkey(8)] Makes a signer seed (default `/keydb/signerkey`) and prints its public key as a key-list line `<hex> <name>`, ready to append to `/lib/keys/signers`. |
 | `auth/getpk file ...` | [getpk(8)] Prints the public key of a seed file, a public key file (named `*.pub`), an authinfo or a certificate, in hex. |
-| `auth/verify [-s signers] [-r revoked] [-u name] [-t time] file` | [verify(8)] Checks the certificate in a file (a certificate or an authinfo) against a signer list and a revocation list, and prints its name, key, expiry and signers. Exits with the error a server would give. |
+| `auth/verify [-s signers] [-r revoked] [-u name] [-t time] file` | [verify(8)] Checks the certificate in a file (a certificate or an authinfo) against a signer list and a revocation list, and prints its name, key, expiry and signers. Exits with the error a server would give. With `-m` it checks a module's signatures instead (`docs/signing.md`). |
+| `auth/sign`, `auth/modpolicy` | Sign a module, and run a command under a module policy. See `docs/signing.md`. |
 | `auth/mkauthinfo [-f signerkey] [-e expires] user keyfile` | [mkauthinfo(8)] Makes a user key and a certificate on the signer's machine and writes an authinfo. |
 | `auth/countersigner [-f key] file` | [countersigner(8)] Adds this key's signature to the certificate in a file and prints the result. |
 | `auth/keyfs [-m mntpt] [-C m,t] [keyfile]` | [keyfs(4)] Serves the key database (default `/keydb/keys` at `/mnt/keys`), sealed with ChaCha20-Poly1305 under an Argon2id key from the master password (read on standard input). Each user is a directory with `secret`, `expire` and `status`. `mkdir` adds a user, `rm` removes one, and every change rewrites the file. |
@@ -350,6 +351,9 @@ the reply (`ok [data]`, `done`, `needkey <attrs>`, `error <message>`).
   `write <challenge>`, then `read` returns `ok <v2 proof>`. Factotum builds
   the whole signed message itself. It does not sign arbitrary bytes, so a
   malicious server cannot turn it into a signing oracle for other formats.
+- `ed25519` with `role=modsign`: `write <digest[32] || abi>`, then `read`
+  returns `ok <entry>`, a module signature entry (`docs/signing.md`).
+  Factotum builds that message itself too.
 - `pass`: `start proto=pass server=<s> [user=<u>]`, then `read` returns
   `ok <user> <password>`, both quoted.
 
