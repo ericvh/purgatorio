@@ -1,8 +1,9 @@
 # wasmdump and wasmdep (issue #40): what is in a module and what it needs.
 # /lib/test/tiny.wasm is a fixed module with one of everything (the
-# sample of appl/lib/wasmobj's tests), so its whole dump is stable. For
-# the modules the build makes, only what does not move with the compiler
-# is shown.
+# sample of appl/lib/wasmobj's tests), so its whole dump is stable. Its
+# purgatorio.abi section says 0.6 and stays so when the ABI moves on: it
+# is only read, never run. For the modules the build makes, only what
+# does not move with the compiler or the ABI is shown.
 d=/tmp/sh-wasmtools
 rm -rf $d
 mkdir $d
