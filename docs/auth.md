@@ -13,6 +13,7 @@ Inferno peers still mount with `-A`.
   public_key[32]`, an Ed25519 signature over the raw challenge.
 - The server trusts any 32-byte public key it can read under the exported
   tree: `usr/<uname>/key.pub` and the test key `lib/test/auth.key.pub`.
+  (It now reads them in its own namespace instead; see below.)
   With no key it answers `Tauth` with `authentication not required`.
 - The client signs through `#¤/rpc` (a kernel agent holding one seed) or
   with a seed file: `/usr/<user>/key`, then `/lib/test/auth.key`.
@@ -54,7 +55,7 @@ All keys are Ed25519. Hex is lowercase. Times are seconds since
 - **Public key file:** 32 raw bytes, as `usr/<user>/key.pub` is now.
 - **Key list:** text, one key per line: 64 hex digits, optionally followed
   by a space and a comment (usually a name). Blank lines and lines starting
-  with `#` are ignored. Used for `lib/keys/signers` and `lib/keys/revoked`.
+  with `#` are ignored. Used for `/lib/keys/signers` and `/lib/keys/revoked`.
 
 ### Certificate (`pgcert1`)
 
@@ -134,7 +135,7 @@ The server accepts a v2 proof when the signature verifies and:
   now), and at least one of its signatures is by a trusted signer and
   verifies.
 
-In every mode, a key listed in `lib/keys/revoked` is refused: the user's
+In every mode, a key listed in `/lib/keys/revoked` is refused: the user's
 key, or a signer's key (whose signatures then do not count).
 
 The `Tattach` that follows must use the same `uname` and `aname` as the
@@ -142,16 +143,31 @@ The `Tattach` that follows must use the same `uname` and `aname` as the
 
 ### Where the server looks
 
-As today, everything is read under the exported tree (for `export /` that
-is the exporter's own `/lib/keys/...`):
+Everything is read in the **exporter's own namespace**, at absolute paths,
+and never from under the exported tree:
 
-- `usr/<uname>/key.pub` and `lib/test/auth.key.pub`: directly held keys.
-- `lib/keys/signers`: trusted signers (a key list).
-- `lib/keys/revoked`: revoked keys (a key list). A line that does not
-  parse makes every certificate fail, so a damaged list fails closed.
+- `/usr/<uname>/key.pub` and `/lib/test/auth.key.pub`: directly held keys.
+- `/lib/keys/signers`: trusted signers (a key list).
+- `/lib/keys/revoked`: revoked keys (a key list). A line that does not
+  parse, or a list that is there but cannot be read, makes every
+  certificate fail, so a damaged list fails closed.
 
-A server with no directly held key and no trusted signer answers `Tauth`
-with `authentication not required`, as before. `-A` (`MNOAUTH`) still
+The exporter's namespace is the namespace of whatever runs the export: the
+prog that calls `export` (the `export` command, usually started by
+`styxlisten` or `listen`, which share their namespace with it), or the
+namespace the probe and the kernel pass to their built-in export. The files
+are read at each `Tauth`, so a `bind` over `/lib/keys` in that namespace
+changes what the server trusts from the next mount on. For `export /` the
+two places are the same files, so that case behaves as it did when the
+server looked under the tree. Someone who can write into an exported
+subtree cannot add a key, a signer or a revocation.
+
+A server with no directly held key and no trusted signer in its namespace
+answers `Tauth` with `authentication not required`, as before. Note that
+the stock root holds the public test key `/lib/test/auth.key.pub`, so an
+export from an unchanged namespace asks for a proof whatever it exports,
+and any client holding the (public) test seed passes; deployments remove
+or hide that pair. `-A` (`MNOAUTH`) still
 skips `Tauth`, and a server that authenticates still rejects such an
 attach with `authentication required`.
 
@@ -275,7 +291,7 @@ The Inferno page each one takes its role from is in brackets.
 
 | tool | role |
 |---|---|
-| `auth/createsignerkey [-f keyfile] [name]` | [createsignerkey(8)] Makes a signer seed (default `/keydb/signerkey`) and prints its public key as a key-list line `<hex> <name>`, ready to append to `lib/keys/signers`. |
+| `auth/createsignerkey [-f keyfile] [name]` | [createsignerkey(8)] Makes a signer seed (default `/keydb/signerkey`) and prints its public key as a key-list line `<hex> <name>`, ready to append to `/lib/keys/signers`. |
 | `auth/getpk file ...` | [getpk(8)] Prints the public key of a seed file, a public key file (named `*.pub`), an authinfo or a certificate, in hex. |
 | `auth/verify [-s signers] [-r revoked] [-u name] [-t time] file` | [verify(8)] Checks the certificate in a file (a certificate or an authinfo) against a signer list and a revocation list, and prints its name, key, expiry and signers. Exits with the error a server would give. |
 | `auth/mkauthinfo [-f signerkey] [-e expires] user keyfile` | [mkauthinfo(8)] Makes a user key and a certificate on the signer's machine and writes an authinfo. |
@@ -363,18 +379,23 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   conversation after authentication is neither encrypted nor
   integrity-protected: someone who can rewrite the connection can take it
   over after the attach. Inferno pushes `ssl` with keys from its
-  handshake; see the open questions.
+  handshake; doing the same here is decided and tracked separately.
 - **Expiry.** Certificates carry an expiry, checked against the server's
   clock (`Platform::now_ns`; the probe and the kernel read the PL031).
   A server with a wrong clock accepts too much or too little. The signer
   caps expiry at the account's expiry and at `-e days`.
-- **Revocation.** `lib/keys/revoked` lists user or signer keys. It is
+- **Revocation.** `/lib/keys/revoked` lists user or signer keys. It is
   read at each `Tauth`, so an edit takes effect on the next mount. A
   malformed list fails closed. There is no online status check.
-- **Trust files under the exported tree.** As with `key.pub` today, the
-  server reads `lib/keys/*` under the tree it exports. Exporting a tree that
-  its clients can write lets them add a signer. Export a subtree only when
-  its `lib/keys` and `usr/*/key.pub` are not writable by its clients.
+- **Where trust comes from.** The server reads its keys, signers and
+  revocations from its own namespace, not from the tree it exports, so a
+  client that can write to an exported subtree cannot make itself trusted
+  or revoke someone else. What remains: a client that can write the
+  exporter's own `/lib/keys` or `/usr/*/key.pub` (through `export /`, say)
+  can, so those files need permissions that keep clients out, and the
+  exporter's namespace must not have an untrusted tree bound over `/lib`
+  or `/usr`. The public test key in the stock root is trusted until it is
+  removed.
 - **Password guessing.** Online guessing is limited only by connection
   rate; the signer does not lock accounts. The stand-in answer for an
   unknown user uses the default Argon2id cost, so an account made with
@@ -403,30 +424,37 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   client, and a small synthetic file server for keyfs and factotum.
 - Tests: unit tests in `purg-auth` (formats, the proof check, the exchange
   over an in-memory pipe, sealing, a netkey test vector); `purg-core`'s
-  `m3` test mounts with a certificate from an authinfo and from `#¤`, and
-  is refused once the key is revoked; the sh corpus's `auth.sh` runs the
-  whole flow on loopback (keyfs, changelogin, signer, getauthinfo, an
-  authenticated export, expired, untrusted and revoked certificates, `-A`)
+  `m3` test mounts with a certificate from an authinfo and from `#¤`, is
+  refused once the key is revoked, and shows that a signer list, a key and
+  a revocation planted inside the exported tree are ignored; the sh
+  corpus's `auth.sh` runs the whole flow on loopback (keyfs, changelogin, signer, getauthinfo, an
+  authenticated export with `/lib/keys` bound in the exporter's namespace
+  and a planted signer list in the tree, expired, untrusted and revoked
+  certificates, `-A`)
   on both VMs, in the probe and in the kernel; `/lib/test/auth/*.sh`
   (factotum, countersigning, keysrv and passwd, keyfs's sealed file, crypt,
   secstore, netkey) run on both VMs in the emu only, to keep the QEMU runs
   short.
 
-## Open questions for the owner
+## Decisions and open questions
 
-1. **Session protection.** Should the handshake also agree a session key
-   (X25519 next to the signature) and push an encrypted, authenticated
-   channel over the 9P conversation, as Inferno's `ssl` push does? This
-   needs a TLS server or an `ssl`-like device.
-2. **Mutual authentication.** Only the client proves who it is. Should the
-   server also prove it holds a key with a certificate from a signer the
-   client trusts (the authinfo's `signer` line)?
-3. **Trust files location.** Read `lib/keys/*` from the exporter's own
-   namespace (`/lib/keys`) instead of under the exported tree?
-4. **OPAQUE.** Move to an augmented PAKE once the RustCrypto crates for it
+Decided by the owner:
+
+- **Trust files location.** The server reads `/lib/keys/*` and the user
+  keys from the exporter's own namespace, not from under the exported tree
+  (done; see "Where the server looks").
+- **Session protection.** Yes, as separate work: the handshake should also
+  agree a session key (X25519 next to the signature) and push an
+  encrypted, authenticated channel over the 9P conversation, as Inferno's
+  `ssl` push does. Until then the conversation after the attach is in the
+  clear.
+- **Module signing (#33)** will reuse `pgcert1` and the signer lists.
+- **Mutual authentication** (the server proving it holds a certificate
+  from a signer the client trusts): maybe later.
+
+Still open:
+
+1. **OPAQUE.** Move to an augmented PAKE once the RustCrypto crates for it
    are stable, so a stolen keyfs entry is not password-equivalent?
-5. **Per-prog users.** `runas`, and servers that act for several users,
+2. **Per-prog users.** `runas`, and servers that act for several users,
    need a user per prog rather than one per system.
-6. **Module signing (#33).** Reuse the certificate format, so a module's
-   `purgatorio.sig` can carry a `pgcert1` for the signing key, and
-   `lib/keys/signers` doubles as the module trust list?
