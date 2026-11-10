@@ -32,9 +32,9 @@ pub mod gic;
 pub mod heap;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod irq;
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(all(target_arch = "aarch64", target_os = "none", feature = "net"))]
 pub mod net;
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(all(target_arch = "aarch64", target_os = "none", feature = "p9"))]
 pub mod p9;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod pl011;
@@ -48,5 +48,9 @@ pub mod sched;
 pub mod semihost;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod timer;
-#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+#[cfg(all(
+    target_arch = "aarch64",
+    target_os = "none",
+    any(feature = "net", feature = "p9")
+))]
 pub mod virtio;
