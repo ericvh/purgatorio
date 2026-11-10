@@ -1,0 +1,87 @@
+-> Tmsg.Version(65535,8192,"9P2000")
+<- Rmsg.Version(65535,8192,"9P2000")
+-> Tmsg.Attach(1,0,4294967295,"inferno","")
+<- Rmsg.Attach(1,Qid(16r0,0,16r80))
+-> Tmsg.Create(2,0,"a",8r644,2)
+<- Rmsg.Create(2,Qid(16r1,0,16r00),8168)
+-> Tmsg.Write(3,0,0,array[11] of byte)
+	text("hello there")
+<- Rmsg.Write(3,11)
+-> Tmsg.Clunk(4,0)
+<- Rmsg.Clunk(4)
+-> Tmsg.Attach(5,1,4294967295,"inferno","")
+<- Rmsg.Attach(5,Qid(16r0,0,16r80))
+-> Tmsg.Walk(6,1,2,array[] of {"a"})
+<- Rmsg.Walk(6,array[] of {Qid(16r1,0,16r00)})
+-> Tmsg.Open(7,2,0)
+<- Rmsg.Open(7,Qid(16r1,0,16r00),8168)
+-> Tmsg.Read(8,2,6,100)
+<- Rmsg.Read(8,array[5] of byte)
+	text("there")
+-> Tmsg.Stat(9,2)
+<- Rmsg.Stat(9,Dir("a","inferno","inferno",Qid(16r1,0,16r00),8r644,0,0,11,16r0,0))
+-> Tmsg.Wstat(10,2,Dir("b","","",Qid(16rffffffffffffffff,4294967295,16rff),8r37777777777,4294967295,4294967295,18446744073709551615,16rffff,4294967295))
+<- Rmsg.Wstat(10)
+-> Tmsg.Walk(11,1,3,array[] of {"nope"})
+<- Rmsg.Error(11,"file does not exist")
+-> Tmsg.Flush(12,99)
+<- Rmsg.Flush(12)
+?usage: Topen fid mode
+?unknown message type
+?next tag is 13
+-> Tmsg.Clunk(20,2)
+<- Rmsg.Clunk(20)
+<- Tmsg.Version(0,8216,"9P2000")
+-> Rmsg.Version(0,8192,"9P2000")
+<- Tmsg.Attach(1,1,4294967295,"user","")
+-> Rmsg.Attach(1,Qid(16r5,0,16r80))
+-> Tmsg.Version(65535,8192,"9P2000")
+Tmsg.Version(65535,8192,"9P2000")
+Rmsg.Version(65535,8192,"9P2000")
+<- Rmsg.Version(65535,8192,"9P2000")
+-> Tmsg.Attach(1,0,4294967295,"inferno","")
+Tmsg.Attach(1,0,4294967295,"inferno","")
+Rmsg.Attach(1,Qid(16r0,0,16r80))
+<- Rmsg.Attach(1,Qid(16r0,0,16r80))
+-> Tmsg.Create(2,0,"x",8r600,1)
+Tmsg.Create(2,0,"x",8r600,1)
+Rmsg.Create(2,Qid(16r1,0,16r00),8168)
+<- Rmsg.Create(2,Qid(16r1,0,16r00),8168)
+-> Tmsg.Write(3,0,0,array[4] of byte)
+Tmsg.Write(3,0,0,array[4] of byte)
+	text("data")
+Rmsg.Write(3,4)
+<- Rmsg.Write(3,4)
+-> Tmsg.Clunk(4,0)
+Tmsg.Clunk(4,0)
+Rmsg.Clunk(4)
+<- Rmsg.Clunk(4)
+hi
+1
+Rmsg.Read(13,array[3] of byte)
+hello
+    1        2        6        0        0 /tmp/sh-styxtools/f
+1
+bad
+x
+1
+iostats: usage: iostats [-d] [-f debugfile] cmds [args ...]
+in a
+in a
+nsbuild: error building namespace: bind: bad option -z
+nsbuild: error building namespace: invalid namespace command
+nsbuild: error building namespace: bind missing c: file does not exist
+nsbuild: error building namespace: cd: must have one argument
+nsbuild: error building namespace: can't open nope for read file does not exist
+copied
+--rw-------
+one
+two
+newtree/1
+newtree/sub
+newtree/sub/2
+fcp: src is a directory
+fcp: copy  not a directory
+fcp: src/1 and src/1 are the same file
+fcp: usage: 	fcp [-r] [-R nproc] [-W nproc] src target
+	fcp [-r] [-R nproc] [-W nproc] src ... directory

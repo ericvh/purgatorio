@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-styxchat"
+description = "styxchat: a 9P conversation typed by hand"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "styxchat"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+purg-styx.workspace = true
+
+[lints]
+workspace = true

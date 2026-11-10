@@ -16,7 +16,6 @@ struct Node {
 #[derive(Clone)]
 struct Fid {
     node: usize,
-    open: bool,
     /// The packed listing a directory read returns, made at offset 0.
     snap: Vec<u8>,
 }
@@ -176,7 +175,6 @@ impl StyxFs for RoTree {
             fid,
             Fid {
                 node: 0,
-                open: false,
                 snap: Vec::new(),
             },
         );
@@ -216,7 +214,6 @@ impl StyxFs for RoTree {
             newfid,
             Fid {
                 node: at,
-                open: false,
                 snap: Vec::new(),
             },
         );
@@ -230,9 +227,6 @@ impl StyxFs for RoTree {
             || omode & (mode::OTRUNC | mode::ORCLOSE) != 0
         {
             return Err(String::from(error::EPERM));
-        }
-        if let Some(f) = self.fids.get_mut(&fid) {
-            f.open = true;
         }
         Ok((self.nodes[node].dir.qid, self.iounit))
     }
@@ -313,7 +307,7 @@ mod tests {
         );
         t.attach(1, !0, "", "").unwrap();
         assert_eq!(t.walk(1, 2, &["a", "x"]).unwrap().len(), 1);
-        assert!(t.fids.get(&2).is_none());
+        assert!(!t.fids.contains_key(&2));
         assert_eq!(t.walk(1, 2, &["a", "b", "c"]).unwrap().len(), 3);
         assert_eq!(t.open(2, mode::OWRITE), Err(String::from(error::EPERM)));
         t.open(2, mode::OREAD).unwrap();
