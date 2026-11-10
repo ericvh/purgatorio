@@ -1,4 +1,5 @@
-//! The shared core on metal (K2): the kernel's [`Platform`], the boot
+//! The shared core on metal (K2): the kernel's `Platform` (a
+//! `purg_aarch64::platform::MetalPlatform`), the boot
 //! namespace, and the programs the kernel runs: the conformance guests and
 //! the `sh` corpus in test mode, or `sh -l` on the console.
 //!
@@ -14,96 +15,19 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 
-use purg_aarch64::mmu;
-use purg_aarch64::timer;
+use purg_aarch64::platform::MetalPlatform;
 use purg_abi::mode;
 use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_core::devram::RamTree;
 use purg_core::devroot::StaticTree;
-use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Procs, Prog};
-use purg_platform::{Console, Platform, Result as PResult};
+use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
+use purg_platform::Console;
 use purg_vm::{Ctx, Engine};
 use purg_vm_wasmi::Wasmi;
 
 use crate::irq::SCHED;
-
-pub struct KernelPlatform {
-    /// The interrupt-driven PL011 console (`crate::console`).
-    console: &'static dyn Console,
-    boot_epoch_ns: u64,
-    boot_counter: u64,
-    /// splitmix64 state for [`Platform::entropy`].
-    seed: AtomicU64,
-}
-
-impl KernelPlatform {
-    /// `rtc` is the PL031's physical address from the DTB.
-    pub fn new(console: &'static dyn Console, rtc: Option<usize>) -> KernelPlatform {
-        let boot_counter = timer::counter();
-        let secs = rtc.map_or(0, |pa| {
-            // SAFETY: the DTB names a PL031 here, in the device window the
-            // high half maps as Device memory; RTCDR is at offset 0.
-            u64::from(unsafe { core::ptr::read_volatile(mmu::phys_to_virt(pa) as *const u32) })
-        });
-        KernelPlatform {
-            console,
-            boot_epoch_ns: secs * 1_000_000_000,
-            boot_counter,
-            seed: AtomicU64::new(boot_counter ^ 0x9e37_79b9_7f4a_7c15),
-        }
-    }
-}
-
-impl Platform for KernelPlatform {
-    fn now_ns(&self) -> u64 {
-        self.boot_epoch_ns + self.monotonic_ns()
-    }
-
-    fn monotonic_ns(&self) -> u64 {
-        timer::ticks_to_ns(timer::counter().wrapping_sub(self.boot_counter))
-    }
-
-    /// Not cryptographic: QEMU virt has no RNG without virtio-rng (K3).
-    fn entropy(&self, buf: &mut [u8]) {
-        for chunk in buf.chunks_mut(8) {
-            let mut z = self
-                .seed
-                .fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed)
-                .wrapping_add(timer::counter());
-            z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            z ^= z >> 31;
-            chunk.copy_from_slice(&z.to_le_bytes()[..chunk.len()]);
-        }
-    }
-
-    fn console(&self) -> &dyn Console {
-        self.console
-    }
-
-    fn user(&self) -> String {
-        String::from("inferno")
-    }
-
-    fn sysname(&self) -> String {
-        String::from("purgatorio")
-    }
-
-    fn current_pid(&self) -> u32 {
-        SCHED.current_pid()
-    }
-
-    fn set_current_pid(&self, pid: u32) {
-        SCHED.set_current_pid(pid);
-    }
-
-    fn spawn_kproc(&self, _name: &str, f: Box<dyn FnOnce() + Send>) -> PResult<()> {
-        SCHED.spawn(f);
-        Ok(())
-    }
-}
 
 /// The booted system: an engine, the kernel and the boot namespace.
 pub struct System {
@@ -114,7 +38,7 @@ pub struct System {
 
 /// Builds the emu's boot namespace over a RAM root that `seed` fills.
 pub fn boot(
-    platform: KernelPlatform,
+    platform: MetalPlatform,
     seed: impl FnOnce(&RamTree) -> Result<(), Error>,
 ) -> Result<System, Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform);
@@ -318,9 +242,10 @@ pub fn start(
     use purg_platform::sync::Sched;
     static DONE: AtomicUsize = AtomicUsize::new(usize::MAX);
     SCHED.spawn(Box::new(move || {
-        let result = match boot(KernelPlatform::new(console, rtc), |root| {
-            root.add_tar(initrd).map(|_| ())
-        }) {
+        let result = match boot(
+            MetalPlatform::new(console, &SCHED, "purgatorio", rtc),
+            |root| root.add_tar(initrd).map(|_| ()),
+        ) {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
             Ok(sys) => match mode {
                 Mode::Test => sys.run_tests(),

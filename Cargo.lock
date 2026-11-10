@@ -1513,7 +1513,10 @@ dependencies = [
 name = "purg-aarch64"
 version = "0.1.0"
 dependencies = [
+ "linked_list_allocator",
+ "purg-abi",
  "purg-platform",
+ "smoltcp",
  "spin 0.10.1",
 ]
 
@@ -1580,14 +1583,12 @@ dependencies = [
 name = "purg-probe"
 version = "0.1.0"
 dependencies = [
- "linked_list_allocator",
+ "purg-aarch64",
  "purg-abi",
  "purg-core",
  "purg-platform",
  "purg-vm",
  "purg-vm-wasmi",
- "smoltcp",
- "spin 0.10.1",
 ]
 
 [[package]]

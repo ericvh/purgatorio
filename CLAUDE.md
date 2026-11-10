@@ -22,6 +22,7 @@ cargo xtask build-root           # build guests into root/bin (tests need this f
 cargo test --workspace           # unit + acceptance tests, wasmtime and wasmi
 cargo xtask run-emu -- sh -c 'ls /bin | wc -l'
 cargo xtask probe                # bare-metal aarch64 image in QEMU (qemu-system-aarch64)
+cargo xtask probe --kvm          # the same under KVM (aarch64 host, PSCI exit)
 cargo xtask kernel               # purg-kernel under QEMU TCG: GICv2, GICv3, EL2 boot
 cargo xtask kernel --kvm         # the same under KVM (aarch64 host, GICv3 only, PSCI exit)
 cargo xtask initrd               # the kernel's root as target/initrd/root.tar
@@ -81,7 +82,8 @@ crates/purg-{abi,styx,platform,core,vm,vm-wasmi}   no_std shared core
 crates/purg-vm-wasmtime                            wasmtime backend (std)
 crates/purg-emu                                    the emu binary; host code in src/host/
 crates/purg-probe                                  bare-metal aarch64 QEMU image; expected.out
-crates/purg-aarch64                                DTB, GIC, timer, vectors, MMU, PL011, scheduler
+crates/purg-aarch64                                boot, link.x, DTB, GIC, timer, vectors, MMU, PL011,
+                                                   scheduler, platform, virtio-net, smoltcp #I
 crates/purg-kernel                                 the native kernel (Phase K); expected.out
 sdk/purgatorio, sdk/purgatorio-macros              guest SDK, #[purgatorio::main]
 appl/cmd/<name>/                                   commands -> root/bin/<name>.wasm

@@ -1,6 +1,6 @@
 [package]
 name = "purg-aarch64"
-description = "aarch64 bare-metal support shared by purg-kernel and purg-probe: DTB, GIC, timer, exceptions, MMU, PL011"
+description = "aarch64 bare-metal support shared by purg-kernel and purg-probe: boot, DTB, GIC, timer, exceptions, MMU, PL011, scheduler, virtio-net and smoltcp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,14 @@ license.workspace = true
 publish = false
 
 [dependencies]
+purg-abi.workspace = true
 purg-platform.workspace = true
 spin.workspace = true
+
+# Only the bare-metal modules use these.
+[target.aarch64-unknown-none.dependencies]
+linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
+smoltcp = { version = "0.14", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-udp"] }
 
 [lints]
 workspace = true
