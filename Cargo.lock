@@ -215,6 +215,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-ed"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-regexp",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-emuinit"
 version = "0.1.0"
 dependencies = [
