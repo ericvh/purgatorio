@@ -130,10 +130,17 @@ Whoever can write a prog's `ctl` can turn this on, as they can kill the
 prog. What they gain is less than a kill: the prog's later children run
 slower, and one that traps stays in `/prog` until it is killed.
 
-What tracing costs, and only for traced progs: two wasm frames per call,
-so half the depth of recursion; one more 64 KiB page; about a dozen
-instructions per call. The digest and the signature check are of the
-module as it is on disk, before the rewrite. A module using a type the
+What tracing costs, and only for traced progs: two wasm frames per call;
+one more 64 KiB page; about a dozen instructions per call. The frames
+would halve how deep a traced prog can recurse, so wasmi, whose limit is
+a count of frames, lets a traced prog nest twice as deep (2,064 frames
+instead of 1,000; `trace mash ctl.mash` now runs as untraced). wasmi's
+frames and values are on the heap and grow as they are used, so the
+higher limit costs nothing until a prog recurses that deep. On the
+kernel, `trace test/debug deep 900` (about 1,800 frames) peaks about
+150 KiB above `deep 1`. wasmtime's limit is the size of its native
+stack, which the thunks' small frames barely add to. The digest and the
+signature check are of the module as it is on disk, before the rewrite. A module using a type the
 rewriter does not know (the GC proposal) runs untraced.
 
 ### Broken progs

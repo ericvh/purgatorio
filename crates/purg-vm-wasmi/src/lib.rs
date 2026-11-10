@@ -50,7 +50,19 @@ pub use purg_vm::KILLED;
 /// code and its value stack are freed when it exits.
 pub struct Wasmi {
     config: Config,
+    /// [`Wasmi::config`] with room for [`TRACED_DEPTH`] frames.
+    traced: Config,
 }
+
+/// wasmi's limit on nested calls (its default).
+pub const DEPTH: usize = 1000;
+
+/// The limit for a traced prog. Tracing puts a thunk's frame under every
+/// function's (`docs/debug.md`), so a traced prog needs twice the frames
+/// for the same recursion. wasmi keeps its frames on the heap and grows
+/// them as they are used, so the limit costs nothing until a prog
+/// recurses that deep.
+pub const TRACED_DEPTH: usize = 2 * DEPTH + 64;
 
 impl Wasmi {
     pub fn new() -> Result<Wasmi, Error> {
@@ -64,7 +76,10 @@ impl Wasmi {
             fuel_per_bytes_translated: 0,
             fuel_per_bytes_validated: 0,
         });
-        let wasmi = Wasmi { config };
+        config.set_max_recursion_depth(DEPTH);
+        let mut traced = config.clone();
+        traced.set_max_recursion_depth(TRACED_DEPTH);
+        let wasmi = Wasmi { config, traced };
         // Linking fails the same way every time, so report it here.
         linker(&Engine::new(&wasmi.config))?;
         Ok(wasmi)
@@ -393,7 +408,12 @@ impl purg_vm::Engine for Wasmi {
     }
 
     fn run(&self, wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
-        let engine = Engine::new(&self.config);
+        let config = if ctx.prog.proc.debug.traced() {
+            &self.traced
+        } else {
+            &self.config
+        };
+        let engine = Engine::new(config);
         let mut store = Store::new(&engine, ctx);
         let res = Wasmi::call(&engine, &mut store, wasm);
         (store.into_data(), res)

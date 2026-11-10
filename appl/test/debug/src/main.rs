@@ -1,4 +1,4 @@
-//! debug trap|spin|hot|nap: a guest for the `stack` and `prof` tests
+//! debug trap|spin|hot|nap|deep n: a guest for the `stack` and `prof` tests
 //! (`docs/debug.md`). Each mode goes through `outer`, `middle` and `inner`,
 //! which are never inlined, so that a stack taken inside names them.
 //!
@@ -10,7 +10,10 @@
 //!   fast the machine is or how often the VM samples (wasmtime by time,
 //!   wasmi by instructions). It needs profiling on, and fails with
 //!   `fail:no samples` if the samples have not come after [`LIMIT`];
-//! - `nap` sleeps in `inner` until it is killed.
+//! - `nap` sleeps in `inner` until it is killed;
+//! - `deep n` recurses `n` calls deep in `down`, called from `inner`. A
+//!   traced prog takes two frames a call, so this checks that tracing
+//!   leaves room for a deep recursion (issue #112).
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -31,6 +34,18 @@ enum Mode {
     Spin,
     Hot,
     Nap,
+    Deep(u32),
+}
+
+/// Recurses `n` calls deep, each with a frame of its own.
+#[inline(never)]
+fn down(n: u32) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+    let frame = [n as u8; 16];
+    black_box(&frame);
+    black_box(down(black_box(n - 1))) + u64::from(frame[0])
 }
 
 /// One round of work: a xorshift generator stepped `n` times.
@@ -77,6 +92,7 @@ fn inner(mode: Mode) -> u64 {
             }
             x
         }
+        Mode::Deep(n) => down(black_box(n)),
         Mode::Nap => loop {
             std::thread::sleep(Duration::from_secs(3600));
         },
@@ -110,7 +126,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some("spin") => Mode::Spin,
         Some("hot") => Mode::Hot,
         Some("nap") => Mode::Nap,
-        _ => return Err(Error::from("usage: debug trap|spin|hot|nap")),
+        Some("deep") => match args.get(2).and_then(|n| n.parse().ok()) {
+            Some(n) => Mode::Deep(n),
+            None => return Err(Error::from("usage: debug deep n")),
+        },
+        _ => return Err(Error::from("usage: debug trap|spin|hot|nap|deep n")),
     };
     black_box(outer(mode));
     Ok(())

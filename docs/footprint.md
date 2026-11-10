@@ -325,7 +325,8 @@ VMs: the 256 KiB shadow stack holds. One limit does show: `trace mash
 ctl.mash` on wasmi stops with `call stack exhausted`, because the
 doubled frames reach wasmi's default call depth before `mash`'s own
 nesting limit; on wasmtime it reaches `mash`'s limit as untraced. That
-limit is wasmi's (`StackLimits`), unchanged by this work.
+limit is wasmi's (`StackLimits`), unchanged by this work. (Since #112 a
+traced prog on wasmi gets twice the depth: `docs/debug.md`.)
 
 With #104 the kernel's text grew by about 100 KiB on `next` at
 `opt-level` 3 (1,948 to 2,050 KiB with the other work that landed
