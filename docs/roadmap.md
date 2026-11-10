@@ -59,6 +59,47 @@ once Phase K starts.
 - [ ] **G3** Tk (D10: guest-side Rust toolkit, optional Tk-string layer).
 - [ ] **G4** `wm/wm`, `wm/sh`, `wm/edit`; `acme` later.
 
+## Module digests and signing (PG-34)
+
+Inferno's Dis has a signed-module form (dis(6)): the loader can check a
+module's signature before running it. Purgatorio does the same for `.wasm`
+with a custom section, which engines ignore when they run the module, so
+it costs nothing at run time and old modules still load.
+
+- [ ] **Digest.** A module's digest is SHA-256 over its bytes with every
+  `purgatorio.sig` section removed (the section cannot cover itself).
+  Custom sections may sit anywhere, so the rule is to drop those sections
+  wherever they are, not to hash a prefix. `xtask build-root` records the
+  digests; the loader computes them once per module, beside the
+  compiled-module cache.
+- [ ] **Signature section.** `purgatorio.sig` holds a version, the signer's
+  Ed25519 public key (or a key id), and a signature over the digest and the
+  `purgatorio.abi` version. More than one signature is allowed, so a module
+  can be countersigned. Keep the format small and versioned; reuse the
+  Ed25519 code from mount authentication (`purg_core::auth`).
+- [ ] **Signing tool.** `cargo xtask sign` on the host, and an in-system
+  `sign` command that signs through `#¤`, so the private key never has to be
+  a readable file. Signing appends the section after `wasm-opt` and
+  stripping, and must keep guest builds byte-identical across hosts (sign
+  with a fixed test key in CI, or sign as a separate step after the hash
+  check).
+- [ ] **Policy.** Trusted keys live in a namespace file (e.g.
+  `/lib/keys/modules`, one public key per line). A per-prog or system
+  setting chooses: accept anything (today's behaviour), warn on unsigned or
+  unknown signers, or require a trusted signature. It applies to
+  `spawn_prog`, `load` of reactors, and the first prog. The failure is an
+  Inferno-style error string, e.g. `module not signed` or `bad signature`.
+- [ ] **Visibility.** Show a running prog's module digest and signer in
+  `/prog/<pid>/` (for example in `status` or a new file), so `ps` and
+  scripts can see what is running.
+- [ ] **Everywhere.** Same check in the emu, the probe and the kernel:
+  `purg-vm` is `no_std`, so SHA-256 and Ed25519 must be `no_std` crates (the
+  M5 auth code already is). The kernel's embedded root is checked like any
+  other module.
+- Decide in the plan (Section 12, a new D-number): whether signatures cover
+  only the digest or also the module's name, and whether the digest should
+  move to the ABI so a guest can ask for its own.
+
 ## Gaps against the plan
 
 Items the plan lists for M1 to M5 that are not in the repo yet. None blocks
