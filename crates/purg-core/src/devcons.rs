@@ -1,4 +1,9 @@
 //! `#c`: the console device, over [`Platform::console`].
+//!
+//! `cons` reads a line at a time unless `rawon` was written to `consctl`.
+//! A console that is a bare byte stream gets its echo and line editing
+//! from [`crate::linedisc`]; the hosted console's terminal does that
+//! itself, so there the lines are only split.
 
 use alloc::format;
 use alloc::string::String;
@@ -15,6 +20,7 @@ use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 use crate::chan::Chan;
 use crate::dev::{Dev, DevTab, Walked, read_str};
 use crate::error::{Error, Result};
+use crate::linedisc::ConsReader;
 
 const QDIR: u64 = 0;
 
@@ -48,7 +54,8 @@ const QSYSCTL: u64 = 11;
 const QJIT: u64 = 12;
 const QMEMORY: u64 = 13;
 
-/// Console input, delivered a line at a time as Inferno's cons does.
+/// Input from a console with its own terminal, delivered a line at a time
+/// as Inferno's cons does.
 #[derive(Default)]
 struct LineBuf {
     pending: Vec<u8>,
@@ -59,7 +66,9 @@ pub struct DevCons {
     platform: Arc<dyn Platform>,
     drivers: Mutex<String>,
     input: Mutex<LineBuf>,
-    raw: core::sync::atomic::AtomicBool,
+    /// Holds the raw flag, and reads a console that wants the line
+    /// discipline.
+    reader: ConsReader,
     kprint: Queue,
 }
 
@@ -69,7 +78,7 @@ impl DevCons {
             platform,
             drivers: Mutex::new(String::new()),
             input: Mutex::new(LineBuf::default()),
-            raw: core::sync::atomic::AtomicBool::new(false),
+            reader: ConsReader::new(),
             kprint: Queue::new(64 * 1024),
         }
     }
@@ -97,8 +106,12 @@ impl DevCons {
     }
 
     fn read_cons(&self, buf: &mut [u8]) -> Result<usize> {
-        if self.raw.load(core::sync::atomic::Ordering::Acquire) {
-            return self.platform.console().read(buf).map_err(Error::from);
+        let cons = self.platform.console();
+        if cons.line_discipline() {
+            return self.reader.read(cons, buf);
+        }
+        if self.reader.is_raw() {
+            return cons.read(buf).map_err(Error::from);
         }
         let mut input = self.input.lock();
         while !input.eof && !input.pending.contains(&b'\n') {
@@ -216,11 +229,11 @@ impl Dev for DevCons {
                     .trim();
                 match cmd {
                     "rawon" => {
-                        self.raw.store(true, core::sync::atomic::Ordering::Release);
+                        self.reader.set_raw(true);
                         self.platform.console().set_raw(true)?;
                     }
                     "rawoff" => {
-                        self.raw.store(false, core::sync::atomic::Ordering::Release);
+                        self.reader.set_raw(false);
                         self.platform.console().set_raw(false)?;
                     }
                     _ => return Err(Error::new(error::EBADARG)),

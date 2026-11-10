@@ -31,6 +31,12 @@ pub trait Console: Send + Sync {
     fn set_raw(&self, _on: bool) -> Result<()> {
         Ok(())
     }
+    /// True if `#c` must echo and edit the input itself: this is a bare
+    /// byte stream (a UART) with no terminal driver in front of it. False
+    /// on hosted, where the host terminal does both.
+    fn line_discipline(&self) -> bool {
+        false
+    }
 }
 
 /// A battery-backed real-time clock, served as `#r/rtc`.

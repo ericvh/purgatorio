@@ -13,7 +13,8 @@
 //!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
 //!   `--kvm`, once under KVM), checking each run's exit status and serial
 //!   output against `crates/purg-kernel/expected.out`. Each run types
-//!   `hello` and ^D on the serial console for the console self-test, and
+//!   an edited line and raw bytes on the serial console for the console
+//!   self-test, checks the echo, and
 //!   has a virtio-net card on QEMU user networking: the kernel mounts a
 //!   hosted emu's `styxlisten` export and pings a UDP echo server on this
 //!   host, and this host mounts the kernel's `tcp!*!6666` export. Each run
@@ -307,32 +308,47 @@ struct SerialInput {
 /// blocked (and its CPU idle) before the bytes arrive.
 const INPUT_DELAY: Duration = Duration::from_millis(300);
 
-/// The kernel console self-test's input: a line, then ^D at the start of
-/// the next line, which the kernel reads as end of input.
-const KERNEL_INPUT: SerialInput = SerialInput {
-    prompt: "kernel: console: waiting for input\n",
-    bytes: b"hello\n\x04",
-};
+/// The kernel console self-test's input (`purg-kernel`'s `selftest.rs`
+/// holds what each must read as). Cooked: `junk` killed with ^U, then
+/// `hexl` with the typo erased by DEL and ^H, `llo é`, a `ü` erased whole
+/// by one DEL, CR, and ^D at the start of the next line, which reads as
+/// end of input. Raw: bytes the cooked console would have acted on.
+const KERNEL_INPUT: &[SerialInput] = &[
+    SerialInput {
+        prompt: "kernel: console: waiting for input\n",
+        bytes: b"junk\x15hexl\x7f\x08llo \xc3\xa9\xc3\xbc\x7f\r\x04",
+    },
+    SerialInput {
+        prompt: "kernel: console: waiting for raw input\n",
+        bytes: b"a\x7f\x15\r\x04",
+    },
+];
+
+/// What the kernel's cooked console echoes for [`KERNEL_INPUT`], after the
+/// first prompt and with `\r` removed: each erased character is wiped with
+/// backspace, space, backspace. The raw input is not echoed at all.
+const KERNEL_ECHO: &str =
+    "junk\x08 \x08\x08 \x08\x08 \x08\x08 \x08hexl\x08 \x08\x08 \x08llo éü\x08 \x08\n";
 
 /// Boots `image` with `qemu-system-aarch64` (or `$QEMU`) and `args` (which
 /// must end with `-kernel`), collecting the serial console from stdout.
 /// Every 20 ms `watch` sees the output so far; an error from it, or the
 /// run outliving `timeout`, kills QEMU, prints the output and fails.
-/// With `input`, the serial console's input is a pipe, and its bytes are
-/// typed into it [`INPUT_DELAY`] after its prompt line appears; otherwise
-/// the input is empty.
+/// With `input`, the serial console's input is a pipe, and each entry's
+/// bytes are typed into it, in order, [`INPUT_DELAY`] after its prompt
+/// line appears; otherwise the input is empty.
 fn run_qemu(
     args: &[&str],
     image: &Path,
     timeout: Duration,
-    input: Option<&SerialInput>,
+    input: &[SerialInput],
     mut watch: impl FnMut(&str) -> Result<()>,
 ) -> Result<QemuRun> {
     let qemu = env::var("QEMU").unwrap_or_else(|_| String::from("qemu-system-aarch64"));
     let mut child = Command::new(&qemu)
         .args(args)
         .arg(image)
-        .stdin(if input.is_some() {
+        .stdin(if !input.is_empty() {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -344,7 +360,7 @@ fn run_qemu(
     // input.
     let mut stdin = child.stdin.take();
     let mut prompted: Option<Instant> = None;
-    let mut typed = false;
+    let mut typed = 0;
     let mut stdout = child.stdout.take().expect("piped stdout");
     let serial = Arc::new(Mutex::new(Vec::<u8>::new()));
     let serial_for_reader = Arc::clone(&serial);
@@ -364,18 +380,18 @@ fn run_qemu(
     let start = Instant::now();
     let status = loop {
         let now = text();
-        if let Some(inp) = input {
+        if let Some(inp) = input.get(typed) {
             if prompted.is_none() && now.contains(inp.prompt) {
                 prompted = Some(Instant::now());
             }
-            if !typed
-                && prompted.is_some_and(|t| t.elapsed() >= INPUT_DELAY)
+            if prompted.is_some_and(|t| t.elapsed() >= INPUT_DELAY)
                 && let Some(w) = stdin.as_mut()
             {
                 w.write_all(inp.bytes)
                     .and_then(|()| w.flush())
                     .map_err(|e| format!("{qemu}: writing the serial input: {e}"))?;
-                typed = true;
+                typed += 1;
+                prompted = None;
             }
         }
         let err = match watch(&now) {
@@ -472,7 +488,7 @@ fn probe(kvm: bool) -> Result<()> {
     args.push("-kernel");
     eprintln!("probe: qemu-system-aarch64 {}", args.join(" "));
     let mut mounted = false;
-    let r = run_qemu(&args, &image, PROBE_TIMEOUT, None, |text| {
+    let r = run_qemu(&args, &image, PROBE_TIMEOUT, &[], |text| {
         if !mounted && text.contains("probe: net ready\n") {
             mounted = true;
             mount_guest(&ws, fwd, "probe")?;
@@ -736,7 +752,7 @@ fn kernel(kvm: bool) -> Result<()> {
         args.push("-kernel");
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
         let mut mounted = false;
-        let r = run_qemu(&args, &image, KERNEL_TIMEOUT, Some(&KERNEL_INPUT), |text| {
+        let r = run_qemu(&args, &image, KERNEL_TIMEOUT, KERNEL_INPUT, |text| {
             if !mounted && text.contains("kernel: net ready\n") {
                 mounted = true;
                 mount_guest(&ws, fwd, "kernel")?;
@@ -760,8 +776,12 @@ fn kernel(kvm: bool) -> Result<()> {
         } else {
             "kernel: root compiled in"
         };
-        let rest: String = r
-            .serial
+        // The echo of the typed line is checked here and is not in the
+        // golden file, which would otherwise hold backspaces.
+        let echo = format!("{}{KERNEL_ECHO}", KERNEL_INPUT[0].prompt);
+        let echoed_typing = r.serial.contains(&echo);
+        let shown = r.serial.replacen(&echo, KERNEL_INPUT[0].prompt, 1);
+        let rest: String = shown
             .lines()
             .filter(|l| !l.starts_with("kernel: booted at EL") && !l.starts_with("kernel: root "))
             .filter(|l| !l.starts_with("kernel: mem "))
@@ -773,6 +793,10 @@ fn kernel(kvm: bool) -> Result<()> {
             Some(format!("no `{el_line}` line"))
         } else if !r.serial.lines().any(|l| l == root_line) {
             Some(format!("no `{root_line}` line"))
+        } else if !echoed_typing {
+            Some(format!(
+                "the console did not echo the typed line as {KERNEL_ECHO:?}"
+            ))
         } else if rest != want {
             Some(format!(
                 "output differs from {}; expected (less the EL line):\n{want}",

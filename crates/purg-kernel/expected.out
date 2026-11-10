@@ -10,7 +10,9 @@ kernel: two threads alternated under timer preemption
 kernel: a lock holder is never preempted, and waiters still get turns
 kernel: tsleep(50ms) woke on time with the cpu idle
 kernel: console: waiting for input
-kernel: console read "hello" then end of input
+kernel: console read "hello é" then end of input, and echoed the typing
+kernel: console: waiting for raw input
+kernel: raw console read 5 bytes unedited and echoed nothing
 kernel: #9/host: 9P2000 through 9P2000.u (the device answered 9P2000 with "unknown")
 kernel: #9/host mounted on /n/host
 kernel: run echo hello world
