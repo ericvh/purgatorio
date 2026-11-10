@@ -54,7 +54,7 @@ a `; ` prompt.
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
-| `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi: cooperative kernel threads, a writable RAM root, the `sh` corpus, `load`/`call`, the WASI test program, and `/net` over virtio-net and smoltcp, exported to and mounted from the host | done |
+| `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi, on the kernel's `purg-aarch64` boot path, interrupts and preemptive kernel threads: a writable RAM root, the `sh` corpus, `load`/`call`, the WASI test program, and `/net` over virtio-net and smoltcp, exported to and mounted from the host | done |
 
 ## Layout
 
@@ -69,8 +69,8 @@ crates/
   purg-vm-wasmi/     no_std  wasmi interpreter backend
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
   purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/
-  purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, kernel threads, virtio-net)
-  purg-aarch64/      no_std  aarch64 support: DTB, GICv2/v3, timer, exception vectors, MMU, PL011, scheduler
+  purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt, on purg-aarch64
+  purg-aarch64/      no_std  aarch64 support: boot, DTB, GICv2/v3, timer, vectors, MMU, PL011, scheduler, virtio-net, smoltcp
   purg-kernel/       no_std  the native kernel for QEMU virt (Phase K)
 sdk/
   purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
@@ -165,21 +165,27 @@ cargo test --workspace
 cargo build --target aarch64-unknown-none \
   -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
 cargo xtask probe         # needs qemu-system-aarch64
+cargo xtask probe --kvm   # the same under KVM on an aarch64 Linux host with /dev/kvm
 RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \
   cargo test -p purg-core --features std --test loom --release
 ```
 
 `cargo xtask probe` builds `purg-probe`, a bare-metal aarch64 image that
 embeds `root/bin` and `root/lib` and runs the milestone's portable test
-subset on `purg-core` and wasmi, with `#c` on the PL011 UART. Its kprocs are
-cooperative kernel threads with their own stacks, switched when a
-`Rendez` sleeps. Its `#U` is a writable RAM tree seeded with the embedded
+subset on `purg-core` and wasmi, with `#c` on the PL011 UART. Below the
+shared core it is built from `purg-aarch64`, as the kernel is: the same
+boot path and link script, the GIC and a 100 Hz timer from the DTB, and
+preemptive kernel threads with their own stacks for its kprocs. Its `#I` is
+smoltcp over virtio-net (`purg_aarch64::net`). Its `#U` is a writable RAM tree seeded with the embedded
 files, so it boots the emu's namespace (`#U` after `#/`, `#c`, `#e`, `#p`).
 It runs the ABI and procs conformance guests, then every script in the `sh`
 corpus with its output captured and compared with the `.out` file. It boots the image with
 `qemu-system-aarch64 -M virt -cpu cortex-a72 -nographic -semihosting`,
 requires a semihosting exit code of 0 within 120 s, and compares the serial
-output with `crates/purg-probe/expected.out`.
+output with `crates/purg-probe/expected.out`. `--kvm` boots it with
+`-accel kvm -cpu host -M virt,gic-version=3 -append exit=psci` instead: KVM
+has no semihosting, so the probe exits through PSCI `SYSTEM_OFF` and the
+verdict comes from the serial output alone.
 
 CI (`.github/workflows/ci.yml`) runs fmt and clippy, then runs the unit and
 acceptance tests on both WASM backends on Linux x86_64, Linux aarch64 and

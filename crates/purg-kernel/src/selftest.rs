@@ -7,10 +7,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
+use purg_aarch64::console::Pl011Console;
 use purg_platform::Console;
 use purg_platform::sync::{Mutex, Rendez, Sched};
 
-use crate::console::KernelConsole;
 use crate::irq::{self, SCHED, TICK_HZ};
 use crate::kernel::{fail, println};
 
@@ -132,7 +132,7 @@ type Reading = Mutex<Option<(Vec<u8>, usize)>>;
 /// as end of input. `cargo xtask kernel` types `hello\n^D` once it sees the
 /// prompt line, a little later, so the reader really blocks, and the CPU
 /// must idle meanwhile.
-pub fn console_test(cons: &'static KernelConsole) {
+pub fn console_test(cons: &'static Pl011Console) {
     let line: Arc<Reading> = Arc::new(Mutex::new(None));
     let done = Rendez::new();
     {

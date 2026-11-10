@@ -5,9 +5,10 @@
 //!   tests as `root/bin/test/<name>.wasm`.
 //! - `run-emu [-- emu args]`: `build-root`, build `emu`, and run it on
 //!   `root/` with stdin, stdout and stderr passed through.
-//! - `probe`: `build-root`, build `purg-probe` for `aarch64-unknown-none`,
-//!   boot it in `qemu-system-aarch64` (or `$QEMU`) and check its serial
-//!   output and semihosting exit code.
+//! - `probe [--kvm]`: `build-root`, build `purg-probe` for
+//!   `aarch64-unknown-none`, boot it in `qemu-system-aarch64` (or `$QEMU`)
+//!   under TCG (or, with `--kvm`, under KVM) and check its serial output
+//!   and exit status.
 //! - `kernel [--kvm]`: build `purg-kernel` for `aarch64-unknown-none` and
 //!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
 //!   `--kvm`, once under KVM), checking each run's exit status and serial
@@ -372,8 +373,16 @@ fn initrd() -> Result<PathBuf> {
 }
 
 /// Builds `purg-probe` over a fresh `root/`, boots it in QEMU and compares
-/// its serial output with `crates/purg-probe/expected.out`.
-fn probe() -> Result<()> {
+/// its serial output with `crates/purg-probe/expected.out`. Under TCG it
+/// exits through semihosting with its status; under KVM (`--kvm`, aarch64
+/// hosts with /dev/kvm), which has no semihosting, through PSCI
+/// `SYSTEM_OFF` (`-append exit=psci`), so QEMU's status is 0 either way and
+/// pass/fail comes from the serial output alone.
+fn probe(kvm: bool) -> Result<()> {
+    if kvm && (env::consts::ARCH != "aarch64" || !Path::new("/dev/kvm").exists()) {
+        eprintln!("probe: skipping the KVM run: needs an aarch64 host with /dev/kvm");
+        return Ok(());
+    }
     build_root()?;
     let ws = workspace();
     run(cargo().current_dir(&ws).args(["build", "-p", "purg-emu"]))?;
@@ -386,20 +395,26 @@ fn probe() -> Result<()> {
         "--profile",
         "probe",
     ]))?;
-    let image = ws
+    let elf = ws
         .join("target")
         .join(PROBE_TARGET)
         .join("probe/purg-probe");
+    let bytes = fs::read(&elf).map_err(|e| format!("{}: {e}", elf.display()))?;
+    let image = elf.with_extension("img");
+    fs::write(&image, elf_to_image(&bytes)?).map_err(|e| format!("{}: {e}", image.display()))?;
     let fwd = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{PROBE_NET_PORT}-:6666");
-    let args = [
-        "-M",
-        "virt",
-        "-cpu",
-        "cortex-a72",
-        "-m",
-        "512M",
-        "-nographic",
-        "-semihosting",
+    let mut args: Vec<&str> = if kvm {
+        vec!["-accel", "kvm", "-cpu", "host", "-M", "virt,gic-version=3"]
+    } else {
+        vec!["-M", "virt", "-cpu", "cortex-a72"]
+    };
+    args.extend(["-m", "512M", "-nographic"]);
+    if kvm {
+        args.extend(["-append", "exit=psci"]);
+    } else {
+        args.push("-semihosting");
+    }
+    args.extend([
         "-netdev",
         &fwd,
         "-global",
@@ -407,7 +422,8 @@ fn probe() -> Result<()> {
         "-device",
         "virtio-net-device,netdev=net0,mac=52:54:00:12:34:56",
         "-kernel",
-    ];
+    ]);
+    eprintln!("probe: qemu-system-aarch64 {}", args.join(" "));
     let mut mounted = false;
     let r = run_qemu(&args, &image, PROBE_TIMEOUT, None, |text| {
         if !mounted && text.contains("probe: net ready\n") {
@@ -432,7 +448,11 @@ fn probe() -> Result<()> {
     if !mounted {
         return Err(String::from("probe finished without announcing tcp!*!6666"));
     }
-    eprintln!("probe: passed in {:.2}s", r.elapsed.as_secs_f64());
+    eprintln!(
+        "probe: {} passed in {:.2}s",
+        if kvm { "kvm" } else { "tcg" },
+        r.elapsed.as_secs_f64()
+    );
     Ok(())
 }
 
@@ -529,9 +549,9 @@ const KERNEL_KVM_RUN: KernelRun = KernelRun {
     initrd: true,
 };
 
-/// Turns the kernel's ELF into a raw arm64 `Image`: each loadable segment
+/// Turns the kernel's or the probe's ELF into a raw arm64 `Image`: each loadable segment
 /// copied to its physical address, relative to the lowest one. The image
-/// starts with the arm64 Image header (see the kernel's boot.rs), so QEMU
+/// starts with the arm64 Image header (see `purg_aarch64::boot`), so QEMU
 /// loads it Linux-style, which is what makes it load `-initrd`.
 fn elf_to_image(elf: &[u8]) -> Result<Vec<u8>> {
     let u16_at = |o: usize| elf.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
@@ -811,7 +831,11 @@ fn main() -> ExitCode {
         }
         Some("initrd") => initrd().map(|_| ExitCode::SUCCESS),
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
-        Some("probe") => probe().map(|()| ExitCode::SUCCESS),
+        Some("probe") => match rest.as_slice() {
+            [] => probe(false).map(|()| ExitCode::SUCCESS),
+            [f] if f == "--kvm" => probe(true).map(|()| ExitCode::SUCCESS),
+            _ => Err(String::from("usage: cargo xtask probe [--kvm]")),
+        },
         Some("kernel") => match rest.as_slice() {
             [] => kernel(false).map(|()| ExitCode::SUCCESS),
             [f] if f == "--kvm" => kernel(true).map(|()| ExitCode::SUCCESS),
@@ -819,7 +843,7 @@ fn main() -> ExitCode {
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe | kernel [--kvm] | initrd | clippy-guests | check-wasm file.wasm...",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] | kernel [--kvm] | initrd | clippy-guests | check-wasm file.wasm...",
         )),
     };
     match res {

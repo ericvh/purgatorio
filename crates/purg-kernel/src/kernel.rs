@@ -3,20 +3,18 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::alloc::{GlobalAlloc, Layout};
+use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU8, Ordering};
 
-use linked_list_allocator::LockedHeap;
+use purg_aarch64::board::{board, exit_method, has_bootarg, heap_region};
+use purg_aarch64::boot::{self, DtbError, find_dtb};
+use purg_aarch64::console::{self, Input, Raw};
 use purg_aarch64::dtb::{self, BootInfo, Fdt};
-use purg_aarch64::exception::IrqGuard;
+use purg_aarch64::exit;
+use purg_aarch64::heap::Heap;
 use purg_aarch64::mmu::{self, KERNEL_VBASE, PAGE_SIZE, Region, TableAlloc};
-use purg_aarch64::semihost;
 
-use crate::board::{ExitMethod, board, dtb_size, exit_method};
-use crate::boot::{self, KERNEL_BOOT_EL};
-use crate::console::{self, Raw};
 use crate::system::{self, Mode};
 use crate::{irq, selftest};
 
@@ -24,67 +22,20 @@ use crate::{irq, selftest};
 /// `root/bin` and `root/lib` (see build.rs).
 static ROOT_TAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/root.tar"));
 
-/// The kernel heap. Interrupt handlers allocate and free too (preempting,
-/// the scheduler grows its run queue and frees exited threads), so every
-/// heap operation runs with IRQs masked: an interrupt never finds the heap
-/// locked, and no thread is preempted holding it. Heap operations are
-/// short, so this costs little interrupt latency.
-struct KernelHeap(LockedHeap);
-
-// SAFETY: forwards to `LockedHeap`'s `GlobalAlloc`, only adding IRQ
-// masking around each call.
-unsafe impl GlobalAlloc for KernelHeap {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _g = IrqGuard::new();
-        // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract.
-        unsafe { self.0.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let _g = IrqGuard::new();
-        // SAFETY: the caller upholds `GlobalAlloc::dealloc`'s contract.
-        unsafe { self.0.dealloc(ptr, layout) }
-    }
-}
-
 #[global_allocator]
-static HEAP: KernelHeap = KernelHeap(LockedHeap::empty());
+static HEAP: Heap = Heap::empty();
 
 /// Prints a line through the console lock (see [`console::print`]).
 macro_rules! println {
     ($($arg:tt)*) => {
-        crate::console::print(format_args!("{}\n", format_args!($($arg)*)))
+        purg_aarch64::console::print(format_args!("{}\n", format_args!($($arg)*)))
     };
 }
 pub(crate) use println;
 
-const EXIT_SEMIHOSTING: u8 = 0;
-const EXIT_PSCI_HVC: u8 = 1;
-const EXIT_PSCI_SMC: u8 = 2;
-
-static EXIT: AtomicU8 = AtomicU8::new(EXIT_SEMIHOSTING);
-
-/// Leaves QEMU. Semihosting passes `code` on; PSCI `SYSTEM_OFF` cannot, so
-/// callers print `kernel: ok` or `kernel: FAILED ...` first.
-fn exit(code: u32) -> ! {
-    const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
-    match EXIT.load(Ordering::Acquire) {
-        // SAFETY: PSCI SYSTEM_OFF does not return; the conduit comes from
-        // the DTB.
-        EXIT_PSCI_HVC => unsafe { asm!("hvc #0", in("x0") PSCI_SYSTEM_OFF, options(nostack)) },
-        // SAFETY: as above.
-        EXIT_PSCI_SMC => unsafe { asm!("smc #0", in("x0") PSCI_SYSTEM_OFF, options(nostack)) },
-        _ => semihost::exit(code),
-    }
-    loop {
-        // SAFETY: parks the core if SYSTEM_OFF returned.
-        unsafe { asm!("wfe", options(nomem, nostack)) };
-    }
-}
-
 pub fn fail(args: fmt::Arguments<'_>) -> ! {
     let _ = writeln!(Raw, "kernel: FAILED {args}");
-    exit(1)
+    exit::exit(1)
 }
 
 macro_rules! check {
@@ -107,32 +58,6 @@ fn current_sp() -> usize {
     // SAFETY: reads the stack pointer.
     unsafe { asm!("mov {}, sp", out(reg) sp, options(nomem, nostack)) };
     sp
-}
-
-/// Finds the DTB: QEMU passes its address in x0 for a Linux-style boot and
-/// 0 for a bare-metal ELF, when it is at the start of RAM. Returns the
-/// blob and whether it came from x0.
-fn find_dtb(x0: usize) -> (&'static [u8], bool) {
-    let (pa, from_x0) = if x0 != 0 {
-        (x0, true)
-    } else {
-        (board().ram.base, false)
-    };
-    let va = mmu::phys_to_virt(pa);
-    // SAFETY: the linear map covers RAM; the header is 40 bytes.
-    let head = unsafe { core::slice::from_raw_parts(va as *const u8, 40) };
-    let Some(size) = dtb_size(head) else {
-        fail(format_args!("no DTB at {pa:#x}"));
-    };
-    check!(
-        pa + size <= board().ram.end() && pa >= board().ram.base,
-        "DTB at {pa:#x} is outside RAM"
-    );
-    // SAFETY: checked to be inside the linear-mapped RAM.
-    (
-        unsafe { core::slice::from_raw_parts(va as *const u8, size) },
-        from_x0,
-    )
 }
 
 /// Checks the image's section permissions through the MMU (`AT`) and the
@@ -209,38 +134,10 @@ fn check_board(info: &BootInfo<'_>) {
 /// nothing the kernel still needs: the initrd, whose pages the RAM root
 /// borrows for good, and the DTB, which `BootInfo` borrows from.
 fn init_heap(reserved: &[Region]) -> Region {
-    let ram = board().ram;
-    let mut best = Region { base: 0, size: 0 };
-    let mut base = boot::image_end();
-    // No allocation: the heap does not exist yet.
-    let mut cuts = [Region { base: 0, size: 0 }; 4];
-    let n = reserved.len().min(cuts.len());
-    cuts[..n].copy_from_slice(&reserved[..n]);
-    let cuts = &mut cuts[..n];
-    cuts.sort_unstable_by_key(|r| r.base);
-    for r in cuts.iter().chain(core::iter::once(&Region {
-        base: ram.end(),
-        size: 0,
-    })) {
-        if r.end() <= base {
-            continue;
-        }
-        let top = r.base.min(ram.end());
-        if top > base && top - base > best.size {
-            best = Region {
-                base,
-                size: top - base,
-            };
-        }
-        base = base.max(r.end().next_multiple_of(PAGE_SIZE));
-    }
-    let heap = best;
-    // SAFETY: RAM after the image is unused and linear-mapped RW.
-    unsafe {
-        HEAP.0
-            .lock()
-            .init(mmu::phys_to_virt(heap.base) as *mut u8, heap.size);
-    }
+    let heap = heap_region(board().ram, boot::image_end(), reserved);
+    // SAFETY: RAM after the image, clear of the DTB and initrd, is unused
+    // and linear-mapped RW; this runs once, before any allocation.
+    unsafe { HEAP.init(heap) };
     heap
 }
 
@@ -307,11 +204,16 @@ fn rebuild_tables() {
     println!("kernel: page tables rebuilt at runtime");
 }
 
-/// The kernel entry point, in the high half with the MMU on. `dtb_phys` is
-/// x0 at boot: the DTB's physical address, or 0 if QEMU did not pass one.
+/// The kernel entry point, called by `purg_aarch64::boot` in the high half
+/// with the MMU on. `dtb_phys` is x0 at boot: the DTB's physical address,
+/// or 0 if QEMU did not pass one.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
-    let (dtb, from_x0) = find_dtb(dtb_phys);
+pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
+    let (dtb, from_x0) = match find_dtb(dtb_phys) {
+        Ok(d) => d,
+        Err(DtbError::NotFound(pa)) => fail(format_args!("no DTB at {pa:#x}")),
+        Err(DtbError::OutsideRam(pa)) => fail(format_args!("DTB at {pa:#x} is outside RAM")),
+    };
     let fdt = match Fdt::new(dtb) {
         Ok(f) => f,
         Err(e) => fail(format_args!("bad DTB: {e:?}")),
@@ -320,19 +222,10 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         Ok(i) => i,
         Err(e) => fail(format_args!("DTB: {e:?}")),
     };
-    let method = exit_method(&fdt, &info);
-    let code = match method {
-        ExitMethod::Semihosting => EXIT_SEMIHOSTING,
-        ExitMethod::Psci { smc: false } => EXIT_PSCI_HVC,
-        ExitMethod::Psci { smc: true } => EXIT_PSCI_SMC,
-    };
-    EXIT.store(code, Ordering::Release);
+    exit::set_method(exit_method(&fdt, &info));
 
     println!("Purgatorio kernel {} (aarch64)", env!("CARGO_PKG_VERSION"));
-    println!(
-        "kernel: booted at EL{}",
-        KERNEL_BOOT_EL.load(Ordering::Acquire)
-    );
+    println!("kernel: booted at EL{}", boot::boot_el());
     println!(
         "kernel: dtb {}",
         if from_x0 {
@@ -343,7 +236,7 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     );
     let pc = current_pc();
     let sp = current_sp();
-    let main = kernel_main as *const () as usize;
+    let main = purg_main as *const () as usize;
     check!(
         pc >= KERNEL_VBASE && sp >= KERNEL_VBASE && main >= KERNEL_VBASE,
         "not in the high half: pc {pc:#x} sp {sp:#x} kernel_main {main:#x}"
@@ -368,14 +261,12 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     println!("kernel: timer interrupts at {} Hz", irq::TICK_HZ);
     irq::alternation_test();
     println!("kernel: two threads alternated under timer preemption");
-    let cons = console::init(&info);
+    let cons = console::init(&info, Input::Blocking);
     selftest::lock_test();
     selftest::tsleep_test();
     // The console test needs `xtask kernel` typing `hello` and ^D, so it
     // runs only in test mode; interactively the console belongs to sh.
-    let test = info
-        .bootargs
-        .is_some_and(|a| a.split_ascii_whitespace().any(|w| w == "test"));
+    let test = has_bootarg(&info, "test");
     if test {
         selftest::console_test(cons);
     }
@@ -402,12 +293,12 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         fail(format_args!("{failed} failed"));
     }
     println!("kernel: ok");
-    exit(0)
+    exit::exit(0)
 }
 
-/// Called by the vector table on any exception: none is expected yet.
+/// Called by the early vectors on an exception before `irq::init`.
 #[unsafe(no_mangle)]
-extern "C" fn kernel_exception(kind: u64, esr: u64, elr: u64, far: u64) -> ! {
+extern "C" fn purg_early_exception(kind: u64, esr: u64, elr: u64, far: u64) -> ! {
     fail(format_args!(
         "exception {kind} esr={esr:#x} elr={elr:#x} far={far:#x}"
     ))

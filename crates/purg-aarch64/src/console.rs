@@ -1,8 +1,11 @@
-//! The kernel console: the PL011 as a [`purg_platform::Console`].
+//! The console: the PL011 as a [`purg_platform::Console`].
 //!
 //! Receive is interrupt-driven. The UART interrupt drains the receive FIFO
-//! into a ring buffer, and [`KernelConsole::read`] sleeps on a [`Rendez`]
-//! until the ring has bytes. The ring is shared with the interrupt
+//! into a ring buffer. An [`Input::Blocking`] console's
+//! [`Pl011Console::read`] sleeps on a [`Rendez`] until the ring has bytes,
+//! as a terminal does (the kernel); an [`Input::Polled`] one returns what
+//! has arrived, and 0 (end of input) when nothing has, for an image whose
+//! programs take no console input (the probe). The ring is shared with the interrupt
 //! handler, so it is a plain spinlock taken with IRQs masked, never a
 //! `purg_platform::sync` lock. Readers also drain the FIFO themselves, so
 //! input still arrives (at the tick rate) if the DTB names no interrupt.
@@ -18,16 +21,16 @@
 
 use core::fmt::{self, Write};
 
-use purg_aarch64::dtb::BootInfo;
-use purg_aarch64::exception::IrqGuard;
-use purg_aarch64::mmu;
-use purg_aarch64::pl011::Pl011;
 use purg_platform::Console;
 use purg_platform::sync::{Mutex, Rendez};
 use spin::Once;
 
 use crate::board::board;
+use crate::dtb::BootInfo;
+use crate::exception::IrqGuard;
 use crate::irq::{self, After};
+use crate::mmu;
+use crate::pl011::Pl011;
 
 /// End of input at the start of a line.
 const EOF: u8 = 0x04;
@@ -93,13 +96,23 @@ impl Ring {
 /// Taken only with IRQs masked.
 static RX: spin::Mutex<Ring> = spin::Mutex::new(Ring::new());
 
-pub struct KernelConsole {
+/// What [`Pl011Console::read`] does when no input has arrived.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Input {
+    /// Sleep until some does.
+    Blocking,
+    /// Return 0, end of input.
+    Polled,
+}
+
+pub struct Pl011Console {
     uart: Pl011,
+    input: Input,
     rx: Rendez,
     wlock: Mutex<()>,
 }
 
-static CONSOLE: Once<KernelConsole> = Once::new();
+static CONSOLE: Once<Pl011Console> = Once::new();
 
 /// The PL011 through the high-half device window.
 fn uart() -> Pl011 {
@@ -135,10 +148,12 @@ fn uart_irq() -> After {
 }
 
 /// Sets up the console and, if the DTB gives the UART's interrupt, routes
-/// it. Call after [`irq::init`].
-pub fn init(info: &BootInfo<'_>) -> &'static KernelConsole {
-    let c = CONSOLE.call_once(|| KernelConsole {
+/// it. Call once, after [`irq::init`]. The DTB's PL011 must be the
+/// [`board`]'s.
+pub fn init(info: &BootInfo<'_>, input: Input) -> &'static Pl011Console {
+    let c = CONSOLE.call_once(|| Pl011Console {
         uart: uart(),
+        input,
         rx: Rendez::new(),
         wlock: Mutex::new(()),
     });
@@ -149,7 +164,7 @@ pub fn init(info: &BootInfo<'_>) -> &'static KernelConsole {
     c
 }
 
-impl KernelConsole {
+impl Pl011Console {
     fn ready(&self) -> bool {
         let _g = IrqGuard::new();
         drain(&self.uart);
@@ -163,12 +178,17 @@ impl KernelConsole {
     }
 }
 
-impl Console for KernelConsole {
+impl Console for Pl011Console {
     fn read(&self, buf: &mut [u8]) -> purg_platform::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
-        self.rx.sleep(|| self.ready());
+        match self.input {
+            Input::Blocking => self.rx.sleep(|| self.ready()),
+            Input::Polled => {
+                self.ready();
+            }
+        }
         let _g = IrqGuard::new();
         let mut ring = RX.lock();
         let mut n = 0;

@@ -1,12 +1,15 @@
 //! `purg-kernel`: the native aarch64 kernel for QEMU virt (Phase K).
 //!
-//! K1: boot at EL2 or EL1 ([`boot`]), the MMU with an identity map and a
+//! The boot path, the link script, the console, interrupts and the
+//! scheduler are `purg_aarch64`'s, shared with `purg-probe`.
+//!
+//! K1: boot at EL2 or EL1 (`purg_aarch64::boot`), the MMU with an identity map and a
 //! high half (`purg_aarch64::mmu`), a heap over the RAM after the image, a
 //! PL011 console, the DTB, the GIC and a 100 Hz timer, and preemptive
 //! kernel threads ([`irq`]). K2 adds locks that are never held across a
 //! preemption, an idle CPU when every thread is blocked, and an
-//! interrupt-driven console ([`console`]), with self-tests in
-//! [`selftest`]. `kernel_main`
+//! interrupt-driven console (`purg_aarch64::console`), with self-tests in
+//! [`selftest`]. `purg_main`
 //! prints a banner and self-tests, then exits QEMU: through semihosting
 //! (exit code 0 or 1) or, with `-append exit=psci` (for KVM, where
 //! semihosting does not work), through PSCI `SYSTEM_OFF` after a final
@@ -35,12 +38,6 @@ fn main() {
 #[cfg(target_os = "none")]
 extern crate alloc;
 
-#[cfg(target_os = "none")]
-mod board;
-#[cfg(target_os = "none")]
-mod boot;
-#[cfg(target_os = "none")]
-mod console;
 #[cfg(target_os = "none")]
 mod irq;
 #[cfg(target_os = "none")]

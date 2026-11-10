@@ -1,6 +1,7 @@
-/* purg-kernel: loaded at physical 0x40200000 (QEMU virt RAM starts at
- * 0x40000000, and QEMU puts the DTB there for a bare-metal ELF), linked at
- * KERNEL_VBASE + physical in the TTBR1 high half. The boot code runs at
+/* The image layout shared by purg-kernel and purg-probe (see
+ * purg_aarch64::boot): loaded at physical 0x40200000 (QEMU virt RAM starts
+ * at 0x40000000, and QEMU puts the DTB there for a bare-metal ELF), linked
+ * at KERNEL_VBASE + physical in the TTBR1 high half. The boot code runs at
  * its physical address until the MMU is on, so it uses only PC-relative
  * addressing; the ELF entry point is the physical address of _start.
  * KERNEL_VBASE must equal purg_aarch64::mmu::KERNEL_VBASE. */

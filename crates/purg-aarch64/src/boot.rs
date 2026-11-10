@@ -1,11 +1,27 @@
-//! Boot path, from `_start` at the physical load address to
-//! [`crate::kernel_main`] in the high half.
+//! The boot path shared by `purg-kernel` and `purg-probe`, from `_start` at
+//! the physical load address to the image's `purg_main` in the high half.
 //!
-//! `_start` (assembly, position-independent: only `adr`/`adrp` until the
-//! MMU is on):
+//! # Contract with the image
+//!
+//! The image links with this crate's `link.x` (its build script passes
+//! `-T crates/purg-aarch64/link.x`), which defines the section symbols
+//! used here, and defines two functions:
+//!
+//! - `#[unsafe(no_mangle)] extern "C" fn purg_main(dtb: usize) -> !`, called
+//!   in the high half with the MMU on, IRQs masked and the boot stack in
+//!   place. `dtb` is x0 at entry: the DTB's physical address, or 0 when
+//!   QEMU booted an ELF and left the DTB at the start of RAM ([`find_dtb`]
+//!   handles both).
+//! - `#[unsafe(no_mangle)] extern "C" fn purg_early_exception(kind: u64,
+//!   esr: u64, elr: u64, far: u64) -> !`, called on the exception stack for
+//!   any exception taken before [`crate::exception::install`].
+//!
+//! # `_start`
+//!
+//! Position-independent (only `adr`/`adrp` until the MMU is on):
 //! 1. Parks every core but core 0.
-//! 2. Keeps x0 (the DTB pointer, or 0 when QEMU boots an ELF) in x19 and
-//!    the boot exception level in x20.
+//! 2. Keeps x0 (the DTB pointer, or 0) in x19 and the boot exception level
+//!    in x20.
 //! 3. At EL2: sets HCR_EL2.RW (EL1 is AArch64), gives EL1 the physical
 //!    counter and timer (CNTHCTL_EL2.EL1PCTEN/EL1PCEN), zeroes CNTVOFF_EL2,
 //!    stops EL2 trapping FP/SIMD (CPTR_EL2) and system registers (HSTR_EL2),
@@ -15,40 +31,43 @@
 //!    masked.
 //! 4. At EL1: resets SCTLR_EL1, enables FP/SIMD (CPACR_EL1.FPEN), sets the
 //!    stack to the physical address of `__stack_top`, and zeroes .bss.
-//! 5. Calls [`boot_map`] (Rust, MMU still off) to build the identity map and
-//!    the high half in `BOOT_TABLES`, then [`boot_enable`] to turn the MMU
-//!    on. Execution continues at the physical address through TTBR0.
-//! 6. Loads the absolute (high) address of `.Lhigh` and jumps there, moves
-//!    the stack to its high-half address, installs the exception vectors,
-//!    records the boot EL and calls `kernel_main(dtb)`.
+//! 5. Calls `boot_map` (Rust, MMU still off) to build the identity map and
+//!    the high half in `BOOT_TABLES` from [`board`], then `boot_enable` to
+//!    turn the MMU on. Execution continues at the physical address through
+//!    TTBR0.
+//! 6. Jumps to the high-half address of `.Lhigh`, moves the stack to its
+//!    high-half address, installs the early vectors, records the boot EL
+//!    and calls `purg_main(dtb)`.
 //!
 //! The Rust code run with the MMU off is safe there because the target is
 //! `+strict-align` (no unaligned accesses to what is then Device memory),
 //! the relocation model is static (symbol addresses are `adrp`/`add`, so
-//! PC-relative), and [`purg_aarch64::mmu`]'s builder neither indexes
-//! slices nor keeps pointers in statics. Addresses it reads from linker
-//! symbols are normalized to physical, so it would also be correct if they
-//! were absolute.
+//! PC-relative), and [`crate::mmu`]'s builder neither indexes slices nor
+//! keeps pointers in statics. Addresses read from linker symbols are
+//! normalized to physical, so it would also be correct if they were
+//! absolute.
 //!
 //! Memory written with the MMU off (non-cacheable: .bss, the tables, the
 //! stack) is invalidated from the data cache (`dc ivac`) before the MMU
 //! turns on, so stale lines cannot shadow it under KVM or on hardware.
 //! TCG does not model caches.
+//!
+//! The image is also an arm64 Linux `Image` (it starts with the header),
+//! so QEMU can load it Linux-style, pass the DTB in x0 and load an initrd.
 
 use core::arch::global_asm;
-use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-use purg_aarch64::mmu::{
+use crate::board::{board, dtb_size};
+use crate::mmu::{
     self, KERNEL_VBASE, KernelImage, KernelMap, PAGE_SIZE, Region, SCTLR_OFF, TableAlloc,
 };
-use purg_aarch64::pl011::Pl011;
-use purg_aarch64::semihost;
-
-use crate::board::board;
+use crate::pl011::Pl011;
+use crate::semihost;
 
 /// The exception level `_start` was entered at; written by the boot code.
 #[unsafe(no_mangle)]
-pub static KERNEL_BOOT_EL: AtomicUsize = AtomicUsize::new(0);
+static PURG_BOOT_EL: AtomicUsize = AtomicUsize::new(0);
 
 const BOOT_TABLE_PAGES: usize = 32;
 
@@ -62,10 +81,10 @@ static mut BOOT_TABLES: Tables = Tables([[0; 512]; BOOT_TABLE_PAGES]);
 #[repr(C, align(16))]
 struct ExceptionStack([u8; 16 * 1024]);
 
-/// The stack the fatal-exception path switches to, so a boot stack
+/// The stack the early exception path switches to, so a boot stack
 /// overflow into the guard page is still reported.
 #[unsafe(no_mangle)]
-static mut EXCEPTION_STACK: ExceptionStack = ExceptionStack([0; 16 * 1024]);
+static mut PURG_EXCEPTION_STACK: ExceptionStack = ExceptionStack([0; 16 * 1024]);
 
 unsafe extern "C" {
     static __image_start: u8;
@@ -75,6 +94,11 @@ unsafe extern "C" {
     static __stack_bottom: u8;
     static __stack_top: u8;
     static __image_end: u8;
+}
+
+/// The exception level the image was entered at (1 or 2).
+pub fn boot_el() -> usize {
+    PURG_BOOT_EL.load(Ordering::Acquire)
 }
 
 /// `a` as a physical address, whether the linker symbol was read before
@@ -119,7 +143,8 @@ pub fn image_end() -> usize {
     phys(&raw const __image_end)
 }
 
-/// Builds the kernel map for the current board and image from `alloc`.
+/// Builds the image's map for the board from `alloc`: the identity map,
+/// and the high half with per-section permissions.
 pub fn kernel_map(alloc: &mut TableAlloc) -> Result<KernelMap, mmu::Error> {
     let b = board();
     mmu::build_kernel_map(alloc, &[b.ram], b.devices, &image())
@@ -128,7 +153,7 @@ pub fn kernel_map(alloc: &mut TableAlloc) -> Result<KernelMap, mmu::Error> {
 /// Runs with the MMU off: builds the boot tables, or reports the error on
 /// the physical UART and exits.
 #[unsafe(no_mangle)]
-extern "C" fn boot_map() -> KernelMap {
+extern "C" fn purg_boot_map() -> KernelMap {
     let pool = Region {
         base: phys((&raw const BOOT_TABLES).cast()),
         size: BOOT_TABLE_PAGES * PAGE_SIZE,
@@ -143,7 +168,7 @@ extern "C" fn boot_map() -> KernelMap {
             // writes reached memory, so no line in .data, .bss (the tables)
             // or the stack is dirty. Discarding stale lines means the
             // cacheable accesses after the switch, the table walks and
-            // the stack frames popped in `boot_enable`, see what was
+            // the stack frames popped in `purg_boot_enable`, see what was
             // written with the MMU off.
             unsafe {
                 mmu::invalidate_dcache(Region {
@@ -156,7 +181,7 @@ extern "C" fn boot_map() -> KernelMap {
         Err(e) => {
             // SAFETY: with the MMU off the PL011 is at its physical address.
             let uart = unsafe { Pl011::new(board().uart) };
-            uart.write(b"kernel: boot page tables: ");
+            uart.write(b"boot page tables: ");
             uart.write(e.as_str().as_bytes());
             uart.write(b"\n");
             semihost::exit(1)
@@ -166,17 +191,55 @@ extern "C" fn boot_map() -> KernelMap {
 
 /// Runs with the MMU off, from the identity-mapped physical address.
 #[unsafe(no_mangle)]
-extern "C" fn boot_enable(ttbr0: usize, ttbr1: usize) {
+extern "C" fn purg_boot_enable(ttbr0: usize, ttbr1: usize) {
     // SAFETY: `_start` calls this at EL1 with the MMU off, from RAM that
     // the boot tables identity-map; BOOT_TABLES is never freed.
     unsafe { mmu::enable(&KernelMap { ttbr0, ttbr1 }) }
+}
+
+/// Why [`find_dtb`] found no usable DTB.
+#[derive(Clone, Copy, Debug)]
+pub enum DtbError {
+    /// No FDT magic at this physical address.
+    NotFound(usize),
+    /// The blob at this physical address runs outside RAM.
+    OutsideRam(usize),
+}
+
+/// Finds the DTB: QEMU passes its address in x0 for a Linux-style boot and
+/// 0 for a bare-metal ELF, when it is at the start of RAM. Returns the
+/// blob, through the linear map, and whether it came from x0.
+pub fn find_dtb(x0: usize) -> Result<(&'static [u8], bool), DtbError> {
+    let ram = board().ram;
+    let (pa, from_x0) = if x0 != 0 {
+        (x0, true)
+    } else {
+        (ram.base, false)
+    };
+    if pa < ram.base || pa + 40 > ram.end() {
+        return Err(DtbError::OutsideRam(pa));
+    }
+    let va = mmu::phys_to_virt(pa);
+    // SAFETY: the linear map covers RAM, and the header's 40 bytes are in
+    // it.
+    let head = unsafe { core::slice::from_raw_parts(va as *const u8, 40) };
+    let size = dtb_size(head).ok_or(DtbError::NotFound(pa))?;
+    if pa + size > ram.end() {
+        return Err(DtbError::OutsideRam(pa));
+    }
+    // SAFETY: checked to be inside the linear-mapped RAM. Nothing writes
+    // the DTB, and the heap is placed clear of it.
+    Ok((
+        unsafe { core::slice::from_raw_parts(va as *const u8, size) },
+        from_x0,
+    ))
 }
 
 global_asm!(
     r#"
 .section .text.boot, "ax"
 // The arm64 Linux Image header (Documentation/arch/arm64/booting.rst), so
-// QEMU and boot loaders can load the kernel as an Image: then they load an
+// QEMU and boot loaders can load the image as an Image: then they load an
 // initrd and pass the DTB in x0. Loaded as an ELF, the first instruction
 // simply branches over it.
 .global _head
@@ -254,48 +317,49 @@ _start:
     b       .Lzero
 .Lzeroed:
 
-    bl      boot_map
-    bl      boot_enable
+    bl      purg_boot_map
+    bl      purg_boot_enable
 
     ldr     x1, =.Lhigh
     br      x1
 .Lhigh:
     ldr     x1, =__stack_top
     mov     sp, x1
-    adrp    x1, kernel_vectors
-    add     x1, x1, :lo12:kernel_vectors
+    adrp    x1, purg_early_vectors
+    add     x1, x1, :lo12:purg_early_vectors
     msr     vbar_el1, x1
     isb
-    adrp    x1, KERNEL_BOOT_EL
-    str     x20, [x1, :lo12:KERNEL_BOOT_EL]
+    adrp    x1, PURG_BOOT_EL
+    str     x20, [x1, :lo12:PURG_BOOT_EL]
     mov     x0, x19
-    bl      kernel_main
+    bl      purg_main
 
 .Lpark:
     wfe
     b       .Lpark
 .ltorg
 
-.section .text.vectors, "ax"
+.section .text.purg_early_vectors, "ax"
 .balign 2048
-.global kernel_vectors
-kernel_vectors:
+.global purg_early_vectors
+purg_early_vectors:
 .irp kind, 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
     .balign 0x80
     mov     x0, #\kind
-    b       .Lexception
+    b       .Learly_exception
 .endr
 
-.Lexception:
-    adrp    x9, EXCEPTION_STACK
-    add     x9, x9, :lo12:EXCEPTION_STACK
+.Learly_exception:
+    adrp    x9, PURG_EXCEPTION_STACK
+    add     x9, x9, :lo12:PURG_EXCEPTION_STACK
     add     x9, x9, #{exc_stack}
     mov     sp, x9
     mrs     x1, esr_el1
     mrs     x2, elr_el1
     mrs     x3, far_el1
-    bl      kernel_exception
-    b       .Lpark
+    bl      purg_early_exception
+1:  wfe
+    b       1b
 "#,
     sctlr_off = const SCTLR_OFF,
     exc_stack = const core::mem::size_of::<ExceptionStack>(),

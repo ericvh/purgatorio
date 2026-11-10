@@ -1,6 +1,6 @@
-//! Links the bare-metal image at QEMU virt's RAM base and embeds `root/bin`
-//! and `root/lib` (whose guest binaries `cargo xtask build-root` installs)
-//! as the files of the probe's root tree.
+//! Links the bare-metal image with `purg-aarch64`'s `link.x` and embeds
+//! `root/bin` and `root/lib` (whose guest binaries `cargo xtask build-root`
+//! installs) as the files of the probe's root tree.
 
 use std::env;
 use std::fmt::Write;
@@ -55,9 +55,12 @@ fn main() {
     src.push_str("];\n");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("embedded.rs");
     fs::write(&out, src).unwrap();
-    println!("cargo:rerun-if-changed={}", dir.join("link.x").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        dir.join("../purg-aarch64/link.x").display()
+    );
     println!(
         "cargo:rustc-link-arg-bins=-T{}",
-        dir.join("link.x").display()
+        dir.join("../purg-aarch64/link.x").display()
     );
 }

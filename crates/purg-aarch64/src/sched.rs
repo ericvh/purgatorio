@@ -2,8 +2,8 @@
 //!
 //! Each thread has its own stack. A thread runs until it yields (a
 //! [`Rendez`] sleep yields through the [`Sched`] hook) or until the timer
-//! interrupt calls [`Scheduler::preempt`]. The probe's cooperative scheduler
-//! is the same design without the interrupt.
+//! interrupt calls [`Scheduler::preempt`]. The kernel and the probe both
+//! use it.
 //!
 //! Interrupt state: the thread table is only touched with IRQs masked, so
 //! the IRQ handler can never find it locked. A voluntary switch saves DAIF
