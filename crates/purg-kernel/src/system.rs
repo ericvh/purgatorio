@@ -235,8 +235,8 @@ pub enum Mode {
 
 /// Boots the namespace over `initrd` and runs the system in a kernel
 /// thread (wasmi needs more stack than the boot stack has). The boot
-/// thread waits; the result is the number of failures in test mode, or 0
-/// or 1 for the shell's exit status.
+/// thread sleeps until it is done; the result is the number of failures
+/// in test mode, or 0 or 1 for the shell's exit status.
 pub fn start(
     initrd: &'static [u8],
     console: &'static dyn Console,
@@ -245,8 +245,10 @@ pub fn start(
     mode: Mode,
 ) -> usize {
     use core::sync::atomic::AtomicUsize;
-    use purg_platform::sync::Sched;
+    use purg_platform::sync::Rendez;
     static DONE: AtomicUsize = AtomicUsize::new(usize::MAX);
+    let done = Rendez::new();
+    let wake = done.clone();
     SCHED.spawn(Box::new(move || {
         let result = match boot(
             MetalPlatform::new(console, &SCHED, "purgatorio", rtc).with_net(Box::new(stack)),
@@ -269,12 +271,9 @@ pub fn start(
             },
         };
         DONE.store(result, Ordering::Release);
+        wake.wakeup();
     }));
-    loop {
-        let r = DONE.load(Ordering::Acquire);
-        if r != usize::MAX {
-            return r;
-        }
-        SCHED.yield_now();
-    }
+    // Sleeping, rather than yielding in a loop, lets the CPU idle.
+    done.sleep(|| DONE.load(Ordering::Acquire) != usize::MAX);
+    DONE.load(Ordering::Acquire)
 }
