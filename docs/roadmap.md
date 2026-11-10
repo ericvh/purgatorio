@@ -9,14 +9,8 @@ Status as of 2026-11-09: the hosted emu milestones M1 through M5 are on
 
 ## Now
 
-- [ ] **PG-26** Merge #10, the macOS CI fix. Host clippy failed on macOS
-  because `appl/test/wasi` and `appl/lib/add` put the `purgatorio.abi` section
-  on every target, and Mach-O rejects that name. With the fix, the whole
-  macOS job passes, including tests and the case-sensitive APFS check.
-- [ ] **PG-27** Update `README.md` for M4 and M5. It still says "Milestone 3 is
-  in progress", lists ABI v0.2 (now 0.4), and has no rows for `#I`, `#C`,
-  dial/listen, virtio-net on the probe, `load std`/`load expr`, `load`/`call`,
-  authenticated mount, full WASI p1, `#¤` and `#D`.
+- [ ] Move the probe onto `purg-aarch64` (boot, PL011, scheduler) so the
+  probe and the kernel share one copy, and give `xtask probe` a `--kvm` mode.
 
 ## Phase K: native aarch64 kernel under QEMU (PG-4)
 
@@ -25,7 +19,7 @@ cooperative kernel threads, a RAM root, and virtio-net with smoltcp. Plan
 Section 10 says to move the shared boot code into a `purg-aarch64` module
 once Phase K starts.
 
-- [ ] **K1 Boot** (`purg-kernel`): EL1 boot on QEMU `virt`, DTB parsing,
+- [x] **K1 Boot** (`purg-kernel`): EL1 boot on QEMU `virt`, DTB parsing,
   PL011, GICv2/v3, generic timer, MMU (identity plus kernel high half), heap
   allocator, kernel threads with context switch and `Rendez`.
   Accept: serial banner, and a timer-driven test with two kernel threads
@@ -107,5 +101,7 @@ Phase K, but they belong to the hosted milestones' acceptance criteria.
   - [x] **PG-24** TLS 1.3 client device `#D`.
 - [x] **PG-3** Hosted emu milestones as stacked PRs.
 - [x] **PG-22** Land the stack tip onto `main` (#9).
+- [x] **PG-26** Fix macOS CI: gate the ABI section to wasm (#10).
+- [x] **PG-27** Bring the README and ABI doc up to M5 (#12).
 - [x] **PG-19** Document the Rust toolchain in the README.
 - [x] **PG-20** Record the wasm64 decision ([wasm64.md](wasm64.md)).

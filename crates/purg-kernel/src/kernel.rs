@@ -9,18 +9,20 @@ use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use linked_list_allocator::LockedHeap;
+use purg_aarch64::dtb::{self, BootInfo, Fdt};
 use purg_aarch64::mmu::{self, KERNEL_VBASE, PAGE_SIZE, Region, TableAlloc};
 use purg_aarch64::pl011::Pl011;
 use purg_aarch64::semihost;
 
 use crate::board::{ExitMethod, board, dtb_size, exit_method};
 use crate::boot::{self, KERNEL_BOOT_EL};
+use crate::irq;
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
 
 /// The console: the PL011 through the high-half device window. Writes are
-/// unlocked; there is one core and no interrupts yet.
+/// unlocked: there is one core, and only the boot thread prints.
 pub struct Console;
 
 impl Write for Console {
@@ -63,7 +65,7 @@ fn exit(code: u32) -> ! {
     }
 }
 
-fn fail(args: fmt::Arguments<'_>) -> ! {
+pub fn fail(args: fmt::Arguments<'_>) -> ! {
     println!("kernel: FAILED {args}");
     exit(1)
 }
@@ -158,6 +160,34 @@ fn check_sections() {
     println!("kernel: sections: text rx, rodata r, data rw, stack guard unmapped");
 }
 
+/// Checks that the DTB agrees with the fixed map the boot tables were built
+/// from: the RAM they map must be RAM, and the console must be the PL011
+/// they reach.
+fn check_board(info: &BootInfo<'_>) {
+    let b = board();
+    let ram = info.ram;
+    check!(
+        ram.base as usize <= b.ram.base && b.ram.end() <= ram.end() as usize,
+        "boot maps RAM {:#x}..{:#x} but the DTB has {:#x}..{:#x}",
+        b.ram.base,
+        b.ram.end(),
+        ram.base,
+        ram.end()
+    );
+    check!(
+        info.uart.base as usize == b.uart,
+        "the DTB's PL011 is at {:#x}, not {:#x}",
+        info.uart.base,
+        b.uart
+    );
+    let in_window = |r: dtb::Region| r.end() as usize <= b.devices.end();
+    check!(
+        in_window(info.gic.dist) && in_window(info.gic.cpu_or_redist),
+        "the GIC is outside the device window"
+    );
+    println!("kernel: dtb agrees with the boot memory map");
+}
+
 fn init_heap() -> Region {
     let ram = board().ram;
     let start = boot::image_end();
@@ -241,7 +271,15 @@ fn rebuild_tables() {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     let (dtb, from_x0) = find_dtb(dtb_phys);
-    let method = exit_method(dtb);
+    let fdt = match Fdt::new(dtb) {
+        Ok(f) => f,
+        Err(e) => fail(format_args!("bad DTB: {e:?}")),
+    };
+    let info = match BootInfo::from_fdt(&fdt) {
+        Ok(i) => i,
+        Err(e) => fail(format_args!("DTB: {e:?}")),
+    };
+    let method = exit_method(&fdt, &info);
     let code = match method {
         ExitMethod::Semihosting => EXIT_SEMIHOSTING,
         ExitMethod::Psci { smc: false } => EXIT_PSCI_HVC,
@@ -270,10 +308,16 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
         "not in the high half: pc {pc:#x} sp {sp:#x} kernel_main {main:#x}"
     );
     println!("kernel: running in the high half");
+    check_board(&info);
     check_sections();
     let heap = init_heap();
     heap_test(heap);
     rebuild_tables();
+    irq::init(&info);
+    irq::wait_ticks(10);
+    println!("kernel: timer interrupts at {} Hz", irq::TICK_HZ);
+    irq::alternation_test();
+    println!("kernel: two threads alternated under timer preemption");
     println!("kernel: ok");
     exit(0)
 }

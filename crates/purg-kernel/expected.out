@@ -1,7 +1,10 @@
 Purgatorio kernel 0.1.0 (aarch64)
 kernel: dtb at the start of RAM
 kernel: running in the high half
+kernel: dtb agrees with the boot memory map
 kernel: sections: text rx, rodata r, data rw, stack guard unmapped
 kernel: heap: vec, box, btreemap, 64 MiB block ok
 kernel: page tables rebuilt at runtime
+kernel: timer interrupts at 100 Hz
+kernel: two threads alternated under timer preemption
 kernel: ok

@@ -1,7 +1,11 @@
-//! What the kernel knows about the machine. Until `purg_aarch64::dtb`
-//! lands this is QEMU virt's fixed memory map and a crude scan of the DTB
-//! blob; every such shortcut is marked `K1: from the DTB`.
+//! What the kernel knows about the machine.
+//!
+//! The boot page tables are built before the MMU is on, from [`board`]:
+//! QEMU virt's fixed memory map. Once the MMU is on, `kernel_main` parses
+//! the DTB and checks that it agrees; the console, the GIC, the timer and
+//! the exit method then come from the DTB.
 
+use purg_aarch64::dtb::{BootInfo, Fdt};
 use purg_aarch64::mmu::Region;
 
 /// The machine's memory map (physical addresses).
@@ -17,9 +21,9 @@ pub struct Board {
     pub uart: usize,
 }
 
-/// The QEMU virt memory map. Called before the MMU is on, so it must not
-/// touch memory.
-// K1: from the DTB once dtb.rs lands
+/// The QEMU virt memory map the boot page tables are built from. Called
+/// before the MMU is on, so it must not touch memory. `kernel_main` checks
+/// it against the DTB.
 pub const fn board() -> Board {
     Board {
         ram: Region {
@@ -53,26 +57,20 @@ fn be32(b: &[u8], off: usize) -> Option<u32> {
     Some(u32::from_be_bytes([w[0], w[1], w[2], w[3]]))
 }
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
-}
-
 /// Chooses the exit method from the DTB: PSCI if `/chosen/bootargs`
 /// contains `exit=psci` (`-append exit=psci`), with the conduit from the
-/// `/psci` node's `method` (`hvc` unless the blob has an `smc` method).
-/// `dtb` is the whole blob (`totalsize` bytes).
-// K1: from the DTB once dtb.rs lands. This scans the raw blob for the
-// strings instead of parsing /chosen/bootargs and /psci/method.
-pub fn exit_method(dtb: &[u8]) -> ExitMethod {
-    if !contains(dtb, b"exit=psci") {
+/// `/psci` node's `method` (`hvc` unless it says `smc`).
+pub fn exit_method(fdt: &Fdt<'_>, info: &BootInfo<'_>) -> ExitMethod {
+    let psci = info
+        .bootargs
+        .is_some_and(|a| a.split_ascii_whitespace().any(|w| w == "exit=psci"));
+    if !psci {
         return ExitMethod::Semihosting;
     }
-    // Property values are NUL-terminated and 4-byte aligned in the
-    // structure block; "smc\0" or "hvc\0" there is the PSCI method.
-    let start = be32(dtb, 8).unwrap_or(0) as usize; // off_dt_struct
-    let size = be32(dtb, 36).unwrap_or(0) as usize; // size_dt_struct
-    let st = dtb.get(start..start.saturating_add(size)).unwrap_or(&[]);
-    let smc = st.as_chunks::<4>().0.iter().any(|w| w == b"smc\0");
+    let smc = fdt
+        .find_path("/psci")
+        .and_then(|n| n.property_str("method"))
+        == Some("smc");
     ExitMethod::Psci { smc }
 }
 
