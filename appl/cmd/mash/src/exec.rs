@@ -17,7 +17,6 @@ use purgatorio::abi::{error, mode, pctl};
 use purgatorio::{Error, Waitmsg};
 
 use crate::ast::{Body, Cmd, Ctx, Expr, Gen, RKind, Redir, Word, quote};
-use crate::glob;
 use crate::history::History;
 use crate::lex::ident;
 use crate::make::Make;
@@ -1273,7 +1272,7 @@ impl Shell {
 /// A word's value after file name globbing.
 fn globbed(v: List, x: bool) -> List {
     match v.as_slice() {
-        [s] if x => glob::expand(s),
+        [s] if x => filepat::expand(s),
         _ => v,
     }
 }

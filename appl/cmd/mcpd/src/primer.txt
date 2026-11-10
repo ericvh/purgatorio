@@ -38,7 +38,7 @@ Redirections: `>`, `>>`, `<`, and `>[2]` for standard error. `>[2=1]` is bash's 
   quiet
 
 Braces group commands, and a `{...}` block is also a value you can pass to a command. That is how control flow works: `if`, `for`, `while`, `fn`, `and`, `or`, `not` and `~` (match) are commands that arrive with `load std`. Without it they fail with `file does not exist`.
-; load std; if {~ foo.c *.c} {echo C} {echo other}
+; load std; if {~ foo.c '*.c'} {echo C} {echo other}
   C
 ; load std; for i in 1 2 3 {echo n$i}
   n1
@@ -59,10 +59,9 @@ Lists: `${hd list}`, `${tl list}` and `${index n list}` come with `load std`.
 ; load std; l=(a b c); echo ${hd $l} ${index 2 $l} ${tl $l}
   a b b c
 
-This sh does not expand `*` or `?` in file names: `rm *.o` looks for a file called `*.o`. List the directory and filter instead.
-; echo /bin/sh*
-  /bin/sh*
-; touch a.o b.o c.c; load std; for f in `{ls | grep '\.o$'} {rm $f}; ls
+File name patterns: an unquoted word with `*`, `?` or `[a-z]` becomes the sorted names that match, and stays as written if none do. Quote a pattern that is meant for a command, such as `~` or `grep`.
+; touch a.o b.o c.c; echo *.o '*.o' *.h; rm *.o; ls
+  a.o b.o *.o *.h
   c.c
 
 Pipelines, `;`, `&` (background, pid in `$apid`) and `#` comments are as usual. `exit` takes a status string. A background program is killed when the session ends; send its output to a file, because the output of a `run` call is closed when the command line finishes.

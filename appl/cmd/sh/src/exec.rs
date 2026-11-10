@@ -541,22 +541,36 @@ impl Shell {
         Ok(out)
     }
 
+    /// The list a word stands for, with the file names its patterns match.
     fn expand(&mut self, w: &Word) -> Result<Vec<String>, Error> {
-        let mut acc: Option<Vec<String>> = None;
+        let words = self.expand_raw(w)?;
+        Ok(words.into_iter().flat_map(Glob::names).collect())
+    }
+
+    /// The list a word stands for, before file name patterns are expanded:
+    /// that waits until the whole word has been put together.
+    fn expand_raw(&mut self, w: &Word) -> Result<Vec<Glob>, Error> {
+        let mut acc: Option<Vec<Glob>> = None;
         for p in &w.parts {
             let v = match p {
-                Part::Lit(s, _) => vec![s.clone()],
+                Part::Lit(s, quoted) => vec![Glob::lit(s, *quoted)],
                 Part::Var(name, kind) => {
                     let v = self.var(name);
-                    match kind {
+                    Glob::plain(match kind {
                         VarKind::Plain => v,
                         VarKind::Count => vec![v.len().to_string()],
                         VarKind::Join => vec![v.join(" ")],
-                    }
+                    })
                 }
-                Part::Subst(src) => self.substitute(src)?,
-                Part::Builtin(src) => self.builtin_subst(src)?,
-                Part::List(words) => self.expand_all(words)?,
+                Part::Subst(src) => Glob::plain(self.substitute(src)?),
+                Part::Builtin(src) => Glob::plain(self.builtin_subst(src)?),
+                Part::List(words) => {
+                    let mut l = Vec::new();
+                    for w in words {
+                        l.extend(self.expand_raw(w)?);
+                    }
+                    l
+                }
             };
             acc = Some(match acc {
                 None => v,
@@ -875,16 +889,68 @@ impl Shell {
     }
 }
 
+/// A word being expanded: its text, and the byte offsets of the `*`, `?`
+/// and `[` that were written unquoted. Only those make a file name
+/// pattern; the same characters from quotes, variables and substitutions
+/// stand for themselves.
+#[derive(Debug, Clone, PartialEq)]
+struct Glob {
+    text: String,
+    meta: Vec<usize>,
+}
+
+impl Glob {
+    fn lit(s: &str, quoted: bool) -> Glob {
+        let meta = match quoted {
+            true => Vec::new(),
+            false => s.match_indices(['*', '?', '[']).map(|m| m.0).collect(),
+        };
+        Glob {
+            text: String::from(s),
+            meta,
+        }
+    }
+
+    fn plain(words: Vec<String>) -> Vec<Glob> {
+        let plain = |text| Glob {
+            text,
+            meta: Vec::new(),
+        };
+        words.into_iter().map(plain).collect()
+    }
+
+    fn join(mut self, other: &Glob) -> Glob {
+        let base = self.text.len();
+        self.meta.extend(other.meta.iter().map(|m| base + m));
+        self.text.push_str(&other.text);
+        self
+    }
+
+    /// The file names the word matches, sorted, or the word itself if it
+    /// has no pattern or nothing matches.
+    fn names(self) -> Vec<String> {
+        if self.meta.is_empty() {
+            return vec![self.text];
+        }
+        let marks: Vec<filepat::Mark> = self
+            .text
+            .char_indices()
+            .map(|(i, c)| (c, self.meta.contains(&i)))
+            .collect();
+        filepat::expand_marked(&marks)
+    }
+}
+
 /// Joins two lists: a one-element list distributes over the other, and
 /// equal-length lists join pairwise.
-fn concat(a: Vec<String>, b: Vec<String>) -> Result<Vec<String>, Error> {
+fn concat(a: Vec<Glob>, b: Vec<Glob>) -> Result<Vec<Glob>, Error> {
     if a.is_empty() || b.is_empty() {
         return Err(Error::from("null list in concatenation"));
     }
     Ok(match (a.len(), b.len()) {
-        (1, _) => b.into_iter().map(|y| format!("{}{y}", a[0])).collect(),
-        (_, 1) => a.into_iter().map(|x| format!("{x}{}", b[0])).collect(),
-        (n, m) if n == m => a.into_iter().zip(b).map(|(x, y)| x + &y).collect(),
+        (1, _) => b.iter().map(|y| a[0].clone().join(y)).collect(),
+        (_, 1) => a.into_iter().map(|x| x.join(&b[0])).collect(),
+        (n, m) if n == m => a.into_iter().zip(&b).map(|(x, y)| x.join(y)).collect(),
         _ => return Err(Error::from("bad concatenation")),
     })
 }
@@ -962,13 +1028,10 @@ fn is_builtin(name: &str) -> bool {
     matches!(name, "cd" | "exit" | "run" | "wait" | "load")
 }
 
+/// `~`: whether the whole of `word` matches `pat`. The pattern has the
+/// syntax of a file name pattern, but `/` is an ordinary character.
 fn glob_match(word: &str, pat: &str) -> bool {
-    match pat.split_once('*') {
-        None => word == pat,
-        Some((pre, suf)) => {
-            word.starts_with(pre) && word.ends_with(suf) && word.len() >= pre.len() + suf.len()
-        }
-    }
+    filepat::matches_marked(&filepat::marks(pat), word)
 }
 
 /// The module a command name runs. A name starting with `/`, `./` or `../`
@@ -999,16 +1062,31 @@ mod tests {
         s.iter().map(|s| String::from(*s)).collect()
     }
 
+    fn cat(a: &[&str], b: &[&str]) -> Result<Vec<String>, Error> {
+        let words = concat(Glob::plain(v(a)), Glob::plain(v(b)))?;
+        Ok(words.into_iter().map(|g| g.text).collect())
+    }
+
     #[test]
     fn concatenation() {
-        assert_eq!(concat(v(&["a"]), v(&["1", "2"])).unwrap(), ["a1", "a2"]);
-        assert_eq!(concat(v(&["x", "y"]), v(&[".c"])).unwrap(), ["x.c", "y.c"]);
-        assert_eq!(
-            concat(v(&["x", "y"]), v(&["1", "2"])).unwrap(),
-            ["x1", "y2"]
-        );
-        assert!(concat(v(&["x", "y"]), v(&["1", "2", "3"])).is_err());
-        assert!(concat(v(&[]), v(&["1"])).is_err());
+        assert_eq!(cat(&["a"], &["1", "2"]).unwrap(), ["a1", "a2"]);
+        assert_eq!(cat(&["x", "y"], &[".c"]).unwrap(), ["x.c", "y.c"]);
+        assert_eq!(cat(&["x", "y"], &["1", "2"]).unwrap(), ["x1", "y2"]);
+        assert!(cat(&["x", "y"], &["1", "2", "3"]).is_err());
+        assert!(cat(&[], &["1"]).is_err());
+    }
+
+    #[test]
+    fn only_unquoted_characters_make_a_pattern() {
+        assert!(Glob::lit("a*[b]?", true).meta.is_empty());
+        assert_eq!(Glob::lit("a*[b]?", false).meta, [1, 2, 5]);
+        // 'é*'^x*^$y: the quoted star stays literal and offsets are bytes.
+        let quoted = Glob::lit("é*", true);
+        let word = quoted.join(&Glob::lit("x*", false));
+        let word = word.join(&Glob::plain(v(&["?"]))[0]);
+        assert_eq!(word.text, "é*x*?");
+        assert_eq!(word.meta, [4]);
+        assert_eq!(Glob::lit("no pattern", false).names(), ["no pattern"]);
     }
 
     #[test]
@@ -1016,6 +1094,10 @@ mod tests {
         assert!(glob_match("hello", "h*o"));
         assert!(glob_match("yes", "yes"));
         assert!(!glob_match("ab", "a"));
+        assert!(glob_match("a/b.c", "*.[ch]"));
+        assert!(glob_match("abc", "a?c"));
+        assert!(glob_match("abc", "*b*"));
+        assert!(!glob_match("abc", "[^a]*"));
     }
 
     #[test]
