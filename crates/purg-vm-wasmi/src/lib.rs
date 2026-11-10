@@ -35,9 +35,17 @@ pub const SLICE: u64 = 1 << 20;
 /// The status of a prog stopped by [`SLICE`] checks after a kill.
 pub const KILLED: &str = "killed";
 
+/// The backend. It holds only the configuration: each prog runs in a
+/// wasmi engine of its own.
+///
+/// A wasmi engine keeps every function it has translated, and the module
+/// bytes behind those not yet translated, until the engine is dropped;
+/// dropping the `Module` frees neither. One engine for the whole system
+/// therefore grew with every command run, until the kernel ran out of
+/// memory. With an engine per prog, all of a prog's code, its reactors'
+/// code and its value stack are freed when it exits.
 pub struct Wasmi {
-    engine: Engine,
-    linker: Linker<Ctx>,
+    config: Config,
 }
 
 impl Wasmi {
@@ -52,12 +60,19 @@ impl Wasmi {
             fuel_per_bytes_translated: 0,
             fuel_per_bytes_validated: 0,
         });
-        let engine = Engine::new(&config);
-        let mut linker = Linker::new(&engine);
-        link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-        register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-        Ok(Wasmi { engine, linker })
+        let wasmi = Wasmi { config };
+        // Linking fails the same way every time, so report it here.
+        linker(&Engine::new(&wasmi.config))?;
+        Ok(wasmi)
     }
+}
+
+/// A linker for `engine` with the host calls and `load`/`call`.
+fn linker(engine: &Engine) -> Result<Linker<Ctx>, Error> {
+    let mut linker = Linker::new(engine);
+    link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
+    register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
+    Ok(linker)
 }
 
 /// Reactor instances loaded by `load`, keyed by the prog that loaded them.
@@ -181,9 +196,7 @@ fn load_reactor(
     };
     let engine = caller.engine().clone();
     let module = Module::new(&engine, &wasm).map_err(bad_exec)?;
-    let mut linker = Linker::new(&engine);
-    link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-    register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
+    let linker = linker(&engine)?;
     // A start function runs unsliced: it cannot be resumed.
     let fuel = caller.get_fuel().unwrap_or(SLICE);
     let _ = caller.set_fuel(u64::MAX);
@@ -287,12 +300,11 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
 }
 
 impl Wasmi {
-    fn call(&self, store: &mut Store<Ctx>, wasm: &[u8]) -> Result<Stop, Error> {
-        let module = Module::new(&self.engine, wasm).map_err(bad_exec)?;
+    fn call(engine: &Engine, store: &mut Store<Ctx>, wasm: &[u8]) -> Result<Stop, Error> {
+        let module = Module::new(engine, wasm).map_err(bad_exec)?;
         // A start function runs unsliced: it cannot be resumed.
         store.set_fuel(u64::MAX).map_err(bad_exec)?;
-        let instance = self
-            .linker
+        let instance = linker(engine)?
             .instantiate_and_start(&mut *store, &module)
             .map_err(bad_exec)?;
         let entry = instance
@@ -315,8 +327,9 @@ impl purg_vm::Engine for Wasmi {
     }
 
     fn run(&self, wasm: &[u8], ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
-        let mut store = Store::new(&self.engine, ctx);
-        let res = self.call(&mut store, wasm);
+        let engine = Engine::new(&self.config);
+        let mut store = Store::new(&engine, ctx);
+        let res = Wasmi::call(&engine, &mut store, wasm);
         (store.into_data(), res)
     }
 }
