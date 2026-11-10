@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-9export"
+description = "9export: serve a namespace to a Plan 9 import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "9export"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
