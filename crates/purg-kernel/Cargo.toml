@@ -18,6 +18,8 @@ purg-aarch64.workspace = true
 
 [target.'cfg(target_os = "none")'.dependencies]
 linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
+purg-platform.workspace = true
+spin.workspace = true
 
 [lints]
 workspace = true

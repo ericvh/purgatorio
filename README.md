@@ -12,7 +12,7 @@ just as `.dis` files did.
 The work is phased:
 
 1. A hosted `emu` on Linux and macOS. **Done through Milestone 5.**
-2. A native aarch64 kernel under QEMU `virt`. **Next.**
+2. A native aarch64 kernel under QEMU `virt`. **K1 (boot) is done.**
 3. Graphics (draw, Tk, wm), deliberately last.
 
 Every milestone is validated on aarch64. CI runs natively on Linux aarch64 and
@@ -70,6 +70,8 @@ crates/
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
   purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/
   purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt (PL011, kernel threads, virtio-net)
+  purg-aarch64/      no_std  aarch64 support: DTB, GICv2/v3, timer, exception vectors, MMU, PL011, scheduler
+  purg-kernel/       no_std  the native kernel for QEMU virt (Phase K)
 sdk/
   purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
   purgatorio-macros/         #[purgatorio::main]
@@ -88,6 +90,25 @@ docs/                        design plan, ABI (the roadmap is GitHub issues)
 The `no_std` crates are the code the aarch64 kernel will share unchanged.
 Only `purg-emu` and `purg-vm-wasmtime` use `std`. Inside `purg-emu`, all
 OS-specific code is under `src/host/`.
+
+## Phase K: the native kernel
+
+`purg-kernel` boots on QEMU `virt` at EL2 or EL1, turns on the MMU with an
+identity map and a kernel high half (virtual `0xffff_0000_0000_0000 + p`),
+and builds a heap over the RAM after the image. It reads the DTB that QEMU
+leaves at the start of RAM, brings up the GIC (v2 or v3) and the virtual
+timer at 100 Hz, and runs preemptive kernel threads. Its self-test ends with
+two threads that only make progress when the timer switches between them.
+
+```sh
+cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on cortex-a72 and max
+cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
+```
+
+Each run must match `crates/purg-kernel/expected.out`. Under KVM,
+semihosting does not work, so the kernel powers off through PSCI
+(`-append exit=psci`) and the result comes from the serial output. KVM on
+Apple silicon offers only GICv3 and no EL2, so CI uses the TCG runs.
 
 ## Building and running
 
