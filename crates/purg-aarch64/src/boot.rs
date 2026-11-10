@@ -69,12 +69,14 @@ use crate::semihost;
 #[unsafe(no_mangle)]
 static PURG_BOOT_EL: AtomicUsize = AtomicUsize::new(0);
 
-const BOOT_TABLE_PAGES: usize = 32;
+const BOOT_TABLE_PAGES: usize = 16;
 
 #[repr(C, align(4096))]
 struct Tables([[u64; 512]; BOOT_TABLE_PAGES]);
 
-/// The boot page tables. Enough for the image, a device window and tens of
+/// The boot page tables. The map of a 10 MiB image, the device window and
+/// the RAM window takes 8 pages; each further 2 MiB of image takes one
+/// more. Enough for the image, a device window and tens of
 /// GiB of RAM in 1 GiB blocks.
 static mut BOOT_TABLES: Tables = Tables([[0; 512]; BOOT_TABLE_PAGES]);
 

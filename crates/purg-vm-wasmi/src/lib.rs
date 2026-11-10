@@ -300,8 +300,10 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
 }
 
 impl Wasmi {
-    fn call(engine: &Engine, store: &mut Store<Ctx>, wasm: &[u8]) -> Result<Stop, Error> {
-        let module = Module::new(engine, wasm).map_err(bad_exec)?;
+    fn call(engine: &Engine, store: &mut Store<Ctx>, wasm: Vec<u8>) -> Result<Stop, Error> {
+        let module = Module::new(engine, &wasm).map_err(bad_exec)?;
+        // The engine has its own copy of what it still needs.
+        drop(wasm);
         // A start function runs unsliced: it cannot be resumed.
         store.set_fuel(u64::MAX).map_err(bad_exec)?;
         let instance = linker(engine)?
@@ -326,7 +328,7 @@ impl purg_vm::Engine for Wasmi {
         "wasmi"
     }
 
-    fn run(&self, wasm: &[u8], ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
+    fn run(&self, wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
         let engine = Engine::new(&self.config);
         let mut store = Store::new(&engine, ctx);
         let res = Wasmi::call(&engine, &mut store, wasm);
