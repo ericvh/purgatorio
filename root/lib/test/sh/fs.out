@@ -1,0 +1,132 @@
+walk
+t
+t/README
+t/obj
+t/obj/main.o
+t/src
+t/src/main.c
+t/src/sub
+t/src/sub/x.h
+t/src/util.c
+t/src/sub
+t/src/sub/x.h
+entries and size
+t/obj
+t/obj/main.o
+37
+d-rwxr-xr-x t/obj
+--rw-r--r-- t/obj/main.o
+d-rwxr-xr-x t/obj
+--rw-r--r-- t/obj/main.o
+filter
+t
+t/obj
+t/src
+t/src/main.c
+t/src/sub
+t/src/util.c
+t
+t/README
+t/src
+t/src/main.c
+t/src/sub
+t/src/sub/x.h
+t/src/util.c
+t
+t/README
+t/obj
+t/obj/main.o
+t/src
+t/src/main.c
+t/src/sub
+t
+t/obj
+t/src
+t/src/main.c
+t/src/sub
+t/src/util.c
+select
+t
+t/obj
+t/src
+t/src/sub
+t/src/main.c
+t/README
+t
+t/README
+t/obj
+t/src
+t
+t/src
+t/src/sub
+t/src/sub/x.h
+t
+t/README
+t/obj
+t/src
+t/src/main.c
+t/src/sub
+t/src/util.c
+t
+t/obj
+t/src
+t/src/sub
+t/src/sub/x.h
+merge
+t/src
+t/src/main.c
+t/src/new.c
+t/src/sub
+t/src/sub/x.h
+t/src/util.c
+main
+new
+write
+out/c
+out/c/README
+out/c/src
+out/c/src/main.c
+out/c/src/sub
+out/c/src/sub/x.h
+out/c/src/util.c
+same
+out/c
+out/c/src
+out/c/src/main.c
+out/c/src/sub
+out/c/README
+bundle
+t
+t/README
+t/obj
+t/obj/main.o
+t/src
+t/src/main.c
+t/src/sub
+t/src/sub/x.h
+t/src/util.c
+same
+7
+exec and eval
+got t/src/main.c
+got t/src/util.c
+      5 t/src/main.c
+     10 t/src/util.c
+     15 total
+t/README
+errors
+fs: usage: fs verb arg...
+fs: usage: print entries
+t/obj
+t/obj/main.o
+fs: the expression yields a gate, which is not printed
+fs: frob: unknown verb
+fs: nosuch: file does not exist
+fs: filter: expected a gate, not tree
+fs: print: expected a tree, not gate
+fs: {walk t: file does not exist
+fs: bad mode q
+fs: bad mode u+q
+fs: out/junk: bad bundle
+fs: out/nodir/x: file does not exist
+status fail:errors

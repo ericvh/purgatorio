@@ -24,6 +24,7 @@ echo status $status
 {cat /bin/sh.wasm /bin/sh.wasm | rcmd $a 'cmp /n/client/bin/sh.wasm /bin/sh.wasm && echo same'} >[2] /dev/null
 rcmd $a 'cat /bin/sh.wasm' </dev/null > $d/work/copy
 cmp $d/work/copy /bin/sh.wasm && echo carried
+rcmd -x $d/work $a 'cat /n/client/f' </dev/null
 rcmd $a nosuchcommand </dev/null
 echo status $status
 cpu $a 'ns | grep client/dev' </dev/null

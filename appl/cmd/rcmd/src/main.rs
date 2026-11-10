@@ -1,8 +1,8 @@
-//! rcmd [-A] [-k keyfile] [-e alg] host [cmd [arg...]]: run `cmd` (default
+//! rcmd [-A] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]: run `cmd` (default
 //! `sh`) on `host`, where `auxi/rstyxd` serves the `rstyx` service. The
 //! command's standard input, output and error are this prog's, this
 //! prog's namespace appears there as `/n/client`, and its exit status is
-//! this prog's. A single `cmd` is a command line for the remote `sh`;
+//! this prog's; `-x dir` shows it `dir` instead of `/`. A single `cmd` is a command line for the remote `sh`;
 //! several words are one command and arrive as they were given.
 //!
 //! The connection is authenticated as a mount is (`docs/auth.md`), with
@@ -14,7 +14,7 @@ use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 use rstyx::client::{self, Opts};
 
-const USAGE: &str = "rcmd [-A] [-k keyfile] [-e alg] host [cmd [arg...]]";
+const USAGE: &str = "rcmd [-A] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -31,6 +31,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         match c {
             'A' => o.noauth = true,
             'k' | 'f' => o.keyfile = Some(arg.earg()?),
+            'x' => o.export = Some(arg.earg()?),
             'e' => {
                 let alg = arg.earg()?;
                 if alg != "none" && alg != "clear" {

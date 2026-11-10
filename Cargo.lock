@@ -461,6 +461,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-fs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-filepat",
+ "appl-lib-regexp",
+ "purg-styx",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-getauthinfo"
 version = "0.1.0"
 dependencies = [

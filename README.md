@@ -55,6 +55,9 @@ a `; ` prompt.
 | W4 archive commands: `gettar gunzip gzip lstar puttar tar` (ustar and gzip code in `appl/archive`) | done |
 | Admin commands: `cron logfile mntgen ndb/query`; `mount {command}` | done |
 | Namespace and Styx tools: `styxchat styxmon iostats nsbuild lockfs trfs fcp tarfs archfs` | done |
+| Remote commands: `rcmd cpu auxi/rstyxd auxi/cpuslave`, authenticated with the mount proof; `rcmd host mcpd` is a remote MCP server. See [docs/rcmd.md](docs/rcmd.md) | done (no encryption yet) |
+| Plan 9 interop: `9export -A` and `import -9 tree` (exportfs's opening, no `p9any`) | tested against each other only |
+| `fs`: trees as values (`walk filter select merge write bundle unbundle exec query` and the gates) | done; fs(1)'s other modules remain |
 | Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd` | done |
 | System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext` | done |
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log. See [docs/mcp.md](docs/mcp.md) | stage 2 |
