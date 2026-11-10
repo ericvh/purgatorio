@@ -375,6 +375,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-mk"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-regexp",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-mkdir"
 version = "0.1.0"
 dependencies = [
@@ -439,6 +447,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-p"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-pause"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
@@ -532,6 +547,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-stream"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-strings"
 version = "0.1.0"
 dependencies = [
@@ -590,6 +612,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-time"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-timestamp"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
