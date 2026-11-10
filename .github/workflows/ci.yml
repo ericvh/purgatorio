@@ -189,7 +189,7 @@ jobs:
         run: >
           cargo clippy -p purg-kernel -p purg-aarch64
           --target aarch64-unknown-none --profile kernel -- -D warnings
-      - name: clippy (small build, without auth, tls, net and p9)
+      - name: clippy (small build, without tls, net and p9)
         run: >
           cargo clippy -p purg-kernel -p purg-aarch64
           --target aarch64-unknown-none --profile kernel --no-default-features -- -D warnings

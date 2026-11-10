@@ -32,7 +32,7 @@
 //!   sizes, its code by crate, and the sizes of the guests in `root/bin`
 //!   (with `--guests`, one line per module). `--small` builds the
 //!   smallest kernel: the `kernel-small` profile, without the optional
-//!   features (TLS, mount authentication, virtio-9p, networking).
+//!   features (TLS, virtio-9p, networking).
 //!   `size --elf FILE` reports on a kernel built earlier.
 //!   See `docs/footprint.md`.
 //! - `small`: build the experimental `no_std` and multi-call guests in
@@ -1211,7 +1211,7 @@ fn size_report(args: &[String]) -> Result<()> {
         build.arg("--no-default-features");
         println!(
             "kernel built with --profile kernel-small --no-default-features: \
-             the interpreter for size too, and no auth, tls, net or p9"
+             the interpreter for size too, and no tls, net or p9"
         );
     }
     run(&mut build)?;
@@ -1234,7 +1234,16 @@ fn small() -> Result<()> {
         cmd.current_dir(ws.join("appl/small"))
             .args(["build", "--release", "--target", triple])
             .env("CARGO_TARGET_DIR", &target)
-            .env("CARGO_ENCODED_RUSTFLAGS", reproducible_rustflags(&ws));
+            // The `std` module gets the guests' stack size; the `no_std`
+            // ones set their own in their build scripts.
+            .env(
+                "CARGO_ENCODED_RUSTFLAGS",
+                if *triple == GUEST_TARGET {
+                    guest_rustflags(&ws)?
+                } else {
+                    reproducible_rustflags(&ws)
+                },
+            );
         for p in *packages {
             cmd.args(["-p", p]);
         }
