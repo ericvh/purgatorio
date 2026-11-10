@@ -175,6 +175,21 @@ extern "C" fn boot_enable(ttbr0: usize, ttbr1: usize) {
 global_asm!(
     r#"
 .section .text.boot, "ax"
+// The arm64 Linux Image header (Documentation/arch/arm64/booting.rst), so
+// QEMU and boot loaders can load the kernel as an Image: then they load an
+// initrd and pass the DTB in x0. Loaded as an ELF, the first instruction
+// simply branches over it.
+.global _head
+_head:
+    b       _start                  // code0
+    .long   0                       // code1
+    .quad   0x200000                // text_offset: RAM base + 2 MiB
+    .quad   __image_size            // image_size, including bss and stack
+    .quad   0x2                     // flags: little-endian, 4 KiB pages
+    .quad   0, 0, 0                 // res2..res4
+    .ascii  "ARM\x64"               // magic
+    .long   0                       // res5: no PE header
+
 .global _start
 _start:
     mrs     x1, mpidr_el1

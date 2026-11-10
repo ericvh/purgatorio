@@ -60,4 +60,5 @@ SECTIONS
     }
 }
 
-_start_phys = _start - KERNEL_VBASE;
+_start_phys = _head - KERNEL_VBASE;
+__image_size = __image_end - __image_start;

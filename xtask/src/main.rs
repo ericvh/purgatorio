@@ -420,7 +420,9 @@ fn expand_golden(text: &str, prefix: &str, ws: &Path) -> Result<String> {
     Ok(out)
 }
 
-const KERNEL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Running the conformance guests and the sh corpus under wasmi in TCG
+/// takes about as long as the probe.
+const KERNEL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// One QEMU configuration `xtask kernel` boots: a name, the machine
 /// arguments before `-kernel`, and the exception level the kernel must
@@ -429,6 +431,8 @@ struct KernelRun {
     name: &'static str,
     args: &'static [&'static str],
     el: u32,
+    /// Boot with `-initrd root.tar` instead of the compiled-in root.
+    initrd: bool,
 }
 
 /// The TCG runs: GICv2 and GICv3 at EL1, and GICv3 with EL2
@@ -437,14 +441,16 @@ struct KernelRun {
 /// assumptions about ID registers). They exit through semihosting.
 const KERNEL_TCG_RUNS: &[KernelRun] = &[
     KernelRun {
-        name: "tcg cortex-a72 gicv2",
+        name: "tcg cortex-a72 gicv2 initrd",
         args: &["-M", "virt,gic-version=2", "-cpu", "cortex-a72"],
         el: 1,
+        initrd: true,
     },
     KernelRun {
         name: "tcg cortex-a72 gicv3",
         args: &["-M", "virt,gic-version=3", "-cpu", "cortex-a72"],
         el: 1,
+        initrd: false,
     },
     KernelRun {
         name: "tcg cortex-a72 gicv3 el2",
@@ -455,11 +461,13 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
             "cortex-a72",
         ],
         el: 2,
+        initrd: false,
     },
     KernelRun {
         name: "tcg max gicv3 el2",
         args: &["-M", "virt,gic-version=3,virtualization=on", "-cpu", "max"],
         el: 2,
+        initrd: false,
     },
 ];
 
@@ -468,25 +476,72 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
 /// through PSCI `SYSTEM_OFF` (`exit=psci`), QEMU's status is 0 either way,
 /// and pass/fail comes from the serial output.
 const KERNEL_KVM_RUN: KernelRun = KernelRun {
-    name: "kvm host gicv3",
-    args: &[
-        "-accel",
-        "kvm",
-        "-cpu",
-        "host",
-        "-M",
-        "virt,gic-version=3",
-        "-append",
-        "exit=psci",
-    ],
+    name: "kvm host gicv3 initrd",
+    args: &["-accel", "kvm", "-cpu", "host", "-M", "virt,gic-version=3"],
     el: 1,
+    initrd: true,
 };
+
+/// Turns the kernel's ELF into a raw arm64 `Image`: each loadable segment
+/// copied to its physical address, relative to the lowest one. The image
+/// starts with the arm64 Image header (see the kernel's boot.rs), so QEMU
+/// loads it Linux-style, which is what makes it load `-initrd`.
+fn elf_to_image(elf: &[u8]) -> Result<Vec<u8>> {
+    let u16_at = |o: usize| elf.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u64_at = |o: usize| {
+        elf.get(o..o + 8)
+            .map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes")))
+    };
+    if elf.get(..6) != Some(b"\x7fELF\x02\x01".as_slice()) {
+        return Err(String::from("kernel: not a 64-bit little-endian ELF"));
+    }
+    let bad = || String::from("kernel: truncated ELF");
+    let phoff = u64_at(0x20).ok_or_else(bad)? as usize;
+    let phentsize = u16_at(0x36).ok_or_else(bad)? as usize;
+    let phnum = u16_at(0x38).ok_or_else(bad)? as usize;
+    let mut segs = Vec::new();
+    for i in 0..phnum {
+        let ph = phoff + i * phentsize;
+        let kind = elf.get(ph..ph + 4).ok_or_else(bad)?;
+        if kind != 1u32.to_le_bytes() {
+            continue;
+        }
+        let offset = u64_at(ph + 0x08).ok_or_else(bad)? as usize;
+        let paddr = u64_at(ph + 0x18).ok_or_else(bad)?;
+        let filesz = u64_at(ph + 0x20).ok_or_else(bad)? as usize;
+        if filesz > 0 {
+            segs.push((paddr, elf.get(offset..offset + filesz).ok_or_else(bad)?));
+        }
+    }
+    let base = segs
+        .iter()
+        .map(|s| s.0)
+        .min()
+        .ok_or("kernel: no loadable segments")?;
+    let mut out = Vec::new();
+    for (paddr, data) in segs {
+        let at = (paddr - base) as usize;
+        if out.len() < at + data.len() {
+            out.resize(at + data.len(), 0);
+        }
+        out[at..at + data.len()].copy_from_slice(data);
+    }
+    if out.get(56..60) != Some(b"ARMd".as_slice()) {
+        return Err(String::from("kernel: the image has no arm64 Image header"));
+    }
+    Ok(out)
+}
 
 /// Builds `purg-kernel` and boots it under each QEMU configuration (TCG,
 /// or KVM with `--kvm`), checking the exit status, the boot EL line and
 /// the rest of the serial output against `crates/purg-kernel/expected.out`.
 fn kernel(kvm: bool) -> Result<()> {
     let ws = workspace();
+    let initrd = initrd()?;
+    let initrd = initrd
+        .to_str()
+        .ok_or("initrd path is not UTF-8")?
+        .to_owned();
     run(cargo().current_dir(&ws).args([
         "build",
         "-p",
@@ -500,6 +555,9 @@ fn kernel(kvm: bool) -> Result<()> {
         .join("target")
         .join(PROBE_TARGET)
         .join("kernel/purg-kernel");
+    let elf = fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let image = image.with_extension("img");
+    fs::write(&image, elf_to_image(&elf)?).map_err(|e| format!("{}: {e}", image.display()))?;
     let golden = ws.join("crates/purg-kernel/expected.out");
     let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
     let runs: Vec<&KernelRun> = if kvm {
@@ -515,8 +573,15 @@ fn kernel(kvm: bool) -> Result<()> {
     for k in runs {
         let mut args: Vec<&str> = k.args.to_vec();
         args.extend(["-m", "512M", "-nographic"]);
-        if !kvm {
-            args.push("-semihosting");
+        if k.initrd {
+            args.extend(["-initrd", &initrd]);
+        }
+        // `test` runs the conformance guests and the sh corpus instead of
+        // an interactive shell.
+        if kvm {
+            args.extend(["-append", "exit=psci test"]);
+        } else {
+            args.extend(["-semihosting", "-append", "test"]);
         }
         args.push("-kernel");
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
@@ -530,16 +595,23 @@ fn kernel(kvm: bool) -> Result<()> {
         };
         print!("{}", r.serial);
         let el_line = format!("kernel: booted at EL{}", k.el);
+        let root_line = if k.initrd {
+            "kernel: root from the initrd"
+        } else {
+            "kernel: root compiled in"
+        };
         let rest: String = r
             .serial
             .lines()
-            .filter(|l| !l.starts_with("kernel: booted at EL"))
+            .filter(|l| !l.starts_with("kernel: booted at EL") && !l.starts_with("kernel: root "))
             .flat_map(|l| [l, "\n"])
             .collect();
         let problem = if !r.status.success() {
             Some(format!("QEMU exited with {}", r.status))
         } else if !r.serial.lines().any(|l| l == el_line) {
             Some(format!("no `{el_line}` line"))
+        } else if !r.serial.lines().any(|l| l == root_line) {
+            Some(format!("no `{root_line}` line"))
         } else if rest != want {
             Some(format!(
                 "output differs from {}; expected (less the EL line):\n{want}",

@@ -17,6 +17,11 @@ use purg_aarch64::semihost;
 use crate::board::{ExitMethod, board, dtb_size, exit_method};
 use crate::boot::{self, KERNEL_BOOT_EL};
 use crate::irq;
+use crate::system::{self, Mode};
+
+/// The root file system compiled into the image: a ustar archive of
+/// `root/bin` and `root/lib` (see build.rs).
+static ROOT_TAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/root.tar"));
 
 #[global_allocator]
 static HEAP: LockedHeap = LockedHeap::empty();
@@ -188,13 +193,36 @@ fn check_board(info: &BootInfo<'_>) {
     println!("kernel: dtb agrees with the boot memory map");
 }
 
-fn init_heap() -> Region {
+/// The heap is the largest stretch of RAM after the image that holds
+/// nothing the kernel still needs: the initrd, whose pages the RAM root
+/// borrows for good, and the DTB, which `BootInfo` borrows from.
+fn init_heap(reserved: &[Region]) -> Region {
     let ram = board().ram;
-    let start = boot::image_end();
-    let heap = Region {
-        base: start,
-        size: ram.end() - start,
-    };
+    let mut best = Region { base: 0, size: 0 };
+    let mut base = boot::image_end();
+    // No allocation: the heap does not exist yet.
+    let mut cuts = [Region { base: 0, size: 0 }; 4];
+    let n = reserved.len().min(cuts.len());
+    cuts[..n].copy_from_slice(&reserved[..n]);
+    let cuts = &mut cuts[..n];
+    cuts.sort_unstable_by_key(|r| r.base);
+    for r in cuts.iter().chain(core::iter::once(&Region {
+        base: ram.end(),
+        size: 0,
+    })) {
+        if r.end() <= base {
+            continue;
+        }
+        let top = r.base.min(ram.end());
+        if top > base && top - base > best.size {
+            best = Region {
+                base,
+                size: top - base,
+            };
+        }
+        base = base.max(r.end().next_multiple_of(PAGE_SIZE));
+    }
+    let heap = best;
     // SAFETY: RAM after the image is unused and linear-mapped RW.
     unsafe {
         HEAP.lock()
@@ -310,7 +338,16 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     println!("kernel: running in the high half");
     check_board(&info);
     check_sections();
-    let heap = init_heap();
+    let initrd = info.initrd.map(|r| Region {
+        base: r.base as usize,
+        size: r.size as usize,
+    });
+    let dtb_region = Region {
+        base: mmu::virt_to_phys(dtb.as_ptr() as usize),
+        size: dtb.len(),
+    };
+    let none = Region { base: 0, size: 0 };
+    let heap = init_heap(&[initrd.unwrap_or(none), dtb_region]);
     heap_test(heap);
     rebuild_tables();
     irq::init(&info);
@@ -318,6 +355,36 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     println!("kernel: timer interrupts at {} Hz", irq::TICK_HZ);
     irq::alternation_test();
     println!("kernel: two threads alternated under timer preemption");
+
+    // The root is compiled in, as in Inferno's kernels; an initrd named by
+    // the DTB replaces it.
+    let (archive, from): (&'static [u8], &str) = match initrd {
+        // SAFETY: the DTB says the loader put the initrd here; it is in the
+        // linear-mapped RAM, outside the heap, and never reused.
+        Some(i) => (
+            unsafe { core::slice::from_raw_parts(mmu::phys_to_virt(i.base) as *const u8, i.size) },
+            "from the initrd",
+        ),
+        None => (ROOT_TAR, "compiled in"),
+    };
+    check!(
+        archive.iter().any(|&b| b != 0),
+        "no root: build the guests (cargo xtask build-root) or boot with -initrd"
+    );
+    let test = info
+        .bootargs
+        .is_some_and(|a| a.split_ascii_whitespace().any(|w| w == "test"));
+    let mode = if test { Mode::Test } else { Mode::Interactive };
+    println!("kernel: root {from}");
+    let failed = system::start(
+        archive,
+        info.uart.base as usize,
+        info.rtc.map(|r| r.base as usize),
+        mode,
+    );
+    if failed != 0 {
+        fail(format_args!("{failed} failed"));
+    }
     println!("kernel: ok");
     exit(0)
 }

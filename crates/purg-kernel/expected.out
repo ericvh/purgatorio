@@ -1,5 +1,5 @@
 Purgatorio kernel 0.1.0 (aarch64)
-kernel: dtb at the start of RAM
+kernel: dtb from x0
 kernel: running in the high half
 kernel: dtb agrees with the boot memory map
 kernel: sections: text rx, rodata r, data rw, stack guard unmapped
@@ -7,4 +7,78 @@ kernel: heap: vec, box, btreemap, 64 MiB block ok
 kernel: page tables rebuilt at runtime
 kernel: timer interrupts at 100 Hz
 kernel: two threads alternated under timer preemption
+kernel: run echo hello world
+hello world
+kernel: ok
+kernel: run cat /lib/probe/hello.txt
+hello from the probe root
+kernel: ok
+kernel: run cat /nonexistent
+cat: /nonexistent: file does not exist
+kernel: failed as expected: fail:errors
+kernel: run /bin/test/abi.wasm
+ok bad_pointer_read
+ok bad_pointer_stat
+ok std_open_missing
+ok std_read_file
+ok std_read_dir
+ok stat_dir
+ok fstat_stdout
+ok dirread_root
+ok werrstr_roundtrip
+kernel: ok
+kernel: run /bin/test/procs.wasm
+ok spawn_echo
+cat: /nonexistent: file does not exist
+ok child_failure_status
+ok spawn_missing
+ok env_inherited
+ok newfd_child
+ok std_sleep
+ok files
+ok chdir_relative
+ok bind_and_unmount
+kernel: ok
+kernel: run /bin/test/m3.wasm
+ok file2chan
+ok export
+ok kill
+kernel: ok
+kernel: run /bin/test/wasi.wasm
+ok read
+ok readdir
+ok files
+ok allocate
+ok nolink
+ok noreadlink
+ok clock
+ok raise
+ok sock
+ok sleep
+ok args
+kernel: ok
+kernel: sh /lib/test/sh/bind.sh
+kernel: ok
+kernel: sh /lib/test/sh/depth.sh
+kernel: ok
+kernel: sh /lib/test/sh/env.sh
+kernel: ok
+kernel: sh /lib/test/sh/files.sh
+kernel: ok
+kernel: sh /lib/test/sh/jobs.sh
+kernel: ok
+kernel: sh /lib/test/sh/m3.sh
+kernel: ok
+kernel: sh /lib/test/sh/m5.sh
+kernel: ok
+kernel: sh /lib/test/sh/pipes.sh
+kernel: ok
+kernel: sh /lib/test/sh/redir.sh
+kernel: ok
+kernel: sh /lib/test/sh/status.sh
+kernel: ok
+kernel: sh /lib/test/sh/tools.sh
+kernel: ok
+kernel: sh /lib/test/sh/words.sh
+kernel: ok
 kernel: ok
