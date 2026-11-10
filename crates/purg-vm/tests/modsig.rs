@@ -74,7 +74,7 @@ impl Engine for NoEngine {
     fn name(&self) -> &'static str {
         "none"
     }
-    fn run(&self, _wasm: &[u8], ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
+    fn run(&self, _wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
         (ctx, Err(Error::new("not run")))
     }
 }
