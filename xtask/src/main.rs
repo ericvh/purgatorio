@@ -323,6 +323,7 @@ fn probe() -> Result<()> {
     print!("{got}");
     let golden = ws.join("crates/purg-probe/expected.out");
     let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
+    let want = expand_golden(&want, "probe", &ws)?;
     if !status.success() {
         return Err(format!("probe exited with {status}"));
     }
@@ -337,6 +338,37 @@ fn probe() -> Result<()> {
     }
     eprintln!("probe: passed in {:.2}s", elapsed.as_secs_f64());
     Ok(())
+}
+
+/// The sh corpus: the `.sh` files in `root/lib/test/sh`, sorted, as the
+/// probe and the kernel run them.
+const SH_CORPUS: &str = "lib/test/sh";
+
+/// Expands a golden file's `@sh-corpus` line into the lines the probe or
+/// kernel prints for each corpus script (`<prefix>: sh /lib/test/sh/x.sh`
+/// then `<prefix>: ok`). Listing the scripts here rather than in each
+/// golden file means a new script changes no golden file, so branches that
+/// add scripts do not conflict.
+fn expand_golden(text: &str, prefix: &str, ws: &Path) -> Result<String> {
+    let dir = ws.join("root").join(SH_CORPUS);
+    let mut scripts: Vec<String> = fs::read_dir(&dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".sh"))
+        .collect();
+    scripts.sort();
+    let mut out = String::new();
+    for line in text.lines() {
+        if line == "@sh-corpus" {
+            for s in &scripts {
+                out.push_str(&format!("{prefix}: sh /{SH_CORPUS}/{s}\n{prefix}: ok\n"));
+            }
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
 }
 
 /// Mounts the probe's export from this host and reads a file through it.

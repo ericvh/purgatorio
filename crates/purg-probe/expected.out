@@ -66,38 +66,7 @@ ok sock
 ok sleep
 ok args
 probe: ok
-probe: sh /lib/test/sh/admin.sh
-probe: ok
-probe: sh /lib/test/sh/archive.sh
-probe: ok
-probe: sh /lib/test/sh/bind.sh
-probe: ok
-probe: sh /lib/test/sh/depth.sh
-probe: ok
-probe: sh /lib/test/sh/env.sh
-probe: ok
-probe: sh /lib/test/sh/files.sh
-probe: ok
-probe: sh /lib/test/sh/jobs.sh
-probe: ok
-probe: sh /lib/test/sh/m3.sh
-probe: ok
-probe: sh /lib/test/sh/m5.sh
-probe: ok
-probe: sh /lib/test/sh/pipes.sh
-probe: ok
-probe: sh /lib/test/sh/redir.sh
-probe: ok
-probe: sh /lib/test/sh/regex.sh
-probe: ok
-probe: sh /lib/test/sh/status.sh
-probe: ok
-probe: sh /lib/test/sh/string.sh
-probe: ok
-probe: sh /lib/test/sh/tools.sh
-probe: ok
-probe: sh /lib/test/sh/words.sh
-probe: ok
+@sh-corpus
 probe: net ready
 probe: net served
 probe: pass
