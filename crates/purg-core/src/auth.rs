@@ -1,50 +1,148 @@
-//! Purgatorio mount authentication: an Ed25519 signature over a server
-//! challenge. This is not Inferno's keyring protocol. Real Inferno clients
-//! still mount with `-A`.
+//! Purgatorio mount authentication (`docs/auth.md`). This is not Inferno's
+//! keyring protocol. Real Inferno clients still mount with `-A`.
 //!
-//! The client writes `signature[64] || public_key[32]`. The server accepts
-//! the signature only when that public key is one it already holds.
+//! The client writes one proof to the auth fid: version 1, `signature[64]
+//! || public_key[32]` over the raw challenge, or version 2, which signs a
+//! domain-separated message and can carry a signer's certificate. The
+//! formats and the server's check are in `purg_auth`.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 pub use purg_abi::auth::{
-    CHALLENGE, FAILED, NO_KEY, NOT_REQUIRED, PROOF, PUBLIC, REQUIRED, SEED, SIGNATURE,
+    CHALLENGE, EXPIRED, FAILED, NAME_MISMATCH, NO_KEY, NOT_REQUIRED, PROOF, PUBLIC, REQUIRED,
+    REVOKED, SEED, SIGNATURE, UNTRUSTED,
 };
+pub use purg_auth::cert::Cert;
+pub use purg_auth::{public_key, sign, verify};
+
+use crate::pgrp::Pgrp;
+use crate::sysfile::open;
 
 /// `root/lib/test/auth.key` is this repeated byte. It is a public test
 /// fixture, shared by the emu and the probe, not a secret to deploy.
 pub const FIXTURE: u8 = 0x42;
 
-pub fn public_key(seed: &[u8; SEED]) -> [u8; PUBLIC] {
-    SigningKey::from_bytes(seed).verifying_key().to_bytes()
-}
-
-pub fn sign(seed: &[u8; SEED], message: &[u8]) -> [u8; SIGNATURE] {
-    SigningKey::from_bytes(seed).sign(message).to_bytes()
-}
-
-pub fn verify(public: &[u8; PUBLIC], message: &[u8], signature: &[u8; SIGNATURE]) -> bool {
-    let Ok(key) = VerifyingKey::from_bytes(public) else {
-        return false;
-    };
-    let Ok(signature) = Signature::from_slice(signature) else {
-        return false;
-    };
-    key.verify(message, &signature).is_ok()
-}
-
-/// `true` when `proof` is a signature by one of `allowed` over `challenge`.
+/// `true` when `proof` is a version 1 proof by one of `allowed` over
+/// `challenge`.
 pub fn accept(allowed: &[[u8; PUBLIC]], challenge: &[u8], proof: &[u8]) -> bool {
-    if proof.len() != PROOF {
-        return false;
+    let policy = purg_auth::proof::Policy {
+        keys: allowed,
+        signers: &[],
+        revoked: Some(&[]),
+        now: 0,
+    };
+    proof.len() == PROOF && purg_auth::proof::check(&policy, challenge, "", "", proof).is_ok()
+}
+
+/// Reads a whole small file (at most `max` bytes). `None` when it is
+/// missing, unreadable or larger.
+pub(crate) fn read_file(pgrp: &Pgrp, path: &str, max: usize) -> Option<Vec<u8>> {
+    let c = pgrp.namec(path, "/").ok()?;
+    let c = open(c, purg_abi::mode::OREAD).ok()?;
+    let mut out = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        let n = c.dev.read(&c, &mut buf, out.len() as u64).ok()?;
+        if n == 0 {
+            return Some(out);
+        }
+        out.extend_from_slice(&buf[..n]);
+        if out.len() > max {
+            return None;
+        }
     }
-    let Ok(signature) = <[u8; SIGNATURE]>::try_from(&proof[..SIGNATURE]) else {
-        return false;
+}
+
+/// Reads a 32-byte key file. Anything else, including a missing file, is
+/// `None`.
+pub(crate) fn read_key(pgrp: &Pgrp, path: &str) -> Option<[u8; PUBLIC]> {
+    read_file(pgrp, path, PUBLIC)?.try_into().ok()
+}
+
+/// A name that can be a path element under `usr/`.
+pub(crate) fn safe_user(user: &str) -> bool {
+    !user.is_empty() && user != "." && user != ".." && !user.contains('/')
+}
+
+/// A key the client signs with: its seed (or `#¤` holding it) and, when it
+/// has one, a certificate for its public key.
+enum Signer {
+    Seed([u8; SEED]),
+    Factotum([u8; PUBLIC]),
+}
+
+/// Builds the client's proof for the kernel's own mount (`afd = -1`). The
+/// key comes from `#¤` (with the certificate loaded into it), an authinfo
+/// in `/usr/<user>/keyring/default`, or a seed file: `/usr/<user>/key`,
+/// then the public test key.
+pub(crate) fn client_proof(
+    pgrp: &Pgrp,
+    user: &str,
+    aname: &str,
+    challenge: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    let (signer, cert) = client_key(pgrp, user)?;
+    let public = match &signer {
+        Signer::Seed(s) => public_key(s),
+        Signer::Factotum(p) => *p,
     };
-    let Ok(public) = <[u8; PUBLIC]>::try_from(&proof[SIGNATURE..]) else {
-        return false;
+    let cert = cert.filter(|c| c.key == public);
+    let (kind, body) = purg_auth::proof::body(cert.as_ref(), &public);
+    let msg = purg_auth::proof::message(challenge, user, aname, kind, &body);
+    let sig = match signer {
+        Signer::Seed(s) => sign(&s, &msg),
+        Signer::Factotum(_) => {
+            let p = factotum_sign(pgrp, &msg).ok_or(crate::error::Error::new(NO_KEY))?;
+            p[..SIGNATURE]
+                .try_into()
+                .map_err(|_| crate::error::Error::new(NO_KEY))?
+        }
     };
-    allowed.contains(&public) && verify(&public, challenge, &signature)
+    Ok(purg_auth::proof::assemble(kind, &sig, &body))
+}
+
+fn client_key(pgrp: &Pgrp, user: &str) -> crate::error::Result<(Signer, Option<Cert>)> {
+    if let Some(ctl) = read_file(pgrp, "#¤/ctl", 4096)
+        && let Some(hex) = ctl.strip_prefix(b"key ")
+        && let Some(public) = hex
+            .get(..PUBLIC * 2)
+            .and_then(purg_auth::hex::array::<PUBLIC>)
+    {
+        let cert = purg_auth::keys::find_cert(&ctl);
+        return Ok((Signer::Factotum(public), cert));
+    }
+    if safe_user(user) {
+        let path = alloc::format!("/usr/{user}/keyring/default");
+        if let Some(text) = read_file(pgrp, &path, 4096)
+            && let Ok(info) = purg_auth::keys::AuthInfo::parse(&text)
+        {
+            return Ok((Signer::Seed(info.seed), Some(info.cert)));
+        }
+    }
+    let mut paths = Vec::new();
+    if safe_user(user) {
+        paths.push(alloc::format!("/usr/{user}/key"));
+    }
+    paths.push(String::from("/lib/test/auth.key"));
+    for path in paths {
+        if let Some(key) = read_key(pgrp, &path) {
+            return Ok((Signer::Seed(key), None));
+        }
+    }
+    Err(crate::error::Error::new(NO_KEY))
+}
+
+/// Asks `#¤/rpc` to sign `msg`. `None` when the agent has no key.
+fn factotum_sign(pgrp: &Pgrp, msg: &[u8]) -> Option<[u8; PROOF]> {
+    let c = pgrp.namec("#¤/rpc", "/").ok()?;
+    let c = open(c, purg_abi::mode::ORDWR).ok()?;
+    if c.dev.write(&c, msg, 0).ok()? != msg.len() {
+        return None;
+    }
+    let mut buf = [0u8; PROOF];
+    let n = c.dev.read(&c, &mut buf, 0).ok()?;
+    (n == buf.len()).then_some(buf)
 }
 
 #[cfg(test)]

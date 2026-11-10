@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.5)
+# Purgatorio application ABI (v0.6)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.5`. The loader rejects a mismatched version. Modules
+section containing `0.6`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -88,7 +88,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.5
+## `purgatorio` imports in v0.6
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -157,21 +157,34 @@ The host writes `args` into a fresh page of the module's memory, the export
 overwrites that page with its result and returns the result length, and the
 host copies up to `olen` bytes of it to `out`.
 
-### Authentication (M5)
+### Authentication (M5; version 2 proofs in v0.6)
 
 A mount authenticates before `Tattach` with an Ed25519 signature over a
 challenge from the server. This is not Inferno's keyring protocol, so real
-Inferno peers mount with `-A`.
+Inferno peers mount with `-A`. `docs/auth.md` has the formats, the tools
+and a security review.
 
-- The server holds public keys: the 32-byte `usr/<uname>/key.pub` under the
-  exported tree. With no key it answers `Tauth` with "authentication not
-  required", as Inferno does.
-- The client signs through `#¤/rpc` when a factotum holds a seed, and
-  otherwise reads a seed from `/usr/<user>/key` (or the public test key
-  `/lib/test/auth.key`). It writes `signature[64] || public_key[32]` to the
-  auth fid.
-- `MNOAUTH` (`0x8000_0000`, the `-A` flag) skips `Tauth`. A server that has
-  a key then rejects the attach.
+- The server trusts keys it holds directly (the 32-byte
+  `usr/<uname>/key.pub` and `lib/test/auth.key.pub` under the exported
+  tree) and certificates from the signers listed in `lib/keys/signers`,
+  unless a key is in `lib/keys/revoked`. With no key and no signer it
+  answers `Tauth` with "authentication not required", as Inferno does.
+- The client writes its proof to the auth fid in one write. A version 1
+  proof is exactly 96 bytes, `signature[64] || public_key[32]` over the raw
+  challenge, and is accepted only for directly held keys. A version 2
+  proof is `0x02 || kind || signature[64] || body`: the body is the public
+  key (kind 0) or a `pgcert1` certificate (kind 1), and the signature
+  covers a context string, the challenge, the `Tauth` uname and aname, the
+  kind and the body. A rejected proof fails the write with `authentication
+  failed`, `certificate expired`, `certificate revoked`, `untrusted signer`
+  or `certificate name mismatch`.
+- The client's key comes from `#¤` (with a certificate loaded by `cert
+  ...` on its `ctl`), an authinfo in `/usr/<user>/keyring/default`, or a
+  seed in `/usr/<user>/key` (or the public test key `/lib/test/auth.key`).
+  The SDK also asks the guest factotum at `/mnt/factotum` first.
+- The `Tattach` must name the same uname and aname as the `Tauth`.
+- `MNOAUTH` (`0x8000_0000`, the `-A` flag) skips `Tauth`. A server that
+  authenticates then rejects the attach.
 - With `afd = -1`, `mount` does all of this itself. A guest can instead run
   the exchange with `fauth` (below) and pass the auth fd to `mount`.
   `MNOAUTH` is ignored when an `afd` is given.
@@ -180,11 +193,10 @@ Inferno peers mount with `-A`.
 
 `fauth(fd, aname, alen)` versions the 9P conversation on `fd` and sends
 `Tauth` for the caller's user and `aname`. It returns a new fd on the auth
-file. Reading it gives the server's 32-byte challenge. Writing
-`signature[64] || public_key[32]` to it completes the exchange. A wrong
-proof fails that write with `authentication failed`. The caller then calls
-`mount(fd, afd, ...)` with the same `aname`, which attaches with the auth
-fid. An `afd` that did not authenticate makes the attach fail with
+file. Reading it gives the server's 32-byte challenge. Writing a proof
+(above) to it completes the exchange. A wrong proof fails that write. The
+caller then calls `mount(fd, afd, ...)` with the same `aname`, which
+attaches with the auth fid. An `afd` that did not authenticate makes the attach fail with
 `authentication required`. An `afd` that is not an auth fd, or that belongs
 to a different conversation, fails with `inappropriate use of fd`.
 
@@ -194,11 +206,13 @@ leaves nothing running on `fd`. Only one `fauth` may be outstanding on a
 conversation. After a successful `fauth`, mount that conversation with the
 `afd` and not with `afd = -1`.
 
-The SDK has `purgatorio::fauth`, plus `purgatorio::auth::{proof,
-authenticate, amount}`. `proof` signs through `#¤/rpc`, or else with the
-seed in `/usr/<user>/key` or `/lib/test/auth.key`. `amount` is Inferno's
-`auth->amount`: fauth, authenticate, then mount, falling back to a plain
-mount when the server does not authenticate. `import` uses it.
+The SDK has `purgatorio::fauth`, plus `purgatorio::auth::{proof, proof_for,
+authenticate, authenticate_for, amount, amount_key}`. `proof_for` builds a
+version 2 proof from the sources above, or from an authinfo given as
+`keyfile`. `amount` is Inferno's `auth->amount`: fauth, authenticate, then
+mount, falling back to a plain mount when the server does not
+authenticate. `mount` and `import` use it, with `-k keyfile` for
+`amount_key`.
 
 ### `stream` (v0.5)
 
