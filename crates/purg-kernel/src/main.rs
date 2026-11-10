@@ -27,10 +27,10 @@
 //! - device window: physical 0..1 GiB, Device-nGnRnE, never executable;
 //! - RAM from 0x4000_0000 linear-mapped Normal RW (the boot tables map a
 //!   fixed 512 MiB window, the runtime tables what the DTB reports); the image's
-//!   text RX, rodata R, data/bss RW, an unmapped guard page, then a 256 KiB
+//!   text RX, rodata R, data/bss RW, an unmapped guard page, then a 64 KiB
 //!   boot stack RW;
 //! - heap: the largest free stretch of RAM after the image;
-//! - boot page tables: 32 pages in .bss.
+//! - boot page tables: 16 pages in .bss (the map takes 8).
 #![cfg_attr(target_os = "none", no_std, no_main)]
 
 #[cfg(not(target_os = "none"))]

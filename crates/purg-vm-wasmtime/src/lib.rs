@@ -258,8 +258,9 @@ fn bad_exec(e: impl std::fmt::Display) -> Error {
 }
 
 impl Wasmtime {
-    fn call(&self, store: &mut Store<Ctx>, wasm: &[u8]) -> Result<Stop, Error> {
-        let module = self.module(wasm)?;
+    fn call(&self, store: &mut Store<Ctx>, wasm: Vec<u8>) -> Result<Stop, Error> {
+        let module = self.module(&wasm)?;
+        drop(wasm);
         let instance = self
             .linker
             .instantiate(&mut *store, &module)
@@ -282,7 +283,7 @@ impl purg_vm::Engine for Wasmtime {
         "wasmtime"
     }
 
-    fn run(&self, wasm: &[u8], ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
+    fn run(&self, wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
         let mut store = Store::new(&self.engine, ctx);
         let mut seen_killed = false;
         store.epoch_deadline_callback(move |state| {
