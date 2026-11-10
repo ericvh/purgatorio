@@ -30,9 +30,10 @@
 //!   root file system.
 //! - `size [--guests] [--small]`: build `purg-kernel` and print its section
 //!   sizes, its code by crate, and the sizes of the guests in `root/bin`
-//!   (with `--guests`, one line per module). `--small` builds the kernel
-//!   without its optional features (TLS, mount authentication, virtio-9p,
-//!   networking). `size --elf FILE` reports on a kernel built earlier.
+//!   (with `--guests`, one line per module). `--small` builds the
+//!   smallest kernel: the `kernel-small` profile, without the optional
+//!   features (TLS, mount authentication, virtio-9p, networking).
+//!   `size --elf FILE` reports on a kernel built earlier.
 //!   See `docs/footprint.md`.
 //! - `small`: build the experimental `no_std` and multi-call guests in
 //!   `appl/small` (its own workspace) and compare their sizes with the
@@ -1194,6 +1195,7 @@ fn size_report(args: &[String]) -> Result<()> {
         }
     }
     let ws = workspace();
+    let profile = if small { "kernel-small" } else { "kernel" };
     let mut build = cargo();
     build.current_dir(&ws).args([
         "build",
@@ -1203,17 +1205,21 @@ fn size_report(args: &[String]) -> Result<()> {
         "--target",
         PROBE_TARGET,
         "--profile",
-        "kernel",
+        profile,
     ]);
     if small {
         build.arg("--no-default-features");
-        println!("kernel built with --no-default-features: no auth, tls, net or p9");
+        println!(
+            "kernel built with --profile kernel-small --no-default-features: \
+             the interpreter for size too, and no auth, tls, net or p9"
+        );
     }
     run(&mut build)?;
     size::kernel(
         &ws.join("target")
             .join(PROBE_TARGET)
-            .join("kernel/purg-kernel"),
+            .join(profile)
+            .join("purg-kernel"),
     )?;
     size::guests(&ws.join("root"), each)
 }
