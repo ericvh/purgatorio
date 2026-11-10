@@ -1406,6 +1406,10 @@ dependencies = [
 [[package]]
 name = "purg-aarch64"
 version = "0.1.0"
+dependencies = [
+ "purg-platform",
+ "spin 0.10.1",
+]
 
 [[package]]
 name = "purg-abi"
