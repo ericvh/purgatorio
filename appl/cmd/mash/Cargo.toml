@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-mash"
+description = "mash: the programmable shell with built-in make"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mash"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+regexp.workspace = true
+
+[lints]
+workspace = true

@@ -243,6 +243,29 @@ fn sh_script_corpus() {
     }
 }
 
+/// mash at the console: a prompt per line, a line continued with a
+/// backslash, and `load history`'s `/chan/history` and `/chan/mash`.
+#[test]
+fn mash_console_history() {
+    let input = [
+        "load history",
+        "echo one",
+        "cat /chan/history",
+        "echo 'echo injected' > /chan/mash",
+        "x = a \\",
+        " b",
+        "echo $x",
+    ];
+    let want = "mash% mash% one\nmash% load history\necho one\n\
+                mash% mash% echo injected\ninjected\n\
+                mash% \tmash% a b\nmash% ";
+    for vm in VMS {
+        let o = emu(vm, &["mash"], (input.join("\n") + "\n").as_bytes());
+        assert_eq!(stdout(&o), want, "{vm}");
+        assert!(o.status.success(), "{vm}: {o:?}");
+    }
+}
+
 /// The plan's M2 session, typed at the login shell.
 #[test]
 fn interactive_session() {

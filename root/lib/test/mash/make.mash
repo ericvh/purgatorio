@@ -1,0 +1,65 @@
+# mash: the make builtins: dependencies, explicit and implicit rules.
+load make;
+d = /tmp/mash-make;
+rm -rf $d;
+mkdir -p $d/src $d/out;
+cd $d;
+echo 'one' > src/a.b;
+echo 'two' > src/b.b;
+echo 'common' > src/c.m;
+touch -t 1000 src/a.b src/b.b src/c.m;
+
+# An implicit rule: build out/x.dis from src/x.b, with $1 the stem.
+flags = -g;
+out/*.dis :~ src/$1.b { cat src/$1.b > $0; echo built $0 from $1 $flags >> log };
+out/a.dis out/b.dis : src/c.m;
+all : out/a.dis out/b.dis {};
+prog : all { echo linking >> log };
+
+depends;
+depends out/a.dis;
+rules;
+rules out/z.dis;
+match 'out/a.dis';
+
+make prog;
+cat log;
+cat out/a.dis;
+
+# Everything is now up to date.
+rm log;
+touch log;
+make prog;
+cat log;
+
+# A newer prerequisite makes its target stale.
+touch -t 2000000000 src/b.b;
+make out/a.dis out/b.dis;
+cat log;
+
+# Rules chain: x.c -> x.b -> x.dis.
+echo 'three' > src/z.c;
+src/*.b :~ src/$1.c { cp src/$1.c src/$1.b };
+make out/z.dis;
+cat out/z.dis;
+
+# Explicit rules for several targets, and default.
+default : t1 t2 {};
+t1 t2 : { echo making t1 and t2 >> log2 };
+make;
+cat log2;
+
+# Errors: unknown targets, cycles, too many rules, failing rules.
+mash -c 'load make; make nosuch; echo not reached';
+mash -c 'load make; c1 : c2; c2 : c1; c1 : { echo c1 }; make c1';
+mash -c 'load make; r : { echo one }; r : { echo two }; make r';
+mash -c 'load make; f : { echo before; cat /nonexistent; echo after }; make f';
+mash -c 'load make; make -bogus';
+@{ x : y };
+@{ x :~ y {} };
+@{ make prog };
+make -clear;
+depends;
+rules;
+cd /;
+rm -r $d;
