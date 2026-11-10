@@ -29,6 +29,17 @@ once Phase K starts.
   tree, `#c` on PL011.
   Accept: boots to `sh` on serial and runs the M2 script corpus (minus `#U`
   and `#C`).
+  - [x] Preemption-safe locks: the no-std lock facade disables preemption
+    while held (a per-thread count; the timer's switch is deferred to the
+    last release) and blocks instead of spinning when contended. The heap
+    masks IRQs.
+  - [x] Interrupt-driven PL011 receive (INTID from the DTB) and a blocking
+    kernel `Console`; ^D at the start of a line is end of input; CR becomes
+    LF.
+  - [x] Idle: when every thread is blocked the CPU waits in `wfi` (KVM: 0.6%
+    of a host core with a console read blocked, against 100% before).
+  - [ ] Console echo and line editing on the kernel (hosted relies on the
+    host terminal for both).
 - [ ] **K3 Devices**: virtio-blk plus a filesystem (D7: virtio-9p for
   development, then a native Rust fs served over Styx), virtio-net plus
   smoltcp behind `#I`, `#t` eia, `#r` rtc, preemption via timer IRQ and wasmi

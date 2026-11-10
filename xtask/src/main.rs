@@ -11,7 +11,8 @@
 //! - `kernel [--kvm]`: build `purg-kernel` for `aarch64-unknown-none` and
 //!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
 //!   `--kvm`, once under KVM), checking each run's exit status and serial
-//!   output against `crates/purg-kernel/expected.out`.
+//!   output against `crates/purg-kernel/expected.out`. Each run types
+//!   `hello` and ^D on the serial console for the console self-test.
 //! - `check-wasm <file.wasm>...`: check modules without building.
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
 //!   `wasm32-wasip1`, denying warnings.
@@ -20,7 +21,7 @@ mod wasm;
 
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::{Arc, Mutex};
@@ -203,24 +204,54 @@ struct QemuRun {
     elapsed: Duration,
 }
 
+/// Bytes to type on a QEMU run's serial console once a prompt appears.
+struct SerialInput {
+    prompt: &'static str,
+    bytes: &'static [u8],
+}
+
+/// How long after the prompt the input is typed, so the guest's reader is
+/// blocked (and its CPU idle) before the bytes arrive.
+const INPUT_DELAY: Duration = Duration::from_millis(300);
+
+/// The kernel console self-test's input: a line, then ^D at the start of
+/// the next line, which the kernel reads as end of input.
+const KERNEL_INPUT: SerialInput = SerialInput {
+    prompt: "kernel: console: waiting for input\n",
+    bytes: b"hello\n\x04",
+};
+
 /// Boots `image` with `qemu-system-aarch64` (or `$QEMU`) and `args` (which
 /// must end with `-kernel`), collecting the serial console from stdout.
 /// Every 20 ms `watch` sees the output so far; an error from it, or the
 /// run outliving `timeout`, kills QEMU, prints the output and fails.
+/// With `input`, the serial console's input is a pipe, and its bytes are
+/// typed into it [`INPUT_DELAY`] after its prompt line appears; otherwise
+/// the input is empty.
 fn run_qemu(
     args: &[&str],
     image: &Path,
     timeout: Duration,
+    input: Option<&SerialInput>,
     mut watch: impl FnMut(&str) -> Result<()>,
 ) -> Result<QemuRun> {
     let qemu = env::var("QEMU").unwrap_or_else(|_| String::from("qemu-system-aarch64"));
     let mut child = Command::new(&qemu)
         .args(args)
         .arg(image)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{qemu}: {e}"))?;
+    // Held until QEMU exits: closing it would be end of file on the serial
+    // input.
+    let mut stdin = child.stdin.take();
+    let mut prompted: Option<Instant> = None;
+    let mut typed = false;
     let mut stdout = child.stdout.take().expect("piped stdout");
     let serial = Arc::new(Mutex::new(Vec::<u8>::new()));
     let serial_for_reader = Arc::clone(&serial);
@@ -239,7 +270,22 @@ fn run_qemu(
     let text = || String::from_utf8_lossy(&serial.lock().expect("serial")).replace('\r', "");
     let start = Instant::now();
     let status = loop {
-        let err = match watch(&text()) {
+        let now = text();
+        if let Some(inp) = input {
+            if prompted.is_none() && now.contains(inp.prompt) {
+                prompted = Some(Instant::now());
+            }
+            if !typed
+                && prompted.is_some_and(|t| t.elapsed() >= INPUT_DELAY)
+                && let Some(w) = stdin.as_mut()
+            {
+                w.write_all(inp.bytes)
+                    .and_then(|()| w.flush())
+                    .map_err(|e| format!("{qemu}: writing the serial input: {e}"))?;
+                typed = true;
+            }
+        }
+        let err = match watch(&now) {
             Err(e) => Some(e),
             Ok(()) if start.elapsed() > timeout => {
                 Some(format!("QEMU did not exit within {timeout:?}"))
@@ -259,6 +305,7 @@ fn run_qemu(
         std::thread::sleep(Duration::from_millis(20));
     };
     let elapsed = start.elapsed();
+    drop(stdin);
     let _ = reader.join();
     Ok(QemuRun {
         status,
@@ -305,7 +352,7 @@ fn probe() -> Result<()> {
         "-kernel",
     ];
     let mut mounted = false;
-    let r = run_qemu(&args, &image, PROBE_TIMEOUT, |text| {
+    let r = run_qemu(&args, &image, PROBE_TIMEOUT, None, |text| {
         if !mounted && text.contains("probe: net ready\n") {
             mounted = true;
             mount_probe(&ws)?;
@@ -431,7 +478,9 @@ fn kernel(kvm: bool) -> Result<()> {
         }
         args.push("-kernel");
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
-        let r = match run_qemu(&args, &image, KERNEL_TIMEOUT, |_| Ok(())) {
+        let r = match run_qemu(&args, &image, KERNEL_TIMEOUT, Some(&KERNEL_INPUT), |_| {
+            Ok(())
+        }) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("kernel: {}: {e}", k.name);

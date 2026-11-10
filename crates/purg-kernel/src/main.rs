@@ -3,7 +3,10 @@
 //! K1: boot at EL2 or EL1 ([`boot`]), the MMU with an identity map and a
 //! high half (`purg_aarch64::mmu`), a heap over the RAM after the image, a
 //! PL011 console, the DTB, the GIC and a 100 Hz timer, and preemptive
-//! kernel threads ([`irq`]). `kernel_main`
+//! kernel threads ([`irq`]). K2 adds locks that are never held across a
+//! preemption, an idle CPU when every thread is blocked, and an
+//! interrupt-driven console ([`console`]), with self-tests in
+//! [`selftest`]. `kernel_main`
 //! prints a banner and self-tests, then exits QEMU: through semihosting
 //! (exit code 0 or 1) or, with `-append exit=psci` (for KVM, where
 //! semihosting does not work), through PSCI `SYSTEM_OFF` after a final
@@ -37,6 +40,10 @@ mod board;
 #[cfg(target_os = "none")]
 mod boot;
 #[cfg(target_os = "none")]
+mod console;
+#[cfg(target_os = "none")]
 mod irq;
 #[cfg(target_os = "none")]
 mod kernel;
+#[cfg(target_os = "none")]
+mod selftest;

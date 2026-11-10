@@ -1,10 +1,10 @@
 //! Interrupts and kernel threads: the GIC and the virtual timer from the
-//! DTB, a 100 Hz tick that preempts, and the K1 acceptance test, two kernel
-//! threads that can only make progress when the timer switches between
-//! them.
+//! DTB, a dispatch table by INTID, a 100 Hz tick that preempts, and the K1
+//! acceptance test, two kernel threads that can only make progress when the
+//! timer switches between them.
 
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use purg_aarch64::dtb::{BootInfo, GicVersion};
 use purg_aarch64::exception::{self, TrapFrame, Vector};
@@ -26,26 +26,78 @@ const STACK_SIZE: usize = 64 << 10;
 pub static SCHED: Scheduler = Scheduler::new(STACK_SIZE);
 
 static GIC: Once<Gic> = Once::new();
-static TIMER_INTID: AtomicU32 = AtomicU32::new(0);
 static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// What the dispatcher does once a handler has returned and its interrupt
+/// is EOId.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum After {
+    Return,
+    /// Give the CPU to the next thread (the timer tick).
+    Preempt,
+}
+
+/// An interrupt handler. It runs with IRQs masked, before the EOI, so it
+/// must quiet a level-triggered source (re-arm the timer, drain the UART)
+/// and must not take `purg_platform::sync` locks or sleep.
+pub type Handler = fn() -> After;
+
+const SLOTS: usize = 8;
+
+/// INTID and handler (a fn pointer as `usize`, 0 for a free slot) pairs.
+static HANDLERS: [(AtomicU32, AtomicUsize); SLOTS] =
+    [const { (AtomicU32::new(0), AtomicUsize::new(0)) }; SLOTS];
+
+/// Routes `intid` to `h` and unmasks it at the GIC. Call after [`init`].
+pub fn register(intid: u32, h: Handler) {
+    let Some(gic) = GIC.get() else {
+        fail(format_args!("irq: register before init"));
+    };
+    let Some((id, f)) = HANDLERS
+        .iter()
+        .find(|(_, f)| f.load(Ordering::Acquire) == 0)
+    else {
+        fail(format_args!("irq: no free slot for INTID {intid}"));
+    };
+    id.store(intid, Ordering::Relaxed);
+    f.store(h as usize, Ordering::Release);
+    gic.enable(intid);
+}
+
+fn handler(intid: u32) -> Option<Handler> {
+    HANDLERS.iter().find_map(|(id, f)| {
+        let p = f.load(Ordering::Acquire);
+        (p != 0 && id.load(Ordering::Relaxed) == intid).then(|| {
+            // SAFETY: only `register` stores a non-zero value, and it
+            // stores a `Handler`.
+            unsafe { core::mem::transmute::<usize, Handler>(p) }
+        })
+    })
+}
 
 fn tick_ns() -> u64 {
     1_000_000_000 / TICK_HZ
 }
 
-/// The IRQ handler. The timer is level-triggered, so it is re-armed before
-/// the EOI; only then may the scheduler switch threads, so the GIC is not
-/// left with an active interrupt while another thread runs.
+fn timer_tick() -> After {
+    timer::arm_after_ns(tick_ns());
+    TICKS.fetch_add(1, Ordering::Relaxed);
+    After::Preempt
+}
+
+/// The IRQ handler: acknowledge, run the INTID's handler, EOI, and only
+/// then let the scheduler switch threads, so the GIC is not left with an
+/// active interrupt while another thread runs. Every interrupt counts as
+/// an event for the idle logic: a thread blocked on what it changed must
+/// get to look.
 fn irq(_frame: &mut TrapFrame) {
     let Some(gic) = GIC.get() else { return };
     let Some(id) = gic.ack() else { return };
-    if id == TIMER_INTID.load(Ordering::Relaxed) {
-        timer::arm_after_ns(tick_ns());
-        TICKS.fetch_add(1, Ordering::Relaxed);
-        gic.eoi(id);
+    let after = handler(id).map_or(After::Return, |h| h());
+    gic.eoi(id);
+    SCHED.wakeup();
+    if after == After::Preempt {
         SCHED.preempt();
-    } else {
-        gic.eoi(id);
     }
 }
 
@@ -86,8 +138,7 @@ pub fn init(info: &BootInfo<'_>) {
     };
     let gic = GIC.call_once(|| gic);
     gic.init();
-    TIMER_INTID.store(info.timer_virt_intid, Ordering::Relaxed);
-    gic.enable(info.timer_virt_intid);
+    register(info.timer_virt_intid, timer_tick);
     timer::arm_after_ns(tick_ns());
     exception::irq_enable();
 }

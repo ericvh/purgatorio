@@ -1,7 +1,8 @@
 //! Lock and sleep/wakeup facade. With the `std` feature the locks are
 //! `std::sync` (blocking, futex/ulock-backed) and [`Rendez`] parks the OS
-//! thread on a `Condvar`. Without it the locks are spinlocks and [`Rendez`]
-//! yields to the kernel scheduler registered with [`set_sched`], which is
+//! thread on a `Condvar`. Without it the locks are spinlocks that disable
+//! preemption while held and block when contended, and [`Rendez`]
+//! blocks in the kernel scheduler registered with [`set_sched`], which is
 //! what the bare-metal probe and kernel use. Both use acquire/release
 //! ordering, so code is correct on weakly ordered aarch64.
 //!
@@ -45,29 +46,169 @@ mod lockops {
     }
 }
 
+/// Without `std` the locks are spinlocks that cooperate with the kernel
+/// scheduler registered with [`set_sched`]:
+///
+/// - Holding a lock disables preemption ([`Sched::preempt_disable`]), so the
+///   timer never switches a holder out in the middle of its critical
+///   section: the scheduler defers the switch until the thread's last lock
+///   is released. Interrupts stay enabled, so interrupt latency does not
+///   grow with the length of critical sections.
+/// - A contended lock does not spin. On one CPU its holder is not running,
+///   so the waiter re-enables preemption and blocks ([`Sched::block`])
+///   until the holder releases the lock and wakes it. This also keeps a
+///   holder that sleeps with the lock held from deadlocking its waiters:
+///   these locks are Inferno qlocks, and `purg-core` does sleep holding
+///   some (the `#c/cons` line buffer, for one).
+///
+/// With no scheduler registered the hooks do nothing and a contended lock
+/// spins, as before.
 #[cfg(not(feature = "std"))]
 mod imp {
-    pub type Mutex<T> = spin::Mutex<T>;
-    pub type MutexGuard<'a, T> = spin::MutexGuard<'a, T>;
-    pub type RwLock<T> = spin::RwLock<T>;
-    pub type ReadGuard<'a, T> = spin::RwLockReadGuard<'a, T>;
-    pub type WriteGuard<'a, T> = spin::RwLockWriteGuard<'a, T>;
+    use core::mem::ManuallyDrop;
+    use core::ops::{Deref, DerefMut};
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    fn preempt_disable() {
+        if let Some(s) = super::SCHED.get() {
+            s.preempt_disable();
+        }
+    }
+
+    fn preempt_enable() {
+        if let Some(s) = super::SCHED.get() {
+            s.preempt_enable();
+        }
+    }
+
+    /// Takes a lock with `try_lock`. Preemption is disabled from just
+    /// before the successful attempt until the guard drops. Between failed
+    /// attempts the caller blocks, having recorded in `waiters` that the
+    /// holder must wake it.
+    fn acquire<G>(waiters: &AtomicBool, mut try_lock: impl FnMut() -> Option<G>) -> G {
+        loop {
+            preempt_disable();
+            if let Some(g) = try_lock() {
+                return g;
+            }
+            waiters.store(true, Ordering::Release);
+            // A release between the failed attempt and the store did not
+            // see `waiters`; try again before blocking.
+            if let Some(g) = try_lock() {
+                return g;
+            }
+            preempt_enable();
+            match super::SCHED.get() {
+                Some(s) => s.block(),
+                None => core::hint::spin_loop(),
+            }
+        }
+    }
+
+    /// Called after the lock word is released.
+    fn release(waiters: &AtomicBool) {
+        if waiters.swap(false, Ordering::AcqRel)
+            && let Some(s) = super::SCHED.get()
+        {
+            s.wakeup();
+        }
+        preempt_enable();
+    }
+
+    /// A spin guard that, when it drops, releases the lock, wakes waiters
+    /// and re-enables preemption, in that order.
+    pub struct Guard<'a, G> {
+        inner: ManuallyDrop<G>,
+        waiters: &'a AtomicBool,
+    }
+
+    impl<'a, G> Guard<'a, G> {
+        fn new(inner: G, waiters: &'a AtomicBool) -> Self {
+            Guard {
+                inner: ManuallyDrop::new(inner),
+                waiters,
+            }
+        }
+    }
+
+    impl<G> Drop for Guard<'_, G> {
+        fn drop(&mut self) {
+            // SAFETY: `inner` is dropped exactly once, here, and not used
+            // after.
+            unsafe { ManuallyDrop::drop(&mut self.inner) };
+            release(self.waiters);
+        }
+    }
+
+    impl<G: Deref> Deref for Guard<'_, G> {
+        type Target = G::Target;
+        fn deref(&self) -> &G::Target {
+            &self.inner
+        }
+    }
+
+    impl<G: DerefMut> DerefMut for Guard<'_, G> {
+        fn deref_mut(&mut self) -> &mut G::Target {
+            &mut self.inner
+        }
+    }
+
+    #[derive(Default)]
+    pub struct Mutex<T> {
+        lock: spin::Mutex<T>,
+        waiters: AtomicBool,
+    }
+
+    impl<T> Mutex<T> {
+        pub const fn new(v: T) -> Self {
+            Mutex {
+                lock: spin::Mutex::new(v),
+                waiters: AtomicBool::new(false),
+            }
+        }
+
+        pub fn into_inner(self) -> T {
+            self.lock.into_inner()
+        }
+    }
+
+    pub type MutexGuard<'a, T> = Guard<'a, spin::MutexGuard<'a, T>>;
+
+    #[derive(Default)]
+    pub struct RwLock<T> {
+        lock: spin::RwLock<T>,
+        waiters: AtomicBool,
+    }
+
+    impl<T> RwLock<T> {
+        pub const fn new(v: T) -> Self {
+            RwLock {
+                lock: spin::RwLock::new(v),
+                waiters: AtomicBool::new(false),
+            }
+        }
+    }
+
+    pub type ReadGuard<'a, T> = Guard<'a, spin::RwLockReadGuard<'a, T>>;
+    pub type WriteGuard<'a, T> = Guard<'a, spin::RwLockWriteGuard<'a, T>>;
+
+    pub mod lockops {
+        use super::*;
+
+        pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+            Guard::new(acquire(&m.waiters, || m.lock.try_lock()), &m.waiters)
+        }
+        pub fn read<T>(l: &RwLock<T>) -> ReadGuard<'_, T> {
+            Guard::new(acquire(&l.waiters, || l.lock.try_read()), &l.waiters)
+        }
+        pub fn write<T>(l: &RwLock<T>) -> WriteGuard<'_, T> {
+            Guard::new(acquire(&l.waiters, || l.lock.try_write()), &l.waiters)
+        }
+    }
 }
 
 #[cfg(not(feature = "std"))]
-mod lockops {
-    use super::imp::*;
-
-    pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-        m.lock()
-    }
-    pub fn read<T>(l: &RwLock<T>) -> ReadGuard<'_, T> {
-        l.read()
-    }
-    pub fn write<T>(l: &RwLock<T>) -> WriteGuard<'_, T> {
-        l.write()
-    }
-}
+use imp::lockops;
 
 /// A mutual-exclusion lock.
 #[derive(Default)]
@@ -163,6 +304,26 @@ pub trait Sched: Sync {
     }
     /// Records the [`Note`] of the kernel thread that is running.
     fn set_note(&self, _note: Option<alloc::sync::Arc<Note>>) {}
+    /// Called by a thread that cannot make progress until another thread
+    /// or an interrupt changes something: a [`Rendez`] sleeper whose
+    /// condition is false, or a waiter for a held lock. Like
+    /// [`Sched::yield_now`], but when every thread is blocked the scheduler
+    /// may idle the CPU until the next interrupt or [`Sched::wakeup`].
+    fn block(&self) {
+        self.yield_now();
+    }
+    /// Something a blocked thread may be waiting for has changed:
+    /// [`Rendez::wakeup`] or the release of a lock that has waiters. Must
+    /// be safe to call from an interrupt handler.
+    fn wakeup(&self) {}
+    /// Disables preemption of the running thread; nests. Called when it
+    /// takes a lock. A voluntary switch ([`Sched::yield_now`],
+    /// [`Sched::block`]) is still allowed and keeps the count with the
+    /// thread.
+    fn preempt_disable(&self) {}
+    /// Undoes one [`Sched::preempt_disable`]. When the count drops to zero
+    /// a preemption deferred meanwhile happens now.
+    fn preempt_enable(&self) {}
 }
 
 #[cfg(not(feature = "std"))]
@@ -237,7 +398,7 @@ impl Rendez {
         {
             while !cond() {
                 match SCHED.get() {
-                    Some(s) => s.yield_now(),
+                    Some(s) => s.block(),
                     None => core::hint::spin_loop(),
                 }
             }
@@ -287,7 +448,9 @@ impl Rendez {
                 if s.monotonic_ns() >= deadline {
                     return false;
                 }
-                s.yield_now();
+                // The scheduler's clock interrupt ends an idle block, so
+                // the deadline is seen within a tick.
+                s.block();
             }
         }
     }
@@ -298,6 +461,12 @@ impl Rendez {
         {
             drop(lockops::lock(&self.inner.lock));
             self.inner.cv.notify_all();
+        }
+        // Sleepers poll their conditions; this tells an idle scheduler to
+        // let them.
+        #[cfg(not(feature = "std"))]
+        if let Some(s) = SCHED.get() {
+            s.wakeup();
         }
     }
 }

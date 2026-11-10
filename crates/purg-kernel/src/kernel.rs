@@ -1,45 +1,57 @@
-//! `kernel_main`, the console, the heap, exit, and fatal error reporting.
+//! `kernel_main`, the heap, exit, and fatal error reporting.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::alloc::Layout;
+use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use linked_list_allocator::LockedHeap;
 use purg_aarch64::dtb::{self, BootInfo, Fdt};
+use purg_aarch64::exception::IrqGuard;
 use purg_aarch64::mmu::{self, KERNEL_VBASE, PAGE_SIZE, Region, TableAlloc};
-use purg_aarch64::pl011::Pl011;
 use purg_aarch64::semihost;
 
 use crate::board::{ExitMethod, board, dtb_size, exit_method};
 use crate::boot::{self, KERNEL_BOOT_EL};
-use crate::irq;
+use crate::console::{self, Raw};
+use crate::{irq, selftest};
 
-#[global_allocator]
-static HEAP: LockedHeap = LockedHeap::empty();
+/// The kernel heap. Interrupt handlers allocate and free too (preempting,
+/// the scheduler grows its run queue and frees exited threads), so every
+/// heap operation runs with IRQs masked: an interrupt never finds the heap
+/// locked, and no thread is preempted holding it. Heap operations are
+/// short, so this costs little interrupt latency.
+struct KernelHeap(LockedHeap);
 
-/// The console: the PL011 through the high-half device window. Writes are
-/// unlocked: there is one core, and only the boot thread prints.
-pub struct Console;
+// SAFETY: forwards to `LockedHeap`'s `GlobalAlloc`, only adding IRQ
+// masking around each call.
+unsafe impl GlobalAlloc for KernelHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let _g = IrqGuard::new();
+        // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract.
+        unsafe { self.0.alloc(layout) }
+    }
 
-impl Write for Console {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        // SAFETY: the high half maps the device window, which holds the
-        // PL011, as Device memory.
-        let uart = unsafe { Pl011::new(mmu::phys_to_virt(board().uart)) };
-        uart.write(s.as_bytes());
-        Ok(())
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let _g = IrqGuard::new();
+        // SAFETY: the caller upholds `GlobalAlloc::dealloc`'s contract.
+        unsafe { self.0.dealloc(ptr, layout) }
     }
 }
 
+#[global_allocator]
+static HEAP: KernelHeap = KernelHeap(LockedHeap::empty());
+
+/// Prints a line through the console lock (see [`console::print`]).
 macro_rules! println {
-    ($($arg:tt)*) => {{
-        let _ = writeln!(Console, $($arg)*);
-    }};
+    ($($arg:tt)*) => {
+        crate::console::print(format_args!("{}\n", format_args!($($arg)*)))
+    };
 }
+pub(crate) use println;
 
 const EXIT_SEMIHOSTING: u8 = 0;
 const EXIT_PSCI_HVC: u8 = 1;
@@ -66,7 +78,7 @@ fn exit(code: u32) -> ! {
 }
 
 pub fn fail(args: fmt::Arguments<'_>) -> ! {
-    println!("kernel: FAILED {args}");
+    let _ = writeln!(Raw, "kernel: FAILED {args}");
     exit(1)
 }
 
@@ -197,7 +209,8 @@ fn init_heap() -> Region {
     };
     // SAFETY: RAM after the image is unused and linear-mapped RW.
     unsafe {
-        HEAP.lock()
+        HEAP.0
+            .lock()
             .init(mmu::phys_to_virt(heap.base) as *mut u8, heap.size);
     }
     heap
@@ -318,6 +331,10 @@ pub extern "C" fn kernel_main(dtb_phys: usize) -> ! {
     println!("kernel: timer interrupts at {} Hz", irq::TICK_HZ);
     irq::alternation_test();
     println!("kernel: two threads alternated under timer preemption");
+    let cons = console::init(&info);
+    selftest::lock_test();
+    selftest::tsleep_test();
+    selftest::console_test(cons);
     println!("kernel: ok");
     exit(0)
 }
