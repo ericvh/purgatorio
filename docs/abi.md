@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.3)
+# Purgatorio application ABI (v0.4)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -7,12 +7,12 @@ They may import from two modules:
   semantics exactly. Because of this, Rust `std` (`std::fs`, `std::io`,
   `println!`, `std::env::args`, `std::time`) works unchanged.
 - **`purgatorio`**: everything WASI cannot express faithfully, such as exact
-  error strings, string exit status, full `Dir`s, namespaces, and later
-  pctl, channels and spawn.
+  error strings, string exit status, full `Dir`s, namespaces, pctl,
+  progs, kernel channels, Styx plumbing and module loading.
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.3`. The loader rejects a mismatched version. Modules
+section containing `0.4`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -55,8 +55,7 @@ and `cargo xtask build-root` rejects modules that import anything outside it.
 
 ## Mapping of Inferno `Sys` onto the ABI
 
-"M1" and "M2" mark what is implemented. Unmarked rows follow the plan's
-milestones.
+Each row is marked with the milestone that implemented it.
 
 | Sys call | Interface | Fit | Notes |
 |---|---|---|---|
@@ -78,16 +77,17 @@ milestones.
 | `chdir` | `purgatorio.chdir` (M2) | missing in WASI | Updates the dot behind the `.` preopen. |
 | `fd2path`, `dup`, `pipe`, `iounit` | `purgatorio.*` (M2) | missing or mismatched in WASI | `fd_renumber` (M2) moves an fd rather than duplicating it. `iounit` is 0 (no limit) until a device sets one. |
 | `bind`, `unmount`, `pctl` | `purgatorio.*` (M2) | missing in WASI | |
-| `mount`, `export`, `fversion`, `fauth`, `file2chan`, `stream` | `purgatorio.*` | missing in WASI | M3–M5 |
+| `mount`, `export`, `fversion`, `file2chan` | `purgatorio.*` (M3) | missing in WASI | `mount` and `export` authenticate (M5); see below. |
+| `fauth`, `stream` | not yet | missing in WASI | Authentication runs inside `mount`, so there is no separate `fauth` call. `stream` is a loop in the SDK. |
 | `werrstr`, `%r` | `purgatorio.errstr`, `purgatorio.werrstr` (M1) | WASI errnos are lossy | |
 | exit status | `purgatorio.exits(status)` (M1) | WASI `proc_exit(i32)` is numeric | `proc_exit(0)` means `""` and `proc_exit(n)` means `"exit n"` (M1). |
 | `spawn` (of a command) | `purgatorio.spawn_prog` (M2) | missing in WASI | Exit messages are read from `/prog/<pid>/wait`. |
-| `spawn` (in-module), `chan of T`, `alt` | SDK tasks and `chan_*` | missing in WASI | M2: `purgatorio::task` runs tasks cooperatively in one instance with `Chan<T>` and needs no imports. Kernel channels (`chan_*`) and `alt` come in M3. |
-| `dial`, `announce`, `listen` | SDK file operations on `/net` | WASI p1 sockets are not used | M4 |
-| `load` | `purgatorio.load`, `purgatorio.call` | missing in WASI | M5 |
+| `spawn` (in-module), `chan of T`, `alt` | SDK tasks and `chan_*` | missing in WASI | M2: `purgatorio::task` runs tasks cooperatively in one instance with `Chan<T>` and needs no imports. Kernel channels (`chan_*`), `alt` and `wait` (M3) carry messages and fds between progs. |
+| `dial`, `announce`, `listen` | SDK file operations on `/net` (M4) | WASI p1 sockets cannot connect or bind | WASI `sock_*` (M5) work on fds from `/net`, so stock programs can serve connections. |
+| `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.3
+## `purgatorio` imports in v0.4
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -120,6 +120,8 @@ chan_send(h, buf, n, handles, nh) -> 0
 chan_recv(h, buf, blen, handles, maxh) -> n
 alt(ops, nops, block) -> index
 wait(ops, nops, timeout_ms) -> index
+load(path, plen) -> handle        instantiate a reactor module in this prog
+call(handle, name, nlen, args, alen, out, olen) -> n
 ```
 
 All of these return -1 and set errstr on failure.
@@ -143,6 +145,31 @@ start (such as a missing module) produces no message.
 
 `exec` from v0.1 is gone; `emuinit` now spawns its command and waits for it.
 
+`load` and `call` (v0.4) are registered by each engine rather than in the
+shared host functions, because they need the engine's store. `load`
+instantiates a reactor module (no `_start`; loadable modules live in
+`/bin/lib`) inside the calling prog, so it shares the prog's fds and
+namespace. `call` runs export `name`, which has type `(i32, i32) -> i32`.
+The host writes `args` into a fresh page of the module's memory, the export
+overwrites that page with its result and returns the result length, and the
+host copies up to `olen` bytes of it to `out`.
+
+### Authentication (M5)
+
+A mount authenticates before `Tattach` with an Ed25519 signature over a
+challenge from the server. This is not Inferno's keyring protocol, so real
+Inferno peers mount with `-A`.
+
+- The server holds public keys: the 32-byte `usr/<uname>/key.pub` under the
+  exported tree. With no key it answers `Tauth` with "authentication not
+  required", as Inferno does.
+- The client signs through `#¤/rpc` when a factotum holds a seed, and
+  otherwise reads a seed from `/usr/<user>/key` (or the public test key
+  `/lib/test/auth.key`). It writes `signature[64] || public_key[32]` to the
+  auth fid.
+- `MNOAUTH` (`0x8000_0000`, the `-A` flag) skips `Tauth`. A server that has
+  a key then rejects the attach.
+
 ## WASI p1 functions implemented
 
 M1: `args_get`, `args_sizes_get`, `environ_get`, `environ_sizes_get`,
@@ -158,3 +185,13 @@ only), `fd_filestat_set_size`, `fd_filestat_set_times`, `fd_sync`,
 `path_filestat_set_times`, `path_readlink` (always `ENOTSUP`: Inferno has no
 links), `poll_oneoff`, `sched_yield`. `environ_get` returns the prog's
 environment group (`/env`) as it was when the prog started.
+
+M5: the rest of preview 1, so stock `wasm32-wasip1` binaries link and run.
+`fd_advise` checks its arguments and does nothing. `fd_allocate` grows the
+file to cover the range. `fd_fdstat_set_rights` accepts any open fd, since
+rights are not tracked. `path_link` and `path_symlink` return `NOTSUP`
+(Inferno has no links). `clock_res_get` reports the clock resolution.
+`proc_raise` kills the prog's note, so its next blocking call returns
+`EINTR`. `sock_accept` on an Inferno `listen` file returns the new
+conversation's `data` fd, and `sock_recv`, `sock_send` and `sock_shutdown`
+work on such fds.
