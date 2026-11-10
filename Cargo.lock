@@ -442,6 +442,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-mcpd"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-md5sum"
 version = "0.1.0"
 dependencies = [

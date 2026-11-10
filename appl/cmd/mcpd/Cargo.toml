@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-mcpd"
+description = "mcpd: a Model Context Protocol server for a sandboxed Purgatorio session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcpd"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
