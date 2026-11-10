@@ -17,7 +17,6 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use purg_aarch64::mmu;
-use purg_aarch64::pl011::Pl011;
 use purg_aarch64::timer;
 use purg_abi::mode;
 use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
@@ -30,26 +29,9 @@ use purg_vm_wasmi::Wasmi;
 
 use crate::irq::SCHED;
 
-/// The console: the PL011, read by polling. An empty receive FIFO reads as
-/// end of input, which is what the test scripts need.
-// K2: replaced by the interrupt-driven console.
-pub struct PolledUart {
-    uart: Pl011,
-}
-
-impl Console for PolledUart {
-    fn read(&self, buf: &mut [u8]) -> PResult<usize> {
-        Ok(self.uart.read(buf))
-    }
-
-    fn write(&self, buf: &[u8]) -> PResult<usize> {
-        self.uart.write(buf);
-        Ok(buf.len())
-    }
-}
-
 pub struct KernelPlatform {
-    console: Box<dyn Console>,
+    /// The interrupt-driven PL011 console (`crate::console`).
+    console: &'static dyn Console,
     boot_epoch_ns: u64,
     boot_counter: u64,
     /// splitmix64 state for [`Platform::entropy`].
@@ -57,8 +39,8 @@ pub struct KernelPlatform {
 }
 
 impl KernelPlatform {
-    /// `uart` and `rtc` are physical addresses from the DTB.
-    pub fn new(uart: usize, rtc: Option<usize>) -> KernelPlatform {
+    /// `rtc` is the PL031's physical address from the DTB.
+    pub fn new(console: &'static dyn Console, rtc: Option<usize>) -> KernelPlatform {
         let boot_counter = timer::counter();
         let secs = rtc.map_or(0, |pa| {
             // SAFETY: the DTB names a PL031 here, in the device window the
@@ -66,10 +48,7 @@ impl KernelPlatform {
             u64::from(unsafe { core::ptr::read_volatile(mmu::phys_to_virt(pa) as *const u32) })
         });
         KernelPlatform {
-            // SAFETY: the DTB names a PL011 here, in the device window.
-            console: Box::new(PolledUart {
-                uart: unsafe { Pl011::new(mmu::phys_to_virt(uart)) },
-            }),
+            console,
             boot_epoch_ns: secs * 1_000_000_000,
             boot_counter,
             seed: AtomicU64::new(boot_counter ^ 0x9e37_79b9_7f4a_7c15),
@@ -101,7 +80,7 @@ impl Platform for KernelPlatform {
     }
 
     fn console(&self) -> &dyn Console {
-        self.console.as_ref()
+        self.console
     }
 
     fn user(&self) -> String {
@@ -329,12 +308,17 @@ pub enum Mode {
 /// thread (wasmi needs more stack than the boot stack has). The boot
 /// thread waits; the result is the number of failures in test mode, or 0
 /// or 1 for the shell's exit status.
-pub fn start(initrd: &'static [u8], uart: usize, rtc: Option<usize>, mode: Mode) -> usize {
+pub fn start(
+    initrd: &'static [u8],
+    console: &'static dyn Console,
+    rtc: Option<usize>,
+    mode: Mode,
+) -> usize {
     use core::sync::atomic::AtomicUsize;
     use purg_platform::sync::Sched;
     static DONE: AtomicUsize = AtomicUsize::new(usize::MAX);
     SCHED.spawn(Box::new(move || {
-        let result = match boot(KernelPlatform::new(uart, rtc), |root| {
+        let result = match boot(KernelPlatform::new(console, rtc), |root| {
             root.add_tar(initrd).map(|_| ())
         }) {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),

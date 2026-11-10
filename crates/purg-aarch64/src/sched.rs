@@ -12,10 +12,20 @@
 //! restores the interrupted DAIF. A new thread starts masked (it is first
 //! entered from a switch) and unmasks in its trampoline.
 //!
-//! Limitation: a thread can be preempted while it holds a spinlock. On one
-//! CPU the next thread that wants that lock spins until the following tick,
-//! when the holder runs again, so this is slow but not a deadlock. K2 should
-//! mask preemption around the platform lock facade.
+//! Preemption and locks: the platform lock facade calls
+//! [`Sched::preempt_disable`] and [`Sched::preempt_enable`] around every
+//! critical section. The count is per thread: [`Scheduler::switch`] saves
+//! it with the thread, so a thread may sleep holding a lock. A timer
+//! preemption that finds the count non-zero is deferred and happens when
+//! the count drops to zero, so a thread is never preempted holding a
+//! facade lock. IRQs stay unmasked meanwhile.
+//!
+//! Idle: there is no blocked state; a sleeping thread stays on the run
+//! queue and polls its condition, calling [`Sched::block`] when it is
+//! false. When every thread has blocked in a row with no interrupt,
+//! [`Sched::wakeup`] or other switch in between, nothing can change until
+//! an interrupt arrives, so the next blocker waits for one with `wfi`. The
+//! 100 Hz tick bounds that wait, so `tsleep` deadlines still pass on time.
 //!
 //! [`Rendez`]: purg_platform::sync::Rendez
 
@@ -24,12 +34,13 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::arch::global_asm;
+use core::arch::{asm, global_asm};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, compiler_fence};
 
 use purg_platform::sync::{Note, Sched};
 use spin::Mutex;
 
-use crate::exception::{IrqGuard, irq_enable, irq_restore, irq_save};
+use crate::exception::{IrqGuard, irq_disable, irq_enable, irq_restore, irq_save};
 use crate::timer;
 
 /// Callee-saved state, laid out for `purg_aarch64_switch`. A voluntary
@@ -53,7 +64,23 @@ struct Thread {
     entry: Option<Box<dyn FnOnce() + Send>>,
     pid: u32,
     note: Option<Arc<Note>>,
+    /// The thread's preemption-disable count while it is switched out.
+    preempt: u32,
     done: bool,
+}
+
+impl Thread {
+    fn new(ctx: Context, stack: Option<Vec<u8>>, entry: Option<Box<dyn FnOnce() + Send>>) -> Self {
+        Thread {
+            ctx,
+            _stack: stack,
+            entry,
+            pid: 0,
+            note: None,
+            preempt: 0,
+            done: false,
+        }
+    }
 }
 
 struct Threads {
@@ -77,6 +104,17 @@ impl Threads {
 pub struct Scheduler {
     threads: Mutex<Threads>,
     stack_size: usize,
+    /// The running thread's preemption-disable count.
+    preempt_count: AtomicU32,
+    /// A timer preemption arrived while `preempt_count` was non-zero.
+    preempt_pending: AtomicBool,
+    /// [`Sched::block`] calls in a row with no interrupt, wakeup or other
+    /// switch in between.
+    blocked_run: AtomicUsize,
+    /// Preemptions deferred because the thread held a lock.
+    deferred: AtomicU64,
+    /// Times the CPU waited for an interrupt with nothing to run.
+    idles: AtomicU64,
 }
 
 unsafe extern "C" {
@@ -159,23 +197,23 @@ impl Scheduler {
                 switches: 0,
             }),
             stack_size,
+            preempt_count: AtomicU32::new(0),
+            preempt_pending: AtomicBool::new(false),
+            blocked_run: AtomicUsize::new(0),
+            deferred: AtomicU64::new(0),
+            idles: AtomicU64::new(0),
         }
     }
 
     /// Makes the caller, on the boot stack, thread 0, and registers this
-    /// scheduler as the [`Rendez`](purg_platform::sync::Rendez) hook.
+    /// scheduler as the [`Rendez`](purg_platform::sync::Rendez) and lock
+    /// hook.
     pub fn init(&'static self) {
         {
             let _g = IrqGuard::new();
             let mut t = self.threads.lock();
-            t.all.push(Some(Box::new(Thread {
-                ctx: Context::default(),
-                _stack: None,
-                entry: None,
-                pid: 0,
-                note: None,
-                done: false,
-            })));
+            t.all
+                .push(Some(Box::new(Thread::new(Context::default(), None, None))));
             t.current = 0;
         }
         purg_platform::sync::set_sched(self);
@@ -189,14 +227,7 @@ impl Scheduler {
         ctx.x[0] = self as *const Scheduler as u64;
         ctx.x[11] = purg_aarch64_thread_start as *const () as u64;
         ctx.sp = top as u64;
-        let th = Box::new(Thread {
-            ctx,
-            _stack: Some(stack),
-            entry: Some(f),
-            pid: 0,
-            note: None,
-            done: false,
-        });
+        let th = Box::new(Thread::new(ctx, Some(stack), Some(f)));
         let _g = IrqGuard::new();
         let mut t = self.threads.lock();
         let id = match t.all.iter().position(Option::is_none) {
@@ -210,9 +241,11 @@ impl Scheduler {
             }
         };
         t.ready.push_back(id);
+        self.blocked_run.store(0, Ordering::Relaxed);
     }
 
-    /// Switches to the next ready thread, if any. IRQs must be masked.
+    /// Switches to the next ready thread, if any, and returns once this
+    /// thread runs again. IRQs must be masked.
     fn switch(&self) {
         let (from, to) = {
             let mut t = self.threads.lock();
@@ -228,15 +261,21 @@ impl Scheduler {
             let Some(next) = t.ready.pop_front() else {
                 return;
             };
-            if t.current_mut().done {
+            let count = self.preempt_count.load(Ordering::Relaxed);
+            let th = t.current_mut();
+            th.preempt = count;
+            if th.done {
                 t.dead.push(cur);
             } else {
                 t.ready.push_back(cur);
             }
             t.current = next;
             t.switches += 1;
+            let to = t.all[next].as_ref().expect("ready thread");
+            self.preempt_count.store(to.preempt, Ordering::Relaxed);
+            self.preempt_pending.store(false, Ordering::Relaxed);
+            let to: *const Context = &to.ctx;
             let from: *mut Context = &mut t.all[cur].as_mut().expect("current thread").ctx;
-            let to: *const Context = &t.all[next].as_ref().expect("ready thread").ctx;
             (from, to)
         };
         // SAFETY: both Contexts are in boxed Threads that stay in the table
@@ -246,9 +285,32 @@ impl Scheduler {
         unsafe { purg_aarch64_switch(from, to) };
     }
 
+    /// Waits for an interrupt and takes it. IRQs must be masked: `wfi`
+    /// wakes on a pending interrupt even so, and unmasking afterwards takes
+    /// it, so one that arrives just before the `wfi` is not missed.
+    fn idle(&self) {
+        self.idles.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: waits for an interrupt; no memory or register effects.
+        unsafe { asm!("dsb sy", "wfi", options(nostack, preserves_flags)) };
+        irq_enable();
+        // SAFETY: a context synchronization event, so the pending IRQ is
+        // taken here, before IRQs are masked again.
+        unsafe { asm!("isb", options(nostack, preserves_flags)) };
+        irq_disable();
+        self.blocked_run.store(0, Ordering::Relaxed);
+    }
+
     /// Called from the timer IRQ handler, after the timer is re-armed and
-    /// the interrupt is EOId: gives the CPU to the next ready thread.
+    /// the interrupt is EOId: gives the CPU to the next ready thread, or,
+    /// if the running thread holds a lock, makes the switch happen when it
+    /// releases its last one.
     pub fn preempt(&self) {
+        if self.preempt_count.load(Ordering::Relaxed) != 0 {
+            self.preempt_pending.store(true, Ordering::Relaxed);
+            self.deferred.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        self.blocked_run.store(0, Ordering::Relaxed);
         self.switch();
     }
 
@@ -256,6 +318,16 @@ impl Scheduler {
     pub fn switches(&self) -> u64 {
         let _g = IrqGuard::new();
         self.threads.lock().switches
+    }
+
+    /// Timer preemptions deferred because the running thread held a lock.
+    pub fn deferred(&self) -> u64 {
+        self.deferred.load(Ordering::Relaxed)
+    }
+
+    /// Times the CPU has waited for an interrupt with every thread blocked.
+    pub fn idles(&self) -> u64 {
+        self.idles.load(Ordering::Relaxed)
     }
 
     /// Number of threads that have not finished.
@@ -279,8 +351,51 @@ impl Scheduler {
 impl Sched for Scheduler {
     fn yield_now(&self) {
         let daif = irq_save();
+        self.blocked_run.store(0, Ordering::Relaxed);
         self.switch();
         irq_restore(daif);
+    }
+
+    /// Only the thread that was running when the last event happened can
+    /// have checked its condition before the event and blocked after it.
+    /// So once one more block than there are runnable threads has happened
+    /// in a row, every thread has seen the latest state, and nothing can
+    /// change until an interrupt.
+    fn block(&self) {
+        let daif = irq_save();
+        let run = self.blocked_run.fetch_add(1, Ordering::Relaxed) + 1;
+        let runnable = self.threads.lock().ready.len() + 1;
+        if run > runnable {
+            self.idle();
+        }
+        self.switch();
+        irq_restore(daif);
+    }
+
+    fn wakeup(&self) {
+        self.blocked_run.store(0, Ordering::Relaxed);
+    }
+
+    /// The count changes only on its own thread, and an interrupt that
+    /// switches away restores it before returning, so a plain load and
+    /// store are enough on one CPU. The fences keep the critical section
+    /// between the two calls.
+    fn preempt_disable(&self) {
+        let c = self.preempt_count.load(Ordering::Relaxed);
+        self.preempt_count.store(c + 1, Ordering::Relaxed);
+        compiler_fence(Ordering::SeqCst);
+    }
+
+    fn preempt_enable(&self) {
+        compiler_fence(Ordering::SeqCst);
+        let c = self.preempt_count.load(Ordering::Relaxed);
+        if c == 0 {
+            return;
+        }
+        self.preempt_count.store(c - 1, Ordering::Relaxed);
+        if c == 1 && self.preempt_pending.load(Ordering::Relaxed) {
+            self.yield_now();
+        }
     }
 
     fn monotonic_ns(&self) -> u64 {
