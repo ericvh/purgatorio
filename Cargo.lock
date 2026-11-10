@@ -695,6 +695,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-netkey"
+version = "0.1.0"
+dependencies = [
+ "appl-authlib",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-netstat"
 version = "0.1.0"
 dependencies = [
