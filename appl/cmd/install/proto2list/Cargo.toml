@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-install-proto2list"
+description = "install/proto2list: list the files a prototype selects"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "proto2list"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+
+[lints]
+workspace = true

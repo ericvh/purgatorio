@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-install-mkproto"
+description = "install/mkproto: write a prototype for a tree"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mkproto"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+
+[lints]
+workspace = true

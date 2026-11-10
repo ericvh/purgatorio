@@ -11,14 +11,19 @@ members = [
     "appl/cmd/*",
     "appl/lib/*",
     "appl/test/*",
-    # Commands in a subdirectory, installed as /bin/ndb/<name>.wasm.
+    # Commands in a subdirectory, installed as /bin/<dir>/<name>.wasm.
     "appl/cmd/ndb/query",
+    "appl/cmd/install/ckproto",
+    "appl/cmd/install/mkproto",
+    "appl/cmd/install/proto2list",
+    "appl/cmd/disk/mkext",
+    "appl/cmd/disk/mkfs",
     # Libraries shared by commands, outside the globbed directories.
     "appl/archive",
     "xtask",
 ]
-# Matched by appl/cmd/* but holds crates, not a Cargo.toml of its own.
-exclude = ["appl/cmd/ndb"]
+# Matched by appl/cmd/* but hold crates, with no Cargo.toml of their own.
+exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk"]
 
 [workspace.package]
 version = "0.1.0"
