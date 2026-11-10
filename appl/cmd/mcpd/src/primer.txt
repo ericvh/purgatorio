@@ -1,0 +1,75 @@
+This server gives you a sandboxed session on Purgatorio, a system in the style of Inferno and Plan 9. It is not Unix, and its shell, Inferno sh, is not bash. Bash syntax usually fails with an error such as `file does not exist` (the command was not found) or a syntax error. Read this before using `run`.
+
+THE SESSION
+- You have a private, empty, in-memory /tmp. It is the working directory of every `run` call and the base of relative names in the file tools.
+- /bin (commands) and /lib are read-only. There is no network, no host file system and no way to run host programs, unless the operator granted them; `ns` prints what the namespace holds.
+- Each `run` starts a new sh. Variables you set, and `bind` and `mount` changes, persist to later calls. `cd` and `load` do not: use the `cwd` argument and repeat `load std`.
+- Errors are Inferno's strings: `file does not exist`, `permission denied`, `mounted directory forbids creation` (you tried to create a file in a read-only place).
+- Commands are in /bin: `ls /bin` lists them. They are Inferno's, not GNU's: few options, no `--long-options`, no `-h`. Among them: cat cp mv rm mkdir ls du wc grep sed tr sort uniq tail cmp diff echo date sleep test xd md5sum sha1sum tar gzip gunzip ps kill ns bind mount unmount mk ed. There is no awk, find, head, python or git.
+
+SH IN EXAMPLES
+Each example is a command line (after `; `) and what it prints.
+
+Quoting uses single quotes only. A quote inside quotes is doubled. Double quotes are ordinary characters.
+; echo 'it''s' "not special"
+  it's "not special"
+
+A variable holds a list of words. `$#x` is the length, `$"x` joins with spaces, and `^` concatenates. There is no `${x}` and no `$x[1]`.
+; x=(a b c); echo $#x; echo $x^.txt
+  3
+  a.txt b.txt c.txt
+
+The exit status is a string in `$status`: empty for success, otherwise a message. `&&`, `||` and `!` work on it.
+; cat /nonexistent; echo status is $status
+  cat: /nonexistent: file does not exist
+  status is fail:errors
+; test -d /tmp && echo yes; test -f /tmp || echo no
+  yes
+  no
+
+Command substitution is `{...}, not $(...). The output is split into words.
+; echo `{echo hi there} | wc -w
+        2
+
+Redirections: `>`, `>>`, `<`, and `>[2]` for standard error. `>[2=1]` is bash's 2>&1. There are no here documents (<<).
+; echo hello > f; cat < f; rm f
+  hello
+; cat /nonexistent >[2] /dev/null; echo quiet
+  quiet
+
+Braces group commands, and a `{...}` block is also a value you can pass to a command. That is how control flow works: `if`, `for`, `while`, `fn`, `and`, `or`, `not` and `~` (match) are commands that arrive with `load std`. Without it they fail with `file does not exist`.
+; load std; if {~ foo.c *.c} {echo C} {echo other}
+  C
+; load std; for i in 1 2 3 {echo n$i}
+  n1
+  n2
+  n3
+; load std; fn greet {echo hello $1}; greet world
+  hello world
+; if {~ a a} {echo yes}
+  sh: if: file does not exist
+
+Arithmetic is `${expr ...}` after `load expr`, in reverse Polish notation.
+; load std expr; i=0; while {! ~ $i 3} {i=${expr $i 1 +}}; echo $i
+  3
+; load expr; echo ${expr 2 3 4 '*' +}
+  14
+
+Lists: `${hd list}`, `${tl list}` and `${index n list}` come with `load std`.
+; load std; l=(a b c); echo ${hd $l} ${index 2 $l} ${tl $l}
+  a b b c
+
+This sh does not expand `*` or `?` in file names: `rm *.o` looks for a file called `*.o`. List the directory and filter instead.
+; echo /bin/sh*
+  /bin/sh*
+; touch a.o b.o c.c; load std; for f in `{ls | grep '\.o$'} {rm $f}; ls
+  c.c
+
+Pipelines, `;`, `&` (background, pid in `$apid`) and `#` comments are as usual. `exit` takes a status string. A background program is killed when the session ends; send its output to a file, because the output of a `run` call is closed when the command line finishes.
+; echo one two | tr a-z A-Z; exit 'fail:my reason'
+  ONE TWO
+
+Namespaces: `bind` and `mount` rearrange what names mean, for this session only. A union directory shows several directories at one name.
+; mkdir a b; echo 1 > a/x; echo 2 > b/y; bind -a b a; ls a; unmount b a; rm -r a b
+  a/x
+  a/y
