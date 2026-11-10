@@ -231,8 +231,8 @@ fn build_tables(ram: Region, pages: usize) -> (mmu::KernelMap, *mut u8, usize) {
 }
 
 /// Rebuilds the kernel map in heap pages with the runtime API, over the
-/// RAM the DTB reports, and switches to it.
-fn rebuild_tables(ram: Region) {
+/// RAM the DTB reports, and switches to it. Returns the pages they take.
+fn rebuild_tables(ram: Region) -> usize {
     // A first build in a generous pool counts the pages the tables need;
     // the tables that stay are then built in exactly that many.
     const PAGES: usize = 64;
@@ -243,7 +243,8 @@ fn rebuild_tables(ram: Region) {
     // it were never loaded.
     unsafe { alloc::alloc::dealloc(va, layout) };
     // The pages are never freed: the tables in them stay live.
-    let (map, _, left) = build_tables(ram, PAGES - left);
+    let pages = PAGES - left;
+    let (map, _, left) = build_tables(ram, pages);
     check!(left == 0, "the second table build differed from the first");
     // SAFETY: the new tables map the image, stack, heap and devices at the
     // same addresses as the boot tables.
@@ -252,6 +253,7 @@ fn rebuild_tables(ram: Region) {
     let probe = Box::new(0x5a5a_u32);
     check!(*probe == 0x5a5a, "heap after the switch");
     println!("kernel: page tables rebuilt at runtime");
+    pages
 }
 
 /// Gives the heap the RAM past the boot map's window, which the runtime
@@ -353,19 +355,20 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
     let reserved = [initrd.unwrap_or(none), dtb_region];
     let heap = init_heap(ram, &reserved);
     heap_test(&heap);
-    rebuild_tables(ram);
+    let table_pages = rebuild_tables(ram);
     let grown = grow_heap(ram, &reserved);
     if memstat {
         crate::memstat::enable();
         let img = boot::image();
         println!(
-            "kernel: mem: ram {} KiB; image: text {} rodata {} data+bss {} stack {} KiB; heap {} KiB",
+            "kernel: mem: ram {} KiB; image: text {} rodata {} data+bss {} stack {} KiB; heap {} KiB, {} KiB of it page tables",
             ram.size >> 10,
             img.text.size >> 10,
             img.rodata.size >> 10,
             img.data.size >> 10,
             img.stack.size >> 10,
-            (heap.iter().map(|r| r.size).sum::<usize>() + grown) >> 10
+            (heap.iter().map(|r| r.size).sum::<usize>() + grown) >> 10,
+            (table_pages * PAGE_SIZE) >> 10
         );
     }
     irq::init(&info);
