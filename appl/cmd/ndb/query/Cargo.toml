@@ -11,6 +11,7 @@ name = "query"
 path = "src/main.rs"
 
 [dependencies]
+ndb.workspace = true
 purgatorio.workspace = true
 
 [lints]

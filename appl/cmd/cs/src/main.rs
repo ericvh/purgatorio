@@ -15,14 +15,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         .read(true)
         .write(true)
         .open("/net/cs")
-        .map_err(|e| Error(format!("cs: {e}")))?;
+        .map_err(|_| Error::last())?;
     cs.write_all(netmkaddr(addr).as_bytes())
-        .map_err(|e| Error(format!("cs: {e}")))?;
-    cs.seek(SeekFrom::Start(0))
-        .map_err(|e| Error(format!("cs: {e}")))?;
+        .map_err(|_| Error::last())?;
+    cs.seek(SeekFrom::Start(0)).map_err(|_| Error::last())?;
     let mut buf = String::new();
-    cs.read_to_string(&mut buf)
-        .map_err(|e| Error(format!("cs: {e}")))?;
+    cs.read_to_string(&mut buf).map_err(|_| Error::last())?;
     print!("{buf}");
     if !buf.ends_with('\n') {
         println!();

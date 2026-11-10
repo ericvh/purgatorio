@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ndb-csquery"
+description = "ndb/csquery: ask the connection server to translate addresses"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "csquery"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
