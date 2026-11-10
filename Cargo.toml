@@ -22,12 +22,14 @@ members = [
     "appl/cmd/install/proto2list",
     "appl/cmd/disk/mkext",
     "appl/cmd/disk/mkfs",
+    "appl/cmd/ip/sntp",
+    "appl/cmd/ip/tftpd",
     # Libraries shared by commands, outside the globbed directories.
     "appl/archive",
     "xtask",
 ]
 # Matched by appl/cmd/* but hold crates, with no Cargo.toml of their own.
-exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk"]
+exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/ip"]
 
 [workspace.package]
 version = "0.1.0"

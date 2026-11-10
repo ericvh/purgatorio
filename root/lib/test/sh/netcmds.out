@@ -1,0 +1,34 @@
+hello, world
+hello, world
+chunk by chunk
+
+<html><body>hello</body></html>
+
+1
+GET /headers HTTP/1.1
+User-Agent: webgrab
+Accept: */*
+Connection: close
+
+not found
+webgrab: can't do https
+chunked.txt
+hello.txt
+moved.txt
+req.txt
+tftp
+webgrab.html
+% test whois server
+query: example.test
+status: active
+name? 
+hello bob
+options answered: 253 1, 253 3, 252 24
+sntp: server time Mon Nov 09 10:15:00 GMT 2026 (1794219300)
+served by tftpd
+test/netsrv: tftp: file not found
+test/netsrv: tftp: access violation
+test/netsrv: tftp: access violation
+sent 17 bytes
+uploaded by tftp
+test/netsrv: tftp: access violation
