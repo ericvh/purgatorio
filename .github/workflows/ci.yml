@@ -229,3 +229,43 @@ jobs:
           -p purg-abi -p purg-auth -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
           -p purg-aarch64
           -- -D warnings
+
+  # License and source policy (deny.toml, plan decision D1), and a check
+  # that the cargo-fuzz targets still compile. Nothing here needs nightly:
+  # running the fuzzers is a manual job (docs/plan.md Section 9.3).
+  deny:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    name: licenses, sources and fuzz targets
+    runs-on: ubuntu-24.04
+    env:
+      # Pinned: a new cargo-deny can change what the checks mean. Bump it
+      # in a pull request of its own.
+      CARGO_DENY_VERSION: 0.20.2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - name: cache the cargo-deny binary
+        id: deny-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ env.CARGO_DENY_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}
+      - name: install cargo-deny
+        if: steps.deny-cache.outputs.cache-hit != 'true'
+        env:
+          # -D warnings is for our code, not for a tool's dependencies.
+          RUSTFLAGS: ""
+        run: cargo install --locked cargo-deny --version "$CARGO_DENY_VERSION"
+      - name: licenses, bans and sources
+        run: cargo deny check licenses bans sources
+      - name: licenses, bans and sources of the fuzz targets
+        run: cargo deny --manifest-path fuzz/Cargo.toml check --config deny.toml licenses bans sources
+      - name: fuzz targets compile
+        run: cargo check --manifest-path fuzz/Cargo.toml
+      # The advisory database changes under us, so a new advisory must not
+      # turn an unrelated pull request red. The step shows as failed in the
+      # log; the job does not fail.
+      - name: advisories (reported, does not fail the job)
+        continue-on-error: true
+        run: cargo deny check advisories
