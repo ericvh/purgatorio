@@ -160,6 +160,26 @@ jobs:
       - name: xtask probe
         run: cargo xtask probe
 
+  kernel:
+    name: purg-kernel in QEMU aarch64 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: install QEMU
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-arm
+      - name: clippy
+        run: >
+          cargo clippy -p purg-kernel -p purg-aarch64
+          --target aarch64-unknown-none --profile kernel -- -D warnings
+      - name: xtask kernel (TCG, GICv2, GICv3, EL2)
+        run: cargo xtask kernel
+
   loom:
     name: loom models (Rendez, qio)
     needs: changes
@@ -197,8 +217,10 @@ jobs:
         run: >
           cargo build --target aarch64-unknown-none
           -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
+          -p purg-aarch64
       - name: clippy
         run: >
           cargo clippy --target aarch64-unknown-none
           -p purg-abi -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
+          -p purg-aarch64
           -- -D warnings
