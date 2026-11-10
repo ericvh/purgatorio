@@ -148,6 +148,24 @@ start (such as a missing module) produces no message.
 
 `exec` from v0.1 is gone; `emuinit` now spawns its command and waits for it.
 
+### Module digests and signatures
+
+Every module loaded by `spawn_prog` or `load` gets a digest, and a prog may
+be under a module policy that refuses unsigned or untrusted modules
+(`docs/signing.md`). None of this adds a host call, so the ABI version is
+unchanged. It is all files:
+
+- A module may carry a `purgatorio.sig` custom section, which the loader
+  ignores under the default policy.
+- `/prog/<pid>/module` lists the prog's policy and its modules: `policy
+  <level>`, then `module <digest> <signers> <path>` for the command and
+  each loaded reactor.
+- Writing `modules warn` or `modules require` to `/prog/<pid>/ctl`
+  tightens the policy. Under `require`, `spawn_prog` and `load` fail with
+  `module not signed`, `bad signature`, `untrusted signer`, `certificate
+  revoked`, `certificate expired` or `module revoked`, after the module's
+  path.
+
 `load` and `call` (v0.4) are registered by each engine rather than in the
 shared host functions, because they need the engine's store. `load`
 instantiates a reactor module (no `_start`; loadable modules live in
