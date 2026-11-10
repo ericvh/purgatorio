@@ -37,6 +37,10 @@ ok file2chan
 ok export
 ok kill
 ok kill_spin
+ok kill_nap
+ok kill_sh_wait
+ok kill_sh_read
+ok kill_sh_spawn
 ok fauth
 ok fauth_bad_proof
 ok fauth_not_required

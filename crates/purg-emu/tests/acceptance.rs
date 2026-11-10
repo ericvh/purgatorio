@@ -145,7 +145,8 @@ fn procs_conformance() {
     }
 }
 
-/// file2chan, export/mount, kill, fauth and stream.
+/// file2chan, export/mount, kill (of a prog and of `sh`, wherever it is
+/// blocked), fauth and stream.
 #[test]
 fn m3_conformance() {
     for vm in VMS {
@@ -158,7 +159,12 @@ fn m3_conformance() {
         );
         assert!(!out.contains("FAIL"), "{vm}:\n{out}");
         for check in [
+            "kill",
             "kill_spin",
+            "kill_nap",
+            "kill_sh_wait",
+            "kill_sh_read",
+            "kill_sh_spawn",
             "fauth",
             "fauth_not_required",
             "amount",

@@ -1,5 +1,6 @@
 //! m3: file2chan, a pipe export/mount, kill of a blocked read and of a
-//! computing prog, fauth with an explicit auth fd, and stream.
+//! computing prog, kill of `sh` wherever it is blocked, fauth with an
+//! explicit auth fd, and stream.
 //!
 //! `m3 --serve-file path` serves `path` and writes a ready byte to fd 1.
 //! `m3 --export` serves `/` on fd 0, and `m3 --export-noauth` does so
@@ -7,6 +8,7 @@
 //! reads fd 0 until it is killed. `m3 --stream path` writes a ready byte to
 //! fd 1 and streams fd 0 into `path` until it is killed. `m3 --spin` writes
 //! a ready byte to fd 1 and then computes, with no host calls, until it is
+//! killed. `m3 --nap` writes a ready byte to fd 1 and sleeps until it is
 //! killed. `m3 --pump frame log` copies fd 0 to fd 1 and appends what it
 //! copies to `log`; when `frame` is a number it flips a bit in the last
 //! byte of that frame (a 9P message or a record) on the way.
@@ -21,6 +23,7 @@ use purgatorio::file2chan::{self, FileIO};
 use purgatorio::{Context, Error, exits};
 
 const SELF: &str = "/bin/test/m3.wasm";
+const SH: &str = "/bin/sh.wasm";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -35,6 +38,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             args.get(3).map(String::as_str).unwrap_or(""),
         ),
         Some("--spin") => spin(),
+        Some("--nap") => nap(),
         _ => checks(),
     }
 }
@@ -57,6 +61,12 @@ fn spin() -> ! {
     }
 }
 
+fn nap() -> ! {
+    let _ = file2chan::write_fd(1, b"R");
+    std::thread::sleep(std::time::Duration::from_secs(3600));
+    exits("woke");
+}
+
 fn checks() -> Result<(), Error> {
     let mut failed = 0;
     for (name, f) in [
@@ -64,6 +74,10 @@ fn checks() -> Result<(), Error> {
         ("export", export_loop),
         ("kill", kill_blocked),
         ("kill_spin", kill_spin),
+        ("kill_nap", kill_nap),
+        ("kill_sh_wait", kill_sh_wait),
+        ("kill_sh_read", kill_sh_read),
+        ("kill_sh_spawn", kill_sh_spawn),
         ("fauth", fauth_mount),
         ("fauth_bad_proof", fauth_bad_proof),
         ("fauth_not_required", fauth_not_required),
@@ -212,11 +226,132 @@ fn kill_blocked() -> Result<(), String> {
         }
     };
     drop(w);
-    if !msg.status.contains("interrupted") {
+    // The kill ends the prog: the read does not return `interrupted` to it.
+    if msg.status != "killed" {
         return Err(format!("wait {msg:?}"));
     }
     let _ = mode::OREAD;
     Ok(())
+}
+
+/// The exit message of child `pid`.
+fn wait_for(pid: u32) -> Result<purgatorio::Waitmsg, String> {
+    loop {
+        let msg = purgatorio::wait().map_err(|e| e.0)?;
+        if msg.pid == pid {
+            return Ok(msg);
+        }
+    }
+}
+
+fn kill(pid: u32) -> Result<(), String> {
+    std::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())
+}
+
+/// The progs whose parent is `ppid`.
+fn children(ppid: u32) -> Vec<u32> {
+    let Ok(dir) = std::fs::read_dir("/prog") else {
+        return Vec::new();
+    };
+    dir.filter_map(|e| e.ok()?.file_name().into_string().ok()?.parse::<u32>().ok())
+        .filter(|pid| {
+            std::fs::read_to_string(format!("/prog/{pid}/status"))
+                .is_ok_and(|s| s.split_whitespace().nth(1) == Some(&*ppid.to_string()))
+        })
+        .collect()
+}
+
+/// Kills `pid` once it has been left `ms` milliseconds to block, and
+/// checks that it ended as killed.
+fn kill_after(pid: u32, ms: u64) -> Result<(), String> {
+    std::thread::sleep(std::time::Duration::from_millis(ms));
+    kill(pid)?;
+    let msg = wait_for(pid)?;
+    if msg.status != "killed" {
+        return Err(format!("wait {msg:?}"));
+    }
+    Ok(())
+}
+
+/// A prog killed in a sleep ends as killed.
+fn kill_nap() -> Result<(), String> {
+    let [ready_r, ready_w] = purgatorio::pipe().map_err(|e| e.0)?;
+    let pid = purgatorio::spawn(
+        SELF,
+        &[String::from("m3"), String::from("--nap")],
+        pctl::NEWFD,
+        &[(ready_w.as_raw_fd(), 1)],
+    )
+    .map_err(|e| e.0)?;
+    drop(ready_w);
+    let mut b = [0u8; 1];
+    std::fs::File::from(ready_r)
+        .read_exact(&mut b)
+        .map_err(|e| e.to_string())?;
+    kill_after(pid, 50)
+}
+
+/// Starts `sh` with `argv`, its fd 0 `stdin` or `/dev/null`, fd 1
+/// `/dev/null` and fd 2 this prog's.
+fn sh(argv: &[&str], stdin: Option<&OwnedFd>) -> Result<u32, String> {
+    let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
+    let null = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")
+        .map_err(|e| e.to_string())?;
+    let fd0 = stdin.map_or(null.as_raw_fd(), |f| f.as_raw_fd());
+    let fdmap = [(fd0, 0), (null.as_raw_fd(), 1), (2, 2)];
+    purgatorio::spawn(SH, &argv, pctl::NEWFD, &fdmap).map_err(|e| e.0)
+}
+
+/// `sh` killed while it waits for a command ends as killed, not with the
+/// error `wait` would return (issue #102).
+fn kill_sh_wait() -> Result<(), String> {
+    let pid = sh(&["sh", "-c", "sleep 300 & wait"], None)?;
+    let mut job = Vec::new();
+    for _ in 0..1000 {
+        job = children(pid);
+        if !job.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let res = kill_after(pid, 100);
+    for p in job {
+        let _ = kill(p);
+    }
+    res
+}
+
+/// `sh` killed while it reads commands from a pipe ends as killed.
+fn kill_sh_read() -> Result<(), String> {
+    let [r, w] = purgatorio::pipe().map_err(|e| e.0)?;
+    let pid = sh(&["sh"], Some(&r))?;
+    drop(r);
+    let res = kill_after(pid, 100);
+    drop(w);
+    res
+}
+
+/// `sh` killed while it starts a command, here one whose module is served
+/// by this prog and never comes, ends as killed rather than reporting the
+/// command's error (issue #102).
+fn kill_sh_spawn() -> Result<(), String> {
+    let path = "/tmp/m3-slow.wasm";
+    let io = file2chan::file2chan("/tmp", "m3-slow.wasm").map_err(|e| e.0)?;
+    let pid = sh(&["sh", "-c", path], None)?;
+    // The first read of the module: sh is in `spawn_prog` until it is
+    // answered.
+    let req = io.recv().map_err(|e| e.0)?;
+    if req.as_ref().is_none_or(|r| !r.is_read()) {
+        return Err(String::from("no read of the module"));
+    }
+    let res = kill_after(pid, 0);
+    drop(req);
+    drop(io);
+    let _ = purgatorio::unmount(None, path);
+    res
 }
 
 /// A prog computing with no host calls has no call to interrupt, so the
@@ -605,8 +740,7 @@ fn stream_child(path: &str) -> ! {
     }
 }
 
-/// A prog blocked in stream is interrupted by kill like a blocked read, and
-/// returns the count it copied.
+/// A prog blocked in stream is killed like one blocked in a read.
 fn stream_kill() -> Result<(), String> {
     let path = "/tmp/m3-stream-kill";
     let _ = std::fs::remove_file(path);
@@ -652,8 +786,12 @@ fn stream_kill() -> Result<(), String> {
         }
     };
     drop(w);
-    if msg.status != "stream 3 interrupted" {
+    // The kill ends the prog, after what it copied has reached the file.
+    if msg.status != "killed" {
         return Err(format!("wait {msg:?}"));
+    }
+    if std::fs::read(path).ok().as_deref() != Some(&b"abc"[..]) {
+        return Err(String::from("the copy is lost"));
     }
     Ok(())
 }

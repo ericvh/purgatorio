@@ -1086,10 +1086,10 @@ fn jobs_run_alongside_other_calls() {
         let k = m.ok("job_kill", &format!(r#"{{"id":{kid}}}"#));
         assert_eq!(k.get("killed"), Some(&Value::Bool(true)), "{vm}");
         let (v, _, _) = read_to_exit(&mut m, kid);
-        // sh reports the kill as an interrupted wait (fail:lost) rather
-        // than dying with status killed; either way it is a failure.
-        assert!(
-            v.get("ok") == Some(&Value::Bool(false)) && !str_of(&v, "status").is_empty(),
+        // sh dies of the kill wherever it was blocked (issue #102).
+        assert_eq!(
+            (str_of(&v, "status"), v.get("ok")),
+            ("killed", Some(&Value::Bool(false))),
             "{vm}: {}",
             v.encode()
         );

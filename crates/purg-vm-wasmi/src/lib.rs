@@ -4,10 +4,8 @@
 //!
 //! Guest code runs on fuel, [`SLICE`] units at a time. When a slice runs
 //! out the backend checks the prog's note: a prog killed while computing,
-//! with no host call to return `interrupted` from, is stopped with status
-//! `killed` at the end of the slice after the one in which it was first
-//! seen killed. That spare slice lets a guest that did see `interrupted`
-//! exit with its own status. The emu's wasmtime backend does the same
+//! with no host call to end it at (see [`purg_vm::host_call`]), is stopped
+//! there with status `killed`. The emu's wasmtime backend does the same
 //! with epoch interruption.
 //!
 //! wasmi cannot say which functions a guest is in. A traced prog
@@ -38,8 +36,8 @@ use wasmi::{
 /// note checks.
 pub const SLICE: u64 = 1 << 20;
 
-/// The status of a prog stopped by [`SLICE`] checks after a kill.
-pub const KILLED: &str = "killed";
+/// The status of a killed prog.
+pub use purg_vm::KILLED;
 
 /// The backend. It holds only the configuration: each prog runs in a
 /// wasmi engine of its own.
@@ -141,7 +139,8 @@ fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
                 |mut caller: Caller<'_, Ctx>, $($a: $t),*| -> Result<$r, wasmi::Error> {
                     record_caller(&mut caller);
                     let (data, ctx) = memory(&mut caller)?;
-                    $f(ctx, &mut Mem(data), $($a),*).map_err(|s| wasmi::Error::host(HostStop(s)))
+                    purg_vm::host_call(ctx, |ctx| $f(ctx, &mut Mem(data), $($a),*))
+                        .map_err(|s| wasmi::Error::host(HostStop(s)))
                 },
             )?;
         };
@@ -157,14 +156,17 @@ fn register_modules(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
     linker.func_wrap(
         purg_abi::MODULE,
         purg_abi::sys::LOAD,
-        move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> i32 {
-            match load_reactor(&mut caller, &loading, path, plen) {
+        move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> Result<i32, wasmi::Error> {
+            killed(&caller)?;
+            let r = match load_reactor(&mut caller, &loading, path, plen) {
                 Ok(handle) => handle,
                 Err(e) => {
                     caller.data_mut().prog.set_error(&e);
                     -1
                 }
-            }
+            };
+            killed(&caller)?;
+            Ok(r)
         },
     )?;
     linker.func_wrap(
@@ -178,8 +180,9 @@ fn register_modules(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
               alen: i32,
               out: i32,
               olen: i32|
-              -> i32 {
-            match call_reactor(
+              -> Result<i32, wasmi::Error> {
+            killed(&caller)?;
+            let r = match call_reactor(
                 &mut caller,
                 &calling,
                 Call {
@@ -197,9 +200,20 @@ fn register_modules(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
                     caller.data_mut().prog.set_error(&e);
                     -1
                 }
-            }
+            };
+            killed(&caller)?;
+            Ok(r)
         },
     )?;
+    Ok(())
+}
+
+/// Ends a killed prog at `load` or `call`, as [`purg_vm::host_call`] does
+/// at the other host calls.
+fn killed(caller: &Caller<'_, Ctx>) -> Result<(), wasmi::Error> {
+    if caller.data().prog.proc.note.killed() {
+        return Err(wasmi::Error::host(HostStop(Stop::killed())));
+    }
     Ok(())
 }
 
@@ -313,7 +327,6 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
     params: P,
     traced: Option<&Instance>,
 ) -> Result<R, wasmi::Error> {
-    let mut seen_killed = false;
     let mut call = func.call_resumable(&mut ctx, params)?;
     loop {
         match call {
@@ -330,11 +343,7 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
                     record_instance(&mut ctx, instance, true);
                 }
                 if ctx.as_context().data().prog.proc.note.killed() {
-                    if seen_killed {
-                        let stop = Stop::Exit(String::from(KILLED));
-                        return Err(wasmi::Error::host(HostStop(stop)));
-                    }
-                    seen_killed = true;
+                    return Err(wasmi::Error::host(HostStop(Stop::killed())));
                 }
                 ctx.as_context_mut()
                     .set_fuel(SLICE.max(t.required_fuel()))?;

@@ -34,6 +34,16 @@ pub enum Stop {
     Exit(String),
 }
 
+/// The status of a killed prog, in its exit message (`pid name killed`).
+pub const KILLED: &str = "killed";
+
+impl Stop {
+    /// How a killed prog stops.
+    pub fn killed() -> Stop {
+        Stop::Exit(String::from(KILLED))
+    }
+}
+
 impl core::fmt::Display for Stop {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -45,6 +55,26 @@ impl core::fmt::Display for Stop {
 impl core::error::Error for Stop {}
 
 pub type HostResult<T> = Result<T, Stop>;
+
+/// Runs host function `f` for a prog, ending the prog if it has been
+/// killed. Backends call every import through this.
+///
+/// In Inferno a kill is not an error handed back to the prog: a prog
+/// killed while blocked in a system call ends when the call returns, and
+/// its parent sees `killed`. So a killed prog makes no further host call,
+/// and a call it was blocked in, which the kill interrupted, unwinds the
+/// guest instead of returning `interrupted`. A prog killed while it
+/// computes is stopped at the VM's next check point.
+pub fn host_call<T>(ctx: &mut Ctx, f: impl FnOnce(&mut Ctx) -> HostResult<T>) -> HostResult<T> {
+    if ctx.prog.proc.note.killed() {
+        return Err(Stop::killed());
+    }
+    let r = f(ctx);
+    if ctx.prog.proc.note.killed() {
+        return Err(Stop::killed());
+    }
+    r
+}
 
 /// Host-side state of a running prog: Inferno's `Prog` plus the WASI view of
 /// its arguments and environment, and the engine that runs it (and any
@@ -135,6 +165,11 @@ pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, E
     platform.set_current_pid(ctx.prog.pid);
     platform.set_note(Some(ctx.prog.proc.note.clone()));
     ctx.prog.proc.set_name(module_name(path));
+    // Killed before it started: the module never runs.
+    if ctx.prog.proc.note.killed() {
+        platform.set_note(None);
+        return (ctx, Ok(String::from(KILLED)));
+    }
     let engine = ctx.engine.clone();
     let (ctx, res) = engine.run(wasm, ctx);
     platform.set_note(None);
@@ -191,6 +226,12 @@ pub fn spawn(
         return Err(Error::new(purg_abi::error::EBADARG));
     }
     let mut child = parent.spawn(flags, fdmap)?;
+    // A `killgrp` that came before the child was in the process table
+    // missed it, but it has killed the parent: the child is not started.
+    // (One that came after kills the child too.)
+    if parent.proc.note.killed() {
+        return Err(Error::new(purg_abi::error::EINTR));
+    }
     let wasm =
         load_module(&mut child, path).map_err(|e| Error::from(alloc::format!("{path}: {e}")))?;
     // A child started under tracing runs a module that keeps a call stack.
