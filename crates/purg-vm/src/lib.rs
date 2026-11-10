@@ -141,6 +141,21 @@ pub fn run_module(ctx: Ctx, wasm: &[u8], path: &str) -> (Ctx, Result<String, Err
     (ctx, res)
 }
 
+/// Drops a prog that has stopped, with its note current while its files
+/// and namespace go.
+///
+/// Dropping the last reference to a namespace clunks the fids of its
+/// mounts, and a clunk waits for the server's reply. A killed prog must
+/// not wait there for a server that will never answer (one that is dead
+/// but whose connection is not hung up, or the prog itself): with the note
+/// current the wait is interrupted, as it would be in a system call.
+pub fn exit(ctx: Ctx) {
+    let platform = ctx.prog.kernel.platform.clone();
+    platform.set_note(Some(ctx.prog.proc.note.clone()));
+    drop(ctx);
+    platform.set_note(None);
+}
+
 /// Loads the command at `path` through the prog's namespace and runs it.
 pub fn run_command(mut ctx: Ctx, path: &str) -> (Ctx, Result<String, Error>) {
     match load_module(&mut ctx.prog, path) {
@@ -191,6 +206,7 @@ pub fn spawn(
                     alloc::format!("fail:{e}")
                 }
             };
+            exit(ctx);
         }),
     )?;
     Ok(pid)

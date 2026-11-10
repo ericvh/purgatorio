@@ -85,11 +85,74 @@ pub fn boot(
 }
 
 impl System {
-    /// Runs `argv` in a fresh prog on this thread. Its fd 0 is the console,
-    /// and fds 1 and 2 are the console or, given `out`, that file. Returns
-    /// the prog's exit status.
+    /// Runs `argv` in a fresh prog on this thread, in the boot namespace.
+    /// Its fd 0 is the console, and fds 1 and 2 are the console or, given
+    /// `out`, that file. Returns the prog's exit status, once every prog
+    /// it started is gone (see [`System::reap`]).
     pub fn run(&self, argv: &[&str], out: Option<&str>) -> Result<String, Error> {
-        let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
+        let prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
+        let first = prog.pid;
+        let status = self.run_prog(prog, argv, out);
+        // A mount it made in the boot namespace keeps its reader thread.
+        self.reap(first, usize::MAX)?;
+        status
+    }
+
+    /// [`System::run`] in a copy of the boot namespace, as a test runs
+    /// under its own emu when hosted: what it binds and mounts goes away
+    /// with it, and so do the file servers behind those mounts. Returns
+    /// the exit status and what `out` held when the prog exited: the progs
+    /// it left behind may write there when they are killed.
+    pub fn run_test(&self, argv: &[&str], out: Option<&str>) -> Result<(String, Vec<u8>), Error> {
+        let threads = SCHED.live();
+        let prog = Prog::new(self.kernel.clone(), Arc::new(self.pgrp.fork()));
+        let first = prog.pid;
+        let status = self.run_prog(prog, argv, out);
+        let got = out.map(|o| self.read_file(o));
+        self.reap(first, threads)?;
+        if let Some(out) = out {
+            let _ = Prog::new(self.kernel.clone(), self.pgrp.clone()).remove(out);
+        }
+        Ok((status?, got.transpose()?.unwrap_or_default()))
+    }
+
+    /// Kills the progs with pids from `first` on that are still running,
+    /// and waits for them to go, and for the kernel threads to be no more
+    /// than `threads`: the progs' own, and the readers of the mounts in
+    /// their namespaces.
+    ///
+    /// A command may leave progs behind: a file server it mounted, a
+    /// background job. Each holds a 2 MiB stack and its wasm memory, so
+    /// over a test run they would add up.
+    fn reap(&self, first: u32, threads: usize) -> Result<(), Error> {
+        use purg_platform::sync::Rendez;
+        const MS: u64 = 1_000_000;
+        let r = Rendez::new();
+        let procs = &self.kernel.procs;
+        let left = || procs.pids().into_iter().filter(|&p| p >= first);
+        for _ in 0..REAP_MS / 10 {
+            if left().next().is_none() && SCHED.live() <= threads {
+                return Ok(());
+            }
+            // Again each time round: a prog may have been spawned since.
+            for p in left().filter_map(|p| procs.get(p)) {
+                p.kill();
+            }
+            r.tsleep(|| false, 10 * MS);
+        }
+        let names: Vec<String> = left()
+            .filter_map(|p| procs.get(p))
+            .map(|p| format!("{} {}", p.pid, p.name()))
+            .collect();
+        Err(Error::from(format!(
+            "{} progs ({}) and {} kernel threads would not die",
+            names.len(),
+            names.join(", "),
+            SCHED.live().saturating_sub(threads)
+        )))
+    }
+
+    fn run_prog(&self, mut prog: Prog, argv: &[&str], out: Option<&str>) -> Result<String, Error> {
         self.kernel.platform.set_current_pid(prog.pid);
         match out {
             None => purg_vm::init_fds(&mut prog)?,
@@ -102,7 +165,9 @@ impl System {
         }
         let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
         let path = purg_vm::command_path(&argv[0]);
-        purg_vm::run_command(Ctx::new(prog, argv, self.engine.clone()), &path).1
+        let (ctx, status) = purg_vm::run_command(Ctx::new(prog, argv, self.engine.clone()), &path);
+        purg_vm::exit(ctx);
+        status
     }
 
     pub fn read_file(&self, path: &str) -> Result<Vec<u8>, Error> {
@@ -148,10 +213,9 @@ impl System {
     pub fn sh_script(&self, script: &str, want: &[u8]) -> core::result::Result<(), String> {
         let name = script.rsplit('/').next().unwrap_or(script);
         let out = format!("/tmp/kernel-{name}.got");
-        let status = self
-            .run(&["sh", script], Some(&out))
+        let (status, got) = self
+            .run_test(&["sh", script], Some(&out))
             .map_err(|e| format!("error: {e}"))?;
-        let got = self.read_file(&out).map_err(|e| format!("{out}: {e}"))?;
         if got != want {
             return Err(format!(
                 "output differs\n--- got\n{}--- want\n{}---",
@@ -178,6 +242,15 @@ const SCRIPT: &[(&[&str], bool)] = &[
     (&["/bin/test/net.wasm"], true),
     (&["/bin/test/wasi.wasm"], true),
 ];
+
+/// Heap the conformance guests and the sh corpus (about 2000 progs) may
+/// leave in use: files in `/tmp` and tables that grew. They leave about
+/// 12 KiB; one prog left running holds over 3 MiB, and before each prog
+/// had its own wasmi engine the run left over 330 MiB.
+const LEAK_LIMIT: u64 = 1 << 20;
+
+/// How long [`System::reap`] waits for killed progs to go.
+const REAP_MS: u64 = 5000;
 
 /// The `sh` scripts; each `x.sh` runs with its output compared with `x.out`.
 const SH_CORPUS: &str = "/lib/test/sh";
@@ -222,16 +295,30 @@ impl System {
         self.say(&format!("kernel: mem threads {}", threads.join(" ")));
     }
 
-    /// Runs the conformance guests and the sh corpus; returns the number
-    /// that failed. With `memstat`, prints [`System::memstat`] after each.
+    /// Heap bytes in use and live kernel threads, once the stacks of
+    /// finished threads are freed (which happens when another thread next
+    /// runs).
+    fn in_use(&self) -> (u64, usize) {
+        use purg_platform::sync::Sched;
+        for _ in 0..2 {
+            SCHED.yield_now();
+        }
+        (crate::kernel::HEAP.memory().0, SCHED.live())
+    }
+
+    /// Runs the conformance guests and the sh corpus, then checks that
+    /// they left no kernel thread and no more than [`LEAK_LIMIT`] of heap
+    /// behind; returns the number that failed. With `memstat`, prints
+    /// [`System::memstat`] after each.
     pub fn run_tests(&self, memstat: bool) -> usize {
         let mut failed = 0;
+        let (heap, threads) = self.in_use();
         if memstat {
             self.memstat();
         }
         for &(argv, ok) in SCRIPT {
             self.say(&format!("kernel: run {}", argv.join(" ")));
-            let v = match (self.run(argv, None), ok) {
+            let v = match (self.run_test(argv, None).map(|(s, _)| s), ok) {
                 (Ok(s), true) if s.is_empty() => Ok(String::from("ok")),
                 (Ok(s), false) if !s.is_empty() => Ok(format!("failed as expected: {s}")),
                 (Ok(s), _) => Err(format!("status {s:?}")),
@@ -262,6 +349,19 @@ impl System {
                 self.memstat();
             }
         }
+        let (heap_now, threads_now) = self.in_use();
+        let grew = heap_now.saturating_sub(heap);
+        let v = if threads_now > threads {
+            Err(format!(
+                "the tests left {} kernel threads running",
+                threads_now - threads
+            ))
+        } else if grew > LEAK_LIMIT {
+            Err(format!("the tests left {grew} bytes of heap in use"))
+        } else {
+            Ok(String::from("the tests left no threads or memory behind"))
+        };
+        self.verdict(&mut failed, v);
         failed
     }
 
