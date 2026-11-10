@@ -9,8 +9,9 @@ use std::os::fd::AsRawFd;
 use std::thread;
 use std::time::Duration;
 
+// Only wasm has this section; Mach-O rejects a section name with no segment.
 #[used]
-#[unsafe(link_section = "purgatorio.abi")]
+#[cfg_attr(target_family = "wasm", unsafe(link_section = "purgatorio.abi"))]
 static ABI: [u8; 3] = *b"0.4";
 
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
