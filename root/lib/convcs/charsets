@@ -1,0 +1,10 @@
+# The character sets tcs(1) knows. Each line is
+#	name alias ... : converter : description
+# The first name is the standard one. The converter is one built into
+# tcs: utf8, ascii, latin1, utf16, utf16be or utf16le.
+utf-8 utf8 : utf8 : Unicode in UTF-8, the Inferno text encoding
+us-ascii ascii ansi_x3.4-1968 iso646-us : ascii : 7-bit ASCII
+iso-8859-1 8859-1 latin1 l1 iso_8859-1 : latin1 : ISO 8859-1, Western European
+utf-16 utf16 ucs-2 : utf16 : Unicode in UTF-16, big-endian unless a byte order mark says otherwise
+utf-16be utf16be : utf16be : Unicode in UTF-16, big-endian
+utf-16le utf16le : utf16le : Unicode in UTF-16, little-endian

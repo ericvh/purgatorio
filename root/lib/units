@@ -1,0 +1,210 @@
+# Units for units(1). Each line is a name and its value, an expression
+# in other units. A value of ! makes the name a fundamental unit, and a
+# name ending in - is a prefix. Lines starting with # are comments.
+
+# Fundamental units
+m	!
+kg	!
+s	!
+A	!
+K	!
+mol	!
+cd	!
+radian	!
+bit	!
+
+# Prefixes, long and short
+yotta-	1e24
+zetta-	1e21
+exa-	1e18
+peta-	1e15
+tera-	1e12
+giga-	1e9
+mega-	1e6
+kilo-	1e3
+hecto-	1e2
+deka-	1e1
+deci-	1e-1
+centi-	1e-2
+milli-	1e-3
+micro-	1e-6
+nano-	1e-9
+pico-	1e-12
+femto-	1e-15
+atto-	1e-18
+Y-	1e24
+Z-	1e21
+E-	1e18
+P-	1e15
+T-	1e12
+G-	1e9
+M-	1e6
+k-	1e3
+h-	1e2
+da-	1e1
+d-	1e-1
+c-	1e-2
+m-	1e-3
+u-	1e-6
+µ-	1e-6
+n-	1e-9
+p-	1e-12
+f-	1e-15
+a-	1e-18
+
+# Numbers and constants
+pi	3.14159265358979323846
+π	pi
+c	2.99792458e8 m/s
+light	c
+e	1.602176634e-19 coulomb
+g	9.80665 m/s²
+force	g
+mole	6.02214076e23
+water	gram g / cm³
+au	1.495978707e11 m
+dozen	12
+percent	1|100
+
+# Time
+sec	s
+second	s
+min	60 s
+minute	min
+hr	60 min
+hour	hr
+day	24 hr
+week	7 day
+fortnight	14 day
+year	365.25 day
+yr	year
+month	year|12
+lightyear	c year
+parsec	au radian / arcsec
+
+# Length
+meter	m
+metre	m
+micron	1e-6 m
+angstrom	1e-10 m
+inch	2.54 cm
+in	inch
+foot	12 inch
+feet	foot
+ft	foot
+yard	3 ft
+yd	yard
+fathom	6 ft
+rod	16.5 ft
+furlong	660 ft
+mile	5280 ft
+mi	mile
+nmile	1852 m
+league	3 mile
+
+# Area and volume
+acre	4840 yd²
+hectare	1e4 m²
+are	100 m²
+liter	1e-3 m³
+litre	liter
+l	liter
+cc	cm³
+gallon	231 in³
+gal	gallon
+quart	gallon|4
+pint	quart|2
+cup	pint|2
+floz	pint|16
+tablespoon	floz|2
+teaspoon	tablespoon|3
+brgallon	4.54609 liter
+brquart	brgallon|4
+brpint	brquart|2
+brfloz	brpint|20
+
+# Mass
+gram	1e-3 kg
+gm	gram
+tonne	1000 kg
+pound	0.45359237 kg
+lb	pound
+ounce	pound|16
+oz	ounce
+ton	2000 lb
+stone	14 lb
+grain	pound|7000
+carat	0.2 gram
+
+# Speed
+mph	mile/hr
+kph	km/hr
+knot	nmile/hr
+
+# Angle
+degree	pi|180 radian
+deg	degree
+arcmin	degree|60
+arcsec	arcmin|60
+rev	2 pi radian
+revolution	rev
+circle	rev
+steradian	radian²
+sr	steradian
+
+# Mechanics and energy
+newton	kg m/s²
+N	newton
+dyne	1e-5 newton
+joule	newton m
+J	joule
+erg	1e-7 joule
+watt	joule/s
+W	watt
+horsepower	550 ft lb g/s
+hp	horsepower
+calorie	4.184 joule
+cal	calorie
+btu	1055.05585 joule
+kwh	kilo watt hour
+electronvolt	e volt
+eV	electronvolt
+pascal	newton/m²
+Pa	pascal
+bar	1e5 pascal
+atmosphere	101325 pascal
+atm	atmosphere
+torr	atm|760
+psi	pound force/inch²
+
+# Electricity
+ampere	A
+amp	A
+coulomb	A s
+coul	coulomb
+volt	watt/A
+V	volt
+ohm	volt/A
+siemens	A/volt
+farad	coulomb/volt
+henry	volt s/A
+weber	volt s
+tesla	weber/m²
+gauss	1e-4 tesla
+hertz	1/s
+Hz	hertz
+
+# Temperature differences, which are multiplicative
+kelvin	K
+degC	K
+degF	5|9 K
+rankine	degF
+
+# Light and amount
+candela	cd
+lumen	cd sr
+lux	lumen/m²
+
+# Information
+byte	8 bit
+B	byte

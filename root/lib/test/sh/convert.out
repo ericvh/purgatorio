@@ -1,0 +1,30 @@
+utf-8 us-ascii iso-8859-1 utf-16 utf-16be utf-16le
+iso-8859-1 8859-1 latin1 l1 iso_8859-1
+Unicode in UTF-16, big-endian unless a byte order mark says otherwise
+utf-16 utf16 ucs-2
+00000000  68 e9 6c 6c 6f                                   h.llo
+héllo
+h??
+00000000  68 00 e9 00                                      h...
+hé
+tcs: foo: unknown character set
+fail:foo: unknown character set
+tcs: cannot open /tmp/sh-convert/nonexistent: file does not exist
+you have: you want: 	* 2.54
+	/ 0.3937008
+you have: you want: 	* 1.020689
+	/ 0.9797299
+you have: you want: 	* 120
+	/ 0.008333333
+you have: you want: 	* 1.609344
+	/ 0.6213712
+you have: you want: conformability
+	1 kg
+	1 m
+you have: unknown unit: nonsense
+you have: you want: 	86400 s
+you have: you want: 	* 500
+	/ 0.002
+you have: 
+inch	2.54 cm	0.0254 m
+units: cannot open /tmp/sh-convert/nonexistent: file does not exist
