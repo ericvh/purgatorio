@@ -49,6 +49,7 @@ a `; ` prompt.
 | Authenticated mount: the server checks an Ed25519 proof over a challenge before `Tattach`, from a key it holds or a certificate from a signer it trusts; `-A` skips it. The handshake also agrees a session key (ephemeral X25519), and the conversation after it is encrypted and authenticated with ChaCha20-Poly1305 records (`ring`'s in the emu). The server proves itself in turn, over the session's keys, and `mount -S` requires that; `export -e` refuses conversations in the clear. `#¤` or a guest factotum signs for the client. See [docs/auth.md](docs/auth.md) | done |
 | Auth tools: `auth/createsignerkey signer keyfs keysrv passwd changelogin factotum secstore countersigner mkauthinfo verify getpk`, `getauthinfo`, `crypt`, `netkey`; password login is SPAKE2 | done |
 | `#D`: TLS 1.3 client with a pinned P-256 server key | done |
+| Lethe, a stateless protocol for static trees: tickets sealed under a server key, every request sealed, `stat`, `read` (conditional on a version) and `readdir` with a cookie. `lethed` serves a host directory read-only; `#λ` and `lethe addr mtpt [path]` attach it, on the emu and the kernel. See [docs/lethe.md](docs/lethe.md) | read-only first cut; writes and streams designed only |
 | W1 commands: `bind cat cp date echo emuinit env ls mkdir mv pwd rm sleep unmount wc` | done |
 | W2 commands: `cmp diff du fc grep kill md5sum memfs mount ns ps ramfile sed tail tee xd` | done |
 | W3 commands: `cs dial export import listen netstat os styxlisten` | done |
@@ -77,13 +78,15 @@ crates/
   purg-abi/          no_std  ABI constants shared by host and guest
   purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec; a 9P2000.u translator
   purg-auth/         no_std  certificates, mount proofs, session keys and records, password login (SPAKE2), sealing
+  purg-lethe/        no_std  Lethe: frames, tickets, the server engine and the client (docs/lethe.md)
   purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam)
   purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree, Styx mount/export;
-                             #/ #c #e #| #p #s #d #% #M #I #C #D #¤
+                             #/ #c #e #| #p #s #d #% #M #I #C #D #¤ #λ
   purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, spawn
   purg-vm-wasmi/     no_std  wasmi interpreter backend
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
-  purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/
+  purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/;
+                             the `lethed` binary, the Lethe server
   purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt, on purg-aarch64
   purg-aarch64/      no_std  aarch64 support: boot, DTB, GICv2/v3, timer, vectors, MMU, PL011, scheduler, virtio-net, smoltcp, virtio-9p
   purg-kernel/       no_std  the native kernel for QEMU virt (Phase K); #9 (virtio-9p)
@@ -195,6 +198,14 @@ cargo xtask run-emu -- sh -c 'ls -l /bin | wc -l'
 cargo xtask run-emu                          # boots emuinit, then sh -l on the console
 ```
 
+To serve a host directory over Lethe and attach it in the emu
+(`docs/lethe.md`):
+
+```sh
+cargo xtask lethed -- -k root/lib/test/auth.key.pub /some/dir &
+cargo xtask run-emu -- sh -c 'mkdir -p /tmp/l; lethe tcp!127.0.0.1!5640 /tmp/l; ls /tmp/l'
+```
+
 You can also run the binary directly: `target/debug/emu [-r root] [--vm=wasmtime|wasmi] [cmd [args...]]`.
 A command name `cmd` runs `/bin/cmd.wasm`. The exit code is 0 when the prog's
 Inferno exit status is empty and 1 otherwise.
@@ -205,8 +216,8 @@ Inferno exit status is empty and 1 otherwise.
 cargo xtask build-root    # acceptance tests run the built apps
 cargo test --workspace
 cargo build --target aarch64-unknown-none \
-  -p purg-abi -p purg-styx -p purg-auth -p purg-platform -p purg-core -p purg-vm \
-  -p purg-vm-wasmi -p purg-aarch64
+  -p purg-abi -p purg-styx -p purg-auth -p purg-lethe -p purg-platform -p purg-core \
+  -p purg-vm -p purg-vm-wasmi -p purg-aarch64
 cargo xtask probe         # needs qemu-system-aarch64
 cargo xtask probe --kvm   # the same under KVM on an aarch64 Linux host with /dev/kvm
 RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \

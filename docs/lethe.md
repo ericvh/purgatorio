@@ -114,7 +114,7 @@ fields`. `time` is the client's estimate of the server's clock (Section 8).
 | op | name | fields | first cut |
 |---:|---|---|---|
 | 0x10 | `Tstat` | `path s[2]` | yes |
-| 0x11 | `Rstat` | `stat s[2]` (a Styx stat entry) | yes |
+| 0x11 | `Rstat` | `stat[n]`, a Styx stat entry (it starts with its own `size[2]`) | yes |
 | 0x12 | `Tread` | `path s[2] offset u64 count u32 cond u8 vers u32` | yes |
 | 0x13 | `Rread` | `qid[13] unchanged u8 data[count u32]` | yes |
 | 0x14 | `Treaddir` | `path s[2] cookie s[2] count u32` | yes |
@@ -550,10 +550,11 @@ writes would take Venti's content addressing.
 | `Tauth`, `stat`, `read` (with `cond`), `readdir` | `purg-lethe` | done |
 | ticket narrowing: rights and prefix | `purg-lethe`, `lethed`, `lethe` | done |
 | fuzz target and smoke test | `fuzz/fuzz_targets/lethe.rs`, `crates/purg-lethe/tests/fuzz_smoke.rs` | done |
-| `lethed`, the host server | `crates/purg-emu/src/bin/lethed.rs`, run with `cargo xtask lethed` | done |
+| `lethed`, the host server | `crates/purg-emu/src/lethed.rs` (binary `src/bin/lethed.rs`), run with `cargo xtask lethed` | done |
 | `#λ`, the client device | `crates/purg-core/src/devlethe.rs` | done |
 | `lethe`, the attach command | `appl/cmd/lethe` | done |
 | TCP | | done |
+| tests | `purg-lethe` unit and engine tests; `crates/purg-emu/tests/lethe.rs` (both VMs); `root/lib/test/sh/lethe.sh`; the kernel's `lethed=PORT` check | done |
 | UDP, streaming, writes, `Tdigest`, server proofs, ticket key rotation | | later |
 | boot root from Lethe | | later (below) |
 
@@ -574,7 +575,9 @@ writes would take Venti's content addressing.
   `host/` holds without duplication. `cargo xtask lethed -- args` builds and
   runs it.
 - `#λ` is a portable device in `purg-core`, behind the `lethe` feature
-  (on in the emu and the kernel). It dials through the platform's network
+  (on in the emu, the probe and the kernel). It adds one hook to the
+  device table, `Dev::devno`, so that each connection's files get their
+  own `Chan::devno` and two trees never share a mount-table key. It dials through the platform's network
   (`Platform::net`), the stack `#I` uses, so it can redial on its own
   after a failure. Lambda for Lethe: Inferno and Plan 9 use Greek letters
   for some devices, and no Inferno or Plan 9 device uses this one (`#L`,
@@ -584,16 +587,19 @@ writes would take Venti's content addressing.
 
 ```
 lethed [-v] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
-       [-k keyfile ...] [-s signers] [-r revoked] root
+       [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root
 ```
 
 - `root`: the host directory served, read only.
 - `-a`: the TCP address to listen on (default `127.0.0.1:5640`; port 0
   picks one). It prints `lethed: listening on <addr>` once ready.
-- `-k`: a public key file (32 bytes) of a directly trusted client, as
-  `usr/<uname>/key.pub`; repeatable. `-s` and `-r`: a trusted signer list
-  and a revocation list (`/lib/keys` formats). At least one `-k` or `-s`
-  is required.
+- `-k`: a public key file (32 bytes) trusted for any user name, as an
+  export trusts `lib/test/auth.key.pub`; repeatable. `-U`: a directory of
+  `<uname>/key.pub` files, each trusted for its user only, as an export
+  trusts `usr/<uname>/key.pub`. `-s` and `-r`: a trusted signer list and a
+  revocation list (`/lib/keys` formats); a revocation list that is there
+  but does not parse fails closed. At least one of `-k`, `-U` and `-s` is
+  required.
 - `-t`, `-e`, `-w`: the ticket key file, the ticket lifetime and the
   request window, in seconds.
 - `-u`: the name host files are owned by in stat entries and permission
@@ -629,7 +635,8 @@ path /lib                 (optional: the subtree, which is also the ticket's pre
 ```
 
 The write dials and authenticates, so a refused key fails it with the
-server's error. Reading `clone` then gives the connection's number `n`,
+server's error; a server that does not answer fails it at once, without
+the retries below. Reading `clone` then gives the connection's number `n`,
 and `lethe` binds `#λn` on `mtpt` with the `-a`, `-b` or `-c` flags. The
 device keeps the key to renew the ticket; a guest factotum cannot be used
 in the first cut, since the device must be able to sign again later.
@@ -641,8 +648,15 @@ connection or dials a new one, and a connection that fails is dropped and
 the request retried on a new one, a few times with a short pause, so a
 server that restarts mid-read costs the reader a delay and no error. A
 ticket that the server refuses is renewed and the request sent again.
+The device dials through the kernel's own stack (`Platform::net`), not
+through the namespace's `/net`, so an imported `/net` does not change
+where it connects; the command translates names with `/net/cs` first.
 Requests block the calling prog; there is no timeout yet, so a server that
 accepts and never answers hangs its readers.
+
+The cache holds 8 KiB blocks by path and version, at most 1 MiB in all;
+when it fills it is emptied. Reads are sent one block at a time, so a
+large read costs one round trip per 8 KiB.
 
 ## 15. Boot root from Lethe (later)
 
@@ -660,3 +674,17 @@ the kernel image. Booting from Lethe would need:
   RAM cache safe, and `Tdigest` would let it be keyed by content.
 
 None of this changes the protocol.
+
+## 16. Cost
+
+Measured on an Apple Silicon host under Linux:
+
+- The kernel's `.text` (`--profile kernel`) grows by 28 KiB, from 1,549
+  to 1,577 KiB (1.8%), with `#λ` and `purg-lethe`; `.rodata` by 1 KiB.
+  No crate is new: XChaCha20-Poly1305, HKDF, X25519 and Ed25519 were
+  already linked for the mount's version 3 handshake. A kernel built
+  without the `lethe` feature leaves all of it out.
+- Test time: the hosted tests in `crates/purg-emu/tests/lethe.rs` take
+  about 6 s for both VMs, most of it the server-restart and expiry
+  checks; the kernel's check adds a few seconds to each QEMU run (each
+  run takes about 150 s under TCG).

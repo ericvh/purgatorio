@@ -332,7 +332,7 @@ fn cons_files() {
     assert_eq!(read_all(&mut p, "#c/null").unwrap(), "");
     assert_eq!(
         read_all(&mut p, "#c/drivers").unwrap(),
-        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#I ip\n#C cmd\n#¤ factotum\n#D ssl\n#A a\n#B b\n#R ram\n#r rtc\n#t eia\n"
+        "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#I ip\n#C cmd\n#¤ factotum\n#D ssl\n#λ lethe\n#A a\n#B b\n#R ram\n#r rtc\n#t eia\n"
     );
 }
 
