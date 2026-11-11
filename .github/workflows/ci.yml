@@ -275,6 +275,14 @@ jobs:
         run: cargo xtask kernel --smp 4 --stress 60
       - name: xtask kernel --kvm --smp 4 (skipped without /dev/kvm)
         run: cargo xtask kernel --kvm --smp 4
+      # Each run's console with the time every line arrived (#147).
+      - name: keep the consoles of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-times-kernel-smp
+          path: target/qemu-times/
+          if-no-files-found: ignore
 
   loom:
     name: loom models (Rendez, qio)
