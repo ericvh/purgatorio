@@ -1293,6 +1293,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-test-fsperf"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-test-m3"
 version = "0.1.0"
 dependencies = [

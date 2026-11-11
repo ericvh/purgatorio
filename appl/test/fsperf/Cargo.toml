@@ -1,0 +1,17 @@
+[package]
+name = "appl-test-fsperf"
+description = "File system workloads timed over a mounted tree, for the Lethe and Styx study"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fsperf"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
