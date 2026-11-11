@@ -49,9 +49,12 @@ impl Tree for Small {
         Ok((d.qid, n))
     }
 
-    fn list(&self, path: &str) -> Result<(Qid, Vec<Dir>), String> {
+    fn list(&self, path: &str, after: &[u8], limit: usize) -> Result<(Qid, Vec<Dir>), String> {
         let d = self.stat(path)?;
-        Ok((d.qid, vec![self.stat("/f")?]))
+        let mut all = vec![self.stat("/f")?];
+        all.retain(|e| e.name.as_bytes() > after);
+        all.truncate(limit);
+        Ok((d.qid, all))
     }
 }
 
