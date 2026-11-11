@@ -2,7 +2,7 @@ ok
 got
 getauthinfo: authentication failed
 hello
-mount: mount: certificate expired
-mount: mount: untrusted signer
-mount: mount: certificate revoked
-mount: mount: authentication required
+mount: certificate expired
+mount: untrusted signer
+mount: certificate revoked
+mount: authentication required

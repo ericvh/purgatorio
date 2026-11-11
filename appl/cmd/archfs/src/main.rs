@@ -92,7 +92,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let stop = args.get(2).map(String::as_str) == Some("-s");
         let rest = &args[2 + usize::from(stop)..];
         let (path, prefixes) = rest.split_first().ok_or_else(|| Error::from(USAGE))?;
-        let mut t = load(path, prefixes, stop).map_err(|e| Error(format!("archfs: {e}")))?;
+        let mut t = load(path, prefixes, stop)?;
         return styxserv::bg::serve(&mut t);
     }
     let mut arg = Arg::new(args, USAGE);

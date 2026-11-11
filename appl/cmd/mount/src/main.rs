@@ -46,25 +46,24 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut host = None;
     let fd = if let Some(cmd) = rest[0].strip_prefix('{').and_then(|c| c.strip_suffix('}')) {
         conn = None;
-        let [a, b] = purgatorio::pipe().map_err(|e| Error(format!("mount: {e}")))?;
+        let [a, b] = purgatorio::pipe()?;
         purgatorio::spawn(
             "/bin/sh.wasm",
             &[String::from("sh"), String::from("-c"), String::from(cmd)],
             pctl::NEWFD,
             &[(a.as_raw_fd(), 0), (a.as_raw_fd(), 1), (2, 2)],
-        )
-        .map_err(|e| Error(format!("mount: {e}")))?;
+        )?;
         drop(a);
         pipe = Some(b);
         pipe.as_ref().map_or(-1, |b| b.as_raw_fd())
     } else if rest[0].contains('!') {
         pipe = None;
         host = dial::host(&rest[0]);
-        conn = Some(dial::dial(&rest[0]).map_err(|e| Error(format!("mount: {e}")))?);
+        conn = Some(dial::dial(&rest[0])?);
         conn.as_ref()
             .and_then(|c| c.data.as_ref())
             .map(|d| d.as_raw_fd())
-            .ok_or_else(|| Error::from("mount: no connection"))?
+            .ok_or_else(|| Error::from("no connection"))?
     } else {
         conn = None;
         pipe = None;
@@ -85,8 +84,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         )
     } else {
         purgatorio::mount(fd, -1, &rest[1], flags, spec)
-    }
-    .map_err(|e| Error(format!("mount: {e}")))?;
+    }?;
     // The mount's session holds the conversation. Dropping `conn` closes this
     // prog's descriptor and leaves the session's reference in place.
     drop(conn);

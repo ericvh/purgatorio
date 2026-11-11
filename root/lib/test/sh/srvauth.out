@@ -1,13 +1,13 @@
      32
-mount: mount: server did not authenticate
+mount: server did not authenticate
 mount: usage: mount [-abrcAS] [-k keyfile] fd-or-addr mtpt [spec]
 encrypted
 proved
      32
 rcmd: server authentication failed
 status fail:server authentication failed
-mount: mount: server trusts no keys
-mount: mount: server trusts no keys
-mount: mount: server trusts no keys
+mount: server trusts no keys
+mount: server trusts no keys
+mount: server trusts no keys
 rcmd: server trusts no keys
 rcmd: server trusts no keys
