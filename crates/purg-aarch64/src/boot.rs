@@ -19,7 +19,9 @@
 //! # `_start`
 //!
 //! Position-independent (only `adr`/`adrp` until the MMU is on):
-//! 1. Parks every core but core 0.
+//! 1. Parks every core but core 0 (a loader that starts them all; QEMU
+//!    starts only the boot CPU and the others through PSCI, at
+//!    `purg_secondary_entry`, see [`crate::smp`]).
 //! 2. Keeps x0 (the DTB pointer, or 0) in x19 and the boot exception level
 //!    in x20.
 //! 3. At EL2: sets HCR_EL2.RW (EL1 is AArch64), gives EL1 the physical
@@ -246,33 +248,15 @@ pub fn find_dtb(x0: usize) -> Result<(&'static [u8], bool), DtbError> {
 
 global_asm!(
     r#"
-.section .text.boot, "ax"
-// The arm64 Linux Image header (Documentation/arch/arm64/booting.rst), so
-// QEMU and boot loaders can load the image as an Image: then they load an
-// initrd and pass the DTB in x0. Loaded as an ELF, the first instruction
-// simply branches over it.
-.global _head
-_head:
-    b       _start                  // code0
-    .long   0                       // code1
-    .quad   0x200000                // text_offset: RAM base + 2 MiB
-    .quad   __image_size            // image_size, including bss and stack
-    .quad   0x2                     // flags: little-endian, 4 KiB pages
-    .quad   0, 0, 0                 // res2..res4
-    .ascii  "ARM\x64"               // magic
-    .long   0                       // res5: no PE header
-
-.global _start
-_start:
-    mrs     x1, mpidr_el1
-    and     x1, x1, #0xffffff
-    cbnz    x1, .Lpark
-
-    mov     x19, x0
+// Keeps the boot exception level in x20 and, entered at EL2, sets up
+// EL2 for an EL1 kernel and drops to EL1h at `el1` with interrupts
+// masked; then, at EL1, resets SCTLR_EL1 and enables FP/SIMD. Uses x1 and
+// x2. The boot CPU and the secondaries share it.
+.macro purg_to_el1 el1
     mrs     x20, CurrentEL
     lsr     x20, x20, #2
     cmp     x20, #2
-    b.ne    .Lel1
+    b.ne    \el1
 
     mov     x1, #(1 << 31)
     msr     hcr_el2, x1
@@ -300,16 +284,42 @@ _start:
     msr     sctlr_el1, x1
     mov     x1, #0x3c5
     msr     spsr_el2, x1
-    adr     x1, .Lel1
+    adr     x1, \el1
     msr     elr_el2, x1
     eret
 
-.Lel1:
+\el1:
     ldr     x1, ={sctlr_off}
     msr     sctlr_el1, x1
     mov     x1, #(3 << 20)
     msr     cpacr_el1, x1
     isb
+.endm
+
+.section .text.boot, "ax"
+// The arm64 Linux Image header (Documentation/arch/arm64/booting.rst), so
+// QEMU and boot loaders can load the image as an Image: then they load an
+// initrd and pass the DTB in x0. Loaded as an ELF, the first instruction
+// simply branches over it.
+.global _head
+_head:
+    b       _start                  // code0
+    .long   0                       // code1
+    .quad   0x200000                // text_offset: RAM base + 2 MiB
+    .quad   __image_size            // image_size, including bss and stack
+    .quad   0x2                     // flags: little-endian, 4 KiB pages
+    .quad   0, 0, 0                 // res2..res4
+    .ascii  "ARM\x64"               // magic
+    .long   0                       // res5: no PE header
+
+.global _start
+_start:
+    mrs     x1, mpidr_el1
+    and     x1, x1, #0xffffff
+    cbnz    x1, .Lpark
+
+    mov     x19, x0
+    purg_to_el1 .Lel1
 
     adrp    x1, __stack_top
     add     x1, x1, :lo12:__stack_top
@@ -348,6 +358,45 @@ _start:
     b       .Lpark
 .ltorg
 
+// A secondary CPU, started by PSCI CPU_ON at its physical address with
+// the MMU off and x0 the physical address of its `SecondaryBoot`. Turns
+// the MMU on with the boot CPU's tables and registers, from the identity
+// map, then moves to the high half and its own stack. Touches no memory
+// but the `SecondaryBoot`, which the boot CPU cleaned to the point of
+// coherency, until the MMU and caches are on.
+.section .text.boot, "ax"
+.global purg_secondary_entry
+purg_secondary_entry:
+    mov     x19, x0
+    purg_to_el1 .Lsecondary_el1
+    ldp     x1, x2, [x19, #0]
+    ldp     x3, x4, [x19, #16]
+    ldr     x5, [x19, #32]
+    msr     mair_el1, x4
+    msr     tcr_el1, x3
+    msr     ttbr0_el1, x1
+    msr     ttbr1_el1, x2
+    isb
+    tlbi    vmalle1
+    ic      iallu
+    dsb     nsh
+    isb
+    msr     sctlr_el1, x5
+    isb
+    ldr     x1, =.Lsecondary_high
+    br      x1
+.Lsecondary_high:
+    ldr     x1, ={kvbase}
+    add     x19, x19, x1
+    ldr     x1, [x19, #40]
+    mov     sp, x1
+    mov     x29, xzr
+    mov     x0, x19
+    bl      purg_aarch64_secondary_main
+2:  wfe
+    b       2b
+.ltorg
+
 .section .text.purg_early_vectors, "ax"
 .balign 2048
 .global purg_early_vectors
@@ -372,4 +421,5 @@ purg_early_vectors:
 "#,
     sctlr_off = const SCTLR_OFF,
     exc_stack = const core::mem::size_of::<ExceptionStack>(),
+    kvbase = const KERNEL_VBASE,
 );

@@ -7,13 +7,16 @@ use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::{self, Write};
 
-use purg_aarch64::board::{FREE_REGIONS, board, bootarg, exit_method, free_regions, has_bootarg};
+use purg_aarch64::board::{
+    FREE_REGIONS, board, bootarg, exit_method, free_regions, has_bootarg, psci_smc,
+};
 use purg_aarch64::boot::{self, DtbError, find_dtb};
 use purg_aarch64::console::{self, Input, Raw};
 use purg_aarch64::dtb::{self, BootInfo, Fdt};
 use purg_aarch64::exit;
 use purg_aarch64::heap::Heap;
 use purg_aarch64::mmu::{self, KERNEL_VBASE, PAGE_SIZE, Region, TableAlloc};
+use purg_aarch64::smp;
 
 use crate::system::{self, Mode};
 use crate::{irq, selftest};
@@ -385,6 +388,15 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
     if test {
         selftest::console_test(cons);
     }
+    // The tests above are of one CPU; the secondaries start now, on the
+    // final page tables. `maxcpus=N` caps the CPUs.
+    let max = bootarg(&info, "maxcpus")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(usize::MAX);
+    if let (_, Some(e)) = smp::start(&fdt, &irq::SCHED, psci_smc(&fdt), max) {
+        fail(format_args!("smp: a cpu did not start: {e:?}"));
+    }
+    selftest::smp_test();
 
     // The root is compiled in, as in Inferno's kernels; an initrd named by
     // the DTB replaces it.

@@ -231,6 +231,33 @@ jobs:
       - name: size report (docs/footprint.md)
         run: cargo xtask size
 
+  kernel-smp:
+    name: purg-kernel on four CPUs in QEMU aarch64 (ubuntu-24.04-arm)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04-arm
+    # About 22 minutes before the smoke split; with four vCPUs a run the
+    # runs boot one at a time.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: install QEMU
+        # Bounded: a mirror outage once left this step hanging for hours.
+        timeout-minutes: 10
+        run: |
+          apt="sudo apt-get -q -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          $apt update && $apt install -y qemu-system-arm
+      # As in the kernel job, two machines run the whole sh corpus and
+      # two the smoke subset.
+      - name: xtask kernel --smp 4 (TCG, GICv2, GICv3, EL2)
+        run: cargo xtask kernel --smp 4
+      - name: xtask kernel --kvm --smp 4 (skipped without /dev/kvm)
+        run: cargo xtask kernel --kvm --smp 4
+
   loom:
     name: loom models (Rendez, qio)
     needs: changes

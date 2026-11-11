@@ -13,6 +13,7 @@ kernel: console: waiting for input
 kernel: console read "hello é" then end of input, and echoed the typing
 kernel: console: waiting for raw input
 kernel: raw console read 5 bytes unedited and echoed nothing
+kernel: threads on every cpu shared a lock without losing an update
 kernel: sdV0: no file system: not a purgfs file system
 kernel: sdV1: purgfs, 512 blocks of 4096 bytes, 454 free
 kernel: #9/host: 9P2000 through 9P2000.u (the device answered 9P2000 with "unknown")
