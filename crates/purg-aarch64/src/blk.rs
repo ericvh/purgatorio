@@ -568,7 +568,9 @@ impl Blk {
 
     /// Requests the device has not finished, abandoned ones included.
     pub fn in_flight(&self) -> usize {
-        self.dev.lock().in_flight()
+        let mut d = self.dev.lock();
+        d.reap();
+        d.in_flight()
     }
 
     /// Reads `buf.len()` bytes from byte offset `sector * 512`. Both must

@@ -232,6 +232,7 @@ fn full_disk() {
         }
     };
     assert_eq!(err, error::ENOSPACE);
+    // Every block was used: the last writes were done a block at a time.
     assert_eq!(fs.usage().free, 0);
     assert_eq!(fs.dentry(f.me).unwrap().length, off);
     // A create may still find room in the root's block; a new directory

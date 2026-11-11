@@ -9,9 +9,15 @@
 //! `/chan` and `/fd`, `#I` (smoltcp over virtio-net, see [`net`]) is on
 //! `/net`, and the kernel's devices (`#r`, `#t`; see [`crate::devices`])
 //! are after `/dev`. A host directory over virtio-9p (`#9`, see
-//! [`host9p`]) is mounted on `/n/host` when QEMU has one. There are no
-//! host commands.
+//! [`host9p`]) is mounted on `/n/host` when QEMU has one, and the virtio-blk
+//! disks are `#S`, after `/dev`, with a purgfs on one of them bound on
+//! `/n/disk` (`#K`, see [`disk`]). There are no host commands.
 
+#[cfg(feature = "blk")]
+pub mod disk;
+#[cfg(not(feature = "blk"))]
+#[path = "system/nodisk.rs"]
+pub mod disk;
 #[cfg(feature = "p9")]
 pub mod host9p;
 #[cfg(not(feature = "p9"))]
@@ -53,15 +59,17 @@ pub struct System {
 }
 
 /// Builds the emu's boot namespace over a RAM root that `seed` fills,
-/// with the kernel's `native` devices (bound after `/dev`) and `extra`
-/// devices (in the device table only, such as `#9`).
+/// with the kernel's `native` devices (bound after `/dev`) and the
+/// devices `extra` makes (in the device table only, such as `#9`).
 pub fn boot(
     platform: MetalPlatform,
-    native: Vec<Arc<dyn Dev>>,
-    extra: Vec<Arc<dyn Dev>>,
+    mut native: Vec<Arc<dyn Dev>>,
+    extra: impl FnOnce(&Arc<dyn Platform>) -> (Vec<Arc<dyn Dev>>, Vec<Arc<dyn Dev>>),
     seed: impl FnOnce(&RamTree) -> Result<(), Error>,
 ) -> Result<System, Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform);
+    let (more_native, extra) = extra(&platform);
+    native.extend(more_native);
     let procs = Procs::new(platform.clone());
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
     let portable = purg_core::portable_devices(&platform, &procs);
@@ -418,6 +426,23 @@ impl System {
         failed
     }
 
+    /// Starts `argv` in a new prog on its own kernel thread, in a copy of
+    /// the boot namespace, with the console as fd 0 and `out` as fds 1
+    /// and 2, and returns its pid without waiting. For the tests that kill
+    /// a prog while it waits.
+    #[cfg(any(feature = "blk", feature = "p9"))]
+    pub fn spawn(&self, argv: &[&str], out: &str) -> Result<u32, Error> {
+        let mut parent = Prog::new(self.kernel.clone(), Arc::new(self.pgrp.fork()));
+        self.kernel.platform.set_current_pid(parent.pid);
+        parent.open("/dev/cons", mode::OREAD)?;
+        parent.open(out, mode::OWRITE)?;
+        parent.dup(1, 2)?;
+        purg_vm::init_preopens(&mut parent)?;
+        let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
+        let path = purg_vm::command_path(&argv[0]);
+        purg_vm::spawn(&parent, &self.engine, &path, argv, 0, &[])
+    }
+
     /// Boots like the emu: `emuinit` runs `sh -l` on the console.
     pub fn interactive(&self) -> Result<String, Error> {
         memstat::sampler();
@@ -434,6 +459,9 @@ pub enum Mode {
     Test { memstat: bool },
     /// `sh -l` on the console.
     Interactive,
+    /// The second boot of `xtask kernel` (`bootargs` has `diskcheck`):
+    /// only check that the disk holds what the first boot left.
+    DiskCheck,
 }
 
 /// Boots the namespace over `initrd` and runs the system in a kernel
@@ -446,6 +474,7 @@ pub fn start(
     rtc: Option<usize>,
     (stack, checks): (net::Stack, net::Checks),
     host: Option<host9p::Host>,
+    blks: disk::Blks,
     mode: Mode,
 ) -> usize {
     use core::sync::atomic::AtomicUsize;
@@ -457,23 +486,35 @@ pub fn start(
         let platform = MetalPlatform::new(console, &SCHED, "purgatorio", rtc)
             .with_heap(&HEAP)
             .with_kproc_stack(crate::irq::KPROC_STACK_SIZE);
-        let native = crate::devices::native(console, rtc, &platform.user());
+        let user = platform.user();
+        let native = crate::devices::native(console, rtc, &user);
         let p9 = host.and_then(host9p::open);
-        let extra = host9p::devs(p9.as_ref());
-        let result = match boot(net::attach(platform, stack), native, extra, |root| {
+        let mut disks = None;
+        let devs = |platform: &Arc<dyn Platform>| {
+            let d = disk::open(blks, platform);
+            let native = disk::devs(&d, &user);
+            disks = Some(d);
+            (native, host9p::devs(p9.as_ref()))
+        };
+        let booted = boot(net::attach(platform, stack), native, devs, |root| {
             root.add_tar(initrd).map(|_| ())
-        }) {
+        });
+        let disks = disks.unwrap_or_default();
+        let result = match booted {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
-            Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref())) {
-                (Mode::Test { memstat }, host) => {
-                    let failed =
-                        sys.run_tests(memstat) + sys.host9p_tests(host) + sys.net_tests(&checks);
+            Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref()), sys.bind_disk(&disks)) {
+                (Mode::Test { memstat }, host, bound) => {
+                    let failed = sys.run_tests(memstat)
+                        + sys.host9p_tests(host, p9.as_deref())
+                        + sys.disk_tests(&disks, bound)
+                        + sys.net_tests(&checks);
                     if memstat {
                         sys.memstat();
                     }
                     failed
                 }
-                (Mode::Interactive, _) => match sys.interactive() {
+                (Mode::DiskCheck, _, bound) => sys.disk_persist(&disks, bound),
+                (Mode::Interactive, _, _) => match sys.interactive() {
                     Ok(s) if s.is_empty() => 0,
                     Ok(s) => {
                         sys.say(&format!("kernel: emuinit: {s}"));

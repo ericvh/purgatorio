@@ -2583,6 +2583,7 @@ dependencies = [
  "purg-aarch64",
  "purg-abi",
  "purg-core",
+ "purg-fs",
  "purg-platform",
  "purg-styx",
  "purg-vm",

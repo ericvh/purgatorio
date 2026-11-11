@@ -1,26 +1,29 @@
-//! Storage on the kernel, first pass (K3, D7): a host directory over
+//! Storage on the kernel, first pass (K3, D7): host directories over
 //! virtio-9p (QEMU's `-fsdev local` with `-device virtio-9p-device`),
 //! mounted through the ordinary 9P2000 client, `#M`.
 //!
-//! `#9` is the transport as a device. Its directory has one file, named
-//! after the device's mount tag (`#9/host`). The file is one 9P
-//! conversation: each write takes T-messages (whole or in pieces), and
-//! reads return the R-messages as a byte stream, as from a pipe or a TCP
-//! connection. So `mount` over an fd open on it works as over any other
-//! connection, and `#M` is unchanged. One open at a time: the device has
-//! one 9P session, and a second conversation would reset the first. The
-//! letter is free in Inferno (9 for 9P).
+//! `#9` is the transports as a device. Its directory has one file per
+//! device, named after the device's mount tag (`#9/host`). Each file is
+//! one 9P conversation: each write takes T-messages (whole or in pieces),
+//! and reads return the R-messages as a byte stream, as from a pipe or a
+//! TCP connection. So `mount` over an fd open on it works as over any
+//! other connection, and `#M` is unchanged. One open of each at a time: a
+//! device has one 9P session, and a second conversation would reset the
+//! first. The letter is free in Inferno (9 for 9P).
 //!
 //! Dialect: QEMU answers `Tversion "9P2000"` with `"unknown"`; it speaks
-//! only 9P2000.u and 9P2000.L. [`Dev9p::new`] asks with plain 9P2000 first
-//! and, when that is refused, puts `purg_styx::dotu::Shim` between the
-//! conversation and the device, so `#M` still sees 9P2000 (D8).
+//! only 9P2000.u and 9P2000.L. [`Dev9p::new`] asks each device with plain
+//! 9P2000 first and, when that is refused, puts `purg_styx::dotu::Shim`
+//! between the conversation and the device, so `#M` still sees 9P2000
+//! (D8).
 //!
-//! At boot the kernel mounts `#9/host` on `/n/host`, Inferno's place for
-//! another machine's files; the network check that mounts a hosted emu's
-//! export uses `/n/remote`. In test mode [`System::host9p_tests`] works on
-//! the files `xtask kernel` puts in the shared directory, and `xtask`
-//! checks what the kernel left there.
+//! At boot the kernel mounts `#9/host` (or the first device, if none is
+//! tagged `host`) on `/n/host`, Inferno's place for another machine's
+//! files; the network check that mounts a hosted emu's export uses
+//! `/n/remote`. In test mode [`System::host9p_tests`] works on the files
+//! `xtask kernel` puts in the shared directory, and `xtask` checks what
+//! the kernel left there. A second device, tagged `slow`, has its reads
+//! throttled, so that a prog can be killed while one waits.
 
 use alloc::format;
 use alloc::string::String;
@@ -40,11 +43,12 @@ use super::System;
 
 /// Where the kernel mounts the host's directory.
 pub const MOUNT_POINT: &str = "/n/host";
+/// The tag of the device mounted there.
+const HOST_TAG: &str = "host";
 
 const QROOT: u64 = 0;
-const QDATA: u64 = 1;
 
-/// The state of the one open conversation.
+/// The state of a device's one open conversation.
 struct Conv {
     /// Bumped by each open; a reply to an earlier conversation's request
     /// (still in flight when it closed) carries an older cookie and is
@@ -59,8 +63,8 @@ struct Conv {
     shim: Option<Shim>,
 }
 
-/// `#9`: the virtio-9p transport as a file.
-pub struct Dev9p {
+/// One virtio-9p device: a file of `#9`.
+struct Unit {
     host: Host9p,
     name: String,
     dotu: bool,
@@ -70,11 +74,16 @@ pub struct Dev9p {
     conv: Mutex<Conv>,
 }
 
-impl Dev9p {
+/// `#9`: the virtio-9p transports as files.
+pub struct Dev9p {
+    units: Vec<Unit>,
+}
+
+impl Unit {
     /// Takes over the device and finds its dialect: a plain `Tversion
     /// "9P2000"` first, and 9P2000.u if that is refused. Runs on a kernel
     /// thread (it waits for the device).
-    pub fn new(host: Host9p) -> Result<Dev9p> {
+    fn new(host: Host9p, i: usize) -> Result<Unit> {
         let probe = Msg {
             tag: NOTAG,
             fcall: Fcall::Tversion {
@@ -93,10 +102,10 @@ impl Dev9p {
         };
         let dotu = plain_answer != VERSION;
         let name = match host.tag() {
-            "" => String::from("9p"),
+            "" => format!("9p{i}"),
             t => String::from(t),
         };
-        Ok(Dev9p {
+        Ok(Unit {
             host,
             name,
             dotu,
@@ -112,13 +121,8 @@ impl Dev9p {
         })
     }
 
-    /// The file's name: the device's mount tag.
-    pub fn file(&self) -> &str {
-        &self.name
-    }
-
     /// A line for the boot log: the dialect, and why.
-    pub fn dialect(&self) -> String {
+    fn dialect(&self) -> String {
         if self.dotu {
             format!(
                 "9P2000 through 9P2000.u (the device answered 9P2000 with {:?})",
@@ -127,6 +131,48 @@ impl Dev9p {
         } else {
             String::from("9P2000")
         }
+    }
+}
+
+impl Dev9p {
+    /// The devices as `#9`, once each one's dialect is known. Runs on a
+    /// kernel thread.
+    pub fn new(hosts: Vec<Host9p>) -> Result<Dev9p> {
+        let units = hosts
+            .into_iter()
+            .enumerate()
+            .map(|(i, h)| Unit::new(h, i))
+            .collect::<Result<Vec<Unit>>>()?;
+        Ok(Dev9p { units })
+    }
+
+    fn by_name(&self, name: &str) -> Option<&Unit> {
+        self.units.iter().find(|u| u.name == name)
+    }
+
+    /// The file mounted on [`MOUNT_POINT`]: the `host` device's, or the
+    /// first.
+    pub fn host_file(&self) -> Option<&str> {
+        self.by_name(HOST_TAG)
+            .or(self.units.first())
+            .map(|u| u.name.as_str())
+    }
+
+    /// A line for the boot log about `file`'s dialect.
+    pub fn dialect(&self, file: &str) -> String {
+        self.by_name(file).map(Unit::dialect).unwrap_or_default()
+    }
+
+    /// Requests `file`'s device has not answered.
+    pub fn in_flight(&self, file: &str) -> usize {
+        self.by_name(file).map_or(0, |u| u.host.in_flight())
+    }
+
+    fn unit(&self, path: u64) -> Result<&Unit> {
+        let i = path.checked_sub(1).ok_or(Error::new(error::EISDIR))?;
+        self.units
+            .get(i as usize)
+            .ok_or(Error::new(error::ENONEXIST))
     }
 
     fn qid(path: u64) -> Qid {
@@ -138,10 +184,9 @@ impl Dev9p {
     }
 
     fn dir(&self, path: u64) -> Dir {
-        let (name, mode) = if path == QROOT {
-            (String::from("#9"), DMDIR | 0o555)
-        } else {
-            (self.name.clone(), 0o660)
+        let (name, mode) = match self.unit(path) {
+            Ok(u) => (u.name.clone(), 0o660),
+            Err(_) => (String::from("#9"), DMDIR | 0o555),
         };
         Dir {
             dtype: '9' as u16,
@@ -175,11 +220,13 @@ impl Dev for Dev9p {
         if c.qid.path != QROOT {
             return Err(Error::new(error::ENOTDIR));
         }
-        if name != self.name {
-            return Err(Error::new(error::ENONEXIST));
-        }
+        let i = self
+            .units
+            .iter()
+            .position(|u| u.name == name)
+            .ok_or(Error::new(error::ENONEXIST))?;
         Ok(Walked {
-            qid: Dev9p::qid(QDATA),
+            qid: Dev9p::qid(i as u64 + 1),
             aux: None,
         })
     }
@@ -196,33 +243,32 @@ impl Dev for Dev9p {
                 Err(Error::new(error::EISDIR))
             };
         }
-        if self.busy.swap(true, Ordering::AcqRel) {
+        let u = self.unit(c.qid.path)?;
+        if u.busy.swap(true, Ordering::AcqRel) {
             return Err(Error::new(error::EINUSE));
         }
-        let mut conv = self.conv.lock();
+        let mut conv = u.conv.lock();
         conv.session += 1;
         conv.inbuf.clear();
         conv.out.clear();
         conv.outpos = 0;
-        conv.shim = self.dotu.then(Shim::new);
+        conv.shim = u.dotu.then(Shim::new);
         Ok(())
     }
 
     fn close(&self, c: &Chan) {
-        if c.qid.path == QDATA {
-            self.busy.store(false, Ordering::Release);
+        if let Ok(u) = self.unit(c.qid.path) {
+            u.busy.store(false, Ordering::Release);
         }
     }
 
     /// The next bytes of the reply stream; waits for a reply when none is
     /// left. One reader at a time (the mount's reader).
     fn read(&self, c: &Chan, buf: &mut [u8], _offset: u64) -> Result<usize> {
-        if c.qid.path == QROOT {
-            return Err(Error::new(error::EISDIR));
-        }
+        let u = self.unit(c.qid.path)?;
         loop {
             let session = {
-                let mut conv = self.conv.lock();
+                let mut conv = u.conv.lock();
                 if conv.outpos < conv.out.len() {
                     let n = read_str(&conv.out, buf, conv.outpos as u64);
                     conv.outpos += n;
@@ -230,8 +276,8 @@ impl Dev for Dev9p {
                 }
                 conv.session
             };
-            let (cookie, reply) = self.host.recv()?;
-            let mut conv = self.conv.lock();
+            let (cookie, reply) = u.host.recv()?;
+            let mut conv = u.conv.lock();
             if cookie != session || conv.session != session {
                 continue;
             }
@@ -247,17 +293,15 @@ impl Dev for Dev9p {
     }
 
     fn dirread(&self, _c: &Chan) -> Result<Vec<Dir>> {
-        Ok(alloc::vec![self.dir(QDATA)])
+        Ok((1..=self.units.len() as u64).map(|p| self.dir(p)).collect())
     }
 
     /// Takes T-messages; each whole one goes to the device.
     fn write(&self, c: &Chan, buf: &[u8], _offset: u64) -> Result<usize> {
-        if c.qid.path == QROOT {
-            return Err(Error::new(error::EISDIR));
-        }
-        let max = self.host.msize();
+        let u = self.unit(c.qid.path)?;
+        let max = u.host.msize();
         let (session, msgs) = {
-            let mut conv = self.conv.lock();
+            let mut conv = u.conv.lock();
             conv.inbuf.extend_from_slice(buf);
             let mut msgs = Vec::new();
             while let Some(n) = purg_styx::message_size(&conv.inbuf) {
@@ -278,7 +322,7 @@ impl Dev for Dev9p {
             (conv.session, msgs)
         };
         for t in msgs {
-            self.host.submit(session, &t)?;
+            u.host.submit(session, &t)?;
         }
         Ok(buf.len())
     }
@@ -296,10 +340,10 @@ fn io_error(reply: &[u8]) -> Result<Vec<u8>> {
         .map_err(|_| Error::new(error::EIO))
 }
 
-/// Opens `#9/<file>` and mounts it on [`MOUNT_POINT`] in `prog`'s
-/// namespace, making the mount point first.
-pub fn mount(prog: &mut Prog, file: &str) -> Result<()> {
-    for d in ["/n", MOUNT_POINT] {
+/// Opens `#9/<file>` and mounts it on `at` in `prog`'s namespace, making
+/// the mount point (under `/n`) first.
+pub fn mount(prog: &mut Prog, file: &str, at: &str) -> Result<()> {
+    for d in ["/n", at] {
         if prog.stat(d).is_err() {
             let fd = prog.create(d, mode::OREAD, DMDIR | 0o775)?;
             prog.close(fd)?;
@@ -309,13 +353,39 @@ pub fn mount(prog: &mut Prog, file: &str) -> Result<()> {
     // Without MNOAUTH: the mount asks with Tauth, which QEMU refuses, and
     // the shim reports as "authentication not required".
     let flags = purg_abi::mount::MREPL | purg_abi::mount::MCREATE;
-    let r = prog.mount(fd, -1, MOUNT_POINT, flags, "");
+    let r = prog.mount(fd, -1, at, flags, "");
     prog.close(fd)?;
     r
 }
 
-/// Files `xtask kernel` puts in the shared directory.
+/// Files `xtask kernel` puts in the shared directory, and in the slow one.
 const HELLO: &str = "hello from the host\n";
+const SLOW_SMALL: &str = "small file\n";
+/// The throttled device's tag, where the kill test mounts it, and the
+/// file it reads there, which takes seconds to read.
+const SLOW_TAG: &str = "slow";
+const SLOW_MOUNT: &str = "/n/slow";
+const SLOW_FILE: &str = "/n/slow/big.bin";
+/// How long the kill test waits for things, in ms.
+const WAIT_MS: u64 = 10_000;
+
+fn ms() -> u64 {
+    purg_aarch64::timer::ticks_to_ns(purg_aarch64::timer::counter()) / 1_000_000
+}
+
+/// Polls `cond` every 10 ms for up to `limit` ms.
+fn until(limit: u64, mut cond: impl FnMut() -> bool) -> bool {
+    let r = purg_platform::sync::Rendez::new();
+    let t0 = ms();
+    while ms() - t0 < limit {
+        if cond() {
+            return true;
+        }
+        r.tsleep(|| false, 10_000_000);
+    }
+    cond()
+}
+
 /// What the kernel writes, and `xtask` reads back from `kept.txt`.
 pub const WRITTEN: &str = "written by the kernel\n";
 
@@ -346,11 +416,11 @@ impl System {
     /// whether the mount worked.
     pub fn mount_host9p(&self, dev: Option<&Dev9p>) -> Option<bool> {
         let dev = dev?;
-        let file = dev.file();
-        self.say(&format!("kernel: #9/{file}: {}", dev.dialect()));
+        let file = dev.host_file()?;
+        self.say(&format!("kernel: #9/{file}: {}", dev.dialect(file)));
         let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
         self.kernel.platform.set_current_pid(prog.pid);
-        match mount(&mut prog, file) {
+        match mount(&mut prog, file, MOUNT_POINT) {
             Ok(()) => {
                 self.say(&format!("kernel: #9/{file} mounted on {MOUNT_POINT}"));
                 Some(true)
@@ -364,7 +434,7 @@ impl System {
 
     /// The virtio-9p checks, given what [`System::mount_host9p`] said;
     /// returns the number that failed.
-    pub fn host9p_tests(&self, mounted: Option<bool>) -> usize {
+    pub fn host9p_tests(&self, mounted: Option<bool>, dev: Option<&Dev9p>) -> usize {
         match mounted {
             None => return 0,
             Some(false) => return 1,
@@ -384,7 +454,65 @@ impl System {
         self.say("kernel: 9p: stat, wstat and errors");
         let v = self.host9p_stat().map(|()| String::from("ok"));
         self.verdict(&mut failed, v);
+        if let Some(dev) = dev.filter(|d| d.by_name(SLOW_TAG).is_some()) {
+            self.say("kernel: 9p: kill a reader of a slow device, and flush its read");
+            let v = self.host9p_kill(dev);
+            self.verdict(&mut failed, v);
+        }
         failed
+    }
+
+    /// Kills a prog blocked in a read that the device answers only after a
+    /// while (the `slow` device's reads are throttled), which makes the
+    /// mount send a `Tflush` through the shim; then checks that the read
+    /// and the flush are answered and both mounts still work.
+    fn host9p_kill(&self, dev: &Dev9p) -> core::result::Result<String, String> {
+        let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
+        self.kernel.platform.set_current_pid(prog.pid);
+        mount(&mut prog, SLOW_TAG, SLOW_MOUNT).map_err(|e| format!("mount #9/{SLOW_TAG}: {e}"))?;
+        let r = self.host9p_kill_slow(dev);
+        let _ = prog.unmount(None, SLOW_MOUNT);
+        r
+    }
+
+    fn host9p_kill_slow(&self, dev: &Dev9p) -> core::result::Result<String, String> {
+        let pid = self
+            .spawn(&["cat", SLOW_FILE], "/dev/null")
+            .map_err(|e| format!("cat {SLOW_FILE}: {e}"))?;
+        let in_flight = || dev.in_flight(SLOW_TAG);
+        // A read held up by the throttle, for a while.
+        let mut since = None;
+        let blocked = until(WAIT_MS, || match (in_flight(), since) {
+            (0, _) => {
+                since = None;
+                false
+            }
+            (_, None) => {
+                since = Some(ms());
+                false
+            }
+            (_, Some(t)) => ms() - t >= 300,
+        });
+        self.kernel.procs.kill(pid);
+        if !blocked {
+            return Err(String::from("the reader never waited on the device"));
+        }
+        if !until(WAIT_MS, || self.kernel.procs.get(pid).is_none()) {
+            return Err(String::from("the killed reader did not go"));
+        }
+        // QEMU answers the flush once the read it holds back is done.
+        if !until(4 * WAIT_MS, || in_flight() == 0) {
+            return Err(format!("{} requests still unanswered", in_flight()));
+        }
+        match (
+            self.read_file("/n/host/hello.txt"),
+            self.read_file("/n/slow/small.txt"),
+        ) {
+            (Ok(h), Ok(s)) if h == HELLO.as_bytes() && s == SLOW_SMALL.as_bytes() => {
+                Ok(String::from("killed, flushed, and the mounts work"))
+            }
+            r => Err(format!("hello.txt and small.txt after: {r:?}")),
+        }
     }
 
     fn host9p_stat(&self) -> core::result::Result<(), String> {
@@ -436,28 +564,32 @@ impl System {
     }
 }
 
-/// What [`find`] returns.
-pub type Host = Host9p;
+/// What [`find`] returns: the devices.
+pub type Host = Vec<Host9p>;
 
 /// `#9` for the device table, if there is one.
 pub fn devs(dev: Option<&Arc<Dev9p>>) -> Vec<Arc<dyn Dev>> {
     dev.map(|d| d.clone() as Arc<dyn Dev>).into_iter().collect()
 }
 
-/// The first virtio-9p device in the DTB, brought up with buffers for
-/// [`MAX_MSIZE`] messages and its interrupt routed (so after `irq::init`).
-pub fn find(fdt: &purg_aarch64::dtb::Fdt<'_>) -> Option<Host9p> {
-    match Host9p::open(fdt, MAX_MSIZE as usize) {
-        Ok(h) => Some(h),
-        Err(why) => {
-            crate::kernel::println!("kernel: no host directory: {why}");
-            None
-        }
+/// The virtio-9p devices in the DTB, brought up with buffers for
+/// [`MAX_MSIZE`] messages and their interrupts routed (so after
+/// `irq::init`).
+pub fn find(fdt: &purg_aarch64::dtb::Fdt<'_>) -> Option<Host> {
+    let (devs, errors) = Host9p::open_all(fdt, MAX_MSIZE as usize);
+    for why in errors {
+        crate::kernel::println!("kernel: virtio-9p: {why}");
     }
+    if devs.is_empty() {
+        crate::kernel::println!("kernel: no host directory: no virtio-9p device");
+        return None;
+    }
+    Some(devs)
 }
 
-/// The device as `#9`, once its dialect is known. Runs on a kernel thread.
-pub fn open(host: Host9p) -> Option<Arc<Dev9p>> {
+/// The devices as `#9`, once their dialects are known. Runs on a kernel
+/// thread.
+pub fn open(host: Host) -> Option<Arc<Dev9p>> {
     match Dev9p::new(host) {
         Ok(d) => Some(Arc::new(d)),
         Err(e) => {
