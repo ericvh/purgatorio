@@ -178,6 +178,12 @@ opt-level = 3
 [profile.kernel.package.wasmi_collections]
 opt-level = 3
 
+# SHA-256 too: the loader takes every module's digest for the module
+# policy, so it is part of each spawn. At 3 a spawn is 13% cheaper on
+# wasmi and a third cheaper with AOT (docs/perf.md).
+[profile.kernel.package.sha2]
+opt-level = 3
+
 # The same for the experimental `aot` feature's engine (docs/perf.md):
 # Pulley's interpreter, and wasmtime's runtime under native code. They
 # are not in a kernel built without it.
@@ -202,4 +208,7 @@ opt-level = "z"
 opt-level = "z"
 
 [profile.kernel-small.package.wasmi_collections]
+opt-level = "z"
+
+[profile.kernel-small.package.sha2]
 opt-level = "z"
