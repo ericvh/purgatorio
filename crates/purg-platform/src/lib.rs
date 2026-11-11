@@ -11,6 +11,7 @@ extern crate std;
 pub mod idle;
 pub mod net;
 pub mod sync;
+pub mod waitq;
 
 use alloc::borrow::Cow;
 use alloc::boxed::Box;

@@ -134,6 +134,9 @@ fn irq(_frame: &mut TrapFrame) {
         sched.wakeup();
     }
     if after == After::Preempt {
+        if cpu::id() == 0 {
+            sched.expire();
+        }
         sched.preempt();
     }
 }

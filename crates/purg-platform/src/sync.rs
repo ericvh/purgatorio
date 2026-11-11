@@ -334,6 +334,78 @@ pub trait Sched: Sync {
     /// Undoes one [`Sched::preempt_disable`]. When the count drops to zero
     /// a preemption deferred meanwhile happens now.
     fn preempt_enable(&self) {}
+    /// Whether [`Sched::park`] and [`Sched::unpark`] work. If not, a
+    /// [`Rendez`] sleeper polls its condition through [`Sched::block`].
+    fn can_park(&self) -> bool {
+        false
+    }
+    /// Names the running thread, for [`Sched::unpark`].
+    fn current(&self) -> usize {
+        0
+    }
+    /// Takes the running thread off the run queue until it is unparked
+    /// or the deadline (monotonic ns) passes, or returns at once if it
+    /// was unparked since its last park. Returns whether the deadline
+    /// has passed.
+    fn park(&self, _deadline_ns: Option<u64>) -> bool {
+        false
+    }
+    /// Lets thread `id` run: now if it is parked, through its next park
+    /// if not. Safe in an interrupt handler, and for a thread that has
+    /// gone.
+    fn unpark(&self, _id: usize) {}
+    /// Masks interrupts and returns the state [`Sched::irq_unmask`]
+    /// restores.
+    fn irq_mask(&self) -> usize {
+        0
+    }
+    fn irq_unmask(&self, _saved: usize) {}
+}
+
+/// The scheduler as a wait queue's parker.
+#[cfg(not(feature = "std"))]
+struct SchedParker(&'static dyn Sched);
+
+#[cfg(not(feature = "std"))]
+impl crate::waitq::Parker for SchedParker {
+    fn current(&self) -> usize {
+        self.0.current()
+    }
+    fn park(&self, deadline_ns: Option<u64>) -> bool {
+        self.0.park(deadline_ns)
+    }
+    fn unpark(&self, id: usize) {
+        self.0.unpark(id);
+    }
+    fn mask(&self) -> usize {
+        self.0.irq_mask()
+    }
+    fn unmask(&self, saved: usize) {
+        self.0.irq_unmask(saved);
+    }
+}
+
+/// How long a parked sleeper with no timeout of its own stays parked
+/// before it looks at its condition again: a net under a condition that
+/// someone changes without a wakeup (a console with no interrupt is
+/// one). [`rescued`] counts the times it mattered.
+#[cfg(not(feature = "std"))]
+pub const SAFETY_NS: u64 = 1_000_000_000;
+
+/// Untimed sleeps whose condition was found true only by the safety
+/// deadline.
+#[cfg(not(feature = "std"))]
+static RESCUED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// How many untimed sleeps found their condition true only because the
+/// safety deadline ([`SAFETY_NS`]) woke them. An upper bound on changes
+/// that came with no wakeup: under load it also counts a sleeper that the
+/// deadline woke and that waited for a CPU while its real wakeup came (at
+/// 100 ms the stress mode counted hundreds of those; at 10 s, none, with
+/// the same throughput).
+#[cfg(not(feature = "std"))]
+pub fn rescued() -> u64 {
+    RESCUED.load(Ordering::Relaxed)
 }
 
 #[cfg(not(feature = "std"))]
@@ -362,6 +434,9 @@ struct RendezInner {
     lock: imp::Mutex<()>,
     #[cfg(feature = "std")]
     cv: imp::Condvar,
+    /// The parked sleepers, when the scheduler can park.
+    #[cfg(not(feature = "std"))]
+    q: crate::waitq::WaitQueue,
 }
 
 impl Clone for Rendez {
@@ -386,6 +461,8 @@ impl Rendez {
                 lock: imp::Mutex::new(()),
                 #[cfg(feature = "std")]
                 cv: imp::Condvar::new(),
+                #[cfg(not(feature = "std"))]
+                q: crate::waitq::WaitQueue::new(),
             }),
         }
     }
@@ -405,11 +482,26 @@ impl Rendez {
             }
         }
         #[cfg(not(feature = "std"))]
-        {
-            while !cond() {
-                match SCHED.get() {
-                    Some(s) => s.block(),
-                    None => core::hint::spin_loop(),
+        match SCHED.get() {
+            Some(s) if s.can_park() => {
+                let p = SchedParker(*s);
+                let mut late = false;
+                while !cond() {
+                    let deadline = s.monotonic_ns().saturating_add(SAFETY_NS);
+                    late = self.inner.q.wait(&p, &mut cond, Some(deadline));
+                }
+                if late {
+                    RESCUED.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Some(s) => {
+                while !cond() {
+                    s.block();
+                }
+            }
+            None => {
+                while !cond() {
+                    core::hint::spin_loop();
                 }
             }
         }
@@ -458,9 +550,16 @@ impl Rendez {
                 if s.monotonic_ns() >= deadline {
                     return false;
                 }
-                // The scheduler's clock interrupt ends an idle block, so
-                // the deadline is seen within a tick.
-                s.block();
+                if s.can_park() {
+                    // The scheduler's tick unparks at the deadline.
+                    self.inner
+                        .q
+                        .wait(&SchedParker(*s), &mut cond, Some(deadline));
+                } else {
+                    // The scheduler's clock interrupt ends an idle
+                    // block, so the deadline is seen within a tick.
+                    s.block();
+                }
             }
         }
     }
@@ -472,11 +571,15 @@ impl Rendez {
             drop(lockops::lock(&self.inner.lock));
             self.inner.cv.notify_all();
         }
-        // Sleepers poll their conditions; this tells an idle scheduler to
-        // let them.
+        // Parked sleepers are unparked; where the scheduler cannot park,
+        // sleepers poll their conditions and this tells it to let them.
         #[cfg(not(feature = "std"))]
         if let Some(s) = SCHED.get() {
-            s.wakeup();
+            if s.can_park() {
+                self.inner.q.wake(&SchedParker(*s));
+            } else {
+                s.wakeup();
+            }
         }
     }
 }
