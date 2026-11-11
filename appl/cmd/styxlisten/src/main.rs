@@ -22,7 +22,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if rest.len() < 2 {
         return Err(Error::from("usage: styxlisten [-A] addr cmd [args...]"));
     }
-    let ann = dial::announce(&rest[0]).map_err(|e| Error(format!("styxlisten: {e}")))?;
+    let ann = dial::announce(&rest[0])?;
     let here = local(&ann.dir).unwrap_or_default();
     eprintln!("styxlisten: {here}");
     let cmd = rest[1].clone();
@@ -31,11 +31,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         argv.insert(1, String::from("-A"));
     }
     loop {
-        let conn = dial::listen(&ann.dir).map_err(|e| Error(format!("styxlisten: {e}")))?;
+        let conn = dial::listen(&ann.dir)?;
         let Some(data) = conn.data.as_ref() else {
             continue;
         };
-        purgatorio::spawn(&cmd, &argv, NEWFD, &[(data.as_raw_fd(), 0)])
-            .map_err(|e| Error(format!("styxlisten: {e}")))?;
+        purgatorio::spawn(&cmd, &argv, NEWFD, &[(data.as_raw_fd(), 0)])?;
     }
 }

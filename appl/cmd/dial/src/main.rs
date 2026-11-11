@@ -12,19 +12,15 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let Some(addr) = args.get(1) else {
         return Err(Error::from("usage: dial addr"));
     };
-    let conn = dial::dial(addr).map_err(|e| Error(format!("dial: {e}")))?;
-    let data = conn
-        .data
-        .ok_or_else(|| Error::from("dial: no connection"))?;
+    let conn = dial::dial(addr)?;
+    let data = conn.data.ok_or_else(|| Error::from("no connection"))?;
     // SAFETY: `data` owns the descriptor and this takes that ownership.
     let mut file = unsafe { std::fs::File::from_raw_fd(data.into_raw_fd()) };
     let mut request = Vec::new();
     std::io::stdin().read_to_end(&mut request)?;
-    file.write_all(&request)
-        .map_err(|e| Error(format!("dial: {e}")))?;
+    file.write_all(&request)?;
     let mut reply = Vec::new();
-    file.read_to_end(&mut reply)
-        .map_err(|e| Error(format!("dial: {e}")))?;
+    file.read_to_end(&mut reply)?;
     std::io::stdout().write_all(&reply)?;
     Ok(())
 }

@@ -19,17 +19,16 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if rest.len() < 2 {
         return Err(Error::from("usage: listen [-A] addr cmd [args...]"));
     }
-    let ann = dial::announce(&rest[0]).map_err(|e| Error(format!("listen: {e}")))?;
+    let ann = dial::announce(&rest[0])?;
     let cmd = rest[1].clone();
     let argv = rest[1..].to_vec();
     loop {
-        let conn = dial::listen(&ann.dir).map_err(|e| Error(format!("listen: {e}")))?;
+        let conn = dial::listen(&ann.dir)?;
         let remote = std::fs::read_to_string(format!("{}/remote", conn.dir)).unwrap_or_default();
         eprintln!("{}", remote.trim());
         let Some(data) = conn.data.as_ref() else {
             continue;
         };
-        purgatorio::spawn(&cmd, &argv, NEWFD, &[(data.as_raw_fd(), 0)])
-            .map_err(|e| Error(format!("listen: {e}")))?;
+        purgatorio::spawn(&cmd, &argv, NEWFD, &[(data.as_raw_fd(), 0)])?;
     }
 }

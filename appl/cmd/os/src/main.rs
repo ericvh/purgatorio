@@ -14,21 +14,14 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut clone = OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/cmd/clone")
-        .map_err(|e| Error(format!("os: {e}")))?;
+        .open("/cmd/clone")?;
     let mut idbuf = [0u8; 32];
-    let n = clone
-        .read(&mut idbuf)
-        .map_err(|e| Error(format!("os: {e}")))?;
+    let n = clone.read(&mut idbuf)?;
     let id = std::str::from_utf8(&idbuf[..n]).unwrap_or("").trim();
-    clone
-        .write_all(line.as_bytes())
-        .map_err(|e| Error(format!("os: {e}")))?;
-    let mut data =
-        std::fs::File::open(format!("/cmd/{id}/data")).map_err(|e| Error(format!("os: {e}")))?;
+    clone.write_all(line.as_bytes())?;
+    let mut data = std::fs::File::open(format!("/cmd/{id}/data"))?;
     let mut out = Vec::new();
-    data.read_to_end(&mut out)
-        .map_err(|e| Error(format!("os: {e}")))?;
+    data.read_to_end(&mut out)?;
     std::io::stdout().write_all(&out)?;
     let err = std::fs::read(format!("/cmd/{id}/stderr")).unwrap_or_default();
     std::io::stderr().write_all(&err)?;
@@ -37,6 +30,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if status.is_empty() {
         Ok(())
     } else {
-        Err(Error(format!("os: {status}")))
+        Err(Error(String::from(status)))
     }
 }

@@ -60,18 +60,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if rest.len() != 2 || (flags & MNOAUTH != 0 && flags & MSRVAUTH != 0) {
         return Err(Error(format!("usage: {USAGE}")));
     }
-    let conn = dial::dial(&rest[0]).map_err(|e| Error(format!("import: {e}")))?;
+    let conn = dial::dial(&rest[0])?;
     let fd = conn
         .data
         .as_ref()
-        .ok_or_else(|| Error::from("import: no connection"))?
+        .ok_or_else(|| Error::from("no connection"))?
         .as_raw_fd();
     if let Some(tree) = tree {
-        plan9(fd, &tree).map_err(|e| Error(format!("import: {e}")))?;
+        plan9(fd, &tree)?;
     }
     let host = dial::host(&rest[0]);
-    purgatorio::auth::amount_host(fd, &rest[1], flags, "", keyfile.as_deref(), host.as_deref())
-        .map_err(|e| Error(format!("import: {e}")))?;
+    purgatorio::auth::amount_host(fd, &rest[1], flags, "", keyfile.as_deref(), host.as_deref())?;
     drop(conn);
     Ok(())
 }

@@ -6,16 +6,16 @@ auth/verify: certificate expired
 auth/verify: certificate name mismatch
 auth/verify: untrusted signer
 hello
-mount: mount: certificate expired
-mount: mount: untrusted signer
+mount: certificate expired
+mount: untrusted signer
 countersigned
-mount: mount: authentication required
-mount: mount: authentication failed
-mount: mount: certificate revoked
-mount: mount: certificate revoked
+mount: authentication required
+mount: authentication failed
+mount: certificate revoked
+mount: certificate revoked
 hello
 1
 factotum
 1
 0
-mount: mount: authentication failed
+mount: authentication failed

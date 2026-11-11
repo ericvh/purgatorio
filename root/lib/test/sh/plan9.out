@@ -2,8 +2,8 @@ hello
 more
 /tmp/sh-plan9/n/f
 /tmp/sh-plan9/n/g
-import: import: bad remote tree: file does not exist
-import: import: bad remote tree: not a directory
+import: bad remote tree: file does not exist
+import: bad remote tree: not a directory
 more
 sh: /tmp/sh-plan9/n/sub/h: permission denied
 9export: Plan 9 authentication (p9any) is not implemented; use -A

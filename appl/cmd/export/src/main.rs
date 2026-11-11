@@ -47,5 +47,5 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     } else {
         purgatorio::auth::keyfile_path(&keyfile, &purgatorio::auth::user())
     };
-    purgatorio::export_key(0, dir, flags, &keyfile).map_err(|e| Error(format!("export: {e}")))
+    purgatorio::export_key(0, dir, flags, &keyfile)
 }

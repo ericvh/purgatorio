@@ -302,7 +302,7 @@ fn run(dot: &str, cmd: &[String]) -> Result<(), Error> {
         mode::OREAD,
     )?);
     purgatorio::mount(CONNFD, -1, "/", mount::MREPL | mount::MNOAUTH, "")
-        .map_err(|e| Error(format!("iostats: can't mount /: {e}")))?;
+        .map_err(|e| Error(format!("can't mount /: {e}")))?;
     // SAFETY: the mount holds its own reference to the connection.
     drop(unsafe { File::from_raw_fd(CONNFD) });
     // Devices whose files are the caller's own (its fds, its console, its
@@ -318,7 +318,7 @@ fn run(dot: &str, cmd: &[String]) -> Result<(), Error> {
     ] {
         let _ = purgatorio::bind(dev, at, flags);
     }
-    purgatorio::chdir(dot).map_err(|e| Error(format!("iostats: can't chdir to {dot}: {e}")))?;
+    purgatorio::chdir(dot).map_err(|e| Error(format!("can't chdir to {dot}: {e}")))?;
     let pid = purgatorio::spawn(&cmd[0], cmd, 0, &[])?;
     let mut wait = wait;
     let mut buf = vec![0u8; 8192];
