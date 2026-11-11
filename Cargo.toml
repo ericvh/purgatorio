@@ -23,6 +23,8 @@ members = [
     "appl/cmd/install/mkproto",
     "appl/cmd/install/proto2list",
     "appl/cmd/disk/mkext",
+    "appl/cmd/disk/chkdisk",
+    "appl/cmd/disk/mkdisk",
     "appl/cmd/disk/mkfs",
     "appl/cmd/ip/sntp",
     "appl/cmd/ip/tftpd",

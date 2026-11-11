@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-disk-chkdisk"
+description = "disk/chkdisk: check a purgfs file system"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "chkdisk"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+purg-fs = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

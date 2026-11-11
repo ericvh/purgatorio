@@ -389,6 +389,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-disk-chkdisk"
+version = "0.1.0"
+dependencies = [
+ "purg-fs",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-disk-mkdisk"
+version = "0.1.0"
+dependencies = [
+ "purg-fs",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-disk-mkext"
 version = "0.1.0"
 dependencies = [
@@ -3632,6 +3648,7 @@ dependencies = [
  "purg-abi",
  "purg-auth",
  "purg-core",
+ "purg-fs",
  "purg-vm",
  "rustc-demangle",
 ]
