@@ -7,12 +7,13 @@
 //! ([`Root`]): the repository's `root/` with fresh `/tmp`, `/mnt` and
 //! `/n`, so runs in parallel do not share scratch files.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+mod common;
 
 const VMS: [&str; 2] = ["wasmtime", "wasmi"];
 
@@ -65,18 +66,14 @@ impl Drop for Root {
 
 fn emu(vm: &str, args: &[&str], stdin: &[u8]) -> Output {
     let root = Root::new();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_emu"))
-        .arg("-r")
-        .arg(&root.0)
-        .arg(format!("--vm={vm}"))
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn emu");
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
-    child.wait_with_output().expect("wait for emu")
+    common::output(
+        Command::new(env!("CARGO_BIN_EXE_emu"))
+            .arg("-r")
+            .arg(&root.0)
+            .arg(format!("--vm={vm}"))
+            .args(args),
+        stdin,
+    )
 }
 
 fn stdout(o: &Output) -> String {
@@ -380,6 +377,91 @@ on_each_vm! {
     }
 }
 
+/// The emu exits when its first prog does, whatever its other progs are
+/// doing: here they are dying, killed just before, and the last of them
+/// to go frees the compiled modules while the process exits. With the C
+/// library's exit handlers run, libgcc aborted the process then, rarely
+/// (issue #145), so each VM does this many times.
+#[test]
+fn exit_with_progs_still_dying() {
+    let script = "load std
+cat /dev/sysname > /dev/null; ls /bin > /dev/null; echo a | wc > /dev/null
+pids=()
+for i in 1 2 3 4 5 6 7 8 {
+	sleep 100 &
+	pids=($pids $apid)
+}
+echo started
+kill $pids &";
+    let jobs: Vec<&str> = VMS.iter().flat_map(|vm| [*vm; 12]).collect();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..threads.min(jobs.len()) {
+            s.spawn(|| {
+                while let Some(vm) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let o = emu(vm, &["sh", "-c", script], b"");
+                    assert!(
+                        o.status.success() && stdout(&o) == "started\n",
+                        "{vm}: {:?}\n{}",
+                        stdout(&o),
+                        common::failure(o.status, &o.stderr)
+                    );
+                }
+            });
+        }
+    });
+}
+
+/// An emu that aborts says where on its standard error (the thread and
+/// its prog), and the harness reports the signal and that line. The
+/// abort here is sent by the test; in the emu it is the C library's.
+#[test]
+fn an_abort_is_reported() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let root = Root::new();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_emu"));
+    cmd.arg("-r")
+        .arg(&root.0)
+        .args(["--vm=wasmi", "sh", "-c", "echo ready; sleep 100"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped());
+    // No core file for this abort. A limit of one byte also keeps Linux
+    // from piping the core to a handler such as systemd-coredump.
+    // SAFETY: setrlimit is async-signal-safe and touches no memory of
+    // the parent.
+    unsafe {
+        cmd.pre_exec(|| {
+            let one = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            libc::setrlimit(libc::RLIMIT_CORE, &one);
+            Ok(())
+        });
+    }
+    let mut emu = common::Watched::spawn(&mut cmd);
+    let mut line = String::new();
+    BufReader::new(emu.child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line, "ready\n");
+    // SAFETY: kill only sends a signal, here to the test's own child.
+    assert_eq!(
+        unsafe { libc::kill(emu.child.id() as libc::pid_t, libc::SIGABRT) },
+        0
+    );
+    let report = emu.post_mortem();
+    assert!(report.contains("SIGABRT"), "{report}");
+    assert!(
+        report.contains("emu: abort (SIGABRT) on thread '"),
+        "{report}"
+    );
+    assert!(!report.contains("still running"), "{report}");
+}
+
 /// The `.sh` files in `root/<dir>`, without the suffix, sorted.
 fn scripts(dir: &str) -> Vec<String> {
     let mut scripts: Vec<String> = std::fs::read_dir(root().join(dir))
@@ -428,14 +510,13 @@ fn run_corpus(jobs: &[(&str, String)], dir: &str) {
                     let start = Instant::now();
                     let o = emu(vm, &["sh", &format!("/{dir}/{name}.sh")], b"");
                     let got = stdout(&o);
+                    // How the emu ended goes with either problem: wrong
+                    // output is often an emu that died half way.
+                    let ended = common::failure(o.status, &o.stderr);
                     let problem = if got != want {
-                        Some(difference(&want, &got))
+                        Some(format!("{}\n{ended}", difference(&want, &got)))
                     } else if !o.status.success() {
-                        Some(format!(
-                            "{}\n{}",
-                            o.status,
-                            String::from_utf8_lossy(&o.stderr)
-                        ))
+                        Some(ended)
                     } else {
                         None
                     };

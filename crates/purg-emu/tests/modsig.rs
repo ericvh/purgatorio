@@ -8,6 +8,8 @@ use std::process::{Command, Output};
 use purg_auth::keys::list_line;
 use purg_auth::modsig;
 
+mod common;
+
 const VMS: [&str; 2] = ["wasmtime", "wasmi"];
 /// The public test seed, `root/lib/test/auth.key`.
 const SEED: [u8; 32] = [0x42; 32];
@@ -19,14 +21,14 @@ fn root() -> PathBuf {
 }
 
 fn emu(root: &Path, vm: &str, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_emu"))
-        .arg("-r")
-        .arg(root)
-        .arg(format!("--vm={vm}"))
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("run emu")
+    common::output(
+        Command::new(env!("CARGO_BIN_EXE_emu"))
+            .arg("-r")
+            .arg(root)
+            .arg(format!("--vm={vm}"))
+            .args(args),
+        b"",
+    )
 }
 
 fn stdout(o: &Output) -> String {
