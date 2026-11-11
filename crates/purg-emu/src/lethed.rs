@@ -2,9 +2,13 @@
 //! (`docs/lethe.md`).
 //!
 //! ```text
-//! lethed [-v] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
+//! lethed [-v] [-A] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
 //!        [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root
 //! ```
+//!
+//! `-A` also answers requests with no authentication and no encryption,
+//! as the user `none`. Without it, and without a key to trust, `lethed`
+//! does not start.
 //!
 //! The protocol is `purg_lethe::server`; this is the host's half: TCP,
 //! the clock, randomness, the trust files and a [`Tree`] over host files
@@ -27,11 +31,13 @@ use crate::devfs;
 use crate::host;
 
 /// The usage line.
-pub const USAGE: &str = "usage: lethed [-v] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window] [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root";
+pub const USAGE: &str = "usage: lethed [-v] [-A] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window] [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root";
 
 /// What the command line says.
 pub struct Options {
     pub verbose: bool,
+    /// `-A`: answer clear requests too, as `none`.
+    pub clear: bool,
     pub addr: String,
     pub owner: Option<String>,
     pub ticket_key: Option<PathBuf>,
@@ -49,6 +55,7 @@ pub struct Options {
 pub fn parse(args: &[String]) -> Result<Options, String> {
     let mut o = Options {
         verbose: false,
+        clear: false,
         addr: String::from("127.0.0.1:5640"),
         owner: None,
         ticket_key: None,
@@ -66,6 +73,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         let secs = |s: String| s.parse::<u64>().map_err(|_| String::from(USAGE));
         match a.as_str() {
             "-v" => o.verbose = true,
+            "-A" => o.clear = true,
             "-a" => o.addr = val()?,
             "-u" => o.owner = Some(val()?),
             "-t" => o.ticket_key = Some(PathBuf::from(val()?)),
@@ -81,9 +89,11 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         }
     }
     o.root = root.ok_or_else(|| String::from(USAGE))?;
-    if o.keys.is_empty() && o.signers.is_none() && o.user_keys.is_none() {
+    // Fail closed: nothing is served unless someone can authenticate or
+    // the clear mode was asked for by name.
+    if !o.clear && o.keys.is_empty() && o.signers.is_none() && o.user_keys.is_none() {
         return Err(String::from(
-            "lethed: no client can authenticate: give -k, -U or -s",
+            "lethed: no client can authenticate: give -k, -U or -s, or -A to serve without authentication",
         ));
     }
     Ok(o)
@@ -305,7 +315,7 @@ pub fn run(o: Options) -> Result<(), String> {
             k
         }
     };
-    let server = Server::new(o.config.clone(), key);
+    let server = Server::new(o.config.clone(), key).with_clear(o.clear);
     let listener = TcpListener::bind(&o.addr).map_err(|e| format!("{}: {}", o.addr, err(e)))?;
     let addr = listener.local_addr().map_err(err)?;
     println!("lethed: listening on {addr}");

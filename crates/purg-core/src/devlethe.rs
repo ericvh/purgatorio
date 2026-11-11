@@ -11,7 +11,11 @@
 //! ```
 //!
 //! dials the server and gets a ticket, so a refused key fails the write
-//! with the server's error. A read of the same open `clone` then gives
+//! with the server's error. With a `noauth` line in place of `user`,
+//! `key` and `cert`, the connection uses Lethe's clear mode instead: no
+//! ticket, nothing sealed, for a server started with `-A`. A connection
+//! keeps the mode it was made with; it never changes it because of what
+//! a server answers. A read of the same open `clone` then gives
 //! the connection's number `n`, and `#λn` is the tree at `path`, ready to
 //! bind. The connection lives as long as something holds a file of it
 //! (the open `clone`, or a bind).
@@ -114,14 +118,20 @@ impl Cache {
 struct Settings {
     host: String,
     port: u16,
-    creds: Creds,
+    /// What to authenticate with; `None` for the clear mode (`noauth`).
+    creds: Option<Creds>,
     prefix: String,
 }
 
 fn parse(text: &str) -> Result<Settings> {
     let bad = || Error::new(EBADARG);
     let (mut dial, mut user, mut seed, mut cert, mut prefix) = (None, None, None, None, None);
+    let mut noauth = false;
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if line == "noauth" {
+            noauth = true;
+            continue;
+        }
         let (k, v) = line.split_once(' ').ok_or_else(bad)?;
         match k {
             "dial" => dial = Some(v),
@@ -145,14 +155,24 @@ fn parse(text: &str) -> Result<Settings> {
     if !path::valid(&prefix) {
         return Err(Error::new(purg_abi::error::EFILENAME));
     }
-    Ok(Settings {
-        host: String::from(host.ok_or_else(bad)?),
-        port: port.and_then(|p| p.parse().ok()).ok_or_else(bad)?,
-        creds: Creds {
+    // The mode is one or the other: `noauth` with a user or a key is a
+    // mistake, not a request to try both.
+    let creds = if noauth {
+        if user.is_some() || seed.is_some() || cert.is_some() {
+            return Err(bad());
+        }
+        None
+    } else {
+        Some(Creds {
             user: user.ok_or_else(bad)?,
             seed: seed.ok_or_else(bad)?,
             cert,
-        },
+        })
+    };
+    Ok(Settings {
+        host: String::from(host.ok_or_else(bad)?),
+        port: port.and_then(|p| p.parse().ok()).ok_or_else(bad)?,
+        creds,
         prefix,
     })
 }
@@ -234,7 +254,11 @@ impl Remote {
 
     /// The current ticket, or a new one got over `c`. Fails with the
     /// attempt's outcome: the transport's error, or the server's refusal.
-    fn session(&self, c: &dyn Conn) -> core::result::Result<Session, alloc::boxed::Box<Attempt>> {
+    fn session(
+        &self,
+        c: &dyn Conn,
+        creds: &Creds,
+    ) -> core::result::Result<Session, alloc::boxed::Box<Attempt>> {
         if let Some(s) = self.session.lock().as_ref()
             && !s.expiring(self.now())
         {
@@ -243,7 +267,7 @@ impl Remote {
         let mut random = [0u8; 32];
         self.platform.entropy(&mut random);
         let (frame, pending) = client::auth(
-            &self.settings.creds,
+            creds,
             self.tag(),
             rights::READ,
             &self.settings.prefix,
@@ -258,8 +282,21 @@ impl Remote {
         Ok(s)
     }
 
+    /// One request in the clear mode: no ticket to get or renew, and
+    /// whatever the server refuses is the answer.
+    fn attempt_clear(&self, c: &dyn Conn, op: &Op<'_>) -> Attempt {
+        let (frame, pending) = client::clear(self.tag(), op);
+        match exchange(c, &frame) {
+            Ok(reply) => Attempt::Done(pending.reply(&reply).map_err(|f| String::from(f.text()))),
+            Err(e) => Attempt::Transport(e),
+        }
+    }
+
     fn attempt(&self, c: &dyn Conn, op: &Op<'_>) -> Attempt {
-        let s = match self.session(c) {
+        let Some(creds) = &self.settings.creds else {
+            return self.attempt_clear(c, op);
+        };
+        let s = match self.session(c, creds) {
             Ok(s) => s,
             Err(a) => return *a,
         };
