@@ -22,7 +22,7 @@ use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_core::devram::RamTree;
 use purg_core::devroot::StaticTree;
 use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
-use purg_platform::sync::Rendez;
+use purg_platform::sync::{Mutex, Rendez};
 use purg_vm::{Ctx, Engine};
 
 /// How long [`System::reap`] waits for killed progs to go, in ms.
@@ -92,7 +92,15 @@ pub struct System {
     pub pgrp: Arc<Pgrp>,
     /// The number of live kernel threads.
     threads: fn() -> usize,
+    /// The step under way: the last line [`System::say`] wrote, less its
+    /// `<who>: ` prefix.
+    step: Mutex<String>,
+    /// The failures counted so far, for the image's last line.
+    failures: Mutex<Vec<String>>,
 }
+
+/// The most of a failure's first line that [`System::failures`] keeps.
+const FAILURE_MAX: usize = 120;
 
 impl System {
     pub fn new(
@@ -105,6 +113,8 @@ impl System {
             kernel,
             pgrp,
             threads,
+            step: Mutex::new(String::new()),
+            failures: Mutex::new(Vec::new()),
         }
     }
 
@@ -113,23 +123,74 @@ impl System {
         (self.threads)()
     }
 
-    /// Writes a line on the console.
+    /// Writes a line on the console. A `<who>: ...` line names the step
+    /// that a failure counted after it is charged to (`<who>: mem ...`
+    /// lines, which report and start nothing, aside).
     pub fn say(&self, s: &str) {
+        if let Some((_, step)) = s.split_once(": ")
+            && !step.starts_with("mem ")
+        {
+            self.step(step);
+        }
+        self.write_line(s);
+    }
+
+    /// Names the step under way without printing anything.
+    pub fn step(&self, step: &str) {
+        *self.step.lock() = String::from(step.lines().next().unwrap_or(""));
+    }
+
+    fn write_line(&self, s: &str) {
         let c = self.kernel.platform.console();
         let _ = c.write(s.as_bytes());
         let _ = c.write(b"\n");
     }
 
     /// Prints `v` after `prefix` (`kernel: ok`, `kernel: FAIL ...`) and
-    /// counts a failure.
+    /// counts a failure, noting it against the step under way.
     pub fn verdict(&self, prefix: &str, failed: &mut usize, v: Result<String, String>) {
         match v {
-            Ok(v) => self.say(&format!("{prefix}: {v}")),
+            Ok(v) => self.write_line(&format!("{prefix}: {v}")),
             Err(v) => {
-                self.say(&format!("{prefix}: FAIL {v}"));
+                self.write_line(&format!("{prefix}: FAIL {v}"));
+                let step = self.step.lock().clone();
+                self.note_failure(&format!("{step}: {v}"));
                 *failed += 1;
             }
         }
+    }
+
+    /// Prints `<prefix>: FAIL <what>` and notes the failure; the caller
+    /// counts it.
+    pub fn failure(&self, prefix: &str, what: &str) {
+        self.write_line(&format!("{prefix}: FAIL {what}"));
+        self.note_failure(what);
+    }
+
+    /// Notes a failure the caller printed and counted: the first line of
+    /// `what`, cut to [`FAILURE_MAX`] bytes.
+    pub fn note_failure(&self, what: &str) {
+        let line = what.lines().next().unwrap_or("");
+        let mut end = line.len().min(FAILURE_MAX);
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.failures.lock().push(String::from(&line[..end]));
+    }
+
+    /// What failed, for the last line an image prints before it exits
+    /// with a failure: each failure noted, and how many of the `counted`
+    /// were not.
+    pub fn failures(&self, counted: usize) -> String {
+        let noted = self.failures.lock();
+        let mut out = noted.join("; ");
+        if counted > noted.len() {
+            if !out.is_empty() {
+                out.push_str("; ");
+            }
+            out.push_str(&format!("{} not named", counted - noted.len()));
+        }
+        out
     }
 
     /// Runs `argv` in a fresh prog on this thread, in the boot namespace.

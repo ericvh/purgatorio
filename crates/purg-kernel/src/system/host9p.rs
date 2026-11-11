@@ -426,7 +426,7 @@ impl System {
                 Some(true)
             }
             Err(e) => {
-                self.say(&format!("kernel: FAIL mount #9/{file}: {e}"));
+                self.failure("kernel", &format!("mount #9/{file}: {e}"));
                 Some(false)
             }
         }

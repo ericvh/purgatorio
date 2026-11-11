@@ -13,7 +13,8 @@
 //! prints a banner and self-tests, then exits QEMU: through semihosting
 //! (exit code 0 or 1) or, with `-append exit=psci` (for KVM, where
 //! semihosting does not work), through PSCI `SYSTEM_OFF` after a final
-//! `kernel: ok` or `kernel: FAILED ...` line. `cargo xtask kernel` boots it
+//! `kernel: ok` or `kernel: FAILED ...` line, which names each failure the
+//! test mode counted. `cargo xtask kernel` boots it
 //! and compares the serial output with `expected.out`.
 //!
 //! With `memstat` in the bootargs the kernel also reports where its memory
