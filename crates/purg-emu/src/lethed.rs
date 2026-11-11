@@ -175,28 +175,35 @@ impl Tree for HostTree {
         Ok((devfs::host_qid(&md), n))
     }
 
-    fn list(&self, p: &str) -> Result<(Qid, Vec<Dir>), String> {
+    fn list(&self, p: &str, after: &[u8], limit: usize) -> Result<(Qid, Vec<Dir>), String> {
         let path = self.resolve(p)?;
         let md = fs::metadata(&path).map_err(err)?;
-        let mut out = Vec::new();
+        // Names first, which costs no stat; then only the entries this
+        // page can hold are resolved and stat'ed.
+        let mut names = Vec::new();
         for e in fs::read_dir(&path).map_err(err)? {
             let e = e.map_err(err)?;
-            let name = e.file_name();
-            let Some(name) = name.to_str() else {
+            let Ok(name) = e.file_name().into_string() else {
                 continue;
             };
-            if host::hidden_entry(name) {
-                continue;
+            if name.as_bytes() > after && !host::hidden_entry(&name) {
+                names.push(name);
+            }
+        }
+        names.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        let mut out = Vec::new();
+        for name in names {
+            if out.len() == limit {
+                break;
             }
             // Links out of the tree and dangling links are left out.
-            let Ok(real) = self.inside(&e.path()) else {
+            let Ok(real) = self.inside(&path.join(&name)) else {
                 continue;
             };
             if let Ok(md) = fs::metadata(real) {
-                out.push(self.entry(name, &md));
+                out.push(self.entry(&name, &md));
             }
         }
-        out.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
         Ok((devfs::host_qid(&md), out))
     }
 }

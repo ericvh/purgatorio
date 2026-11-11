@@ -81,7 +81,7 @@ impl Tree for Mem {
         Ok((d.qid, n))
     }
 
-    fn list(&self, path: &str) -> Result<(Qid, Vec<Dir>), String> {
+    fn list(&self, path: &str, after: &[u8], limit: usize) -> Result<(Qid, Vec<Dir>), String> {
         let d = self.stat(path)?;
         let prefix = if path == "/" {
             String::from("/")
@@ -96,7 +96,11 @@ impl Tree for Mem {
             .filter(|k| !k[prefix.len()..].contains('/'))
             .cloned()
             .collect();
-        Ok((d.qid, names.iter().filter_map(|n| self.dir(n)).collect()))
+        let mut all: Vec<Dir> = names.iter().filter_map(|n| self.dir(n)).collect();
+        all.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+        all.retain(|e| e.name.as_bytes() > after);
+        all.truncate(limit);
+        Ok((d.qid, all))
     }
 }
 
