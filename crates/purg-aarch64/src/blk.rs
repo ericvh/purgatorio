@@ -191,7 +191,7 @@ impl VirtioBlk {
         if (m.read(REG_QUEUE_NUM_MAX) as usize) < DESCS {
             return Err("virtio queue is too small");
         }
-        let align = 64;
+        let align = crate::cache::dma_align();
         let meta_stride = 2 * align;
         let buf_stride = xfer.next_multiple_of(align);
         let desc = dma(16 * DESCS);

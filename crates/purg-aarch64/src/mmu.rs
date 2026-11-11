@@ -507,9 +507,7 @@ mod hw {
     pub unsafe fn invalidate_dcache(r: super::Region) {
         // SAFETY: the caller guarantees no dirty data is discarded.
         unsafe {
-            let ctr: u64;
-            asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack));
-            let line = 4usize << ((ctr >> 16) & 0xf);
+            let line = crate::cache::dline();
             let mut a = r.base & !(line - 1);
             asm!("dsb sy", options(nostack));
             while a < r.end() {
