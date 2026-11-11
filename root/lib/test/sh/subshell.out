@@ -1,0 +1,32 @@
+/tmp/sh-subshell/dir
+inner changed
+/tmp/sh-subshell
+outer local
+outer
+child sees outer
+set in sub
+f in sub
+z is new
+z is 0
+no /env/z
+expr in sub 3
+sh: ntest: file does not exist
+no expr here
+over
+0
+not bound here
+1
+status three
+status fail:errors
+ok
+and ran
+or ran
+negated
+plain words
+/
+outer
+/tmp/sh-subshell
+args
+piped out
+err
+backgrounded
