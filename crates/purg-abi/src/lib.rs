@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.8";
+pub const ABI_VERSION: &str = "0.9";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -86,6 +86,11 @@ pub mod sys {
     /// `export(fd, dir, dlen, flags) -> 0`. Serves `dir` on `fd` until the
     /// connection closes.
     pub const EXPORT: &str = "export";
+    /// `export_key(fd, dir, dlen, flags, key, klen) -> 0` (v0.9): `export`
+    /// whose server proof is signed with the authinfo at path `key` (in the
+    /// exporter's namespace) instead of the exporting user's default keys
+    /// (`export -k`). An empty `key` is `export`.
+    pub const EXPORT_KEY: &str = "export_key";
     /// `fversion(fd, msize, ver, vlen) -> n`. Writes the negotiated version
     /// string and returns its length. `msize` is the offered message size.
     pub const FVERSION: &str = "fversion";
@@ -289,15 +294,21 @@ pub mod mount {
     /// Mask selecting the ordering part of the flags.
     pub const MORDER: u32 = 0x0003;
     /// Skip `Tauth`. The mount and export commands set this for `-A`.
-    /// A server that has a key rejects the attach; one that does not
-    /// accepts it.
+    /// A server that authenticates rejects the attach. An export with
+    /// `MNOAUTH` asks for no proof and lets every attach in; without it an
+    /// export that trusts nothing refuses every attach with
+    /// [`super::auth::NO_TRUST`] (v0.9).
     pub const MNOAUTH: u32 = 0x8000_0000;
     /// Require the server to prove itself after a version 3 handshake
     /// (`mount -S`): the mount reads the server's proof from the auth fid
-    /// and checks it against `/lib/keys/servers`, `/lib/keys/signers` and
-    /// `/lib/test/auth.key.pub` in the mounter's namespace. A server that
-    /// gives none fails with [`super::auth::SERVER_NONE`], a proof that
-    /// does not check with [`super::auth::SERVER_FAILED`].
+    /// and checks it against `/lib/keys/servers` (every line, whatever its
+    /// host) and `/lib/keys/signers` in the mounter's namespace. A server
+    /// that gives none fails with [`super::auth::SERVER_NONE`], a proof
+    /// that does not check with [`super::auth::SERVER_FAILED`]. The host a
+    /// proof is for is checked in the guest (`docs/auth.md`, "Servers per
+    /// host"), on the proof a read of the auth fd at
+    /// [`super::auth::SERVER_PROOF_OFFSET`] returns: the kernel reads it
+    /// from the server once and checks those same bytes.
     pub const MSRVAUTH: u32 = 0x4000_0000;
 }
 
@@ -372,6 +383,10 @@ pub mod auth {
     /// started again in the clear: mount it with its auth fd, or dial
     /// again.
     pub const ENCRYPTED: &str = "conversation is encrypted";
+    /// An export (or `rstyxd`) without `-A` whose namespace trusts no key
+    /// and no signer: it cannot authenticate anyone, so it lets nobody in
+    /// (v0.9; before, it asked for no proof).
+    pub const NO_TRUST: &str = "server trusts no keys";
     /// The offset on the auth fid where the server's proof is read, after
     /// the [`OFFER`].
     pub const SERVER_PROOF_OFFSET: u64 = OFFER as u64;

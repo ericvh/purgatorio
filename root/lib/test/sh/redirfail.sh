@@ -8,8 +8,8 @@ mkdir -p $d/src $d/m $d/t
 cd $d
 echo hello > src/a
 tar cf t.tar src
-# A read-only export.
-mount {export -r src} m
+# A read-only export, to this system only: -A, as nothing is trusted.
+mount {export -A -r src} m
 echo x > m/a
 echo x >> m/a
 echo x > m/new

@@ -13,8 +13,8 @@ use alloc::vec::Vec;
 
 pub use purg_abi::auth::{
     CHALLENGE, ENCRYPTED, ENCRYPTION_REQUIRED, EXPIRED, FAILED, NAME_MISMATCH, NO_KEY, NO_SESSION,
-    NOT_REQUIRED, OFFER, PROOF, PUBLIC, REQUIRED, REVOKED, SEED, SERVER_FAILED, SERVER_NONE,
-    SERVER_PROOF_OFFSET, SIGNATURE, SIGNED, UNTRUSTED,
+    NO_TRUST, NOT_REQUIRED, OFFER, PROOF, PUBLIC, REQUIRED, REVOKED, SEED, SERVER_FAILED,
+    SERVER_NONE, SERVER_PROOF_OFFSET, SIGNATURE, SIGNED, UNTRUSTED,
 };
 pub use purg_auth::cert::Cert;
 pub use purg_auth::{public_key, sign, verify};
@@ -80,7 +80,7 @@ enum Signer {
 /// kind, the signature and the body. The key comes from `#¤` (with the
 /// certificate loaded into it), an authinfo in
 /// `/usr/<user>/keyring/default`, or a seed file: `/usr/<user>/key`, then
-/// the public test key.
+/// the public test key, which nothing trusts unless a test installs it.
 fn sign_as(
     pgrp: &Pgrp,
     user: &str,
@@ -122,13 +122,24 @@ pub(crate) fn client_proof(
 }
 
 /// The server's proof for a version 3 session (`purg_auth::server`), made
-/// as `user` with the key a mount by `user` in `pgrp` would prove with.
-/// `None` when there is no key.
+/// as `user` in `pgrp`'s namespace. The key is the authinfo `keyfile` when
+/// given; else the guest factotum's (`/mnt/factotum/rpc`, `role=server`),
+/// so the exporting prog need not be able to read the key; else the key a
+/// mount by `user` would prove with. `None` when there is no key.
 pub(crate) fn server_proof(
     pgrp: &Pgrp,
     user: &str,
+    keyfile: Option<&str>,
     keys: &purg_auth::session::Keys,
 ) -> Option<Vec<u8>> {
+    if let Some(path) = keyfile {
+        let text = read_file(pgrp, path, 4096)?;
+        let info = purg_auth::keys::AuthInfo::parse(&text).ok()?;
+        return Some(purg_auth::server::make(&info.seed, Some(&info.cert), keys));
+    }
+    if let Some(p) = factotum_server(pgrp, keys) {
+        return Some(p);
+    }
     let (kind, sig, body) = sign_as(pgrp, user, |kind, body| {
         purg_auth::server::message(keys, kind, body)
     })
@@ -136,14 +147,48 @@ pub(crate) fn server_proof(
     Some(purg_auth::server::assemble(kind, &sig, &body))
 }
 
+/// The guest factotum, mounted at this path in the exporter's namespace.
+const FACTOTUM_RPC: &str = "/mnt/factotum/rpc";
+
+/// Asks the guest factotum for a server proof over the session's
+/// transcript and bound value (`docs/auth.md`, "Factotum"). `None` when
+/// it is not mounted, has no key, or answers anything else.
+fn factotum_server(pgrp: &Pgrp, keys: &purg_auth::session::Keys) -> Option<Vec<u8>> {
+    let c = pgrp.namec(FACTOTUM_RPC, "/").ok()?;
+    let c = open(c, purg_abi::mode::ORDWR).ok()?;
+    let rpc = |req: &[u8]| -> Option<Vec<u8>> {
+        if c.dev.write(&c, req, 0).ok()? != req.len() {
+            return None;
+        }
+        let mut buf = alloc::vec![0u8; 4096];
+        let n = c.dev.read(&c, &mut buf, 0).ok()?;
+        buf.truncate(n);
+        Some(buf)
+    };
+    // The key is the server's, whose certificate names the host rather
+    // than the exporting user: no `user` attribute.
+    if rpc(b"start proto=ed25519 role=server")? != b"ok" {
+        return None;
+    }
+    let mut w = b"write ".to_vec();
+    w.extend_from_slice(&keys.transcript);
+    w.extend_from_slice(&keys.bind);
+    if rpc(&w)? != b"ok" {
+        return None;
+    }
+    let proof = rpc(b"read")?.strip_prefix(b"ok ")?.to_vec();
+    purg_auth::server::parse(&proof)?;
+    Some(proof)
+}
+
 /// The longest key list read.
 const MAX_LIST: usize = 64 * 1024;
-/// Trusted signers, revoked keys and the keys a client trusts as servers'.
+/// Trusted signers and revoked keys (key lists), and the keys held
+/// directly for users and for servers (named key lists).
 const SIGNERS_LIST: &str = "/lib/keys/signers";
 const REVOKED_LIST: &str = "/lib/keys/revoked";
+const USERS: &str = "/lib/keys/users";
 const SERVERS: &str = "/lib/keys/servers";
-/// The public test key: held directly by servers and by clients.
-const TEST_KEY: &str = "/lib/test/auth.key.pub";
 
 /// What one side trusts: keys it holds directly, signers, and revoked keys
 /// (`None` when that list does not parse).
@@ -174,37 +219,33 @@ impl Trust {
         }
     }
 
-    /// What a server in `pgrp` trusts for `uname`: the test key,
-    /// `/usr/<uname>/key.pub`, `/lib/keys/signers` and `/lib/keys/revoked`.
+    /// What a server in `pgrp` trusts for `uname`: the keys
+    /// `/lib/keys/users` lists for `uname` or `*`, `/usr/<uname>/key.pub`,
+    /// `/lib/keys/signers` and `/lib/keys/revoked`. Nothing else: the
+    /// stock root trusts no key (`docs/auth.md`, "Trust by default").
     pub(crate) fn client(pgrp: &Pgrp, uname: &str) -> Trust {
-        let mut keys = Vec::new();
-        let mut paths = alloc::vec![String::from(TEST_KEY)];
-        if safe_user(uname) {
-            paths.push(alloc::format!("/usr/{uname}/key.pub"));
-        }
-        for path in paths {
-            if let Some(key) = read_key(pgrp, &path)
-                && !keys.contains(&key)
-            {
-                keys.push(key);
-            }
+        let users = read_file(pgrp, USERS, MAX_LIST)
+            .map(|t| purg_auth::keys::parse_named(&t))
+            .unwrap_or_default();
+        let mut keys = purg_auth::keys::keys_for(&users, Some(uname));
+        if safe_user(uname)
+            && let Some(key) = read_key(pgrp, &alloc::format!("/usr/{uname}/key.pub"))
+            && !keys.contains(&key)
+        {
+            keys.push(key);
         }
         Trust::read(pgrp, keys)
     }
 
-    /// What a client in `pgrp` trusts as a server: the keys listed in
-    /// `/lib/keys/servers`, the test key, and certificates from
-    /// `/lib/keys/signers`, less `/lib/keys/revoked`.
+    /// What a client in `pgrp` trusts as a server, whatever its host: every
+    /// key in `/lib/keys/servers`, and certificates from
+    /// `/lib/keys/signers`, less `/lib/keys/revoked`. The host a proof is
+    /// for is the guest's to check (`docs/auth.md`, "Servers per host").
     pub(crate) fn server(pgrp: &Pgrp) -> Trust {
-        let mut keys = read_file(pgrp, SERVERS, MAX_LIST)
-            .map(|t| purg_auth::keys::parse_list_lenient(&t))
+        let servers = read_file(pgrp, SERVERS, MAX_LIST)
+            .map(|t| purg_auth::keys::parse_named(&t))
             .unwrap_or_default();
-        if let Some(k) = read_key(pgrp, TEST_KEY)
-            && !keys.contains(&k)
-        {
-            keys.push(k);
-        }
-        Trust::read(pgrp, keys)
+        Trust::read(pgrp, purg_auth::keys::keys_for(&servers, None))
     }
 
     pub(crate) fn policy(&self, now: u64) -> purg_auth::proof::Policy<'_> {

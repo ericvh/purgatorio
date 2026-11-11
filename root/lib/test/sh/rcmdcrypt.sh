@@ -1,7 +1,9 @@
 # rcmd encrypts the connection after the proof (docs/rcmd.md). A client
 # that did not ask for the clear with -A refuses a server that offers no
-# session key, and -e none goes only with -A.
+# session key, and -e none goes only with -A. Both ends trust the test
+# keys, bound on /lib/keys.
 load std
+bind /lib/test/keys /lib/keys
 d=/tmp/sh-rcmdcrypt
 rm -rf $d
 mkdir -p $d
@@ -23,4 +25,5 @@ rcmd -e none $a echo no </dev/null
 cpu -C clear $a echo no </dev/null
 cpu -C chacha20poly1305 $a 'echo sealed too' </dev/null
 kill $lpid
+unmount /lib/keys
 rm -rf $d

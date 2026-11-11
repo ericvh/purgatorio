@@ -1369,6 +1369,24 @@ pub mod purgatorio {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn export_key(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        dir: i32,
+        dlen: i32,
+        flags: i32,
+        key: i32,
+        klen: i32,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let dir = mem.str(dir, dlen)?;
+            let key = mem.str(key, klen)?;
+            c.prog.export_key(fd, dir, flags as u32, key).map(|()| 0)
+        })
+    }
+
     pub fn fversion(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,

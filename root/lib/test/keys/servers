@@ -1,0 +1,3 @@
+# The public test key (/lib/test/auth.key.pub), for any host. Tests bind
+# this directory on /lib/keys; a real system never does.
+* 2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12 test key

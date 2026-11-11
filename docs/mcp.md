@@ -446,9 +446,10 @@ and in an `mcpServers` table:
 - `mcpd`'s options go after it: `rcmd tcp!host!6668 mcpd -t 10000 -n
   /lib/mcp/work.ns` (the file is a name on the remote system).
 - The local emu proves its user's identity with the default keys, or
-  with `rcmd -k keyfile`. The stock root on both ends holds the public
-  test key, so an unchanged pair authenticates; a deployment replaces it
-  (`docs/auth.md`).
+  with `rcmd -k keyfile`. The stock root trusts no key, so the remote
+  `rstyxd` refuses everyone until keys are set up (`docs/auth.md`,
+  "Setting up keys"); the tests bind the test keys (`/lib/test/keys`) on
+  `/lib/keys` at both ends.
 - After the proof the connection is encrypted with ChaCha20-Poly1305 under
   keys from an X25519 exchange bound to the proof. `rcmd` refuses a
   server that offers no session key; `-A` asks for a connection in the

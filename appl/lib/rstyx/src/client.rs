@@ -8,9 +8,9 @@
 //! standard input in, and `export` serves the namespace on a pipe
 //! whose other end this prog copies to and from STYX frames. The export
 //! is the kernel's, so the server authenticates to it as any mounter does,
-//! unless the server has already proved itself on this connection: then
-//! the export asks no proof and runs in the clear inside the encrypted
-//! connection (`docs/rcmd.md`, "Encryption").
+//! unless the server has already proved, on this connection, that it is
+//! the host dialled: then the export asks no proof and runs in the clear
+//! inside the encrypted connection (`docs/rcmd.md`, "Encryption").
 
 use std::fs::File;
 use std::io::Write;
@@ -35,7 +35,7 @@ pub struct Opts {
     /// clear. Without it the connection must be encrypted.
     pub noauth: bool,
     /// `-S`: the server must prove itself with a key or certificate this
-    /// namespace trusts as a server's.
+    /// namespace trusts as a server's, for the host dialled.
     pub srvauth: bool,
     /// `-k`: the authinfo to make the proof from.
     pub keyfile: Option<String>,
@@ -65,15 +65,15 @@ fn text(d: &[u8]) -> String {
 }
 
 /// Runs the opening exchange on `net`, sends `cmd`, and returns the link
-/// the rest of the session goes over, and whether the server proved
-/// itself.
+/// the rest of the session goes over, and whether the server proved it is
+/// `host`.
 ///
 /// Without `-A` the server must ask for a proof and offer a session key:
 /// a server that asks for none, or offers only a challenge, is refused
 /// with `no session key offered` rather than spoken to in the clear.
 /// With `-S` its OK must carry a proof of its own that this namespace
-/// takes (`auth::check_server`).
-fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<(Link, bool), Error> {
+/// takes for `host` (`auth::check_server_host`).
+fn hello(net: &mut Fd, o: &Opts, host: Option<&str>, cmd: &str) -> Result<(Link, bool), Error> {
     let user = auth::user();
     net.write_all(&frame(
         kind::HELLO,
@@ -109,17 +109,21 @@ fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<(Link, bool), Error> {
         _ => return Err(Error::from(EPROTO)),
     };
     // The server's proof, in OK. It signs this session's keys, which only
-    // the real server shares, so it cannot be one from another session.
+    // the real server shares, so it cannot be one from another session;
+    // and it must be for the host dialled, so a server certified for
+    // another name does not pass.
     let proved = match &keys {
-        Some(k) => auth::check_server(k, &server),
+        Some(k) => auth::check_server_host(k, &server, host),
         None => Err(Error::from(SERVER_NONE)),
     };
     if o.srvauth {
         proved.clone()?;
     }
-    let proved = proved.is_ok();
+    // Without a host to have proved, nothing skips the export's own check.
+    let proved = proved.is_ok() && host.is_some();
     let mut link = keys.as_ref().map_or_else(Link::clear, Link::client);
-    // A server that proved itself is not asked again by the export.
+    // A server that proved it is the host dialled is not asked again by
+    // the export.
     let mut exec = vec![if o.noauth || proved { proto::NOAUTH } else { 0 }];
     exec.extend_from_slice(cmd.as_bytes());
     net.write_all(&link.wire(kind::EXEC, &exec).map_err(Error::from)?)?;
@@ -131,14 +135,15 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
     if cmd.len() >= proto::MAX {
         return Err(Error::from("command too long"));
     }
-    let conn = dial::dial(&proto::mkaddr(host))?;
+    let addr = proto::mkaddr(host);
+    let conn = dial::dial(&addr)?;
     let data = conn
         .data
         .as_ref()
         .ok_or_else(|| Error::from("no connection"))?
         .as_raw_fd();
     let mut net = Fd(data);
-    let (mut link, proved) = hello(&mut net, o, cmd)?;
+    let (mut link, proved) = hello(&mut net, o, dial::host(&addr).as_deref(), cmd)?;
 
     let mut children = Children::new();
     let pump = [String::from("pump"), String::from(crate::io::PUMP)];
@@ -161,9 +166,11 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
     let [exp, exp_far] = purgatorio::pipe()?;
     let mut argv = vec![String::from("export")];
     // The export asks the server for a proof of its own, and encrypts
-    // again, unless the server has proved itself to this namespace on
-    // the encrypted connection that carries the export: then the
-    // connection's keys already authenticate both ends of it.
+    // again, unless the server has proved to this namespace that it is
+    // the host dialled, on the encrypted connection that carries the
+    // export: then the connection's keys already authenticate both ends
+    // of it. A server that proved some other identity, or none, gets
+    // `/n/client` only as a user this namespace trusts.
     if o.noauth || proved {
         argv.push(String::from("-A"));
     }

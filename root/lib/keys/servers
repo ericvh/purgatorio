@@ -1,0 +1,5 @@
+# Servers' keys held directly: "<host> <key>" per line. The key proves
+# the server dialled at <host>, as the dial string names it, or at any
+# host for *. A server with a certificate from a signer in signers proves
+# the host its certificate names. See docs/auth.md, "Servers per host".
+# The stock system trusts no server.

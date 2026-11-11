@@ -40,19 +40,23 @@ fn kprocs_gone(mock: &Mock) {
     }
 }
 
-/// The public test key, trusted by the exporter and held by the client.
+/// The public test key, trusted by the exporter (for any user) and by the
+/// client (for any server), and held by both: what `/lib/test/keys` holds.
 fn install_fixture(p: &mut Prog) {
     p.bind("#R", "/", purg_abi::mount::MAFTER | MCREATE)
         .unwrap();
-    for dir in ["/lib", "/lib/test"] {
+    for dir in ["/lib", "/lib/test", "/lib/keys"] {
         let fd = p.create(dir, mode::OREAD, purg_styx::DMDIR).unwrap();
         p.close(fd).unwrap();
     }
     let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
     let public = purg_core::auth::public_key(&seed);
+    let any = format!("* {}\n", purg_auth::hex::encode(&public));
     for (path, bytes) in [
         ("/lib/test/auth.key", seed.as_slice()),
         ("/lib/test/auth.key.pub", public.as_slice()),
+        ("/lib/keys/users", any.as_bytes()),
+        ("/lib/keys/servers", any.as_bytes()),
     ] {
         let fd = p.create(path, mode::OWRITE, 0o644).unwrap();
         assert_eq!(p.write(fd, bytes).unwrap(), bytes.len());
@@ -289,12 +293,13 @@ fn an_unauthenticated_mount_stays_clear() {
     kprocs_gone(&mock);
 }
 
-/// A server that answers "authentication not required" is spoken to in
-/// the clear too.
+/// A server that answers "authentication not required" (an export with
+/// `-A`) is spoken to in the clear too, by a mount that did not ask for
+/// `-A` itself.
 #[test]
 fn a_server_without_keys_stays_clear() {
     let (mut p, mock) = setup();
-    let (server, b) = spawn_export(&mut p, &mock, 0);
+    let (server, b) = spawn_export(&mut p, &mock, MNOAUTH);
     let (relay, c) = Relay::new(&mut p, &mock, b, None);
     p.mount(c, -1, "#R/mnt", MREPL | MCREATE, "").unwrap();
     p.close(c).unwrap();
@@ -303,6 +308,34 @@ fn a_server_without_keys_stays_clear() {
     let (up, _) = relay.join();
     within("the export ends", move || server.join().unwrap()).unwrap();
     assert!(contains(&up, NAME) && contains(&up, DATA));
+    kprocs_gone(&mock);
+}
+
+/// An export without `-A` whose namespace trusts no key lets nobody in:
+/// not a mount that proves, not one that asks for no proof, and not
+/// `fauth` (`docs/auth.md`, "Trust by default"). Nothing of the tree
+/// crosses the wire.
+#[test]
+fn an_export_that_trusts_nothing_lets_nobody_in() {
+    use purg_core::auth::NO_TRUST;
+    let (mut p, mock) = setup();
+    // The client holds the test key; the exporter trusts nothing.
+    install_fixture(&mut p);
+    p.remove("/lib/keys/users").unwrap();
+    for flags in [0, MNOAUTH] {
+        let (server, b) = spawn_export(&mut p, &mock, 0);
+        let (relay, c) = Relay::new(&mut p, &mock, b, None);
+        let r = p.mount(c, -1, "#R/mnt", MREPL | MCREATE | flags, "");
+        assert_eq!(r.unwrap_err().as_str(), NO_TRUST, "flags {flags:#x}");
+        p.close(c).unwrap();
+        let (_, down) = relay.join();
+        within("the export ends", move || server.join().unwrap()).unwrap();
+        assert!(!contains(&down, b"box"), "flags {flags:#x}");
+    }
+    let (server, b) = spawn_export(&mut p, &mock, 0);
+    assert_eq!(p.fauth(b, "").unwrap_err().as_str(), NO_TRUST);
+    p.close(b).unwrap();
+    within("the export ends", move || server.join().unwrap()).unwrap();
     kprocs_gone(&mock);
 }
 
@@ -530,9 +563,11 @@ fn an_impostor_server_is_refused() {
     assert_eq!(mount_with(0, install_other_user_key), Ok(()));
     let listed = |p: &mut Prog| {
         install_other_user_key(p);
-        mkdirs(p, &["/lib/keys"]);
+        // The kernel takes the key whatever host its line names: the
+        // host is the guest's to check (`docs/auth.md`, "Servers per
+        // host").
         let line = format!(
-            "{} the other server\n",
+            "box.example {} the other server\n",
             purg_auth::hex::encode(&purg_core::auth::public_key(&OTHER))
         );
         write_file(p, "/lib/keys/servers", line.as_bytes());
@@ -545,7 +580,7 @@ fn an_impostor_server_is_refused() {
 #[test]
 fn a_server_without_keys_cannot_prove_itself() {
     let (mut p, mock) = setup();
-    let (server, b) = spawn_export(&mut p, &mock, 0);
+    let (server, b) = spawn_export(&mut p, &mock, MNOAUTH);
     let r = p.mount(b, -1, "#R/mnt", MREPL | MSRVAUTH | MNOAUTH, "");
     assert_eq!(r.unwrap_err().as_str(), purg_abi::error::EBADARG);
     let r = p.mount(b, -1, "#R/mnt", MREPL | MSRVAUTH, "");
@@ -598,6 +633,10 @@ enum Answer {
     Fresh,
     /// A proof the real server made for another session.
     Reused(Vec<u8>),
+    /// One answer for the first read and another for the rest (`None` is
+    /// a fresh proof): a server that would show a guest one proof and the
+    /// kernel's check another.
+    Two(Option<Vec<u8>>, Option<Vec<u8>>),
 }
 
 /// A server of its own that takes any proof, holds its end of the session
@@ -617,6 +656,7 @@ fn fake_server(p: &mut Prog, mock: &Arc<Mock>, answer: Answer) -> (thread::JoinH
         let kx = purg_auth::session::Server::new([1; 32], [2; 32]);
         let mut ends: Option<(purg_auth::record::Sealer, purg_auth::record::Opener)> = None;
         let mut keys = None;
+        let mut reads = 0;
         loop {
             let got = match &mut ends {
                 Some((_, o)) => read_sealed(&conn, o, MAX_MSIZE),
@@ -635,14 +675,20 @@ fn fake_server(p: &mut Prog, mock: &Arc<Mock>, answer: Answer) -> (thread::JoinH
                 Fcall::Tauth { .. } => Fcall::Rauth { aqid: qid(QTAUTH) },
                 Fcall::Tread { offset: 0, .. } => Fcall::Rread { data: &kx.offer },
                 Fcall::Tread { .. } => {
-                    proof = match &answer {
-                        Answer::Fresh => purg_auth::server::make(
+                    reads += 1;
+                    let given = match &answer {
+                        Answer::Fresh => None,
+                        Answer::Reused(p) => Some(p),
+                        Answer::Two(a, _) if reads == 1 => a.as_ref(),
+                        Answer::Two(_, b) => b.as_ref(),
+                    };
+                    proof = given.cloned().unwrap_or_else(|| {
+                        purg_auth::server::make(
                             &[purg_core::auth::FIXTURE; 32],
                             None,
                             keys.as_ref().unwrap(),
-                        ),
-                        Answer::Reused(p) => p.clone(),
-                    };
+                        )
+                    });
                     Fcall::Rread { data: &proof }
                 }
                 Fcall::Twrite { data, .. } => {
@@ -733,8 +779,8 @@ fn a_server_proof_from_another_session_is_refused() {
     }
 }
 
-/// An export with `ENCRYPT` refuses a version 1 or 2 proof, and an attach
-/// without a proof when it trusts nothing; a version 3 mount works.
+/// An export with `ENCRYPT` refuses a version 1 or 2 proof; a version 3
+/// mount works.
 #[test]
 fn an_export_can_require_encryption() {
     let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
@@ -771,11 +817,11 @@ fn an_export_can_require_encryption() {
     p.unmount(None, "#R/mnt").unwrap();
     within("the export ends", move || server.join().unwrap()).unwrap();
     kprocs_gone(&mock);
-    // Nothing trusted, so nothing can be encrypted.
+    // Nothing trusted: nobody gets in, encrypted or not.
     let (mut p, mock) = setup();
     let (server, c) = spawn_export(&mut p, &mock, ENCRYPT);
     let r = p.mount(c, -1, "#R/mnt", MREPL, "");
-    assert_eq!(r.unwrap_err().as_str(), ENCRYPTION_REQUIRED);
+    assert_eq!(r.unwrap_err().as_str(), purg_core::auth::NO_TRUST);
     p.close(c).unwrap();
     within("the export ends", move || server.join().unwrap()).unwrap();
     // `-A` and `-e` together.
@@ -845,6 +891,89 @@ fn the_offer_reads_the_same_from_every_thread() {
     p.mount(c, afd, "#R/mnt", MREPL | MCREATE | MSRVAUTH, "")
         .unwrap();
     p.close(afd).unwrap();
+    p.close(c).unwrap();
+    use_mount(&mut p);
+    p.unmount(None, "#R/mnt").unwrap();
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    kprocs_gone(&mock);
+}
+
+/// The auth fd reads at offset 64 as the server's proof, fetched from the
+/// server once: every read gives those bytes, and a mount with `MSRVAUTH`
+/// checks them, not a second answer. So what a guest checked for the host
+/// it dialled (`docs/auth.md`, "Servers per host") is what the kernel
+/// verifies; a server cannot show one proof to each.
+#[test]
+fn the_server_proof_is_read_once() {
+    let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
+    let real = a_real_server_proof();
+    // The guest reads first; the mount's check must see the same answer.
+    for (answer, want) in [
+        (
+            Answer::Two(Some(real.clone()), None),
+            Err(String::from(SERVER_FAILED)),
+        ),
+        (Answer::Two(None, Some(real.clone())), Ok(())),
+    ] {
+        let first_bad = matches!(&answer, Answer::Two(Some(_), _));
+        let (mut p, mock) = setup();
+        install_fixture(&mut p);
+        let (server, c) = fake_server(&mut p, &mock, answer);
+        let afd = p.fauth(c, "").unwrap();
+        let mut signed = [0u8; SIGNED];
+        assert_eq!(p.read(afd, &mut signed).unwrap(), signed.len());
+        let proof = purg_auth::proof::make(&seed, None, &signed, "inferno", "");
+        assert_eq!(p.write(afd, &proof).unwrap(), proof.len());
+        {
+            // Every read gives the first answer.
+            let chan = p.chan(afd).unwrap();
+            let at = purg_core::auth::SERVER_PROOF_OFFSET;
+            let mut a = vec![0u8; 4096];
+            let n = chan.dev.read(&chan, &mut a, at).unwrap();
+            a.truncate(n);
+            let mut b = vec![0u8; 4096];
+            let n = chan.dev.read(&chan, &mut b, at).unwrap();
+            b.truncate(n);
+            let mut tail = vec![0u8; 4096];
+            let n = chan.dev.read(&chan, &mut tail, at + 65).unwrap();
+            tail.truncate(n);
+            assert_eq!(a, b);
+            assert_eq!(tail, a[65..]);
+            assert_eq!(a == real, first_bad);
+        }
+        let r = p.mount(c, afd, "#R/mnt", MREPL | MSRVAUTH, "");
+        if r.is_ok() {
+            p.unmount(None, "#R/mnt").unwrap();
+        }
+        assert_eq!(r.map_err(|e| String::from(e.as_str())), want);
+        p.close(afd).unwrap();
+        p.close(c).unwrap();
+        within("the server ends", move || server.join().unwrap());
+        kprocs_gone(&mock);
+    }
+}
+
+/// A conversation whose `fauth` session is still open, here after a
+/// refused version 1 proof that left it in the clear, cannot be mounted
+/// with `afd = -1` or given to `fauth` again: a second session would race
+/// the first one's reader for the replies. Once the auth fd is closed the
+/// fd mounts.
+#[test]
+fn a_live_session_keeps_its_conversation() {
+    use purg_abi::error::EINUSE;
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, c) = spawn_export(&mut p, &mock, 0);
+    let afd = p.fauth(c, "").unwrap();
+    let mut challenge = [0u8; purg_core::auth::CHALLENGE];
+    assert_eq!(p.read(afd, &mut challenge).unwrap(), challenge.len());
+    let r = p.write(afd, &[0u8; purg_core::auth::PROOF]);
+    assert_eq!(r.unwrap_err().as_str(), purg_core::auth::FAILED);
+    let r = p.mount(c, -1, "#R/mnt", MREPL, "");
+    assert_eq!(r.unwrap_err().as_str(), EINUSE);
+    assert_eq!(p.fauth(c, "").unwrap_err().as_str(), EINUSE);
+    p.close(afd).unwrap();
+    p.mount(c, -1, "#R/mnt", MREPL | MCREATE, "").unwrap();
     p.close(c).unwrap();
     use_mount(&mut p);
     p.unmount(None, "#R/mnt").unwrap();

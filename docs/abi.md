@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.8)
+# Purgatorio application ABI (v0.9)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.8`. The loader rejects a mismatched version. Modules
+section containing `0.9`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -88,7 +88,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.8
+## `purgatorio` imports in v0.9
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -113,6 +113,7 @@ pctl(flags, movefd, n) -> pid     movefd: n i32 fds that NEWFD keeps
 spawn_prog(path, plen, argv, alen, flags, fdmap, n) -> pid
 mount(fd, afd, old, olen, flags, aname, alen) -> 0     afd = -1: mount authenticates
 export(fd, dir, dlen, flags) -> 0
+export_key(fd, dir, dlen, flags, key, klen) -> 0     export -k: the server proof's authinfo (v0.9)
 fversion(fd, msize, ver, vlen) -> n
 fauth(fd, aname, alen) -> afd     Tauth on fd's conversation (v0.5)
 stream(src, dst, bufsiz) -> n     copy src to dst in the kernel (v0.5)
@@ -222,7 +223,7 @@ The host writes `args` into a fresh page of the module's memory, the export
 overwrites that page with its result and returns the result length, and the
 host copies up to `olen` bytes of it to `out`.
 
-### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7, server proofs in v0.8)
+### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7, server proofs in v0.8, no trust by default in v0.9)
 
 A mount authenticates before `Tattach` with an Ed25519 signature over a
 challenge from the server. This is not Inferno's keyring protocol, so real
@@ -230,11 +231,16 @@ Inferno peers mount with `-A`. `docs/auth.md` has the formats, the tools
 and a security review.
 
 - The server trusts keys it holds directly (the 32-byte
-  `/usr/<uname>/key.pub` and `/lib/test/auth.key.pub`) and certificates
-  from the signers listed in `/lib/keys/signers`, unless a key is in
-  `/lib/keys/revoked`. These are read in the exporter's own namespace,
-  never from under the exported tree. With no key and no signer there it
-  answers `Tauth` with "authentication not required", as Inferno does.
+  `/usr/<uname>/key.pub`, and the `<user> <key>` lines of
+  `/lib/keys/users` for `uname` or `*`) and certificates from the signers
+  listed in `/lib/keys/signers`, unless a key is in `/lib/keys/revoked`.
+  These are read in the exporter's own namespace, never from under the
+  exported tree. The stock root trusts nothing. Since v0.9 an export
+  without `MNOAUTH` that trusts no key and no signer answers `Tauth` and
+  `Tattach` with `server trusts no keys` (before, it answered
+  "authentication not required" and let everyone in); an export with
+  `MNOAUTH` answers `Tauth` with "authentication not required", as
+  Inferno does (`docs/auth.md`, "Trust by default").
 - The client writes its proof to the auth fid in one write. A version 1
   proof is exactly 96 bytes, `signature[64] || public_key[32]` over the raw
   challenge, and is accepted only for directly held keys. A version 2
@@ -254,31 +260,49 @@ and a security review.
   their conversations stay in the clear.
 - The client's key comes from `#¤` (with a certificate loaded by `cert
   ...` on its `ctl`), an authinfo in `/usr/<user>/keyring/default`, or a
-  seed in `/usr/<user>/key` (or the public test key `/lib/test/auth.key`).
-  The SDK also asks the guest factotum at `/mnt/factotum` first.
+  seed in `/usr/<user>/key` (or the public test key `/lib/test/auth.key`,
+  which no stock server trusts). The SDK also asks the guest factotum at
+  `/mnt/factotum` first.
 - Since v0.8 the server proves itself in turn: once a version 3 proof is
   accepted, the auth fid reads at offset 64
   (`purg_abi::auth::SERVER_PROOF_OFFSET`) as `kind || signature[64] ||
-  body`, signed with the exporting user's key over the session's
+  body`, signed with the exporting user's key (or the authinfo given to
+  `export_key`, or the guest factotum's key) over the session's
   transcript hash and a value bound to its keys (`docs/auth.md`, "Server
   authentication"). `MSRVAUTH` (`0x4000_0000`, `mount -S`) makes the
-  mount read and check it against `/lib/keys/servers`,
-  `/lib/keys/signers` and `/lib/test/auth.key.pub` in the mounter's
-  namespace, before the attach, both with `afd = -1` and with an `afd`.
-  No proof fails with `server did not authenticate`, a proof that does
-  not check with `server authentication failed`. `MSRVAUTH` with
-  `MNOAUTH` is `bad arg in system call`.
+  mount read and check it against every key in `/lib/keys/servers`
+  (whatever host its line names) and `/lib/keys/signers` in the
+  mounter's namespace, before the attach, both with `afd = -1` and with
+  an `afd`. No proof fails with `server did not authenticate`, a proof
+  that does not check with `server authentication failed`. `MSRVAUTH`
+  with `MNOAUTH` is `bad arg in system call`.
+- The host a server proves is checked in the guest (`docs/auth.md`,
+  "Servers per host"). Since v0.9 a read of the auth fd at offset 64 or
+  later, once the conversation is encrypted, gives the server's proof as
+  the kernel first read it from the server; every later read, and the
+  `MSRVAUTH` check of a mount with that `afd`, use the same bytes. The
+  SDK's `amount_host` reads it, checks the key or certificate for the
+  host dialled, then mounts with `MSRVAUTH`.
 - The `Tattach` must name the same uname and aname as the `Tauth`.
 - `MNOAUTH` (`0x8000_0000`, the `-A` flag) skips `Tauth`. A server that
   authenticates then rejects the attach.
 - A conversation that a version 3 proof switched to records, even a
   refused one, cannot be started again in the clear: `mount` with `afd =
   -1` and `fauth` on its fd fail with `conversation is encrypted` (v0.8).
+- A conversation whose session is still alive (an auth fd from `fauth`
+  still open, or a mount on it) cannot be versioned again: `mount` with
+  `afd = -1` and `fauth` on its fd fail with `device or object already in
+  use` (v0.9). Before, a second session raced the first one's reader for
+  the replies.
 - With `afd = -1`, `mount` does all of this itself. A guest can instead run
   the exchange with `fauth` (below) and pass the auth fd to `mount`.
   `MNOAUTH` is ignored when an `afd` is given.
 
 ### Read-only `export`
+
+`export_key(fd, dir, dlen, flags, key, klen)` (v0.9) is `export` whose
+server proof is signed with the authinfo at path `key` in the exporter's
+namespace (`export -k`); an empty `key` is `export`.
 
 `export(fd, dir, dlen, flags)` takes `MNOAUTH`, `RDONLY`
 (`0x4000_0000`, `purg_abi::export::RDONLY`) and, since v0.8, `ENCRYPT`

@@ -207,14 +207,11 @@ fn serve_export(sys: &System) -> Result<(), Error> {
     }
     let data = prog.open(&format!("/net/tcp/{new_id}/data"), mode::ORDWR)?;
     let chan = prog.chan(data)?;
-    purg_core::export::serve(
-        sys.pgrp.clone(),
-        "/",
-        &chan,
-        &sys.kernel.platform,
-        false,
-        false,
-    )?;
+    // The host's client proves with the public test key: this export, and
+    // only this one, trusts it (`docs/auth.md`, "Trust by default").
+    let pgrp = Arc::new(sys.pgrp.fork());
+    pgrp.bind("/lib/test/keys", "/lib/keys", MREPL)?;
+    purg_core::export::serve(pgrp, "/", &chan, &sys.kernel.platform, false, false)?;
     println!("probe: net served");
     Ok(())
 }

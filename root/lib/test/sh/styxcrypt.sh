@@ -2,8 +2,10 @@
 # (docs/auth.md, "Mount handshake, version 3"). A file several messages
 # long goes both ways through an authenticated mount on loopback, with
 # the public test key, and comes back whole; the same through -A against
-# an export that does not authenticate, which stays in the clear.
+# an export that does not authenticate, which stays in the clear. The
+# test keys are bound on /lib/keys: the stock root trusts no key.
 load std
+bind /lib/test/keys /lib/keys
 d=/tmp/sh-styxcrypt
 rm -rf $d
 mkdir -p $d/srv $d/n
@@ -26,4 +28,5 @@ cmp $d/srv/big $d/n/big && echo read clear
 unmount $d/n
 mount -A $srv $d/n
 kill $epid $apid2
+unmount /lib/keys
 rm -rf $d

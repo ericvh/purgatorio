@@ -5,7 +5,9 @@
 //! the authinfo `keyfile` if given (`docs/auth.md`); `-A` skips that. `-S`
 //! (an addition) requires the server to prove itself as well, with a key
 //! or certificate this namespace trusts as a server's
-//! (`/lib/keys/servers`, `/lib/keys/signers`).
+//! (`/lib/keys/servers`, `/lib/keys/signers`), and for a dial string, one
+//! for the host it names: a key listed for that host, or a certificate
+//! with that name (`docs/auth.md`, "Servers per host").
 
 use std::os::fd::AsRawFd;
 
@@ -41,6 +43,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     // A dial string has a `!`. The connection has to stay open for the mount.
     let conn;
     let pipe;
+    let mut host = None;
     let fd = if let Some(cmd) = rest[0].strip_prefix('{').and_then(|c| c.strip_suffix('}')) {
         conn = None;
         let [a, b] = purgatorio::pipe().map_err(|e| Error(format!("mount: {e}")))?;
@@ -56,6 +59,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         pipe.as_ref().map_or(-1, |b| b.as_raw_fd())
     } else if rest[0].contains('!') {
         pipe = None;
+        host = dial::host(&rest[0]);
         conn = Some(dial::dial(&rest[0]).map_err(|e| Error(format!("mount: {e}")))?);
         conn.as_ref()
             .and_then(|c| c.data.as_ref())
@@ -69,9 +73,16 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let flags = order | create | noauth | srvauth;
     // The kernel authenticates a plain mount itself, in one conversation.
     // A keyfile or a guest factotum means the proof is built here, with
-    // fauth first.
-    if keyfile.is_some() || purgatorio::auth::have_factotum() {
-        purgatorio::auth::amount_key(fd, &rest[1], flags, spec, keyfile.as_deref())
+    // fauth first, and so does a server proof that must be for a host.
+    if keyfile.is_some() || purgatorio::auth::have_factotum() || (srvauth != 0 && host.is_some()) {
+        purgatorio::auth::amount_host(
+            fd,
+            &rest[1],
+            flags,
+            spec,
+            keyfile.as_deref(),
+            host.as_deref(),
+        )
     } else {
         purgatorio::mount(fd, -1, &rest[1], flags, spec)
     }

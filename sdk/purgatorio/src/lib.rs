@@ -319,6 +319,22 @@ pub fn export(fd: i32, dir: &str, flags: u32) -> Result<(), Error> {
     check(unsafe { sys::export(fd, dir.as_ptr(), dir.len(), flags) }).map(drop)
 }
 
+/// [`export`] whose server proof is signed with the authinfo `keyfile` (a
+/// path) instead of this user's default keys: `export -k`.
+pub fn export_key(fd: i32, dir: &str, flags: u32, keyfile: &str) -> Result<(), Error> {
+    check(unsafe {
+        sys::export_key(
+            fd,
+            dir.as_ptr(),
+            dir.len(),
+            flags,
+            keyfile.as_ptr(),
+            keyfile.len(),
+        )
+    })
+    .map(drop)
+}
+
 /// `sys->unmount`: removes `name` from the union at `old`, or everything
 /// mounted there when `name` is `None`.
 pub fn unmount(name: Option<&str>, old: &str) -> Result<(), Error> {

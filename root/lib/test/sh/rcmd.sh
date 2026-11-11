@@ -4,8 +4,10 @@
 # status are carried; a command that ignores its input does not stall
 # the session. cpu binds the caller's /dev before the remote one. Then
 # with certificates: a signer both ends trust, another they do not, and
-# a client with no proof.
+# a client with no proof. The first part trusts the test keys, bound on
+# /lib/keys.
 load std
+bind /lib/test/keys /lib/keys
 d=/tmp/sh-rcmd
 rm -rf $d
 mkdir -p $d/lib/keys $d/work
@@ -33,6 +35,7 @@ rcmd -A $a echo no </dev/null
 rcmd -e rc4 $a echo no
 rcmd
 kill $lpid
+unmount /lib/keys
 # Certificates. The server proves itself to the client's export with -k.
 auth/createsignerkey -f $d/sk one > $d/lib/keys/signers
 auth/createsignerkey -f $d/sk2 two > /dev/null

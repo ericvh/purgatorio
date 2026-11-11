@@ -182,6 +182,8 @@ struct Conn {
     encrypt: bool,
     /// The exporting user, whose key signs this server's proof.
     user: String,
+    /// The authinfo that signs this server's proof instead (`export -k`).
+    keyfile: Option<String>,
     /// The exporting prog: workers serve files as it would.
     pid: u32,
     msize: AtomicU32,
@@ -214,9 +216,11 @@ struct Conn {
 ///
 /// With `rdonly`, nothing in the tree can be changed through the connection.
 ///
-/// When `noauth` is false and `pgrp` (the exporter's namespace) trusts a
-/// key or a signer (`docs/auth.md`), `Tattach` is accepted only after a
-/// proof over a challenge from `platform`.
+/// When `noauth` is false, `Tattach` is accepted only after a proof over a
+/// challenge from `platform`, by a key or a signer `pgrp` (the exporter's
+/// namespace) trusts (`docs/auth.md`). An export that trusts nothing then
+/// lets nobody in: `Tauth` and `Tattach` fail with
+/// [`NO_TRUST`](crate::auth::NO_TRUST).
 ///
 /// Requests are served by worker kprocs, started through `platform` as
 /// they are needed. They have all exited when this returns.
@@ -250,6 +254,9 @@ pub struct Opts {
     /// one, signs this server's proof. Empty finds only `#¤` and the test
     /// key.
     pub user: String,
+    /// An authinfo (a path in the exporter's namespace) whose key signs
+    /// this server's proof instead of the user's (`export -k`).
+    pub keyfile: Option<String>,
 }
 
 /// [`serve`] with every option.
@@ -272,6 +279,7 @@ pub fn serve_with(
         noauth: opts.noauth,
         encrypt: opts.encrypt,
         user: opts.user.clone(),
+        keyfile: opts.keyfile.clone(),
         pid: platform.current_pid(),
         msize: AtomicU32::new(purg_styx::MAX_MSIZE),
         afids: Mutex::new(BTreeMap::new()),
@@ -539,7 +547,9 @@ impl Conn {
         let Some(keys) = self.keys.lock().clone() else {
             return Vec::new();
         };
-        let p = crate::auth::server_proof(&self.fs.pgrp, &self.user, &keys).unwrap_or_default();
+        let p =
+            crate::auth::server_proof(&self.fs.pgrp, &self.user, self.keyfile.as_deref(), &keys)
+                .unwrap_or_default();
         if !p.is_empty() {
             *self.server.lock() = Some(p.clone());
         }
@@ -671,8 +681,9 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
     let (afids, platform, fs) = (&conn.afids, conn.platform.as_ref(), &conn.fs);
     let tag = msg.tag;
     if let Fcall::Tauth { afid, uname, aname } = &msg.fcall {
+        // Nothing trusted: nobody can prove anything, and nobody gets in.
         if !trust(fs, uname).required() {
-            return None;
+            return Some(rerr(tag, crate::auth::NO_TRUST));
         }
         let afid = *afid;
         let mut challenge = [0u8; crate::auth::CHALLENGE];
@@ -758,7 +769,8 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
         afid, uname, aname, ..
     } = &msg.fcall
     {
-        // With `encrypt`, only an attach on a version 3 proof's fid.
+        // With `encrypt`, only an attach on a version 3 proof's fid. An
+        // attach without a proof gets nowhere.
         let proved = afids
             .lock()
             .get(afid)
@@ -766,9 +778,8 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
         return match proved {
             Some(true) => None,
             Some(false) => Some(rerr(tag, crate::auth::REQUIRED)),
-            None if trust(fs, uname).required() => Some(rerr(tag, crate::auth::REQUIRED)),
-            None if conn.encrypt => Some(rerr(tag, crate::auth::ENCRYPTION_REQUIRED)),
-            None => None,
+            None if !trust(fs, uname).required() => Some(rerr(tag, crate::auth::NO_TRUST)),
+            None => Some(rerr(tag, crate::auth::REQUIRED)),
         };
     }
     None

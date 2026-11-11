@@ -174,6 +174,9 @@ fn m3_conformance() {
             "crypt_server",
             "crypt_required",
             "crypt_reuse",
+            "untrusted",
+            "server_proof_fd",
+            "in_use",
             "stream_kill",
         ] {
             assert!(out.contains(&format!("ok {check}\n")), "{vm}:\n{out}");
