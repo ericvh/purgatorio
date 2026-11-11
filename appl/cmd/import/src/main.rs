@@ -1,6 +1,7 @@
-//! import [-A] [-k keyfile] [-9 tree] addr mtpt: dial `addr` and mount the
+//! import [-AS] [-k keyfile] [-9 tree] addr mtpt: dial `addr` and mount the
 //! 9P server there. The mount authenticates with `fauth` when the server
 //! asks, with the authinfo `keyfile` if given; `-A` skips authentication.
+//! `-S` requires the server to prove itself too, as `mount -S` does.
 //!
 //! `-9 tree` (an addition) is for a Plan 9 `exportfs`, or `9export` here:
 //! before 9P, the name of the tree wanted is sent and the server's `OK`
@@ -10,12 +11,12 @@
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 
-use purgatorio::abi::mount::{MNOAUTH, MREPL};
+use purgatorio::abi::mount::{MNOAUTH, MREPL, MSRVAUTH};
 use purgatorio::arg::Arg;
 use purgatorio::dial;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "import [-A] [-k keyfile] [-9 tree] addr mtpt";
+const USAGE: &str = "import [-AS] [-k keyfile] [-9 tree] addr mtpt";
 
 /// `exportfs`'s opening exchange on `fd`.
 fn plan9(fd: i32, tree: &str) -> Result<(), Error> {
@@ -45,6 +46,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     while let Some(c) = arg.opt() {
         match c {
             'A' => flags |= MNOAUTH,
+            'S' => flags |= MSRVAUTH,
             'k' => keyfile = Some(arg.earg()?),
             '9' => {
                 tree = Some(arg.earg()?);
@@ -54,7 +56,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let rest = arg.argv();
-    if rest.len() != 2 {
+    if rest.len() != 2 || (flags & MNOAUTH != 0 && flags & MSRVAUTH != 0) {
         return Err(Error(format!("usage: {USAGE}")));
     }
     let conn = dial::dial(&rest[0]).map_err(|e| Error(format!("import: {e}")))?;

@@ -3,8 +3,9 @@
 //! explicit auth fd, and stream.
 //!
 //! `m3 --serve-file path` serves `path` and writes a ready byte to fd 1.
-//! `m3 --export` serves `/` on fd 0, and `m3 --export-noauth` does so
-//! without authentication. `m3 --block` writes a ready byte to fd 1 and then
+//! `m3 --export` serves `/` on fd 0, `m3 --export-noauth` does so
+//! without authentication, and `m3 --export-crypt` only to encrypted
+//! conversations. `m3 --block` writes a ready byte to fd 1 and then
 //! reads fd 0 until it is killed. `m3 --stream path` writes a ready byte to
 //! fd 1 and streams fd 0 into `path` until it is killed. `m3 --spin` writes
 //! a ready byte to fd 1 and then computes, with no host calls, until it is
@@ -17,7 +18,7 @@ use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 
 use purgatorio::abi::mode;
-use purgatorio::abi::mount::{MCREATE, MNOAUTH, MREPL};
+use purgatorio::abi::mount::{MCREATE, MNOAUTH, MREPL, MSRVAUTH};
 use purgatorio::abi::pctl;
 use purgatorio::file2chan::{self, FileIO};
 use purgatorio::{Context, Error, exits};
@@ -31,6 +32,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some("--serve-file") => serve_file(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--export") => purgatorio::export(0, "/", 0),
         Some("--export-noauth") => purgatorio::export(0, "/", MNOAUTH),
+        Some("--export-crypt") => purgatorio::export(0, "/", purgatorio::abi::export::ENCRYPT),
         Some("--stream") => stream_child(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--block") => block(),
         Some("--pump") => pump(
@@ -86,6 +88,9 @@ fn checks() -> Result<(), Error> {
         ("crypt_wire", crypt_wire),
         ("crypt_clear", crypt_clear),
         ("crypt_tamper", crypt_tamper),
+        ("crypt_server", crypt_server),
+        ("crypt_required", crypt_required),
+        ("crypt_reuse", crypt_reuse),
         ("stream_pipe_file", stream_pipe_file),
         ("stream_file_pipe", stream_file_pipe),
         ("stream_short_write", stream_short_write),
@@ -673,6 +678,67 @@ fn crypt_tamper() -> Result<(), String> {
         w.mounted.map_err(Error::from),
         purgatorio::abi::error::EHUNGUP,
     )
+}
+
+/// The server proves itself with the test key, which this namespace trusts
+/// as a server's: a mount and an `amount` that require it work, and one
+/// against a server that asks for no proof is refused.
+fn crypt_server() -> Result<(), String> {
+    let dir = mtpt("server")?;
+    let conn = exporter("--export")?;
+    purgatorio::mount(conn.as_raw_fd(), -1, &dir, MREPL | MSRVAUTH, "").map_err(|e| e.0)?;
+    drop(conn);
+    read_through(&dir)?;
+    let conn = exporter("--export")?;
+    purgatorio::auth::amount(conn.as_raw_fd(), &dir, MREPL | MSRVAUTH, "").map_err(|e| e.0)?;
+    drop(conn);
+    read_through(&dir)?;
+    let conn = exporter("--export-noauth")?;
+    let r = purgatorio::auth::amount(conn.as_raw_fd(), &dir, MREPL | MSRVAUTH, "");
+    want_err(r, purgatorio::abi::auth::SERVER_NONE)
+}
+
+/// An export that requires encryption refuses a version 2 proof and takes
+/// a version 3 one.
+fn crypt_required() -> Result<(), String> {
+    let dir = mtpt("required")?;
+    let conn = exporter("--export-crypt")?;
+    let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
+    let mut f = std::fs::File::from(afd);
+    let mut challenge = [0u8; purgatorio::abi::auth::CHALLENGE];
+    f.read_exact(&mut challenge).map_err(|e| e.to_string())?;
+    let proof = purgatorio::auth::proof(&challenge, &purgatorio::auth::user()).map_err(|e| e.0)?;
+    let r = f.write_all(&proof);
+    want_err(
+        r.map_err(Error::from),
+        purgatorio::abi::auth::ENCRYPTION_REQUIRED,
+    )?;
+    drop(f);
+    drop(conn);
+    let conn = exporter("--export-crypt")?;
+    purgatorio::auth::amount(conn.as_raw_fd(), &dir, MREPL, "").map_err(|e| e.0)?;
+    drop(conn);
+    read_through(&dir)
+}
+
+/// After a refused version 3 proof the conversation is records: a plain
+/// mount on the same fd says so instead of failing obscurely.
+fn crypt_reuse() -> Result<(), String> {
+    let dir = mtpt("reuse")?;
+    let conn = exporter("--export")?;
+    let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
+    let mut f = std::fs::File::from(afd);
+    let mut signed = [0u8; purgatorio::abi::auth::SIGNED];
+    f.read_exact(&mut signed).map_err(|e| e.to_string())?;
+    let user = purgatorio::auth::user();
+    let proof = purgatorio::auth::fmt::proof::make(&[0x55; 32], None, &signed, &user, "");
+    want_err(
+        f.write_all(&proof).map_err(Error::from),
+        purgatorio::abi::auth::FAILED,
+    )?;
+    drop(f);
+    let r = purgatorio::mount(conn.as_raw_fd(), -1, &dir, MREPL, "");
+    want_err(r, purgatorio::abi::auth::ENCRYPTED)
 }
 
 const STREAM_DATA: &[u8] = b"the quick brown fox jumps over the lazy dog";

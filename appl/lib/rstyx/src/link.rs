@@ -145,6 +145,8 @@ mod tests {
         Keys {
             c2s: [1; 32],
             s2c: [2; 32],
+            transcript: [3; 32],
+            bind: [4; 32],
         }
     }
 

@@ -3,7 +3,7 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -17,7 +17,7 @@ use purg_styx::{DMDIR, Dir, Fcall, Msg, NOFID, NOTAG, QTAUTH, QTDIR, VERSION, di
 use purg_auth::record::{self, Opener, Sealer};
 use purg_auth::session;
 
-use crate::auth::{self, NO_SESSION, OFFER, SIGNED};
+use crate::auth::{self, ENCRYPTED, NO_SESSION, OFFER, SERVER_NONE, SERVER_PROOF_OFFSET, SIGNED};
 use crate::chan::Chan;
 use crate::dev::{Dev, Walked};
 use crate::error::{Error, Result};
@@ -41,6 +41,11 @@ struct Session {
     rekey: Arc<Mutex<Option<(u16, Opener)>>>,
     /// The exchange on an auth fd from [`DevMnt::auth`].
     kx: Mutex<Option<Kx>>,
+    /// The keys the conversation switched to, for the server's proof.
+    keys: Mutex<Option<session::Keys>>,
+    /// Conversations a version 3 proof switched to records, shared by
+    /// every session of the device.
+    sealed: Arc<Sealed>,
     platform: Arc<dyn Platform>,
     next_fid: AtomicU32,
 }
@@ -50,8 +55,40 @@ struct Session {
 struct Kx {
     user: String,
     aname: String,
+    /// This client's ephemeral key for the offer, made by the first read
+    /// of it. Every later read gives the same bytes, so a read from
+    /// another thread cannot change the key under a proof being written.
     client: Option<session::Client>,
 }
+
+/// The conversations (by their fd's Chan) that went to records. One of
+/// them cannot be versioned or authenticated again in the clear: the
+/// server opens everything on it as records, so a new `Tversion` would
+/// only come back as a hangup.
+#[derive(Default)]
+struct Sealed(Mutex<Vec<Weak<Chan>>>);
+
+impl Sealed {
+    fn add(&self, fd: &Arc<Chan>) {
+        let mut v = self.0.lock();
+        v.retain(|w| w.strong_count() > 0);
+        v.push(Arc::downgrade(fd));
+    }
+
+    /// Fails with [`ENCRYPTED`] when `fd` went to records.
+    fn check(&self, fd: &Arc<Chan>) -> Result<()> {
+        let mut v = self.0.lock();
+        v.retain(|w| w.strong_count() > 0);
+        if v.iter().any(|w| core::ptr::eq(w.as_ptr(), Arc::as_ptr(fd))) {
+            return Err(Error::new(ENCRYPTED));
+        }
+        Ok(())
+    }
+}
+
+/// Checks a server's proof (`purg_auth::server`) for the session's keys:
+/// what `sys->mount` passes with `MSRVAUTH`.
+pub type ServerCheck<'a> = &'a dyn Fn(&session::Keys, &[u8]) -> Result<()>;
 
 struct MntFile {
     session: Arc<Session>,
@@ -147,9 +184,30 @@ impl Session {
         let sent = write_full(&self.fd, &bytes);
         if sent.is_ok() {
             *g = Some(sealer);
+            *self.keys.lock() = Some(keys.clone());
+            self.sealed.add(&self.fd);
         }
         drop(g);
         self.wait_or_fail(tag, sent)
+    }
+
+    /// Reads the server's proof from the auth fid and checks it with
+    /// `check` against this session's keys. A conversation that is not
+    /// encrypted has no proof to read.
+    fn check_server(&self, afid: u32, check: ServerCheck<'_>) -> Result<()> {
+        let Some(keys) = self.keys.lock().clone() else {
+            return Err(Error::new(SERVER_NONE));
+        };
+        let reply = self.rpc(Fcall::Tread {
+            fid: afid,
+            offset: SERVER_PROOF_OFFSET,
+            count: purg_auth::proof::MAX_LEN as u32,
+        })?;
+        let proof = match self.decode(&reply)? {
+            Fcall::Rread { data } => data.to_vec(),
+            _ => return Err(Error::new(error::EIO)),
+        };
+        check(&keys, &proof)
     }
 
     fn wait_or_fail(&self, tag: u16, sent: Result<()>) -> Result<Vec<u8>> {
@@ -166,6 +224,10 @@ impl Session {
     /// this client's ([`SIGNED`] bytes). A server that offers only a
     /// challenge gives just that, and the caller decides.
     fn read_offer(&self, buf: &mut [u8]) -> Result<usize> {
+        if let Some(c) = self.kx.lock().as_ref().and_then(|k| k.client.as_ref()) {
+            buf[..SIGNED].copy_from_slice(&c.signed);
+            return Ok(SIGNED);
+        }
         let reply = self.rpc(Fcall::Tread {
             fid: AUTH_FID,
             offset: 0,
@@ -184,10 +246,15 @@ impl Session {
             }
         };
         let client = self.client(offer)?;
-        buf[..SIGNED].copy_from_slice(&client.signed);
-        if let Some(kx) = self.kx.lock().as_mut() {
-            kx.client = Some(client);
-        }
+        // Two first reads at once: the one that stores its key wins, and
+        // both return that key.
+        let mut kx = self.kx.lock();
+        let signed = match kx.as_mut() {
+            Some(k) => k.client.get_or_insert(client).signed,
+            None => client.signed,
+        };
+        drop(kx);
+        buf[..SIGNED].copy_from_slice(&signed);
         Ok(SIGNED)
     }
 
@@ -353,6 +420,7 @@ fn file(c: &Chan) -> Result<&MntFile> {
 pub struct DevMnt {
     platform: Arc<dyn Platform>,
     next_id: AtomicU32,
+    sealed: Arc<Sealed>,
 }
 
 impl DevMnt {
@@ -360,6 +428,7 @@ impl DevMnt {
         DevMnt {
             platform,
             next_id: AtomicU32::new(1),
+            sealed: Arc::new(Sealed::default()),
         }
     }
 
@@ -378,6 +447,8 @@ impl DevMnt {
             write: Mutex::new(None),
             rekey: Arc::new(Mutex::new(None)),
             kx: Mutex::new(None),
+            keys: Mutex::new(None),
+            sealed: self.sealed.clone(),
             platform: self.platform.clone(),
             next_fid: AtomicU32::new(1),
         });
@@ -467,7 +538,12 @@ impl DevMnt {
     /// Version and attach on `fd`, returning the attached root.
     ///
     /// `noauth` attaches with `NOFID`. Otherwise the client speaks `Tauth`
-    /// and, when the server asks, signs the challenge with `secret`.
+    /// and, when the server asks, signs the challenge with `secret`. With
+    /// `server`, the server must prove itself after that, and `server`
+    /// checks its proof; a server that asks for no proof cannot.
+    ///
+    /// A conversation that went to records earlier fails with
+    /// [`ENCRYPTED`].
     pub fn mount(
         self: &Arc<Self>,
         fd: Arc<Chan>,
@@ -475,7 +551,9 @@ impl DevMnt {
         user: &str,
         noauth: bool,
         secret: impl Fn(&[u8]) -> Result<Vec<u8>>,
+        server: Option<ServerCheck<'_>>,
     ) -> Result<Chan> {
+        self.sealed.check(&fd)?;
         // The version exchange runs on the caller's thread, with `NOTAG`
         // as version(5) requires: tags belong to the session it starts.
         let msize = sync_rpc(
@@ -499,6 +577,12 @@ impl DevMnt {
             } else {
                 session.authenticate(user, aname, &secret)?.unwrap_or(NOFID)
             };
+            if let Some(check) = server {
+                if afid == NOFID {
+                    return Err(Error::new(SERVER_NONE));
+                }
+                session.check_server(afid, check)?;
+            }
             self.attach(&session, afid, user, aname)
         })();
         if established.is_err() {
@@ -523,7 +607,11 @@ impl DevMnt {
     /// The exchange up to `Rauth` runs on the caller's thread. A server that
     /// does not authenticate therefore leaves no session (and no reader)
     /// behind, and the fd can still be mounted with `afd = -1`.
+    ///
+    /// A conversation that went to records earlier fails with
+    /// [`ENCRYPTED`].
     pub fn auth(self: &Arc<Self>, fd: Arc<Chan>, aname: &str, user: &str) -> Result<Chan> {
+        self.sealed.check(&fd)?;
         let msize = sync_rpc(
             &fd,
             MAX_MSIZE,
@@ -575,12 +663,15 @@ impl DevMnt {
 
     /// `sys->mount` with an auth fd from [`DevMnt::auth`]: attaches on the
     /// session `afd` belongs to. `fd` must be that session's conversation.
+    /// With `server`, the server's proof is read from `afd` and checked
+    /// first.
     pub fn mount_auth(
         self: &Arc<Self>,
         fd: &Arc<Chan>,
         afd: &Chan,
         aname: &str,
         user: &str,
+        server: Option<ServerCheck<'_>>,
     ) -> Result<Chan> {
         let f = match afd.aux::<MntFile>() {
             Some(f) if afd.dev.dc() == 'M' && afd.qid.qtype & QTAUTH != 0 => f,
@@ -588,6 +679,9 @@ impl DevMnt {
         };
         if !Arc::ptr_eq(&f.session.fd, fd) {
             return Err(Error::new(error::EBADUSEFD));
+        }
+        if let Some(check) = server {
+            f.session.check_server(f.fid, check)?;
         }
         self.attach(&f.session, f.fid, user, aname)
     }

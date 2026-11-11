@@ -10,6 +10,8 @@
 //!   the session keys it derives.
 //! - [`record`]: the ChaCha20-Poly1305 records that carry the Styx
 //!   conversation after a version 3 handshake.
+//! - [`server`]: the server's proof of a version 3 handshake, which a
+//!   client checks to know it reached the server it trusts.
 //! - [`login`] (feature `login`): the `pglogin1` password exchange (SPAKE2
 //!   over an Argon2id-hardened password) and password-sealed blobs.
 //!
@@ -28,6 +30,7 @@ pub mod login;
 pub mod modsig;
 pub mod proof;
 pub mod record;
+pub mod server;
 pub mod session;
 
 pub use purg_abi::auth::{PUBLIC, SEED, SIGNATURE};

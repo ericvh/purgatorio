@@ -21,6 +21,9 @@ use crate::record::{Opener, Sealer};
 /// HKDF labels of the two directions.
 const C2S: &[u8] = b"pgauth3 c2s";
 const S2C: &[u8] = b"pgauth3 s2c";
+/// HKDF label of the value a server's proof binds to the session
+/// ([`crate::server`]).
+const BIND: &[u8] = b"pgauth3 server";
 
 /// An ephemeral X25519 key pair.
 #[derive(Clone)]
@@ -47,28 +50,38 @@ impl Ephemeral {
     }
 }
 
-/// The two directions' record keys.
+/// The two directions' record keys, and what a server's proof signs.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Keys {
     /// Client to server.
     pub c2s: [u8; 32],
     /// Server to client.
     pub s2c: [u8; 32],
+    /// SHA-256 of the client's signed message: the challenge, both
+    /// ephemeral keys, both names and the client's identity.
+    pub transcript: [u8; 32],
+    /// A third HKDF output, `"pgauth3 server"`: only the two ends of this
+    /// exchange can compute it, so a server proof that signs it is good
+    /// for this session alone.
+    pub bind: [u8; 32],
 }
 
 impl Keys {
     /// The keys for `shared` and the signed message `transcript`:
     /// HKDF-SHA256 with the transcript's SHA-256 as salt.
     pub fn derive(shared: &[u8; 32], transcript: &[u8]) -> Keys {
-        let salt = Sha256::digest(transcript);
+        let salt: [u8; 32] = Sha256::digest(transcript).into();
         let hk = Hkdf::<Sha256>::new(Some(&salt), shared);
         let mut k = Keys {
             c2s: [0; 32],
             s2c: [0; 32],
+            transcript: salt,
+            bind: [0; 32],
         };
         // 32 bytes is always a valid HKDF-SHA256 output length.
         let _ = hk.expand(C2S, &mut k.c2s);
         let _ = hk.expand(S2C, &mut k.s2c);
+        let _ = hk.expand(BIND, &mut k.bind);
         k
     }
 

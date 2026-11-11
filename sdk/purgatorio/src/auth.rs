@@ -13,6 +13,12 @@
 //! then the seed in `/usr/<user>/key` or the public test key
 //! `/lib/test/auth.key`.
 //!
+//! A server proves itself in turn (`docs/auth.md`, "Server
+//! authentication"). For a mount the kernel checks that proof when the
+//! mount has `abi::mount::MSRVAUTH`; [`check_server`] and
+//! [`server_proof`] are for protocols the guest runs itself, as `rcmd`
+//! does.
+//!
 //! The formats and protocols themselves are in [`fmt`] (the `purg-auth`
 //! crate); this module adds files, the namespace and randomness.
 
@@ -317,6 +323,93 @@ pub fn proof_for(
     Ok(purg_auth::proof::make(&seed, None, challenge, user, aname))
 }
 
+/// A server's proof (`purg_auth::server`) for the session `keys`, made as
+/// `user` from the authinfo `keyfile` when given, else from the first
+/// default source with a key: `#¤`, `/usr/<user>/keyring/default`,
+/// `/usr/<user>/key`, the test key. The guest factotum is not asked: its
+/// protocol makes client proofs only. `None` when there is no key.
+pub fn server_proof(
+    keys: &purg_auth::session::Keys,
+    user: &str,
+    keyfile: Option<&str>,
+) -> Option<Vec<u8>> {
+    use purg_auth::server;
+    if let Some(k) = keyfile {
+        let info = read_authinfo(&keyfile_path(k, user)).ok()?;
+        return Some(server::make(&info.seed, Some(&info.cert), keys));
+    }
+    if let Some((public, cert)) = agent_key() {
+        let cert = cert.filter(|c| c.key == public);
+        let (kind, body) = purg_auth::proof::body(cert.as_ref(), &public);
+        if let Some(sig) = agent_sign(&server::message(keys, kind, &body)) {
+            return Some(server::assemble(kind, &sig, &body));
+        }
+    }
+    if safe_user(user)
+        && let Ok(info) = read_authinfo(&format!("/usr/{user}/keyring/default"))
+    {
+        return Some(server::make(&info.seed, Some(&info.cert), keys));
+    }
+    let seed = seed(user).ok()?;
+    Some(server::make(&seed, None, keys))
+}
+
+/// What this namespace trusts as a server: the keys in
+/// `/lib/keys/servers` and the test key `/lib/test/auth.key.pub`, held
+/// directly; certificates from `/lib/keys/signers`; less
+/// `/lib/keys/revoked` (a list that is there but does not parse fails
+/// every certificate). The kernel's `MSRVAUTH` check reads the same files.
+pub struct ServerTrust {
+    pub keys: Vec<[u8; PUBLIC]>,
+    pub signers: Vec<[u8; PUBLIC]>,
+    pub revoked: Option<Vec<[u8; PUBLIC]>>,
+}
+
+impl ServerTrust {
+    pub fn read() -> ServerTrust {
+        use purg_auth::keys::{parse_list, parse_list_lenient};
+        let mut keys = std::fs::read("/lib/keys/servers")
+            .map(|t| parse_list_lenient(&t))
+            .unwrap_or_default();
+        if let Ok(b) = std::fs::read("/lib/test/auth.key.pub")
+            && let Ok(k) = <[u8; PUBLIC]>::try_from(b.as_slice())
+            && !keys.contains(&k)
+        {
+            keys.push(k);
+        }
+        let signers = std::fs::read("/lib/keys/signers")
+            .map(|t| parse_list_lenient(&t))
+            .unwrap_or_default();
+        let revoked = match std::fs::read("/lib/keys/revoked") {
+            Ok(t) => parse_list(&t),
+            Err(_) if crate::stat("/lib/keys/revoked").is_ok() => None,
+            Err(_) => Some(Vec::new()),
+        };
+        ServerTrust {
+            keys,
+            signers,
+            revoked,
+        }
+    }
+
+    pub fn policy(&self) -> purg_auth::proof::Policy<'_> {
+        purg_auth::proof::Policy {
+            keys: &self.keys,
+            signers: &self.signers,
+            revoked: self.revoked.as_deref(),
+            now: now(),
+        }
+    }
+}
+
+/// Checks a server's `proof` for the session `keys` against
+/// [`ServerTrust`]. Fails with `abi::auth::SERVER_NONE` for an empty proof
+/// and `abi::auth::SERVER_FAILED` for one that does not pass.
+pub fn check_server(keys: &purg_auth::session::Keys, proof: &[u8]) -> Result<(), Error> {
+    let t = ServerTrust::read();
+    purg_auth::server::check(&t.policy(), keys, proof).map_err(Error::from)
+}
+
 /// Signs `challenge` with no attach name and the default sources.
 pub fn proof(challenge: &[u8], user: &str) -> Result<Vec<u8>, Error> {
     proof_for(challenge, user, "", None)
@@ -380,6 +473,9 @@ pub fn amount(fd: i32, old: &str, flags: u32, aname: &str) -> Result<(), Error> 
 }
 
 /// [`amount`] with an authinfo `keyfile` (`-k` on `mount` and `import`).
+/// With `abi::mount::MSRVAUTH` in `flags` the kernel checks the server's
+/// proof before the attach, and a server that asks for no proof is
+/// refused with `abi::auth::SERVER_NONE`.
 pub fn amount_key(
     fd: i32,
     old: &str,
@@ -394,6 +490,9 @@ pub fn amount_key(
         Ok(afd) => {
             authenticate_for(&afd, &user(), aname, keyfile)?;
             crate::mount(fd, afd.as_raw_fd(), old, flags, aname)
+        }
+        Err(e) if e.0 == abi::auth::NOT_REQUIRED && flags & abi::mount::MSRVAUTH != 0 => {
+            Err(Error::from(abi::auth::SERVER_NONE))
         }
         Err(e) if e.0 == abi::auth::NOT_REQUIRED => {
             crate::mount(fd, -1, old, flags | abi::mount::MNOAUTH, aname)
