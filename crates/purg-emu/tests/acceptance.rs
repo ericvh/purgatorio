@@ -1,9 +1,18 @@
 //! Acceptance tests: run `emu` on the repository's `root/` on both WASM
 //! backends. Requires `cargo xtask build-root` first.
+//!
+//! Each case is a test per VM (`echo_hello_world::wasmi`), and the sh
+//! corpus runs its scripts on a pool of threads, so cargo's test threads
+//! keep the host busy. Every emu run gets a root of its own
+//! ([`Root`]): the repository's `root/` with fresh `/tmp`, `/mnt` and
+//! `/n`, so runs in parallel do not share scratch files.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 const VMS: [&str; 2] = ["wasmtime", "wasmi"];
 
@@ -16,10 +25,49 @@ fn root() -> PathBuf {
     root
 }
 
+/// The directories of `root/` that runs write in; each [`Root`] has its
+/// own, empty.
+const SCRATCH: [&str; 3] = ["tmp", "mnt", "n"];
+
+/// A root for one emu run, under the target's scratch directory: a
+/// symbolic link to each entry of `root/` except [`SCRATCH`], which are
+/// fresh directories. Removed on drop.
+struct Root(PathBuf);
+
+impl Root {
+    fn new() -> Root {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let real = std::fs::canonicalize(root()).unwrap();
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let path = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("acceptance")
+            .join(format!("{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        for e in std::fs::read_dir(&real).unwrap() {
+            let name = e.unwrap().file_name();
+            if !SCRATCH.iter().any(|s| name == *s) {
+                std::os::unix::fs::symlink(real.join(&name), path.join(&name)).unwrap();
+            }
+        }
+        for s in SCRATCH {
+            std::fs::create_dir(path.join(s)).unwrap();
+        }
+        Root(path)
+    }
+}
+
+impl Drop for Root {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn emu(vm: &str, args: &[&str], stdin: &[u8]) -> Output {
+    let root = Root::new();
     let mut child = Command::new(env!("CARGO_BIN_EXE_emu"))
         .arg("-r")
-        .arg(root())
+        .arg(&root.0)
         .arg(format!("--vm={vm}"))
         .args(args)
         .stdin(Stdio::piped())
@@ -35,28 +83,48 @@ fn stdout(o: &Output) -> String {
     String::from_utf8_lossy(&o.stdout).into_owned()
 }
 
-#[test]
-fn echo_hello_world() {
-    for vm in VMS {
+/// `fn name(vm) { ... }` as a module `name` with a test per VM,
+/// `name::wasmtime` and `name::wasmi`, which cargo runs in parallel.
+macro_rules! on_each_vm {
+    ($($(#[$m:meta])* fn $name:ident($vm:ident) $body:block)*) => {$(
+        $(#[$m])*
+        mod $name {
+            #[allow(unused_imports)]
+            use super::*;
+
+            fn run($vm: &str) $body
+
+            #[test]
+            fn wasmtime() {
+                run("wasmtime")
+            }
+
+            #[test]
+            fn wasmi() {
+                run("wasmi")
+            }
+        }
+    )*};
+}
+
+on_each_vm! {
+    fn echo_hello_world(vm) {
         let o = emu(vm, &["echo", "hello", "world"], b"");
         assert_eq!(stdout(&o), "hello world\n", "{vm}");
         assert!(o.status.success(), "{vm}: {o:?}");
     }
-}
 
-#[test]
-fn cat_sysname_and_user() {
-    let host = {
-        let mut buf = [0u8; 256];
-        // SAFETY: buf is valid for writes of its length.
-        assert_eq!(
-            unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) },
-            0
-        );
-        let end = buf.iter().position(|&b| b == 0).unwrap();
-        String::from_utf8_lossy(&buf[..end]).into_owned()
-    };
-    for vm in VMS {
+    fn cat_sysname_and_user(vm) {
+        let host = {
+            let mut buf = [0u8; 256];
+            // SAFETY: buf is valid for writes of its length.
+            assert_eq!(
+                unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) },
+                0
+            );
+            let end = buf.iter().position(|&b| b == 0).unwrap();
+            String::from_utf8_lossy(&buf[..end]).into_owned()
+        };
         let sysname = emu(vm, &["cat", "/dev/sysname"], b"");
         assert_eq!(stdout(&sysname), host, "{vm}");
         let user = emu(vm, &["cat", "/dev/user"], b"");
@@ -65,11 +133,8 @@ fn cat_sysname_and_user() {
         assert_eq!(stdout(&both), stdout(&sysname) + &stdout(&user), "{vm}");
         assert!(both.status.success(), "{vm}");
     }
-}
 
-#[test]
-fn cat_nonexistent_uses_inferno_error() {
-    for vm in VMS {
+    fn cat_nonexistent_uses_inferno_error(vm) {
         let o = emu(vm, &["cat", "/nonexistent"], b"");
         assert_eq!(
             stdout(&o),
@@ -78,32 +143,23 @@ fn cat_nonexistent_uses_inferno_error() {
         );
         assert!(!o.status.success(), "{vm}");
     }
-}
 
-#[test]
-fn cat_copies_stdin() {
-    for vm in VMS {
+    fn cat_copies_stdin(vm) {
         let o = emu(vm, &["cat"], b"hi\nthere\n");
         assert_eq!(stdout(&o), "hi\nthere\n", "{vm}");
         assert!(o.status.success(), "{vm}");
     }
-}
 
-#[test]
-fn abi_conformance() {
-    for vm in VMS {
+    fn abi_conformance(vm) {
         let o = emu(vm, &["/bin/test/abi.wasm"], b"");
         let out = stdout(&o);
         assert!(o.status.success(), "{vm}:\n{out}");
         assert!(!out.contains("FAIL"), "{vm}:\n{out}");
         assert!(out.contains("ok bad_pointer_read"), "{vm}:\n{out}");
     }
-}
 
-/// Inferno names are byte-exact even on macOS's case-insensitive volumes.
-#[test]
-fn names_are_case_exact() {
-    for vm in VMS {
+    /// Inferno names are byte-exact even on macOS's case-insensitive volumes.
+    fn names_are_case_exact(vm) {
         let ok = emu(vm, &["cat", "/lib/probe/hello.txt"], b"");
         assert_eq!(stdout(&ok), "hello from the probe root\n", "{vm}");
         let bad = emu(vm, &["cat", "/LIB/probe/hello.txt"], b"");
@@ -114,11 +170,8 @@ fn names_are_case_exact() {
         );
         assert!(!bad.status.success(), "{vm}");
     }
-}
 
-#[test]
-fn emuinit_spawns_command() {
-    for vm in VMS {
+    fn emuinit_spawns_command(vm) {
         let o = emu(vm, &["emuinit", "echo", "via", "emuinit"], b"");
         assert_eq!(stdout(&o), "via emuinit\n", "{vm}");
         assert!(o.status.success(), "{vm}");
@@ -132,24 +185,18 @@ fn emuinit_spawns_command() {
             "{vm}"
         );
     }
-}
 
-#[test]
-fn procs_conformance() {
-    for vm in VMS {
+    fn procs_conformance(vm) {
         let o = emu(vm, &["/bin/test/procs.wasm"], b"");
         let out = stdout(&o);
         assert!(o.status.success(), "{vm}:\n{out}");
         assert!(!out.contains("FAIL"), "{vm}:\n{out}");
         assert!(out.contains("ok bind_and_unmount"), "{vm}:\n{out}");
     }
-}
 
-/// file2chan, export/mount, kill (of a prog and of `sh`, wherever it is
-/// blocked), fauth and stream.
-#[test]
-fn m3_conformance() {
-    for vm in VMS {
+    /// file2chan, export/mount, kill (of a prog and of `sh`, wherever it is
+    /// blocked), fauth and stream.
+    fn m3_conformance(vm) {
         let o = emu(vm, &["/bin/test/m3.wasm"], b"");
         let out = stdout(&o);
         assert!(
@@ -182,11 +229,8 @@ fn m3_conformance() {
             assert!(out.contains(&format!("ok {check}\n")), "{vm}:\n{out}");
         }
     }
-}
 
-#[test]
-fn stock_wasi_sees_the_namespace() {
-    for vm in VMS {
+    fn stock_wasi_sees_the_namespace(vm) {
         let o = emu(vm, &["/bin/test/wasi.wasm"], b"");
         let out = stdout(&o);
         assert!(
@@ -198,11 +242,8 @@ fn stock_wasi_sees_the_namespace() {
         assert!(out.contains("ok args"), "{vm}:\n{out}");
         assert!(!out.contains("FAIL"), "{vm}:\n{out}");
     }
-}
 
-#[test]
-fn tcp_dial_export_and_os() {
-    for vm in VMS {
+    fn tcp_dial_export_and_os(vm) {
         let o = emu(vm, &["/bin/test/net.wasm"], b"");
         let out = stdout(&o);
         assert!(
@@ -221,138 +262,72 @@ fn tcp_dial_export_and_os() {
             "{vm}: the host has a network stack"
         );
     }
-}
 
-/// With no command, emu boots emuinit, which runs `sh -l` on the console.
-#[test]
-fn boots_to_login_shell() {
-    for vm in VMS {
+    /// With no command, emu boots emuinit, which runs `sh -l` on the console.
+    fn boots_to_login_shell(vm) {
         let o = emu(vm, &[], b"echo $user\n");
         let user = stdout(&emu(vm, &["cat", "/dev/user"], b""));
         assert!(o.status.success(), "{vm}: {o:?}");
         assert_eq!(stdout(&o), format!("; {user}\n; "), "{vm}");
     }
-}
 
-/// A prog killed in a sleep dies at once, not when the sleep ends.
-#[test]
-fn kill_ends_a_sleep() {
-    let script = "sleep 60 &\np=$apid\nsleep 0.2\nkill $p\nwait\necho killed";
-    for vm in VMS {
-        let start = std::time::Instant::now();
+    /// A prog killed in a sleep dies at once, not when the sleep ends.
+    fn kill_ends_a_sleep(vm) {
+        let script = "sleep 60 &\np=$apid\nsleep 0.2\nkill $p\nwait\necho killed";
+        let start = Instant::now();
         let o = emu(vm, &["sh", "-c", script], b"");
         assert_eq!(stdout(&o), "killed\n", "{vm}: {o:?}");
         assert!(start.elapsed().as_secs() < 30, "{vm}: the sleep ran on");
     }
-}
 
-/// Runs every `/lib/test/sh/*.sh` and compares its output with the `.out`
-/// file next to it.
-#[test]
-fn sh_script_corpus() {
-    let dir = root().join("lib/test/sh");
-    let mut scripts: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| {
-            let name = e.unwrap().file_name().into_string().unwrap();
-            name.strip_suffix(".sh").map(String::from)
-        })
-        .collect();
-    scripts.sort();
-    assert!(scripts.len() >= 8, "{scripts:?}");
-    for vm in VMS {
-        for s in &scripts {
-            let want = std::fs::read_to_string(dir.join(format!("{s}.out"))).unwrap();
-            let o = emu(vm, &["sh", &format!("/lib/test/sh/{s}.sh")], b"");
-            assert_eq!(stdout(&o), want, "{vm} {s}.sh");
-            assert!(o.status.success(), "{vm} {s}.sh: {o:?}");
-        }
-    }
-}
-
-/// mash at the console: a prompt per line, a line continued with a
-/// backslash, and `load history`'s `/chan/history` and `/chan/mash`.
-#[test]
-fn mash_console_history() {
-    let input = [
-        "load history",
-        "echo one",
-        "cat /chan/history",
-        "echo 'echo injected' > /chan/mash",
-        "x = a \\",
-        " b",
-        "echo $x",
-    ];
-    let want = "mash% mash% one\nmash% load history\necho one\n\
-                mash% mash% echo injected\ninjected\n\
-                mash% \tmash% a b\nmash% ";
-    for vm in VMS {
+    /// mash at the console: a prompt per line, a line continued with a
+    /// backslash, and `load history`'s `/chan/history` and `/chan/mash`.
+    fn mash_console_history(vm) {
+        let input = [
+            "load history",
+            "echo one",
+            "cat /chan/history",
+            "echo 'echo injected' > /chan/mash",
+            "x = a \\",
+            " b",
+            "echo $x",
+        ];
+        let want = "mash% mash% one\nmash% load history\necho one\n\
+                    mash% mash% echo injected\ninjected\n\
+                    mash% \tmash% a b\nmash% ";
         let o = emu(vm, &["mash"], (input.join("\n") + "\n").as_bytes());
         assert_eq!(stdout(&o), want, "{vm}");
         assert!(o.status.success(), "{vm}: {o:?}");
     }
-}
 
-/// The authentication tools beyond the corpus's `auth.sh` flow
-/// (`docs/auth.md`): factotum, countersigning, keysrv and passwd, keyfs's
-/// sealed file, crypt, secstore and netkey. Each `/lib/test/auth/*.sh` is
-/// compared with its `.out` file. They run here only, not in the probe or
-/// the kernel, to keep the QEMU runs short.
-#[test]
-fn auth_tools() {
-    let dir = root().join("lib/test/auth");
-    let mut scripts: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(|e| {
-            let name = e.unwrap().file_name().into_string().unwrap();
-            name.strip_suffix(".sh").map(String::from)
-        })
-        .collect();
-    scripts.sort();
-    assert_eq!(scripts, ["certs", "crypt", "login"]);
-    for vm in VMS {
-        for s in &scripts {
-            let want = std::fs::read_to_string(dir.join(format!("{s}.out"))).unwrap();
-            let o = emu(vm, &["sh", &format!("/lib/test/auth/{s}.sh")], b"");
-            assert_eq!(stdout(&o), want, "{vm} {s}.sh");
-            assert!(o.status.success(), "{vm} {s}.sh: {o:?}");
-        }
-    }
-}
-
-/// The plan's M2 session, typed at the login shell.
-#[test]
-fn interactive_session() {
-    let session = [
-        "ls -l /bin | wc -l",
-        "x=hello",
-        "echo $x > /env/x; cat /env/x",
-        "rm -rf /tmp/ia /tmp/ib; mkdir /tmp/ia /tmp/ib",
-        "echo 1 > /tmp/ia/one; echo 2 > /tmp/ib/two",
-        "bind -b /tmp/ia /tmp/ib; ls /tmp/ib",
-        "sleep 10 & ; echo bg",
-        "echo a b c | cat | cat | wc -w",
-        "unmount /tmp/ia /tmp/ib; rm -r /tmp/ia /tmp/ib",
-    ];
-    let input = session.join("\n") + "\n";
-    let bins = std::fs::read_dir(root().join("bin")).unwrap().count();
-    for vm in VMS {
-        let start = std::time::Instant::now();
+    /// The plan's M2 session, typed at the login shell.
+    fn interactive_session(vm) {
+        let session = [
+            "ls -l /bin | wc -l",
+            "x=hello",
+            "echo $x > /env/x; cat /env/x",
+            "rm -rf /tmp/ia /tmp/ib; mkdir /tmp/ia /tmp/ib",
+            "echo 1 > /tmp/ia/one; echo 2 > /tmp/ib/two",
+            "bind -b /tmp/ia /tmp/ib; ls /tmp/ib",
+            "sleep 10 & ; echo bg",
+            "echo a b c | cat | cat | wc -w",
+            "unmount /tmp/ia /tmp/ib; rm -r /tmp/ia /tmp/ib",
+        ];
+        let input = session.join("\n") + "\n";
+        let bins = std::fs::read_dir(root().join("bin")).unwrap().count();
+        let start = Instant::now();
         let o = emu(vm, &[], input.as_bytes());
         let out = stdout(&o).replace("; ", "");
         assert!(o.status.success(), "{vm}: {o:?}");
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(10),
+            start.elapsed() < Duration::from_secs(10),
             "{vm}: waited for the background sleep"
         );
         let want = format!("{bins:>7}\nhello\n/tmp/ib/one\n/tmp/ib/two\nbg\n      3\n");
         assert_eq!(out, want, "{vm}");
     }
-}
 
-#[test]
-fn devices_are_listed() {
-    for vm in VMS {
+    fn devices_are_listed(vm) {
         let o = emu(vm, &["cat", "/dev/drivers"], b"");
         assert_eq!(
             stdout(&o),
@@ -360,30 +335,24 @@ fn devices_are_listed() {
             "{vm}"
         );
     }
-}
 
-/// A kill ends a prog that is asleep; it does not sleep on, broken.
-#[test]
-fn kill_interrupts_a_sleeping_prog() {
-    for vm in VMS {
-        let start = std::time::Instant::now();
+    /// A kill ends a prog that is asleep; it does not sleep on, broken.
+    fn kill_interrupts_a_sleeping_prog(vm) {
+        let start = Instant::now();
         let script = "sleep 40 & sleep 1; kill $apid; wait; echo waited; ps";
         let o = emu(vm, &["sh", "-c", script], b"");
         let out = stdout(&o);
         assert!(out.contains("waited\n"), "{vm}: {out}");
         assert!(!out.contains("sleep"), "{vm}: {out}");
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(20),
+            start.elapsed() < Duration::from_secs(20),
             "{vm}: the killed sleep ran to its end"
         );
     }
-}
 
-/// Everything a prog wrote before it exited reaches the host, whatever its
-/// exit status (issue #69).
-#[test]
-fn output_survives_a_failing_exit() {
-    for vm in VMS {
+    /// Everything a prog wrote before it exited reaches the host, whatever
+    /// its exit status (issue #69).
+    fn output_survives_a_failing_exit(vm) {
         let want = stdout(&emu(vm, &["sh", "-c", "ls -l /bin"], b""));
         assert!(want.lines().count() > 50, "{vm}");
         for script in [
@@ -409,4 +378,117 @@ fn output_survives_a_failing_exit() {
         let o = emu(vm, &["sh", "-c", "echo -n partial; exit 1"], b"");
         assert_eq!(stdout(&o), "partial", "{vm}");
     }
+}
+
+/// The `.sh` files in `root/<dir>`, without the suffix, sorted.
+fn scripts(dir: &str) -> Vec<String> {
+    let mut scripts: Vec<String> = std::fs::read_dir(root().join(dir))
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".sh").map(String::from)
+        })
+        .collect();
+    scripts.sort();
+    scripts
+}
+
+/// Why `got` is not `want`: the first line that differs, with its
+/// number, then both in full.
+fn difference(want: &str, got: &str) -> String {
+    let (w, g): (Vec<&str>, Vec<&str>) = (want.lines().collect(), got.lines().collect());
+    let n = w
+        .iter()
+        .zip(&g)
+        .position(|(a, b)| a != b)
+        .unwrap_or(w.len().min(g.len()));
+    let line = |v: &[&str]| v.get(n).map_or(String::from("(end)"), |l| format!("{l:?}"));
+    format!(
+        "line {}: want {}, got {}\n--- want\n{want}--- got\n{got}---",
+        n + 1,
+        line(&w),
+        line(&g)
+    )
+}
+
+/// Runs `/<dir>/<script>.sh` on each VM in `jobs` and compares its output
+/// with the `.out` file next to it. The runs share a pool of threads, one
+/// per CPU; every run happens, and the failures are reported together,
+/// each with the script, the VM and the difference.
+fn run_corpus(jobs: &[(&str, String)], dir: &str) {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let next = AtomicUsize::new(0);
+    let failures = Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..threads.min(jobs.len()) {
+            s.spawn(|| {
+                while let Some((vm, name)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let want =
+                        std::fs::read_to_string(root().join(format!("{dir}/{name}.out"))).unwrap();
+                    let start = Instant::now();
+                    let o = emu(vm, &["sh", &format!("/{dir}/{name}.sh")], b"");
+                    let got = stdout(&o);
+                    let problem = if got != want {
+                        Some(difference(&want, &got))
+                    } else if !o.status.success() {
+                        Some(format!(
+                            "{}\n{}",
+                            o.status,
+                            String::from_utf8_lossy(&o.stderr)
+                        ))
+                    } else {
+                        None
+                    };
+                    let t = start.elapsed().as_secs_f64();
+                    match problem {
+                        Some(p) => {
+                            eprintln!("{dir}/{name}.sh on {vm}: FAILED in {t:.1}s");
+                            failures
+                                .lock()
+                                .unwrap()
+                                .push(format!("== {dir}/{name}.sh on {vm}: {p}"));
+                        }
+                        None => eprintln!("{dir}/{name}.sh on {vm}: ok in {t:.1}s"),
+                    }
+                }
+            });
+        }
+    });
+    let failures = failures.into_inner().unwrap();
+    assert!(
+        failures.is_empty(),
+        "{} of {} runs failed:\n{}",
+        failures.len(),
+        jobs.len(),
+        failures.join("\n")
+    );
+}
+
+/// Every script on every VM, the VMs interleaved so both stay busy.
+fn corpus_jobs(scripts: &[String]) -> Vec<(&'static str, String)> {
+    scripts
+        .iter()
+        .flat_map(|s| VMS.map(|vm| (vm, s.clone())))
+        .collect()
+}
+
+/// Runs every `/lib/test/sh/*.sh` and compares its output with the `.out`
+/// file next to it.
+#[test]
+fn sh_script_corpus() {
+    let scripts = scripts("lib/test/sh");
+    assert!(scripts.len() >= 8, "{scripts:?}");
+    run_corpus(&corpus_jobs(&scripts), "lib/test/sh");
+}
+
+/// The authentication tools beyond the corpus's `auth.sh` flow
+/// (`docs/auth.md`): factotum, countersigning, keysrv and passwd, keyfs's
+/// sealed file, crypt, secstore and netkey. Each `/lib/test/auth/*.sh` is
+/// compared with its `.out` file. They run here only, not in the probe or
+/// the kernel, to keep the QEMU runs short.
+#[test]
+fn auth_tools() {
+    let scripts = scripts("lib/test/auth");
+    assert_eq!(scripts, ["certs", "crypt", "login"]);
+    run_corpus(&corpus_jobs(&scripts), "lib/test/auth");
 }
