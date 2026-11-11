@@ -52,6 +52,23 @@ fn main() {
         fail("readdir", format!("{names:?}"));
     }
 
+    // A name that starts with `#` is a device, for open, stat and readdir.
+    let dev = fs::read("#c/sysname").unwrap_or_else(|e| fail("devname", e));
+    let sysname = fs::read("/dev/sysname").unwrap_or_else(|e| fail("devname", e));
+    if dev != sysname {
+        fail("devname", format!("{dev:?} != {sysname:?}"));
+    }
+    match fs::metadata("#c/sysname") {
+        Ok(m) if !m.is_dir() => {}
+        Ok(_) => fail("devname", "#c/sysname is a directory"),
+        Err(e) => fail("devname", e),
+    }
+    let mut dir = fs::read_dir("#c").unwrap_or_else(|e| fail("devname", e));
+    if !dir.any(|e| e.is_ok_and(|e| e.file_name() == "sysname")) {
+        fail("devname", "no sysname in #c");
+    }
+    ok("devname");
+
     if let Err(e) = fs::create_dir_all("/tmp/wasi-d") {
         fail("mkdir", e);
     }

@@ -20,5 +20,13 @@ rm $d/nonexistent
 echo $status
 rm -f $d/nonexistent
 echo $status
+# A name that starts with # is a device, through std's file calls too.
+cat '#c/sysname' > $d/s
+cmp $d/s /dev/sysname && echo cat '#c/sysname'
+cd /lib
+cmp '#c/sysname' /dev/sysname && echo cmp '#c/sysname' in /lib
+cd /
+cat '#c/nosuch'
+ls '#c' | grep -s sysname && echo ls '#c'
 rm -r $d
 ls $d >[2] /dev/null || echo removed

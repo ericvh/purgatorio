@@ -13,4 +13,8 @@ f
 rm: /tmp/sh-files/nonexistent: file does not exist
 fail:errors
 
+cat #c/sysname
+cmp #c/sysname in /lib
+cat: #c/nosuch: file does not exist
+ls #c
 removed
