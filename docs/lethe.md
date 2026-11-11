@@ -9,7 +9,12 @@ server can be very small.
 The owner decided, and this design follows:
 
 - The server is stateless.
-- Authentication and encryption are required. There is no clear mode.
+- Authentication and encryption are the default. A clear mode, with
+  neither, exists as an explicit option on both ends (`lethed -A`,
+  `lethe -A`), in the way `-A` works for Styx mounts. Neither end falls
+  back to it by itself. Section 17 says what it gives up. (The first
+  decision was "required, no clear mode"; the owner revised it in issue
+  #99.)
 - The first version reads only. Writes come later, without a new wire
   version.
 - Streaming comes later, as an open mode of Lethe that is a property of
@@ -59,6 +64,10 @@ servers hold. Each request carries the ticket and is sealed with the
 session key. The server opens the ticket, checks the request and answers.
 It remembers nothing afterwards.
 
+In the clear mode (Section 17) there is no ticket: a request is the plain
+operation, the reply the plain answer, and the server answers as the user
+`none`.
+
 ## 3. Framing
 
 Every message, in both directions, is one frame:
@@ -98,7 +107,10 @@ opens more connections for concurrency.
 | 3 | `Treq` | C -> S | `ticket s[2] nonce[24] sealed(request)` | under `c2s` |
 | 4 | `Rreq` | S -> C | `nonce[24] sealed(reply)` | under `s2c` |
 | 5 | `Rerror` | S -> C | `ename s[2]` | no |
-| 6-15 | reserved | | streams and later outer frames (Section 11) | |
+| 6-8 | reserved | | streams (Section 11) | |
+| 9 | `Tclear` | C -> S | `request`: `op u8 fields` | no |
+| 10 | `Rclear` | S -> C | `reply`: `op u8 fields` | no |
+| 11-15 | reserved | | later outer frames | |
 
 `Rerror` in the clear is only for failures before the server can seal: a
 bad frame, a ticket that does not open or has expired, a request that does
@@ -106,10 +118,33 @@ not open or is outside its time window, and every `Tauth` failure. Errors
 about files (`file does not exist`, `permission denied`) are sealed inside
 `Rreq`, so an eavesdropper does not learn which names exist.
 
+`Tclear` and `Rclear` are the clear mode's request and reply (Section 17).
+They use two of the outer types the design kept in reserve, inside
+version 1: no new version, and no flag in the header. Their bodies are the
+inner request and reply of the table below, as they are: a `Tclear` is the
+header, the op and its fields (path and arguments), with no ticket, no
+nonce, no `time` and no seal; an `Rclear` is the header and the reply. For
+example a `stat` of `/` with id 5 is these 14 bytes:
+
+```
+0e 00 00 00  01  09  05 00 00 00  10  01 00 2f
+size         v   Tclear  id       Tstat  path "/"
+```
+
+Each is one self-contained frame, as the sealed forms are, so it maps to
+one datagram the same way (Section 12). A file error (`file does not
+exist`) comes back inside the `Rclear` as the inner `Rerror`; the outer
+`Rerror` is for a frame the server refuses, as before. A server not
+started with `-A` refuses every `Tclear` with the outer `Rerror`
+`authentication required`, before looking at its body. A server from
+before the clear mode answers it `bad lethe message`.
+
 ### Inner requests and replies
 
 The plaintext of a `Treq` is `time u64 op u8 fields`; of an `Rreq`, `op u8
 fields`. `time` is the client's estimate of the server's clock (Section 8).
+The body of a `Tclear` is `op u8 fields` with no `time` (there is no replay
+window to check it against), and the body of an `Rclear` is `op u8 fields`.
 
 | op | name | fields | first cut |
 |---:|---|---|---|
@@ -326,6 +361,13 @@ the tree: `file does not exist`, `permission denied`, `not a directory`,
 | `request expired` | clear | resynchronise the clock (authenticate again) and resend |
 | `bad record mac` | clear | give up on this request (tampering) |
 | `not implemented` | sealed | give up |
+| `authentication required` | clear | give up: a clear request (`lethe -A`) reached a server not started with `-A` |
+| `authentication not required` | clear | give up: a `Tauth` reached a server started with `-A` that trusts no key for the user |
+
+The last two are the mode mismatches, with the strings Styx uses for the
+same two cases (`docs/auth.md`). Neither makes the client change mode: the
+attach fails with the error, and the user decides. In the clear mode
+"sealed" in this table means inside the `Rclear`.
 
 `Tauth` failures use `docs/auth.md`'s strings: `authentication failed`,
 `certificate expired`, `certificate revoked`, `untrusted signer`,
@@ -367,8 +409,14 @@ that share tickets but not caches accept a replay at most once each.
   at every `Tauth`, so an edit takes effect on the next ticket. A damaged
   revocation list fails closed. A server with no key and no signer refuses
   every client with `server trusts no keys`, as an export that trusts
-  nothing does (`docs/auth.md`, "Trust by default"): there is no
-  unauthenticated mode.
+  nothing does (`docs/auth.md`, "Trust by default"). The only way to
+  serve without authentication is to ask for it with `-A` (Section 17).
+- **Clear requests** are answered only by a server started with `-A`, as
+  the user `none`, Inferno's unauthenticated identity. `none` owns
+  nothing: it gets the other bits of every file and directory, even in a
+  tree whose owner is called `none` (`lethed -u none`). It has the read
+  right over the whole tree, with no narrower prefix, and the same search
+  check on each directory above the path.
 - **What a ticket may do.** The identity in the ticket is checked against
   the tree's permissions at every request, as Inferno checks a user against
   a file's mode: the owner's bits when the ticket's user is the file's
@@ -435,7 +483,7 @@ identities configured for it.
 For audio, video, sensor and telemetry streams, where late data is
 worthless and a lost packet is better skipped than resent. Nothing here is
 built in the first cut; the base protocol only keeps room for it (outer
-types 6-15, ops 0x40-0x4f, the stream right).
+types 6-8, ops 0x40-0x4f, the stream right).
 
 ### Decided by the owner
 
@@ -449,7 +497,8 @@ types 6-15, ops 0x40-0x4f, the stream right).
   to a file (the client sends): a camera feeding a server file, telemetry
   uploads, a guest sending audio to the host. The same loss rules apply
   either way.
-- **Auth and encryption are still required.**
+- **Auth and encryption are still required.** The clear mode (Section 17)
+  covers the request operations only; no clear stream frame is defined.
 - **Multicast and broadcast: maybe.**
 
 ### Sketch
@@ -519,7 +568,10 @@ bytes work over other transports, but each has its own costs:
   trip, as for streams); and the client needs retransmission timers and
   duplicate suppression that TCP gives for free. The device and the server
   are written around one frame in, one frame out, so adding UDP later is a
-  transport, not a protocol change.
+  transport, not a protocol change. The clear frames are datagram-ready in
+  the same way, and without a ticket and a tag more data fits under the
+  MTU; the amplification problem is the same, and without tickets the
+  cookie round trip is the only thing that would limit it.
 - **QEMU integration** (a virtio device or a vhost-user backend) is the
   long-term transport for the kernel, so no network stack is needed. It is
   later work.
@@ -533,7 +585,7 @@ bytes work over other transports, but each has its own costs:
 | directory paging | read on an open directory fid, offset | `READDIR` with a cookie | none | `readdir` with an opaque cookie |
 | reads | offset and count on an open fid | offset and count on a handle | byte ranges | offset and count on a path |
 | change detection | qid version (rarely used by clients) | attributes and mtime | `ETag`, `If-None-Match` | qid version, conditional read |
-| security | auth fid, then a record layer per connection here | AUTH_UNIX (none, really) | TLS per connection | tickets, every request sealed |
+| security | auth fid, then a record layer per connection here | AUTH_UNIX (none, really) | TLS per connection | tickets, every request sealed; none with `-A` on both ends |
 | a lost connection | loses every fid and mount | loses nothing | loses nothing | loses nothing |
 | replicas | no | yes, with shared handles | yes | yes, with a shared ticket key |
 | writes | yes | yes (stateless, with known consistency problems) | PUT, conditional | later, conditional |
@@ -551,12 +603,13 @@ writes would take Venti's content addressing.
 | codec, tickets, key schedule, server engine, client state machine | `crates/purg-lethe` (`no_std` + `alloc`) | done |
 | `Tauth`, `stat`, `read` (with `cond`), `readdir` | `purg-lethe` | done |
 | ticket narrowing: rights and prefix | `purg-lethe`, `lethed`, `lethe` | done |
+| the clear mode: `Tclear`, `Rclear`, `lethed -A`, `lethe -A`, `noauth` in `#λ` | `purg-lethe`, `lethed`, `#λ`, `lethe` | done |
 | fuzz target and smoke test | `fuzz/fuzz_targets/lethe.rs`, `crates/purg-lethe/tests/fuzz_smoke.rs` | done |
 | `lethed`, the host server | `crates/purg-emu/src/lethed.rs` (binary `src/bin/lethed.rs`), run with `cargo xtask lethed` | done |
 | `#λ`, the client device | `crates/purg-core/src/devlethe.rs` | done |
 | `lethe`, the attach command | `appl/cmd/lethe` | done |
 | TCP | | done |
-| tests | `purg-lethe` unit and engine tests; `crates/purg-emu/tests/lethe.rs` (both VMs); `root/lib/test/sh/lethe.sh`; the kernel's `lethed=PORT` check | done |
+| tests | `purg-lethe` unit and engine tests; `crates/purg-emu/tests/lethe.rs` (both VMs); `root/lib/test/sh/lethe.sh`; the kernel's `lethed=PORT` check, sealed and clear | done |
 | UDP, streaming, writes, `Tdigest`, server proofs, ticket key rotation | | later |
 | boot root from Lethe | | later (below) |
 
@@ -588,7 +641,7 @@ writes would take Venti's content addressing.
 ### `lethed`
 
 ```
-lethed [-v] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
+lethed [-v] [-A] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
        [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root
 ```
 
@@ -603,12 +656,19 @@ lethed [-v] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
   trusts `usr/<uname>/key.pub`. `-s` and `-r`: a trusted signer list and a
   revocation list (`/lib/keys` formats); a revocation list that is there
   but does not parse fails closed. At least one of `-k`, `-U` and `-s` is
-  required.
+  required, unless `-A` is given: without any of them `lethed` does not
+  start.
+- `-A`: also answer clear requests, with no authentication and no
+  encryption, as the user `none` (Section 17). `-A` alone serves in the
+  clear only. `-A` with `-k`, `-U` or `-s` serves both: clients with a
+  trusted key get tickets and sealed replies under their own names, and
+  clear requests are answered as `none`.
 - `-t`, `-e`, `-w`: the ticket key file, the ticket lifetime and the
   request window, in seconds.
 - `-u`: the name host files are owned by in stat entries and permission
   checks; by default each file's host owner, as `#U` shows it.
-- `-v`: log each ticket issued and each request on standard error.
+- `-v`: log each ticket issued and each request on standard error. Clear
+  requests are logged for `none`.
 
 **Names that escape the root.** Paths with `..` never reach the tree:
 the codec refuses them (`file name syntax`). Symbolic links are followed
@@ -623,7 +683,7 @@ changed by someone untrusted should not be served.
 ### The device and the command
 
 ```
-lethe [-k keyfile] [-u user] [-abc] addr mtpt [path]
+lethe [-A] [-k keyfile] [-u user] [-abc] addr mtpt [path]
 ```
 
 `lethe` resolves `addr` with `/net/cs`, finds a key as `mount` does (`-k`
@@ -637,6 +697,25 @@ key <seed hex>
 cert <pgcert1 line>       (with an authinfo)
 path /lib                 (optional: the subtree, which is also the ticket's prefix)
 ```
+
+`lethe -A` asks for the clear mode. It reads no key and writes
+
+```
+dial tcp!10.0.2.2!5640
+noauth
+path /lib                 (optional: the subtree)
+```
+
+`noauth` takes the place of `user`, `key` and `cert`; a write with
+`noauth` and any of them is refused (`bad arg in system call`), and
+`lethe -A` with `-k` or `-u` is a usage error. A connection keeps the mode
+its settings gave it for as long as it lives. In the clear mode the
+device sends `Tclear` and accepts only `Rclear` or the outer `Rerror`; in
+the sealed mode it accepts only `Rauth`, `Rreq` and `Rerror`. So nothing a
+server or someone in between sends can move it from one mode to the
+other. The cache, the conditional reads, the pool, the redial and the
+directory paging below are the same in both modes; only the ticket and
+its renewal are missing in the clear.
 
 The write dials and authenticates, so a refused key fails it with the
 server's error; a server that does not answer fails it at once, without
@@ -688,7 +767,92 @@ Measured on an Apple Silicon host under Linux:
   No crate is new: XChaCha20-Poly1305, HKDF, X25519 and Ed25519 were
   already linked for the mount's version 3 handshake. A kernel built
   without the `lethe` feature leaves all of it out.
-- Test time: the hosted tests in `crates/purg-emu/tests/lethe.rs` take
-  about 6 s for both VMs, most of it the server-restart and expiry
-  checks; the kernel's check adds a few seconds to each QEMU run (each
+- Test time: the hosted tests in `crates/purg-emu/tests/lethe.rs` took
+  about 6 s for both VMs before the clear mode, most of it the
+  server-restart and expiry checks, and its tests add a few seconds; the kernel's check adds a few seconds to each QEMU run (each
   run takes about 150 s under TCG).
+
+## 17. The clear mode
+
+Lethe can run with no authentication and no encryption. It is an option,
+asked for on both ends, as `-A` is for a Styx mount and its export:
+
+```
+lethed -A root                    the server answers clear requests
+lethe -A tcp!host!5640 /n/x       the client sends them
+```
+
+### Rules
+
+- **The server.** Without `-A`, a clear request is refused with
+  `authentication required` and nothing is read. With `-A` it is answered
+  as `none` (Section 9). A server with neither `-A` nor a key to trust
+  still does not start, and an engine in that state answers every `Tauth`
+  with `server trusts no keys`.
+- **`-A` alone** means clear only. Nobody can get a ticket; a `Tauth` is
+  answered `authentication not required`, as an export with `-A` answers
+  one.
+- **`-A` with trust** (`-k`, `-U`, `-s`) means both. This follows the
+  Styx export, where `-A` lets everyone in whatever keys are there, with
+  one difference that comes from Lethe having no negotiation: a Styx
+  mount that authenticates is told `authentication not required` and
+  goes on in the clear, while a Lethe client that authenticates gets its
+  ticket and stays sealed, under its own name and with its owner's bits.
+  `-A` does not weaken the check on a `Tauth`: an untrusted key is still
+  `authentication failed`. A user the server holds no key for (`-U`
+  without that user, and no `-k` or `-s`) is told `authentication not
+  required`.
+- **Tickets that open are honoured** by any server holding their ticket
+  key, `-A` or not, as before. A server gives none out unless it trusts
+  a key, so this matters only for replicas that share a ticket key.
+- **The client.** `lethe -A` sends clear requests and nothing else;
+  `lethe` without it authenticates and seals and nothing else. Neither
+  falls back. The two mismatches are errors of the attach:
+
+  | client | server | error |
+  |---|---|---|
+  | `lethe -A` | `lethed` without `-A` | `authentication required` |
+  | `lethe` | `lethed -A` alone | `authentication not required` |
+
+### What it gives up
+
+- **Confidentiality.** Names, data, directory listings and errors cross
+  the wire as they are. Anyone on the path reads them.
+- **Integrity.** Nothing protects a request or a reply. Someone in the
+  middle can change the data read, the entries listed, the qid version
+  (so a cache keeps or drops the wrong blocks) or the error, and can
+  answer in the server's place.
+- **Identity.** The server does not know who asks, so everyone is `none`
+  and files not readable by others cannot be read at all. Tickets, with
+  their rights and prefixes, do not exist in the clear.
+- **Replay protection.** There is no time window. For reads this costs
+  nothing: a replayed request gets the same public answer again. It is one
+  reason writes, when they come, will not be offered in the clear without
+  a separate decision.
+
+### What still holds
+
+- **Signed modules.** A module's signatures are inside it and cover its
+  content digest (`docs/signing.md`), and the loader checks them whatever
+  the module came over. Under the module policy `require`, a module
+  changed on a clear link does not load. The default policy is `none`,
+  which loads anything, so this protection has to be turned on. It is
+  end-to-end integrity for signed modules only: unsigned files, directory
+  listings and plain data have no such check.
+- **The server's own rules.** Path syntax, the root-escape rules for
+  symbolic links, permission bits, search on each directory and the
+  read-only tree are enforced the same way.
+- **The default.** A server not started with `-A` and a client not
+  started with `-A` behave exactly as before the clear mode existed.
+
+### What it is for
+
+- **Trusted links**: a host and its own VM (QEMU user networking to
+  `10.0.2.2`, later a virtio transport), a loopback, or a link that is
+  already protected underneath.
+- **Measurement**: comparing Lethe with and without its cryptography, and
+  with Styx mounted `-A`.
+
+It is not for a network someone else can reach. A boot root fetched in
+the clear (Section 15) would need signed modules required for everything
+it runs, and even then leaves listings and unsigned files open to change.
