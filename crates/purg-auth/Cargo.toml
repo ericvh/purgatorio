@@ -13,6 +13,10 @@ license.workspace = true
 # use.
 default = ["login"]
 login = ["dep:spake2", "dep:argon2", "dep:hmac"]
+# The record layer's cipher from `ring` instead of RustCrypto: about three
+# times faster, same records. Only the hosted emu turns it on; the kernel
+# and the guests keep the `no_std` crate.
+ring = ["dep:ring"]
 
 [dependencies]
 purg-abi.workspace = true
@@ -29,6 +33,7 @@ argon2 = { version = "0.5", default-features = false, features = ["alloc"], opti
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 hkdf = { version = "0.12", default-features = false }
 hmac = { version = "0.12", default-features = false, optional = true }
+ring = { version = "0.17", default-features = false, optional = true }
 
 [lints]
 workspace = true

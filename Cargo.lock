@@ -2502,6 +2502,7 @@ dependencies = [
  "hmac",
  "purg-abi",
  "rand_core 0.6.4",
+ "ring",
  "sha2",
  "spake2",
 ]
