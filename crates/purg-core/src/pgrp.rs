@@ -248,15 +248,35 @@ impl Pgrp {
     ///
     /// When `to` is a union, its other members follow it at `old`, in
     /// order, with the same `MBEFORE` or `MAFTER` (and without `MCREATE`).
+    ///
+    /// The checks are those of Inferno's `bindmount` and `cmount`: flags
+    /// other than an order and `MCREATE`, or both orders at once, are
+    /// [`error::EBADARG`]. A directory and a file cannot be bound on each
+    /// other, a file cannot be a union, and `MCREATE` cannot bind a mount
+    /// point that is a union or that was mounted on without `MCREATE`:
+    /// each of those is [`error::EISMOUNT`] (`inconsistent mount`).
     pub fn bind_chan(&self, mut to: Chan, old: &str, flags: u32) -> Result<()> {
+        if flags & !(mount::MORDER | mount::MCREATE) != 0 || flags & mount::MORDER == mount::MORDER
+        {
+            return Err(Error::new(error::EBADARG));
+        }
         let from = self.namec_unmounted(old)?;
         if to.is_dir() != from.is_dir() {
             return Err(Error::new(error::EISMOUNT));
         }
         if flags & mount::MORDER != mount::MREPL && !from.is_dir() {
-            return Err(Error::new("mount must be a directory to union"));
+            return Err(Error::new(error::EISMOUNT));
         }
         let rest = to.union.take();
+        // What `to` was mounted on, when it is a mount point: binding it
+        // with `MCREATE` makes sense only when that is one member, itself
+        // mounted with `MCREATE` (`mount -c fd /root; bind -c /root /`).
+        if flags & mount::MCREATE != 0
+            && let Some(u) = &rest
+            && (u.len() > 1 || u.first().is_some_and(|m| !m.can_create()))
+        {
+            return Err(Error::new(error::EISMOUNT));
+        }
         let mut to = vec![Member {
             chan: Arc::new(to),
             flags,
