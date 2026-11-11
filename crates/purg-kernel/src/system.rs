@@ -115,7 +115,7 @@ const SCRIPT: &[(&[&str], bool)] = &[
 const LEAK_LIMIT: u64 = 1 << 20;
 
 /// The `sh` scripts; each `x.sh` runs with its output compared with `x.out`.
-const SH_CORPUS: &str = "/lib/test/sh";
+pub(crate) const SH_CORPUS: &str = "/lib/test/sh";
 
 impl System {
     /// Prints `kernel: <v>` or `kernel: FAIL <v>`, counting a failure.
@@ -152,7 +152,7 @@ impl System {
     /// Heap bytes in use and live kernel threads, once the stacks of
     /// finished threads are freed (which happens when another thread next
     /// runs).
-    fn in_use(&self) -> (u64, usize) {
+    pub(crate) fn in_use(&self) -> (u64, usize) {
         use purg_platform::sync::Sched;
         for _ in 0..2 {
             SCHED.yield_now();
@@ -240,6 +240,13 @@ pub enum Mode {
     /// The second boot of `xtask kernel` (`bootargs` has `diskcheck`):
     /// only check that the disk holds what the first boot left.
     DiskCheck,
+    /// The stress mode (`bootargs` has `stress=SECS`; see
+    /// [`crate::stress`]).
+    Stress {
+        secs: u64,
+        workers: usize,
+        watch: u64,
+    },
 }
 
 /// Boots the namespace over `initrd` and runs the system in a kernel
@@ -292,6 +299,21 @@ pub fn start(
                     failed
                 }
                 (Mode::DiskCheck, _, bound) => sys.disk_persist(&disks, bound),
+                (
+                    Mode::Stress {
+                        secs,
+                        workers,
+                        watch,
+                    },
+                    _,
+                    _,
+                ) => {
+                    let failed = sys.stress(secs, workers, watch);
+                    if memstat::on() {
+                        sys.memstat();
+                    }
+                    failed
+                }
                 (Mode::Interactive, _, _) => match sys.interactive() {
                     Ok(s) if s.is_empty() => 0,
                     Ok(s) => {

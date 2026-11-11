@@ -86,6 +86,8 @@ pub fn with_test_keys(pgrp: &Pgrp) -> Result<Arc<Pgrp>, Error> {
 }
 
 /// The booted system: an engine, the kernel and the boot namespace.
+/// Clones share all three, so several threads can run progs in it.
+#[derive(Clone)]
 pub struct System {
     pub engine: Arc<dyn Engine>,
     pub kernel: Arc<Kernel>,
@@ -238,6 +240,63 @@ impl System {
             names.len(),
             names.join(", "),
             self.threads().saturating_sub(threads)
+        )))
+    }
+
+    /// [`System::run_test`] for runs that may overlap: `argv` runs in a
+    /// copy of the boot namespace with the directory `tmp` (a boot
+    /// namespace name) bound on `/tmp`, its fds 1 and 2 on `/tmp/cons`
+    /// there, and in a prog domain of its own, whose `#pdomain` view is
+    /// its `/prog`. So it sees only its own progs, and everything it
+    /// starts, whatever its process group, can be found afterwards and
+    /// killed without touching another run's. Returns the exit status and
+    /// what it wrote. The file is named `cons` because `abi.wasm` checks
+    /// that its stdout is.
+    pub fn run_isolated(&self, argv: &[&str], tmp: &str) -> Result<(String, Vec<u8>), Error> {
+        let ns = Arc::new(self.pgrp.fork());
+        ns.bind(tmp, "/tmp", MREPL | MCREATE)?;
+        let prog = Prog::new(self.kernel.clone(), ns.clone());
+        // Attaching `#pdomain` as the new prog founds a domain named by
+        // its process group, which is its pid.
+        let domain = prog.proc.group();
+        self.kernel.platform.set_current_pid(prog.pid);
+        ns.bind("#pdomain", "/prog", MREPL)?;
+        let status = self.run_prog(prog, argv, Some("/tmp/cons"));
+        let out = format!("{tmp}/cons");
+        let got = self.read_file(&out);
+        self.reap_domain(domain)?;
+        let _ = Prog::new(self.kernel.clone(), self.pgrp.clone()).remove(&out);
+        Ok((status?, got?))
+    }
+
+    /// Kills the progs in domain `id` and waits for them to go.
+    pub fn reap_domain(&self, id: u32) -> Result<(), Error> {
+        const MS: u64 = 1_000_000;
+        let r = Rendez::new();
+        let procs = &self.kernel.procs;
+        let left = || {
+            procs
+                .pids()
+                .into_iter()
+                .filter(|&p| procs.get(p).is_some_and(|p| p.in_domain(id)))
+        };
+        for _ in 0..REAP_MS / 10 {
+            if left().next().is_none() {
+                return Ok(());
+            }
+            for p in left() {
+                procs.kill(p);
+            }
+            r.tsleep(|| false, 10 * MS);
+        }
+        let names: Vec<String> = left()
+            .filter_map(|p| procs.get(p))
+            .map(|p| format!("{} {}", p.pid, p.name()))
+            .collect();
+        Err(Error::from(format!(
+            "{} progs ({}) would not die",
+            names.len(),
+            names.join(", ")
         )))
     }
 

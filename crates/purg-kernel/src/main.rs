@@ -53,4 +53,6 @@ mod memstat;
 #[cfg(target_os = "none")]
 mod selftest;
 #[cfg(target_os = "none")]
+mod stress;
+#[cfg(target_os = "none")]
 mod system;

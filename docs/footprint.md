@@ -292,6 +292,7 @@ Across the whole test mode:
 | A mount reader (the mount driver's reader kproc) | 2 MiB | 3 to 6 KiB | 64 KiB |
 | An export worker (one Styx request through a device or a mount) | 2 MiB | 18 KiB | 64 KiB |
 | The boot stack (in the image) | 256 KiB | 4 KiB | 64 KiB |
+| A CPU's idle thread (one per CPU, K4) | - | not measured | 32 KiB |
 
 Export workers came with `next`'s concurrent export (#97): an exporting
 prog hands each request to a kproc named `export`, which walks, opens,
