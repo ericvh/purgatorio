@@ -21,9 +21,13 @@
 //! never needs it (everything is polled), but a sleeper can wait for it
 //! instead of a timer: register a handler that calls [`Mmio::ack`].
 //!
-//! The card's driver is used with the `net` feature and the 9P transport
-//! with `p9`; with only one of them the other's code is unused.
-#![cfg_attr(not(all(feature = "net", feature = "p9")), allow(dead_code))]
+//! The card's driver is used with the `net` feature, the 9P transport
+//! with `p9`, and [`crate::blk`] (a virtio-blk driver) with `blk`; with
+//! only some of them the others' code is unused.
+#![cfg_attr(
+    not(all(feature = "net", feature = "p9", feature = "blk")),
+    allow(dead_code)
+)]
 
 use alloc::alloc::{Layout, alloc_zeroed};
 use alloc::string::String;
@@ -42,43 +46,45 @@ const VERSION: u32 = 2;
 
 /// The virtio device ID of a network card.
 pub const DEVICE_NET: u32 = 1;
+/// The virtio device ID of a block device.
+pub const DEVICE_BLK: u32 = 2;
 /// The virtio device ID of a 9P transport.
 pub const DEVICE_9P: u32 = 9;
 
 // Register offsets.
 const REG_MAGIC: usize = 0x000;
 const REG_VERSION: usize = 0x004;
-const REG_DEVICE_ID: usize = 0x008;
+pub(crate) const REG_DEVICE_ID: usize = 0x008;
 const REG_DEVICE_FEATURES: usize = 0x010;
 const REG_DEVICE_FEATURES_SEL: usize = 0x014;
 const REG_DRIVER_FEATURES: usize = 0x020;
 const REG_DRIVER_FEATURES_SEL: usize = 0x024;
-const REG_QUEUE_SEL: usize = 0x030;
-const REG_QUEUE_NUM_MAX: usize = 0x034;
-const REG_QUEUE_NUM: usize = 0x038;
-const REG_QUEUE_READY: usize = 0x044;
-const REG_QUEUE_NOTIFY: usize = 0x050;
+pub(crate) const REG_QUEUE_SEL: usize = 0x030;
+pub(crate) const REG_QUEUE_NUM_MAX: usize = 0x034;
+pub(crate) const REG_QUEUE_NUM: usize = 0x038;
+pub(crate) const REG_QUEUE_READY: usize = 0x044;
+pub(crate) const REG_QUEUE_NOTIFY: usize = 0x050;
 const REG_INTERRUPT_STATUS: usize = 0x060;
 const REG_INTERRUPT_ACK: usize = 0x064;
-const REG_STATUS: usize = 0x070;
-const REG_QUEUE_DESC: usize = 0x080;
-const REG_QUEUE_AVAIL: usize = 0x090;
-const REG_QUEUE_USED: usize = 0x0a0;
-const REG_CONFIG: usize = 0x100;
+pub(crate) const REG_STATUS: usize = 0x070;
+pub(crate) const REG_QUEUE_DESC: usize = 0x080;
+pub(crate) const REG_QUEUE_AVAIL: usize = 0x090;
+pub(crate) const REG_QUEUE_USED: usize = 0x0a0;
+pub(crate) const REG_CONFIG: usize = 0x100;
 
-const ACKNOWLEDGE: u32 = 1;
-const DRIVER: u32 = 2;
-const DRIVER_OK: u32 = 4;
-const FEATURES_OK: u32 = 8;
+pub(crate) const ACKNOWLEDGE: u32 = 1;
+pub(crate) const DRIVER: u32 = 2;
+pub(crate) const DRIVER_OK: u32 = 4;
+pub(crate) const FEATURES_OK: u32 = 8;
 
 const F_MAC: u64 = 1 << 5;
-const F_VERSION_1: u64 = 1 << 32;
+pub(crate) const F_VERSION_1: u64 = 1 << 32;
 
 /// virtio-9p: the configuration space has a mount tag.
 const F_MOUNT_TAG: u64 = 1 << 0;
 
-const DESC_NEXT: u16 = 1;
-const DESC_WRITE: u16 = 2;
+pub(crate) const DESC_NEXT: u16 = 1;
+pub(crate) const DESC_WRITE: u16 = 2;
 
 /// Buffers per queue.
 pub const QUEUE: usize = 8;
@@ -103,7 +109,7 @@ impl Mmio {
         Mmio { base }
     }
 
-    fn read(&self, off: usize) -> u32 {
+    pub(crate) fn read(&self, off: usize) -> u32 {
         // SAFETY: `new` requires a mapped window; offsets are in it.
         unsafe { read_volatile((self.base + off) as *const u32) }
     }
@@ -114,9 +120,14 @@ impl Mmio {
         unsafe { read_volatile((self.base + off) as *const u8) }
     }
 
-    fn write(&self, off: usize, val: u32) {
+    pub(crate) fn write(&self, off: usize, val: u32) {
         // SAFETY: as in `read`.
         unsafe { write_volatile((self.base + off) as *mut u32, val) }
+    }
+
+    /// The window's virtual address.
+    pub fn base(&self) -> usize {
+        self.base
     }
 
     /// The device ID, 0 for an empty slot, if this is a version 2
@@ -137,6 +148,17 @@ impl Mmio {
         }
         status
     }
+}
+
+/// Every version 2 virtio-mmio transport the DTB lists whose device is
+/// `device_id`, in DTB order. The device window must be mapped in the high
+/// half.
+pub fn find_all<'a>(fdt: &Fdt<'a>, device_id: u32) -> impl Iterator<Item = Transport> + 'a {
+    dtb::virtio_mmio(fdt).filter_map(move |(reg, intid)| {
+        // SAFETY: as in `find`.
+        let mmio = unsafe { Mmio::new(mmu::phys_to_virt(reg.base as usize)) };
+        (mmio.device_id() == Some(device_id)).then_some(Transport { mmio, intid })
+    })
 }
 
 /// A virtio-mmio transport from the DTB.
@@ -747,7 +769,7 @@ pub(crate) fn sleep(
     }
 }
 
-fn device_features(m: &Mmio) -> u64 {
+pub(crate) fn device_features(m: &Mmio) -> u64 {
     m.write(REG_DEVICE_FEATURES_SEL, 0);
     let lo = u64::from(m.read(REG_DEVICE_FEATURES));
     m.write(REG_DEVICE_FEATURES_SEL, 1);
@@ -755,7 +777,7 @@ fn device_features(m: &Mmio) -> u64 {
     lo | (hi << 32)
 }
 
-fn driver_features(m: &Mmio, features: u64) {
+pub(crate) fn driver_features(m: &Mmio, features: u64) {
     m.write(REG_DRIVER_FEATURES_SEL, 0);
     m.write(REG_DRIVER_FEATURES, features as u32);
     m.write(REG_DRIVER_FEATURES_SEL, 1);
@@ -765,7 +787,7 @@ fn driver_features(m: &Mmio, features: u64) {
 /// Zeroed heap memory for the device, in whole 64-byte cache lines so no
 /// other allocation shares a line that [`dcache_inval`] discards. Never
 /// freed.
-fn dma(size: usize) -> usize {
+pub(crate) fn dma(size: usize) -> usize {
     let layout = Layout::from_size_align(size.next_multiple_of(64), 64).expect("dma layout");
     // SAFETY: a non-zero-size layout.
     let p = unsafe { alloc_zeroed(layout) };
@@ -773,11 +795,11 @@ fn dma(size: usize) -> usize {
     p as usize
 }
 
-fn dcache_clean(addr: usize, len: usize) {
+pub(crate) fn dcache_clean(addr: usize, len: usize) {
     dcache(addr, len, true);
 }
 
-fn dcache_inval(addr: usize, len: usize) {
+pub(crate) fn dcache_inval(addr: usize, len: usize) {
     dcache(addr, len, false);
 }
 
@@ -806,7 +828,7 @@ fn dcache(addr: usize, len: usize, clean: bool) {
     fence();
 }
 
-fn fence() {
+pub(crate) fn fence() {
     // SAFETY: a full barrier, no other effect.
     unsafe { asm!("dsb sy", options(nostack)) }
 }
