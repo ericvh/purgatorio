@@ -4,6 +4,7 @@
 //!   check each module, and install commands as `root/bin/<name>.wasm` and
 //!   tests as `root/bin/test/<name>.wasm`, each with its function names
 //!   beside it in `<name>.names` (`docs/debug.md`).
+//! - `lethed [-- lethed args]`: build `lethed` and run it (`docs/lethe.md`).
 //! - `run-emu [-- emu args]`: `build-root`, build `emu`, and run it on
 //!   `root/` with stdin, stdout and stderr passed through.
 //! - `probe [--kvm] [--names]`: `build-root`, build `purg-probe` for
@@ -18,7 +19,8 @@
 //!   self-test, checks the echo, and
 //!   has a virtio-net card on QEMU user networking: the kernel mounts a
 //!   hosted emu's `styxlisten` export and pings a UDP echo server on this
-//!   host, and this host mounts the kernel's `tcp!*!6666` export and runs
+//!   host, attaches this host's `lethed` (`docs/lethe.md`), and this host
+//!   mounts the kernel's `tcp!*!6666` export and runs
 //!   an MCP session on the kernel with `rcmd tcp!...!6668 mcpd`. Each run
 //!   also shares a fresh directory under `target/kernel-9p/` over
 //!   virtio-9p, which the kernel mounts on `/n/host` and works on, and
@@ -334,6 +336,63 @@ fn run_emu(args: &[String]) -> Result<ExitCode> {
     Ok(ExitCode::from(
         status.code().unwrap_or(1).clamp(0, 255) as u8
     ))
+}
+
+/// Builds `lethed` and runs it with `args` (`docs/lethe.md`), with stdin,
+/// stdout and stderr passed through.
+fn run_lethed(args: &[String]) -> Result<ExitCode> {
+    let ws = workspace();
+    run(cargo()
+        .current_dir(&ws)
+        .args(["build", "--quiet", "-p", "purg-emu", "--bin", "lethed"]))?;
+    let lethed = ws.join("target/debug/lethed");
+    let status = Command::new(&lethed)
+        .args(args)
+        .status()
+        .map_err(|e| format!("{}: {e}", lethed.display()))?;
+    Ok(ExitCode::from(
+        status.code().unwrap_or(1).clamp(0, 255) as u8
+    ))
+}
+
+/// The host's `lethed` serving a kernel run's shared directory read-only
+/// on a free port, trusting the test key; killed when dropped.
+struct HostLethed {
+    child: std::process::Child,
+    port: u16,
+}
+
+impl HostLethed {
+    fn start(ws: &Path, tree: &Path) -> Result<HostLethed> {
+        let lethed = ws.join("target/debug/lethed");
+        let mut child = Command::new(&lethed)
+            .args(["-a", "127.0.0.1:0", "-k"])
+            .arg(ws.join("root/lib/test/auth.key.pub"))
+            .arg(tree)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("{}: {e}", lethed.display()))?;
+        let mut line = String::new();
+        let out = child.stdout.take().expect("piped stdout");
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(out), &mut line)
+            .map_err(|e| format!("lethed: {e}"))?;
+        let mut host = HostLethed { child, port: 0 };
+        host.port = line
+            .trim()
+            .strip_prefix("lethed: listening on ")
+            .and_then(|a| a.rsplit(':').next())
+            .and_then(|p| p.parse().ok())
+            .ok_or_else(|| format!("lethed said {line:?}"))?;
+        Ok(host)
+    }
+}
+
+impl Drop for HostLethed {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 const PROBE_TARGET: &str = "aarch64-unknown-none";
@@ -875,13 +934,23 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
                 continue;
             }
         };
+        // The host's lethed serves the same directory read-only.
+        let lethed = match HostLethed::start(&ws, &shared.0.path) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("kernel: {}: {e}", k.name);
+                failed.push(k.name);
+                continue;
+            }
+        };
         // `test` runs the conformance guests, the sh corpus and the
         // network checks instead of an interactive shell.
         let bootargs = format!(
-            "{}test hostexport={} udpecho={} netexport rstyx{}",
+            "{}test hostexport={} udpecho={} lethed={} netexport rstyx{}",
             if kvm { "exit=psci " } else { "" },
             host.port,
             echo.port,
+            lethed.port,
             if memstat { " memstat" } else { "" }
         );
         let mut args: Vec<&str> = k.args.to_vec();
@@ -911,6 +980,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             Ok(())
         });
         drop(host);
+        drop(lethed);
         let echoed = echo.stop();
         let r = match r {
             Ok(r) => r,
@@ -1513,6 +1583,13 @@ fn main() -> ExitCode {
             };
             run_emu(&emu_args)
         }
+        Some("lethed") => {
+            let lethed_args = match args.iter().position(|a| a == "--") {
+                Some(i) => args[i + 1..].to_vec(),
+                None => rest,
+            };
+            run_lethed(&lethed_args)
+        }
         Some("initrd") => match image_flags(&rest, false) {
             Some(_) => initrd().map(|_| ExitCode::SUCCESS),
             None => Err(String::from("usage: cargo xtask initrd [--names]")),
@@ -1533,7 +1610,7 @@ fn main() -> ExitCode {
         Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
