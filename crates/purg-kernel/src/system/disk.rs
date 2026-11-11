@@ -435,7 +435,7 @@ impl System {
                 Some(true)
             }
             Err(e) => {
-                self.say(&format!("kernel: FAIL bind #K: {e}"));
+                self.failure("kernel", &format!("bind #K: {e}"));
                 Some(false)
             }
         }
@@ -645,10 +645,13 @@ impl System {
     /// the file system checks clean.
     pub fn disk_persist(&self, disks: &Disks, bound: Option<bool>) -> usize {
         let Some(fs) = disks.fs.as_ref() else {
-            self.say("kernel: FAIL no file system on the disks");
+            self.failure("kernel", "no file system on the disks");
             return 1;
         };
         if bound != Some(true) {
+            if bound.is_none() {
+                self.failure("kernel", "the disk's file system was not bound");
+            }
             return 1;
         }
         let mut failed = 0;

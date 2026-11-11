@@ -193,7 +193,7 @@ impl System {
         let names = match self.list(SH_CORPUS) {
             Ok(n) => n,
             Err(e) => {
-                self.say(&format!("kernel: FAIL {SH_CORPUS}: {e}"));
+                self.failure("kernel", &format!("{SH_CORPUS}: {e}"));
                 return failed + 1;
             }
         };
@@ -216,6 +216,7 @@ impl System {
                 self.memstat();
             }
         }
+        self.step("the leak check");
         let (heap_now, threads_now) = self.in_use();
         let grew = heap_now.saturating_sub(heap);
         let v = if threads_now > threads {
@@ -239,10 +240,12 @@ impl System {
             Ok(s) if s.is_empty() => 0,
             Ok(s) => {
                 self.say(&format!("kernel: bench: {s}"));
+                self.note_failure(&format!("bench: {s}"));
                 1
             }
             Err(e) => {
                 self.say(&format!("kernel: bench: {e}"));
+                self.note_failure(&format!("bench: {e}"));
                 1
             }
         }
@@ -285,7 +288,8 @@ pub enum Mode {
 /// Boots the namespace over `initrd` and runs the system in a kernel
 /// thread (wasmi needs more stack than the boot stack has). The boot
 /// thread sleeps until it is done; the result is the number of failures
-/// in test mode, or 0 or 1 for the shell's exit status.
+/// in test mode, or 0 or 1 for the shell's exit status, and what failed
+/// (`purg_system::System::failures`).
 pub fn start(
     initrd: &'static [u8],
     console: &'static dyn Console,
@@ -294,12 +298,14 @@ pub fn start(
     host: Option<host9p::Host>,
     blks: disk::Blks,
     mode: Mode,
-) -> usize {
+) -> (usize, String) {
     use core::sync::atomic::AtomicUsize;
     use purg_platform::sync::Rendez;
     static DONE: AtomicUsize = AtomicUsize::new(usize::MAX);
     let done = Rendez::new();
     let wake = done.clone();
+    let what = Arc::new(purg_platform::sync::Mutex::new(String::new()));
+    let named = what.clone();
     SCHED.spawn(Box::new(move || {
         let platform = MetalPlatform::new(console, &SCHED, "purgatorio", rtc)
             .with_heap(&HEAP)
@@ -318,7 +324,7 @@ pub fn start(
             root.add_tar(initrd).map(|_| ())
         });
         let disks = disks.unwrap_or_default();
-        let result = match booted {
+        let result = match &booted {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
             Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref()), sys.bind_disk(&disks)) {
                 (Mode::Test { memstat, sh }, host, bound) => {
@@ -352,20 +358,26 @@ pub fn start(
                     Ok(s) if s.is_empty() => 0,
                     Ok(s) => {
                         sys.say(&format!("kernel: emuinit: {s}"));
+                        sys.note_failure(&format!("emuinit: {s}"));
                         1
                     }
                     Err(e) => {
                         sys.say(&format!("kernel: emuinit: {e}"));
+                        sys.note_failure(&format!("emuinit: {e}"));
                         1
                     }
                 },
             },
         };
+        if let Ok(sys) = &booted {
+            *named.lock() = sys.failures(result);
+        }
         memstat::report("end");
         DONE.store(result, Ordering::Release);
         wake.wakeup();
     }));
     // Sleeping, rather than yielding in a loop, lets the CPU idle.
     done.sleep(|| DONE.load(Ordering::Acquire) != usize::MAX);
-    DONE.load(Ordering::Acquire)
+    let what = what.lock().clone();
+    (DONE.load(Ordering::Acquire), what)
 }
