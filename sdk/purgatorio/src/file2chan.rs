@@ -50,9 +50,15 @@ pub struct Request {
 }
 
 enum Body {
-    Read { count: u32 },
-    Write { data: Vec<u8> },
+    Read {
+        count: u32,
+    },
+    Write {
+        data: Vec<u8>,
+    },
     Trunc,
+    /// The fid was closed: a write with no data and no reply channel.
+    Close,
 }
 
 impl Request {
@@ -64,11 +70,18 @@ impl Request {
         matches!(self.body, Body::Trunc)
     }
 
+    /// Whether this is the close of `fid`, which takes no reply. Only
+    /// [`FileIO::recv_with_close`] and [`recv_any_with_close`] return
+    /// these.
+    pub fn is_close(&self) -> bool {
+        matches!(self.body, Body::Close)
+    }
+
     pub fn count(&self) -> u32 {
         match self.body {
             Body::Read { count } => count,
             Body::Write { ref data } => data.len() as u32,
-            Body::Trunc => 0,
+            Body::Trunc | Body::Close => 0,
         }
     }
 
@@ -102,6 +115,10 @@ impl Request {
 }
 
 fn reply(h: i32, msg: &[u8]) -> Result<(), Error> {
+    // A close has no reply channel.
+    if h < 0 {
+        return Ok(());
+    }
     // The kernel owns the reply handle and closes it after this send. Closing
     // it here races with the next request reusing the same slot.
     check(unsafe { sys::chan_send(h, msg.as_ptr(), msg.len(), std::ptr::null(), 0) })?;
@@ -110,15 +127,32 @@ fn reply(h: i32, msg: &[u8]) -> Result<(), Error> {
 
 impl FileIO {
     /// Blocks until the next read, write, or truncate. `Ok(None)` means the
-    /// file's channels have hung up.
+    /// file's channels have hung up. Closes are skipped.
     pub fn recv(&self) -> Result<Option<Request>, Error> {
         Ok(recv_any(&[self])?.map(|(_, r)| r))
+    }
+
+    /// [`FileIO::recv`], also returning each close of a fid
+    /// ([`Request::is_close`]).
+    pub fn recv_with_close(&self) -> Result<Option<Request>, Error> {
+        Ok(recv_any_with_close(&[self])?.map(|(_, r)| r))
     }
 }
 
 /// Blocks until the next request on any of `files`, and returns it with the
 /// index of its file. `Ok(None)` means that file's channels have hung up.
+/// Closes are skipped.
 pub fn recv_any(files: &[&FileIO]) -> Result<Option<(usize, Request)>, Error> {
+    loop {
+        match recv_any_with_close(files)? {
+            Some((_, r)) if r.is_close() => continue,
+            other => return Ok(other),
+        }
+    }
+}
+
+/// [`recv_any`], also returning each close of a fid.
+pub fn recv_any_with_close(files: &[&FileIO]) -> Result<Option<(usize, Request)>, Error> {
     let ops: Vec<i32> = files.iter().flat_map(|f| [2, f.read, 2, f.write]).collect();
     let which = unsafe { sys::wait(ops.as_ptr(), ops.len() / 2, -1) };
     if which < 0 {
@@ -161,13 +195,18 @@ fn decode(buf: &[u8]) -> Result<Request, Error> {
         }
         fio::WRITE => {
             let (offset, fid, reply, data) = fio::unpack_write(buf).ok_or_else(Error::last)?;
+            let body = if reply < 0 && data.is_empty() {
+                Body::Close
+            } else {
+                Body::Write {
+                    data: data.to_vec(),
+                }
+            };
             Ok(Request {
                 offset,
                 fid,
                 reply,
-                body: Body::Write {
-                    data: data.to_vec(),
-                },
+                body,
             })
         }
         fio::TRUNC => {
