@@ -16,9 +16,11 @@ bench = false
 # A small build leaves these out (`--no-default-features`); the test mode
 # needs all of them. docs/footprint.md has the sizes.
 [features]
-default = ["tls", "net", "p9"]
+default = ["tls", "net", "p9", "lethe"]
 # `#D`, the TLS client device.
 tls = ["purg-core/tls"]
+# `#λ`, the Lethe client (docs/lethe.md). Without `net` it has nothing to dial.
+lethe = ["purg-core/lethe"]
 # `#I` over virtio-net and smoltcp.
 net = ["purg-aarch64/net"]
 # `#9`, a host directory over virtio-9p, mounted on `/n/host`.

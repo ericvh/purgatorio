@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-lethe"
+description = "lethe: attach a Lethe tree (docs/lethe.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lethe"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

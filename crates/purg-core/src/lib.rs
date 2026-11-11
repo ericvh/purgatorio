@@ -18,6 +18,8 @@ pub mod deveia;
 pub mod devenv;
 pub mod devfactotum;
 pub mod devip;
+#[cfg(feature = "lethe")]
+pub mod devlethe;
 pub mod devmem;
 pub mod devmnt;
 pub mod devpipe;
@@ -67,12 +69,13 @@ pub struct Portable {
     pub mnt: Arc<DevMnt>,
 }
 
-/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C`, `#¤`, and
-/// with the `tls` feature `#D`. Embedders add `#/` and their own devices.
+/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C`, `#¤`, with the
+/// `tls` feature `#D` and with the `lethe` feature `#λ`. Embedders add `#/`
+/// and their own devices.
 pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Portable {
     let srv = Arc::new(devsrv::DevSrv::new(procs.user()));
     let mnt = Arc::new(devmnt::DevMnt::new(platform.clone()));
-    #[cfg_attr(not(feature = "tls"), allow(unused_mut))]
+    #[cfg_attr(not(any(feature = "tls", feature = "lethe")), allow(unused_mut))]
     let mut devs: Vec<Arc<dyn Dev>> = alloc::vec![
         Arc::new(devcons::DevCons::new(platform.clone())),
         Arc::new(devenv::DevEnv::new(procs.clone())),
@@ -91,5 +94,7 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
         platform.clone(),
         procs.clone(),
     )));
+    #[cfg(feature = "lethe")]
+    devs.push(Arc::new(devlethe::DevLethe::new(platform.clone())));
     Portable { devs, srv, mnt }
 }
