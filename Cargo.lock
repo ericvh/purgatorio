@@ -2602,6 +2602,7 @@ dependencies = [
  "purg-styx",
  "purg-system",
  "purg-vm",
+ "purg-vm-aot",
  "purg-vm-wasmi",
  "spin 0.10.1",
 ]
@@ -2670,6 +2671,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "purg-vm-aot"
+version = "0.1.0"
+dependencies = [
+ "purg-abi",
+ "purg-core",
+ "purg-platform",
+ "purg-vm",
+ "wasmtime",
+]
+
+[[package]]
 name = "purg-vm-wasmi"
 version = "0.1.0"
 dependencies = [
@@ -2685,8 +2697,10 @@ name = "purg-vm-wasmtime"
 version = "0.1.0"
 dependencies = [
  "purg-abi",
+ "purg-auth",
  "purg-core",
  "purg-vm",
+ "purg-vm-aot",
  "wasmtime",
 ]
 

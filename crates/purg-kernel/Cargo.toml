@@ -28,6 +28,9 @@ p9 = ["purg-aarch64/p9"]
 # `#S`, the virtio-blk disks, and a purgfs on one of them as `#K` on
 # `/n/disk` (docs/fs.md).
 blk = ["purg-aarch64/blk", "dep:purg-fs"]
+# Experimental: the modules `xtask bench --aot` compiled ahead of time run
+# on wasmtime's `no_std` runtime, the rest on wasmi (docs/perf.md).
+aot = ["dep:purg-vm-aot"]
 
 [dependencies]
 purg-aarch64.workspace = true
@@ -42,6 +45,7 @@ purg-system.workspace = true
 purg-fs = { workspace = true, features = ["dev"], optional = true }
 purg-vm.workspace = true
 purg-vm-wasmi.workspace = true
+purg-vm-aot = { workspace = true, optional = true }
 spin.workspace = true
 
 [lints]
