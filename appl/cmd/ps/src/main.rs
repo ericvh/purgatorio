@@ -13,7 +13,11 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
         .collect();
     pids.sort();
     for pid in pids {
-        let text = std::fs::read_to_string(format!("/prog/{pid}/status"))?;
+        // A prog that exits after the directory is read is not listed, as
+        // in Inferno's ps.
+        let Ok(text) = std::fs::read_to_string(format!("/prog/{pid}/status")) else {
+            continue;
+        };
         let f: Vec<&str> = text.split_whitespace().collect();
         if f.len() >= 6 {
             println!(
