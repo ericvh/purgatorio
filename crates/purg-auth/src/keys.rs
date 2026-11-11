@@ -4,6 +4,10 @@
 //! space and a comment. Blank lines and lines starting with `#` are
 //! ignored. An authinfo is three lines: `key <seed>`, `signer <public key>`
 //! and a `pgcert1` certificate.
+//!
+//! A named key list (`/lib/keys/users`, `/lib/keys/servers`) has a name
+//! before each key: `<name> <key> [comment]`, where the name is a user or
+//! a host, or `*` for any. It binds a key to the names it may prove.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -47,6 +51,67 @@ pub fn list_line(key: &[u8; PUBLIC], comment: &str) -> String {
     }
     s.push('\n');
     s
+}
+
+/// One line of a named key list: a key and the name it is trusted for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Named {
+    /// A user or host name, or [`ANY`].
+    pub name: String,
+    pub key: [u8; PUBLIC],
+}
+
+/// The name in a named key list that matches every name.
+pub const ANY: &str = "*";
+
+/// Parses a named key list: `<name> <key> [comment]` per line, blank
+/// lines and lines starting with `#` ignored. A malformed line is skipped,
+/// so it grants nothing and does not cancel the good ones.
+pub fn parse_named(text: &[u8]) -> Vec<Named> {
+    let mut out = Vec::new();
+    for line in text.split(|&b| b == b'\n') {
+        let Ok(line) = core::str::from_utf8(line) else {
+            continue;
+        };
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut words = line.split_ascii_whitespace();
+        let (Some(name), Some(key)) = (words.next(), words.next()) else {
+            continue;
+        };
+        if let Some(key) = hex::array::<PUBLIC>(key.as_bytes()) {
+            out.push(Named {
+                name: String::from(name),
+                key,
+            });
+        }
+    }
+    out
+}
+
+/// Whether `pattern`, a name from a named key list, covers `name`: it is
+/// [`ANY`], or the same name with ASCII case ignored (host names are
+/// case-insensitive; user names are compared the same way).
+pub fn name_matches(pattern: &str, name: &str) -> bool {
+    pattern == ANY || pattern.eq_ignore_ascii_case(name)
+}
+
+/// The keys of `list` trusted for `name`; for `None`, every key in it.
+pub fn keys_for(list: &[Named], name: Option<&str>) -> Vec<[u8; PUBLIC]> {
+    let mut keys = Vec::new();
+    for n in list {
+        if name.is_none_or(|name| name_matches(&n.name, name)) && !keys.contains(&n.key) {
+            keys.push(n.key);
+        }
+    }
+    keys
+}
+
+/// One line of a named key list.
+pub fn named_line(name: &str, key: &[u8; PUBLIC]) -> String {
+    alloc::format!("{name} {}\n", hex::encode(key))
 }
 
 /// What `getauthinfo` and `mkauthinfo` write.
@@ -115,6 +180,27 @@ mod tests {
         let glued = alloc::format!("{}x\n", hex::encode(&a));
         assert_eq!(parse_list(glued.as_bytes()), None);
         assert_eq!(parse_list(b""), Some(Vec::new()));
+    }
+
+    #[test]
+    fn named_lists() {
+        let a = [1u8; PUBLIC];
+        let b = [2u8; PUBLIC];
+        let c = [3u8; PUBLIC];
+        let text = alloc::format!(
+            "# servers\n\n{}{}  * {} any host\nnokey\n{} alone\nhost nothex\n",
+            named_line("Host.example", &a),
+            named_line("other", &b),
+            hex::encode(&c),
+            hex::encode(&a),
+        );
+        let list = parse_named(text.as_bytes());
+        assert_eq!(list.len(), 3);
+        assert_eq!(keys_for(&list, Some("host.EXAMPLE")), alloc::vec![a, c]);
+        assert_eq!(keys_for(&list, Some("other")), alloc::vec![b, c]);
+        assert_eq!(keys_for(&list, Some("nobody")), alloc::vec![c]);
+        assert_eq!(keys_for(&list, None), alloc::vec![a, b, c]);
+        assert!(name_matches("*", "x") && !name_matches("x", "*"));
     }
 
     #[test]

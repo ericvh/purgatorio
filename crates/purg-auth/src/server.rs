@@ -25,7 +25,7 @@
 
 use alloc::vec::Vec;
 
-use purg_abi::auth::{KIND_CERT, KIND_KEY, SERVER_FAILED, SERVER_NONE};
+use purg_abi::auth::{KIND_CERT, KIND_KEY, NAME_MISMATCH, SERVER_FAILED, SERVER_NONE};
 
 use crate::cert::Cert;
 use crate::proof::{MAX_LEN, Policy, check_cert};
@@ -37,14 +37,25 @@ pub const CONTEXT: &[u8] = b"pgauth3 server\0";
 
 /// The bytes a server's proof signs for the session `keys`.
 pub fn message(keys: &Keys, kind: u8, body: &[u8]) -> Vec<u8> {
+    message_for(&keys.transcript, &keys.bind, kind, body)
+}
+
+/// [`message`] from the session's transcript and bound value alone, as an
+/// agent that holds the server's key but not the session's (factotum's
+/// `role=server`) builds it.
+pub fn message_for(transcript: &[u8; 32], bind: &[u8; 32], kind: u8, body: &[u8]) -> Vec<u8> {
     let mut m = Vec::with_capacity(CONTEXT.len() + 65 + body.len());
     m.extend_from_slice(CONTEXT);
-    m.extend_from_slice(&keys.transcript);
-    m.extend_from_slice(&keys.bind);
+    m.extend_from_slice(transcript);
+    m.extend_from_slice(bind);
     m.push(kind);
     m.extend_from_slice(body);
     m
 }
+
+/// What an agent is given to make a server proof (factotum's
+/// `role=server`): the session's transcript, then its bound value.
+pub const SESSION: usize = 64;
 
 /// A server proof from its parts.
 pub fn assemble(kind: u8, signature: &[u8; SIGNATURE], body: &[u8]) -> Vec<u8> {
@@ -133,6 +144,63 @@ pub fn check(policy: &Policy<'_>, keys: &Keys, proof: &[u8]) -> Result<(), &'sta
         }
         _ => Err(SERVER_FAILED),
     }
+}
+
+/// Checks who the server in `proof` is, for a client that dialled
+/// `host`: everything [`check_host`] checks except the signature over the
+/// session, which only the holder of the session's keys can verify (the
+/// kernel, for a mount; see `docs/auth.md`, "Servers per host").
+///
+/// `policy.keys` are the server keys trusted for `host` (the
+/// `/lib/keys/servers` lines naming it or `*`), and `policy.signers` the
+/// signers whose certificates are taken. A key proof must be one of those
+/// keys. A certificate passes when its key is one of them, or when its
+/// name is `host` (ASCII case ignored) and a trusted signer made it; one
+/// for another name fails with [`NAME_MISMATCH`]. With no `host` (a mount
+/// of a descriptor, which has no address) the name is not checked.
+pub fn check_identity(
+    policy: &Policy<'_>,
+    proof: &[u8],
+    host: Option<&str>,
+) -> Result<(), &'static str> {
+    if proof.is_empty() {
+        return Err(SERVER_NONE);
+    }
+    let p = parse(proof).ok_or(SERVER_FAILED)?;
+    let revoked = |k: &[u8; PUBLIC]| policy.revoked.is_none_or(|r| r.contains(k));
+    match p.kind {
+        KIND_KEY => {
+            let key: [u8; PUBLIC] = p.body.try_into().map_err(|_| SERVER_FAILED)?;
+            if !policy.keys.contains(&key) || revoked(&key) {
+                return Err(SERVER_FAILED);
+            }
+            Ok(())
+        }
+        KIND_CERT => {
+            let cert = Cert::parse(p.body).map_err(|_| SERVER_FAILED)?;
+            if let Some(h) = host
+                && !policy.keys.contains(&cert.key)
+                && !h.eq_ignore_ascii_case(&cert.name)
+            {
+                return Err(NAME_MISMATCH);
+            }
+            check_cert(policy, &cert, None).map_err(|_| SERVER_FAILED)
+        }
+        _ => Err(SERVER_FAILED),
+    }
+}
+
+/// [`check`] for a client that dialled `host`: the proof must verify for
+/// the session `keys`, and [`check_identity`] must pass, so a server
+/// certified for one host cannot pose as another.
+pub fn check_host(
+    policy: &Policy<'_>,
+    keys: &Keys,
+    proof: &[u8],
+    host: Option<&str>,
+) -> Result<(), &'static str> {
+    check(policy, keys, proof)?;
+    check_identity(policy, proof, host)
 }
 
 #[cfg(test)]
@@ -268,5 +336,73 @@ mod tests {
         let sig = crate::sign(&USER, &message(&c, KIND_CERT, cert.encode().as_bytes()));
         let q = assemble(KIND_CERT, &sig, cert.encode().as_bytes());
         assert_eq!(check(&policy(&[], &signer), &c, &q), Err(SERVER_FAILED));
+    }
+
+    /// A certificate from a trusted signer proves the host it names and no
+    /// other: the impostor case of `docs/auth.md`, "Servers per host".
+    #[test]
+    fn a_server_is_checked_for_its_host() {
+        let (s, c) = exchange(9);
+        let mut cert = Cert::new("Box.example", crate::public_key(&HOST), 0).unwrap();
+        cert.sign(&SIGNER).unwrap();
+        let p = make(&HOST, Some(&cert), &s);
+        let signer = [crate::public_key(&SIGNER)];
+        let pol = policy(&[], &signer);
+        assert_eq!(check_host(&pol, &c, &p, Some("box.example")), Ok(()));
+        assert_eq!(check_host(&pol, &c, &p, Some("other")), Err(NAME_MISMATCH));
+        assert_eq!(check_identity(&pol, &p, Some("other")), Err(NAME_MISMATCH));
+        assert_eq!(check_identity(&pol, &p, Some("*")), Err(NAME_MISMATCH));
+        assert_eq!(check_identity(&pol, &p, None), Ok(()));
+        // A key listed for the host proves it whatever the name says.
+        let host = [crate::public_key(&HOST)];
+        assert_eq!(
+            check_host(&policy(&host, &[]), &c, &p, Some("other")),
+            Ok(())
+        );
+        // The right name from an untrusted signer is still refused.
+        assert_eq!(
+            check_identity(&policy(&[], &[]), &p, Some("box.example")),
+            Err(SERVER_FAILED)
+        );
+        // Revoked keys, and a revocation list that did not parse.
+        let revoked = Policy {
+            revoked: Some(&host),
+            ..policy(&[], &signer)
+        };
+        assert_eq!(
+            check_identity(&revoked, &p, Some("box.example")),
+            Err(SERVER_FAILED)
+        );
+        let broken = Policy {
+            revoked: None,
+            ..policy(&host, &[])
+        };
+        let q = make(&HOST, None, &s);
+        assert_eq!(check_identity(&broken, &q, Some("h")), Err(SERVER_FAILED));
+        // A bare key: only one listed for the host.
+        assert_eq!(check_host(&policy(&host, &[]), &c, &q, Some("h")), Ok(()));
+        assert_eq!(
+            check_identity(&policy(&[], &signer), &q, Some("h")),
+            Err(SERVER_FAILED)
+        );
+        // The identity check alone does not look at the signature: the
+        // kernel does that, over the same bytes.
+        let mut forged = p.clone();
+        forged[1] ^= 1;
+        assert_eq!(check_identity(&pol, &forged, Some("box.example")), Ok(()));
+        assert_eq!(
+            check_host(&pol, &c, &forged, Some("box.example")),
+            Err(SERVER_FAILED)
+        );
+        assert_eq!(check_identity(&pol, &[], None), Err(SERVER_NONE));
+    }
+
+    #[test]
+    fn message_for_matches_message() {
+        let (s, _) = exchange(9);
+        assert_eq!(
+            message(&s, KIND_KEY, b"body"),
+            message_for(&s.transcript, &s.bind, KIND_KEY, b"body")
+        );
     }
 }
