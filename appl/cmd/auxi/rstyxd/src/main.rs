@@ -7,13 +7,14 @@
 //!
 //! The client proves who it is as a mounter does (`docs/auth.md`): the
 //! keys and signers this namespace trusts are the ones an `export` here
-//! would trust, and a client with no proof is refused when there are any.
-//! `-A` asks for no proof. After a proof the connection is encrypted with
-//! the keys the version 3 handshake agrees (`rstyx::link`); with `-A`, or
-//! when this namespace trusts nothing, it stays in the clear, and a client
-//! that did not ask for that with `-A` itself goes away; with `-e` this
-//! side refuses to go on in the clear (`encryption required`). A version
-//! 1 or 2 proof, which carries no key, is refused. After the client's
+//! would trust, and a client with no proof is refused. When this
+//! namespace trusts nothing every client is refused (`server trusts no
+//! keys`). `-A` asks for no proof. After a proof the connection is
+//! encrypted with the keys the version 3 handshake agrees
+//! (`rstyx::link`); with `-A` it stays in the clear, and a client that did
+//! not ask for that with `-A` itself goes away. `-e` is kept from before,
+//! when an rstyxd that trusted nothing served in the clear: it now changes
+//! nothing. A version 1 or 2 proof, which carries no key, is refused. After the client's
 //! proof this side proves itself in the OK frame, with the authinfo
 //! `keyfile`, or else with this user's default keys. The client's export
 //! in turn asks this side for a proof when the client's namespace trusts
@@ -37,11 +38,11 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 
-use purgatorio::abi::auth::{ENCRYPTION_REQUIRED, NO_SESSION};
+use purgatorio::abi::auth::{NO_SESSION, NO_TRUST};
 use purgatorio::abi::mode::OWRITE;
 use purgatorio::abi::pctl::{FORKENV, FORKNS, NEWFD, NEWPGRP};
 use purgatorio::arg::Arg;
-use purgatorio::auth::fmt::keys::{parse_list, parse_list_lenient};
+use purgatorio::auth::fmt::keys::{keys_for, parse_list, parse_list_lenient, parse_named};
 use purgatorio::auth::fmt::proof::{Policy, check};
 use purgatorio::auth::fmt::session::Server as Offer;
 use purgatorio::{Context, Error, auth};
@@ -68,18 +69,19 @@ struct Trust {
 }
 
 fn trust(uname: &str) -> Trust {
-    let mut keys = Vec::new();
-    let mut paths = vec![String::from("/lib/test/auth.key.pub")];
-    if !uname.is_empty() && uname != "." && uname != ".." && !uname.contains('/') {
-        paths.push(format!("/usr/{uname}/key.pub"));
-    }
-    for path in paths {
-        if let Ok(bytes) = std::fs::read(&path)
-            && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
-            && !keys.contains(&key)
-        {
-            keys.push(key);
-        }
+    let users = std::fs::read("/lib/keys/users")
+        .map(|t| parse_named(&t))
+        .unwrap_or_default();
+    let mut keys = keys_for(&users, Some(uname));
+    if !uname.is_empty()
+        && uname != "."
+        && uname != ".."
+        && !uname.contains('/')
+        && let Ok(bytes) = std::fs::read(format!("/usr/{uname}/key.pub"))
+        && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
+        && !keys.contains(&key)
+    {
+        keys.push(key);
     }
     let signers = std::fs::read("/lib/keys/signers")
         .map(|t| parse_list_lenient(&t))
@@ -100,8 +102,6 @@ fn trust(uname: &str) -> Trust {
 struct Hello<'a> {
     /// `-A`: ask no proof, stay in the clear.
     noauth: bool,
-    /// `-e`: refuse to go on in the clear.
-    encrypt: bool,
     /// `-k`: the authinfo this side proves itself with.
     keyfile: Option<&'a str>,
 }
@@ -135,8 +135,9 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
         auth::Rng::fill(&mut random);
         Offer::new(challenge, random)
     });
-    if offer.is_none() && h.encrypt {
-        return Err(refuse(net, ENCRYPTION_REQUIRED));
+    // Nothing trusted: nobody can prove anything, and nobody gets in.
+    if offer.is_none() && !noauth {
+        return Err(refuse(net, NO_TRUST));
     }
     let chal = offer.as_ref().map_or(&[][..], |o| &o.offer[..]);
     net.write_all(&frame(kind::CHAL, chal))
@@ -224,7 +225,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut net = Fd(0);
     let h = Hello {
         noauth,
-        encrypt,
         keyfile: Some(keyfile.as_str()).filter(|k| !k.is_empty()),
     };
     let Ok((flags, cmd, mut link)) = hello(&mut net, &h) else {

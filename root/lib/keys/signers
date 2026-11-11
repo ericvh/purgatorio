@@ -1,0 +1,4 @@
+# Signers whose certificates this system takes, for users and for
+# servers: one key per line, 64 hex digits, then a comment.
+# auth/createsignerkey prints a line ready to add here. See docs/auth.md,
+# "Setting up keys". The stock system trusts no signer.

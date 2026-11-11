@@ -313,12 +313,20 @@ impl Prog {
     }
 
     /// `sys->export`: serve `dir` on `fd` until the client closes.
-    /// `MNOAUTH` serves the tree even when the caller's namespace trusts a
-    /// key or a signer; `export::RDONLY` refuses every change to it;
+    /// `MNOAUTH` serves the tree to anyone; without it the client must
+    /// prove a key or a certificate the caller's namespace trusts, and
+    /// when it trusts none nobody gets in; `export::RDONLY` refuses every change to it;
     /// `export::ENCRYPT` refuses every attach that is not encrypted. The
     /// server's own proof is signed with the key the caller's mount would
     /// prove with.
     pub fn export(&self, fd: i32, dir: &str, flags: u32) -> Result<()> {
+        self.export_key(fd, dir, flags, "")
+    }
+
+    /// `sys->export` whose server proof is signed with the authinfo at
+    /// `keyfile` (a path in this namespace; `export -k`). An empty
+    /// `keyfile` is [`Prog::export`].
+    pub fn export_key(&self, fd: i32, dir: &str, flags: u32, keyfile: &str) -> Result<()> {
         let fd = self.fgrp.get(fd)?;
         let dir = absolute(dir, &self.dot());
         let opts = crate::export::Opts {
@@ -326,6 +334,7 @@ impl Prog {
             rdonly: flags & purg_abi::export::RDONLY != 0,
             encrypt: flags & purg_abi::export::ENCRYPT != 0,
             user: String::from(self.kernel.procs.user()),
+            keyfile: (!keyfile.is_empty()).then(|| absolute(keyfile, &self.dot())),
         };
         crate::export::serve_with(self.pgrp.clone(), &dir, &fd, &self.kernel.platform, &opts)
     }

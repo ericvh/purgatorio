@@ -173,6 +173,7 @@ fn pipe_between_progs() {
 #[test]
 fn export_mount_loopback() {
     let (mut p, mock) = setup();
+    install_fixture(&mut p);
     let [a, b] = p.pipe().unwrap();
     let [ready_r, ready_w] = p.pipe().unwrap();
     let mut child = p.spawn(0, &[(a, 0), (ready_w, 1)]).unwrap();
@@ -243,15 +244,18 @@ fn install_fixture(p: &mut Prog) {
         purg_abi::mount::MAFTER | purg_abi::mount::MCREATE,
     )
     .unwrap();
-    for dir in ["/lib", "/lib/test"] {
+    for dir in ["/lib", "/lib/test", "/lib/keys"] {
         let fd = p.create(dir, mode::OREAD, purg_styx::DMDIR).unwrap();
         p.close(fd).unwrap();
     }
     let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
     let public = purg_core::auth::public_key(&seed);
+    // The test key, trusted for any user: what `/lib/test/keys` holds.
+    let users = format!("* {}\n", purg_auth::hex::encode(&public));
     for (path, bytes) in [
         ("/lib/test/auth.key", seed.as_slice()),
         ("/lib/test/auth.key.pub", public.as_slice()),
+        ("/lib/keys/users", users.as_bytes()),
     ] {
         let fd = p.create(path, mode::OWRITE, 0o644).unwrap();
         assert_eq!(p.write(fd, bytes).unwrap(), bytes.len());
@@ -444,9 +448,27 @@ fn fauth_failures() {
     server.join().unwrap();
 
     // The exporter's namespace decides, not the exported tree: with the
-    // key gone from `/lib/test`, nothing is trusted and nothing is asked.
-    p.remove("/lib/test/auth.key.pub").unwrap();
-    let (server, b) = spawn_export(&mut p, mock, "#R/box");
+    // key gone from `/lib/keys`, nothing is trusted and nobody gets in,
+    // with a proof or without one (`docs/auth.md`, "Trust by default").
+    p.remove("/lib/keys/users").unwrap();
+    let (server, b) = spawn_export(&mut p, mock.clone(), "#R/box");
+    let err = p.fauth(b, "").unwrap_err();
+    assert_eq!(err.as_str(), purg_core::auth::NO_TRUST);
+    let err = p
+        .mount(b, -1, "#R/mnt", purg_abi::mount::MREPL, "")
+        .unwrap_err();
+    assert_eq!(err.as_str(), purg_core::auth::NO_TRUST);
+    p.close(b).unwrap();
+    server.join().unwrap();
+    let (server, b) = spawn_export(&mut p, mock.clone(), "#R/box");
+    let err = p
+        .mount(b, -1, "#R/mnt", purg_abi::mount::MNOAUTH, "")
+        .unwrap_err();
+    assert_eq!(err.as_str(), purg_core::auth::NO_TRUST);
+    p.close(b).unwrap();
+    server.join().unwrap();
+    // `-A` on the export lets everyone in, and says so to `fauth`.
+    let (server, b) = spawn_export_flags(&mut p, mock, "#R/box", purg_abi::mount::MNOAUTH);
     let err = p.fauth(b, "").unwrap_err();
     assert_eq!(err.as_str(), purg_core::auth::NOT_REQUIRED);
     p.mount(b, -1, "#R/mnt", purg_abi::mount::MREPL, "")
@@ -609,7 +631,6 @@ fn certificate_mount() {
         "/box/lib/keys",
         "/box/usr",
         "/box/usr/inferno",
-        "/lib/keys",
         "/usr",
         "/usr/inferno",
         "/usr/inferno/keyring",

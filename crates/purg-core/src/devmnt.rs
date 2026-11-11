@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use purg_abi::error;
 use purg_abi::mode::ORDWR;
-use purg_platform::sync::{Mutex, Note};
+use purg_platform::sync::{Mutex, Note, Rendez};
 use purg_platform::{Platform, sync};
 use purg_styx::server::{IOHDRSZ, MAX_MSIZE};
 use purg_styx::{DMDIR, Dir, Fcall, Msg, NOFID, NOTAG, QTAUTH, QTDIR, VERSION, dirs};
@@ -43,6 +43,10 @@ struct Session {
     kx: Mutex<Option<Kx>>,
     /// The keys the conversation switched to, for the server's proof.
     keys: Mutex<Option<session::Keys>>,
+    /// The server's proof, as first read from it. A guest that reads it
+    /// from the auth fd (to check the host it is for) and the mount's own
+    /// check (`MSRVAUTH`) then see the same bytes.
+    server: Mutex<Option<Vec<u8>>>,
     /// Conversations a version 3 proof switched to records, shared by
     /// every session of the device.
     sealed: Arc<Sealed>,
@@ -81,6 +85,87 @@ impl Sealed {
         v.retain(|w| w.strong_count() > 0);
         if v.iter().any(|w| core::ptr::eq(w.as_ptr(), Arc::as_ptr(fd))) {
             return Err(Error::new(ENCRYPTED));
+        }
+        Ok(())
+    }
+}
+
+/// Set by a session's reader kproc as it exits.
+#[derive(Default)]
+struct Reader {
+    done: AtomicBool,
+    gone: Rendez,
+}
+
+impl Reader {
+    fn finish(&self) {
+        self.done.store(true, Ordering::Release);
+        self.gone.wakeup();
+    }
+
+    fn finished(&self) -> bool {
+        self.done.load(Ordering::Acquire)
+    }
+}
+
+/// How long a new session waits for the reader of a dead one on the same
+/// fd to go. Its note was killed when the session went, so this is only
+/// a bound.
+const READER_GONE_NS: u64 = 5_000_000_000;
+
+/// One session of the device: the conversation it reads, the session, and
+/// its reader.
+struct Entry {
+    fd: Weak<Chan>,
+    session: Weak<Session>,
+    reader: Arc<Reader>,
+}
+
+impl Entry {
+    fn over(&self) -> bool {
+        self.session.strong_count() == 0 && self.reader.finished()
+    }
+}
+
+/// The sessions of the device, by the conversation they read. Two
+/// sessions on one fd would race each other's reader for its replies, so
+/// a fd whose session is still alive cannot be versioned again, and one
+/// whose session has gone is versioned only once its reader has stopped.
+#[derive(Default)]
+struct Live(Mutex<Vec<Entry>>);
+
+impl Live {
+    fn add(&self, s: &Arc<Session>, reader: Arc<Reader>) {
+        let mut v = self.0.lock();
+        v.retain(|e| !e.over());
+        v.push(Entry {
+            fd: Arc::downgrade(&s.fd),
+            session: Arc::downgrade(s),
+            reader,
+        });
+    }
+
+    /// Fails with `EINUSE` while a session on `fd` lives: an auth fd from
+    /// `fauth`, or a mount, still holds it. When the session has gone but
+    /// its reader is still on its way out, waits for it.
+    fn check(&self, fd: &Arc<Chan>) -> Result<()> {
+        let mut v = self.0.lock();
+        v.retain(|e| !e.over());
+        let mut dying = Vec::new();
+        for e in v
+            .iter()
+            .filter(|e| core::ptr::eq(e.fd.as_ptr(), Arc::as_ptr(fd)))
+        {
+            if e.session.strong_count() > 0 {
+                return Err(Error::new(error::EINUSE));
+            }
+            dying.push(e.reader.clone());
+        }
+        drop(v);
+        for r in dying {
+            if !r.gone.tsleep(|| r.finished(), READER_GONE_NS) && !r.finished() {
+                return Err(Error::new(error::EINUSE));
+            }
         }
         Ok(())
     }
@@ -198,6 +283,18 @@ impl Session {
         let Some(keys) = self.keys.lock().clone() else {
             return Err(Error::new(SERVER_NONE));
         };
+        let proof = self.server_proof(afid)?;
+        check(&keys, &proof)
+    }
+
+    /// The server's proof, read from the auth fid on the first call and
+    /// the same bytes on every later one, so what a guest checked is what
+    /// the mount checks. Only an encrypted conversation has one: the
+    /// callers look for its keys first.
+    fn server_proof(&self, afid: u32) -> Result<Vec<u8>> {
+        if let Some(p) = self.server.lock().clone() {
+            return Ok(p);
+        }
         let reply = self.rpc(Fcall::Tread {
             fid: afid,
             offset: SERVER_PROOF_OFFSET,
@@ -207,7 +304,8 @@ impl Session {
             Fcall::Rread { data } => data.to_vec(),
             _ => return Err(Error::new(error::EIO)),
         };
-        check(&keys, &proof)
+        // Two first reads at once: the first one stored wins.
+        Ok(self.server.lock().get_or_insert(proof).clone())
     }
 
     fn wait_or_fail(&self, tag: u16, sent: Result<()>) -> Result<Vec<u8>> {
@@ -421,6 +519,7 @@ pub struct DevMnt {
     platform: Arc<dyn Platform>,
     next_id: AtomicU32,
     sealed: Arc<Sealed>,
+    live: Live,
 }
 
 impl DevMnt {
@@ -429,6 +528,7 @@ impl DevMnt {
             platform,
             next_id: AtomicU32::new(1),
             sealed: Arc::new(Sealed::default()),
+            live: Live::default(),
         }
     }
 
@@ -448,12 +548,15 @@ impl DevMnt {
             rekey: Arc::new(Mutex::new(None)),
             kx: Mutex::new(None),
             keys: Mutex::new(None),
+            server: Mutex::new(None),
             sealed: self.sealed.clone(),
             platform: self.platform.clone(),
             next_fid: AtomicU32::new(1),
         });
         let msize = session.msize.clone();
         let rekey = session.rekey.clone();
+        let reader = Arc::new(Reader::default());
+        let done = reader.clone();
         self.platform.spawn_kproc(
             "mnt",
             Box::new(move || {
@@ -495,8 +598,11 @@ impl DevMnt {
                     }
                 }
                 sync::set_current_note(None);
+                drop(fd);
+                done.finish();
             }),
         )?;
+        self.live.add(&session, reader);
         Ok(session)
     }
 
@@ -543,7 +649,8 @@ impl DevMnt {
     /// checks its proof; a server that asks for no proof cannot.
     ///
     /// A conversation that went to records earlier fails with
-    /// [`ENCRYPTED`].
+    /// [`ENCRYPTED`], and one another session still reads (an open auth fd
+    /// from [`DevMnt::auth`], or a mount) with `EINUSE`.
     pub fn mount(
         self: &Arc<Self>,
         fd: Arc<Chan>,
@@ -554,6 +661,7 @@ impl DevMnt {
         server: Option<ServerCheck<'_>>,
     ) -> Result<Chan> {
         self.sealed.check(&fd)?;
+        self.live.check(&fd)?;
         // The version exchange runs on the caller's thread, with `NOTAG`
         // as version(5) requires: tags belong to the session it starts.
         let msize = sync_rpc(
@@ -609,9 +717,15 @@ impl DevMnt {
     /// behind, and the fd can still be mounted with `afd = -1`.
     ///
     /// A conversation that went to records earlier fails with
-    /// [`ENCRYPTED`].
+    /// [`ENCRYPTED`], and one another session still reads with `EINUSE`.
+    ///
+    /// Once the conversation is encrypted, a read at
+    /// [`SERVER_PROOF_OFFSET`] or later gives the server's proof, read
+    /// from the server once: a mount with `MSRVAUTH` checks the same
+    /// bytes (`docs/auth.md`, "Servers per host").
     pub fn auth(self: &Arc<Self>, fd: Arc<Chan>, aname: &str, user: &str) -> Result<Chan> {
         self.sealed.check(&fd)?;
+        self.live.check(&fd)?;
         let msize = sync_rpc(
             &fd,
             MAX_MSIZE,
@@ -862,6 +976,14 @@ impl Dev for DevMnt {
         let f = file(c)?;
         if f.fid == AUTH_FID && offset == 0 && buf.len() >= SIGNED {
             return f.session.read_offer(buf);
+        }
+        if f.fid == AUTH_FID && offset >= SERVER_PROOF_OFFSET && f.session.keys.lock().is_some() {
+            let proof = f.session.server_proof(f.fid)?;
+            let start = usize::try_from(offset - SERVER_PROOF_OFFSET).unwrap_or(usize::MAX);
+            let data = proof.get(start..).unwrap_or(&[]);
+            let n = data.len().min(buf.len());
+            buf[..n].copy_from_slice(&data[..n]);
+            return Ok(n);
         }
         let count = (buf.len() as u32).min(f.session.iounit().max(1));
         let reply = f.session.rpc(Fcall::Tread {

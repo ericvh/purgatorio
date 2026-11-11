@@ -37,10 +37,12 @@ auxi/cpuslave [command [arg...]]
   only with `-A`. `rcmd -e none` without `-A` fails with `an
   authenticated connection is always encrypted; use -A for none`.
 - `auxi/rstyxd` serves one client on fd 0. `-k` is the authinfo it
-  proves itself with. `-e` makes it refuse to go on in the clear: with
-  nothing trusted it cannot ask for a proof, so it refuses every client
-  with `encryption required`. Start it from `listen` or `styxlisten` with
-  its module path:
+  proves itself with. With nothing trusted it cannot ask for a proof, so
+  it refuses every client with `server trusts no keys` (`docs/auth.md`,
+  "Trust by default"); `-A` serves everyone in the clear. `-e` was for
+  refusing to serve in the clear when nothing was trusted, which is now
+  always so; it is accepted and changes nothing. Start it from `listen`
+  or `styxlisten` with its module path:
 
   ```
   listen 'tcp!*!rstyx' /bin/auxi/rstyxd.wasm &
@@ -60,10 +62,10 @@ must leave the group.
 Both directions use the mount proof of `docs/auth.md`.
 
 - **Client to server.** The server reads the same files an `export` in
-  its namespace would: `/usr/<user>/key.pub`, `/lib/test/auth.key.pub`,
-  `/lib/keys/signers`, `/lib/keys/revoked`. If it trusts any key or
-  signer it sends an offer: a 32-byte challenge and an ephemeral X25519
-  key. The client answers with a version 3 proof for its user name and
+  its namespace would: `/usr/<user>/key.pub`, `/lib/keys/users`,
+  `/lib/keys/signers`, `/lib/keys/revoked`. If it trusts no key and no
+  signer it refuses the client with `server trusts no keys`. Otherwise it
+  sends an offer: a 32-byte challenge and an ephemeral X25519 key. The client answers with a version 3 proof for its user name and
   the attach name `rstyx`, made from `-k keyfile` or the default sources
   (factotum, `#¤`, the default authinfo, the user's seed). The attach
   name keeps a proof for a mount from being used here and the other way
@@ -75,18 +77,26 @@ Both directions use the mount proof of `docs/auth.md`.
   in the OK frame: its data is a server proof (`docs/auth.md`, "Server
   authentication"), signed over this session's transcript and a value
   bound to its keys, from `-k keyfile` on `rstyxd`, or else from its
-  user's default keys (`#¤`, `/usr/<user>/keyring/default`,
-  `/usr/<user>/key`, the test key). The client checks it against what
-  its namespace trusts as a server: `/lib/keys/servers`,
-  `/lib/keys/signers` and the test key. With `-S` a missing or failing
-  proof ends the session with `server did not authenticate` or `server
-  authentication failed`. Without `-S` the client goes on either way.
+  user's default keys (the guest factotum, `#¤`,
+  `/usr/<user>/keyring/default`, `/usr/<user>/key`, the test key). The
+  client checks it against what its namespace trusts as a server for the
+  host it dialled (`docs/auth.md`, "Servers per host"): a key that
+  `/lib/keys/servers` lists for that host or `*`, or a certificate from a
+  signer in `/lib/keys/signers` that names that host. With `-S` a
+  missing or failing proof ends the session with `server did not
+  authenticate`, `certificate name mismatch` (a certificate for another
+  host) or `server authentication failed`. Without `-S` the client goes
+  on either way.
 - **The client's export.** The client serves its namespace with the
-  kernel's `export`. When the server's proof checked, the export asks no
-  proof of its own and runs in the clear inside the encrypted connection
-  (see "Encryption"). Otherwise it asks whoever mounts it for a proof when
-  the client's namespace trusts anything, and the server answers from the
-  same key.
+  kernel's `export`. When the server proved it is the host dialled, the
+  export asks no proof of its own and runs in the clear inside the
+  encrypted connection (see "Encryption"). Otherwise, whether its proof
+  was missing, failed, or was good but for another host, the export asks
+  whoever mounts it for a proof, as any export does, and the server
+  answers from the same key. So `/n/client` goes without a second
+  handshake only to the server this namespace knows as that host; any
+  other server gets it only by proving a user this namespace trusts, and
+  when the namespace trusts nobody, not at all.
 
 `rstyxd -A` asks for no proof. `rcmd -A` gives none and exports without
 asking for one. Without `-A`, `rcmd` refuses a server that asks for no
@@ -125,12 +135,12 @@ server has proved itself, the export runs without a handshake of its own
 encrypted connection. That is safe because the connection already
 authenticates both ends: the client's proof and the server's are bound to
 its keys, only the two of them hold those keys, and every frame is sealed
-under them, so nobody else can speak in the 9P conversation. Being a
-server this namespace trusts is then what gets the server `/n/client`,
-in place of being a user the export trusts; with the stock root both are
-the test key. When the server's proof is missing or does not check, the
-export authenticates the server and encrypts again, as before, so a
-server that does not prove itself still has to prove its user.
+under them, so nobody else can speak in the 9P conversation. Being the
+server this namespace trusts for the host dialled is then what gets the
+server `/n/client`, in place of being a user the export trusts. When the
+server's proof is missing, does not check, or is for another host, the
+export authenticates the server and encrypts again, as before, so such a
+server still has to prove its user.
 
 Measured on an Apple Silicon host under Linux with the release emu and
 wasmtime, copying 16 MiB from `/n/client` with `rcmd host 'cat
@@ -144,11 +154,14 @@ pass in the kernel.
 
 An attacker who can answer for the server's address can still pose as
 the server to a client without `-S` (the client's proof is for that
-attacker's key, so it cannot be replayed to the real one); `-S` closes
-that.
+attacker's key, so it cannot be replayed to the real one), though it gets
+`/n/client` only as a trusted user; `-S` closes that.
 
-The stock root holds the public test key pair, so an unchanged system
-authenticates with it in both directions. Deployments remove it.
+The stock root trusts no key, so `rcmd` between two unchanged systems is
+refused (`server trusts no keys`) until keys are set up
+(`docs/auth.md`, "Setting up keys"). Tests bind `/lib/test/keys` on
+`/lib/keys` at both ends, which trusts the public test key for any user
+and any host.
 
 ## Protocol
 
@@ -203,9 +216,10 @@ in its own prog on the client.
 
 ## Limits
 
-- The server authenticates itself only to a client that asks with `-S`,
-  and it is trusted as a server, not for its address: any server key or
-  certified server the client trusts will do (`docs/auth.md`).
+- The server authenticates itself only to a client that asks with `-S`
+  (and, without `-S`, gets `/n/client` without a second handshake only
+  when it proved the host dialled). The host is the dial string's, as
+  written: a certificate for `fs.example` does not prove `10.0.0.5`.
 - The remote command runs as the server's user.
 - The client's namespace is served by the kernel's `export`, which
   serves requests concurrently, so a remote read that blocks (of

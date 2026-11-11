@@ -2,10 +2,14 @@
 //! computing prog, kill of `sh` wherever it is blocked, fauth with an
 //! explicit auth fd, and stream.
 //!
+//! The checks run in a copy of the namespace with the test keys
+//! (`/lib/test/keys`) bound on `/lib/keys`: the stock root trusts no key.
+//!
 //! `m3 --serve-file path` serves `path` and writes a ready byte to fd 1.
 //! `m3 --export` serves `/` on fd 0, `m3 --export-noauth` does so
-//! without authentication, and `m3 --export-crypt` only to encrypted
-//! conversations. `m3 --block` writes a ready byte to fd 1 and then
+//! without authentication, `m3 --export-crypt` only to encrypted
+//! conversations, and `m3 --export-untrusted` from a namespace that
+//! trusts no key. `m3 --block` writes a ready byte to fd 1 and then
 //! reads fd 0 until it is killed. `m3 --stream path` writes a ready byte to
 //! fd 1 and streams fd 0 into `path` until it is killed. `m3 --spin` writes
 //! a ready byte to fd 1 and then computes, with no host calls, until it is
@@ -33,6 +37,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some("--export") => purgatorio::export(0, "/", 0),
         Some("--export-noauth") => purgatorio::export(0, "/", MNOAUTH),
         Some("--export-crypt") => purgatorio::export(0, "/", purgatorio::abi::export::ENCRYPT),
+        Some("--export-untrusted") => {
+            purgatorio::pctl(pctl::FORKNS, &[])?;
+            purgatorio::unmount(None, "/lib/keys")?;
+            purgatorio::export(0, "/", 0)
+        }
         Some("--stream") => stream_child(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--block") => block(),
         Some("--pump") => pump(
@@ -70,6 +79,8 @@ fn nap() -> ! {
 }
 
 fn checks() -> Result<(), Error> {
+    purgatorio::pctl(pctl::FORKNS, &[])?;
+    purgatorio::bind("/lib/test/keys", "/lib/keys", MREPL)?;
     let mut failed = 0;
     for (name, f) in [
         ("file2chan", file2chan as fn() -> Result<(), String>),
@@ -91,6 +102,9 @@ fn checks() -> Result<(), Error> {
         ("crypt_server", crypt_server),
         ("crypt_required", crypt_required),
         ("crypt_reuse", crypt_reuse),
+        ("untrusted", untrusted),
+        ("server_proof_fd", server_proof_fd),
+        ("in_use", in_use),
         ("stream_pipe_file", stream_pipe_file),
         ("stream_file_pipe", stream_file_pipe),
         ("stream_short_write", stream_short_write),
@@ -739,6 +753,85 @@ fn crypt_reuse() -> Result<(), String> {
     drop(f);
     let r = purgatorio::mount(conn.as_raw_fd(), -1, &dir, MREPL, "");
     want_err(r, purgatorio::abi::auth::ENCRYPTED)
+}
+
+/// An export that trusts no key lets nobody in, whatever the client
+/// tries: a proof, no proof, or `-A`.
+fn untrusted() -> Result<(), String> {
+    let dir = mtpt("untrusted")?;
+    let none = purgatorio::abi::auth::NO_TRUST;
+    let conn = exporter("--export-untrusted")?;
+    want_err(
+        purgatorio::mount(conn.as_raw_fd(), -1, &dir, MREPL, ""),
+        none,
+    )?;
+    let conn = exporter("--export-untrusted")?;
+    want_err(
+        purgatorio::auth::amount(conn.as_raw_fd(), &dir, MREPL, ""),
+        none,
+    )?;
+    let conn = exporter("--export-untrusted")?;
+    want_err(purgatorio::fauth(conn.as_raw_fd(), ""), none)?;
+    let conn = exporter("--export-untrusted")?;
+    let r = purgatorio::mount(conn.as_raw_fd(), -1, &dir, MREPL | MNOAUTH, "");
+    want_err(r, none)
+}
+
+/// After a version 3 proof the auth fd reads at offset 64 as the server's
+/// proof, the same bytes each time, and a mount that requires the server
+/// checks those bytes.
+fn server_proof_fd() -> Result<(), String> {
+    use std::io::{Seek, SeekFrom};
+    let dir = mtpt("srvfd")?;
+    let conn = exporter("--export")?;
+    let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
+    purgatorio::auth::authenticate(&afd, &purgatorio::auth::user()).map_err(|e| e.0)?;
+    let mut f = std::fs::File::from(afd);
+    let mut read = || -> Result<Vec<u8>, String> {
+        f.seek(SeekFrom::Start(purgatorio::abi::auth::SERVER_PROOF_OFFSET))
+            .map_err(|e| e.to_string())?;
+        let mut p = vec![0u8; 4096];
+        let n = f.read(&mut p).map_err(|e| e.to_string())?;
+        p.truncate(n);
+        Ok(p)
+    };
+    let (a, b) = (read()?, read()?);
+    let key = purgatorio::auth::fmt::server::key(&a);
+    let test = std::fs::read("/lib/test/auth.key.pub").map_err(|e| e.to_string())?;
+    if a != b || key.map(|k| k.to_vec()) != Some(test) {
+        return Err(format!("proofs of {} and {} bytes", a.len(), b.len()));
+    }
+    purgatorio::auth::check_server_fd(&f, Some("anyhost")).map_err(|e| e.0)?;
+    purgatorio::mount(conn.as_raw_fd(), f.as_raw_fd(), &dir, MREPL | MSRVAUTH, "")
+        .map_err(|e| e.0)?;
+    drop(f);
+    drop(conn);
+    read_through(&dir)
+}
+
+/// A conversation whose `fauth` session is still open (here after a
+/// refused version 1 proof, which leaves it in the clear) cannot be
+/// mounted again with `afd = -1`: two sessions would race for its
+/// replies. Once the auth fd is closed it can.
+fn in_use() -> Result<(), String> {
+    let dir = mtpt("inuse")?;
+    let conn = exporter("--export")?;
+    let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
+    let mut f = std::fs::File::from(afd);
+    let mut challenge = [0u8; purgatorio::abi::auth::CHALLENGE];
+    f.read_exact(&mut challenge).map_err(|e| e.to_string())?;
+    let r = f.write_all(&[0u8; purgatorio::abi::auth::PROOF]);
+    want_err(r.map_err(Error::from), purgatorio::abi::auth::FAILED)?;
+    let r = purgatorio::mount(conn.as_raw_fd(), -1, &dir, MREPL, "");
+    want_err(r, purgatorio::abi::error::EINUSE)?;
+    want_err(
+        purgatorio::fauth(conn.as_raw_fd(), ""),
+        purgatorio::abi::error::EINUSE,
+    )?;
+    drop(f);
+    purgatorio::mount(conn.as_raw_fd(), -1, &dir, MREPL, "").map_err(|e| e.0)?;
+    drop(conn);
+    read_through(&dir)
 }
 
 const STREAM_DATA: &[u8] = b"the quick brown fox jumps over the lazy dog";

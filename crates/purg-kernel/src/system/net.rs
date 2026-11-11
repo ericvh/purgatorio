@@ -14,6 +14,11 @@
 //!   connection, as `listen` would. The host connects through a second
 //!   `hostfwd` with `rcmd ... mcpd` and drives an MCP session on the
 //!   kernel (`docs/mcp.md`).
+//!
+//! Both run in a copy of the boot namespace with the test keys
+//! (`/lib/test/keys`) bound on `/lib/keys`, so they trust the public test
+//! key, as the host's client does. Only these test modes do: the
+//! interactive kernel trusts no key (`docs/auth.md`, "Trust by default").
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -164,7 +169,7 @@ impl System {
         let data = prog.open(&format!("/net/tcp/{new_id}/data"), mode::ORDWR)?;
         let chan = prog.chan(data)?;
         purg_core::export::serve(
-            self.pgrp.clone(),
+            super::with_test_keys(&self.pgrp)?,
             "/",
             &chan,
             &self.kernel.platform,

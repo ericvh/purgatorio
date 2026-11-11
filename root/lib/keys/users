@@ -1,0 +1,4 @@
+# Users' keys held directly: "<user> <key>" per line, where <user> is the
+# user the key may attach as, or * for any, and <key> is 64 hex digits
+# (auth/getpk prints one). See docs/auth.md, "Setting up keys".
+# The stock system trusts no key.

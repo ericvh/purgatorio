@@ -2,7 +2,9 @@
 //! protocol (`docs/rcmd.md`), on both WASM backends. One emu runs both
 //! ends on loopback: `auxi/rstyxd` behind `styxlisten`, and `rcmd` with
 //! this test as its standard input and output, authenticated with the
-//! test key. Requires `cargo xtask build-root` first.
+//! test key, which each script trusts by binding the test keys
+//! (`/lib/test/keys`) on `/lib/keys`. Requires `cargo xtask build-root`
+//! first.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -30,11 +32,16 @@ fn root() -> PathBuf {
     root
 }
 
+/// What a script runs first: the stock root trusts no key, so both ends
+/// trust the public test key the way the corpus does.
+const TEST_KEYS: &str = "bind /lib/test/keys /lib/keys";
+
 /// Starts the listener, runs `rcmd` with `flags` and `cmd` against it,
 /// and stops the listener when `rcmd` is done.
 fn script(vm: &str, tag: &str, flags: &str, cmd: &str) -> String {
     format!(
         "load std
+{TEST_KEYS}
 d=/tmp/rcmd-{tag}-{vm}
 rm -rf $d
 mkdir -p $d
@@ -275,6 +282,7 @@ fn relayed(
     let seen = relay(l, host_dir.join("l"), flip);
     let script = format!(
         "load std
+{TEST_KEYS}
 d=/tmp/{name}
 styxlisten tcp!127.0.0.1!0 /bin/auxi/rstyxd.wasm >[2] $d/l.tmp &
 lpid=$apid
@@ -370,6 +378,7 @@ fn the_server_proves_itself() {
         assert_eq!(out, "hello from the probe root\n", "{vm}");
         let script = format!(
             "load std
+{TEST_KEYS}
 d=/tmp/rcmd-impostor-{vm}
 rm -rf $d
 mkdir -p $d
@@ -423,7 +432,11 @@ fn an_mcp_client_reaches_another_system() {
                 .arg("-r")
                 .arg(root())
                 .arg(format!("--vm={vm}"))
-                .args(["styxlisten", "tcp!127.0.0.1!0", "/bin/auxi/rstyxd.wasm"])
+                .args([
+                    "sh",
+                    "-c",
+                    &format!("{TEST_KEYS}; styxlisten tcp!127.0.0.1!0 /bin/auxi/rstyxd.wasm"),
+                ])
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -443,7 +456,7 @@ fn an_mcp_client_reaches_another_system() {
                 .arg("-r")
                 .arg(root())
                 .arg(format!("--vm={vm}"))
-                .args(["rcmd", &format!("tcp!{addr}"), "mcpd"])
+                .args(["sh", "-c", &format!("{TEST_KEYS}; rcmd tcp!{addr} mcpd")])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())

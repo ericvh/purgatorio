@@ -73,6 +73,10 @@ fn accept(dir: &str) -> Result<(), Error> {
 }
 
 fn checks() -> Result<(), Error> {
+    // The export over loopback authenticates the mount with the public
+    // test key, which only a namespace with the test keys trusts.
+    purgatorio::pctl(purgatorio::abi::pctl::FORKNS, &[])?;
+    purgatorio::bind("/lib/test/keys", "/lib/keys", MREPL)?;
     cs()?;
     println!("ok cs");
     match os_echo() {
