@@ -91,8 +91,14 @@ cat $d/logged
 file2chan $d/never {} {}
 nv=$apid
 cat $d/never >[2=1]
+# The close command runs when a client closes the file. A write is
+# answered after the close before it, which it reports.
+file2chan $d/closed {rreadone x} {cat $d/closes} {echo closed >> $d/closes}
+cl=$apid
+cat $d/closed > /dev/null
+echo sync > $d/closed
 file2chan $d/nodir/x {} {}
 echo status $status
 {rread nothing} >[2=1] | cat
-kill $mem $info $log $nv
+kill $mem $info $log $nv $cl
 rm -rf $d

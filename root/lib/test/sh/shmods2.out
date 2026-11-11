@@ -51,5 +51,6 @@ status write error
 one
 two
 cat: /tmp/shmods2/never: invalid read
+closed
 status cannot make chan
 rread: cannot find tag
