@@ -187,6 +187,14 @@ jobs:
           cargo clippy -p purg-probe --target aarch64-unknown-none --profile probe -- -D warnings
       - name: xtask probe
         run: cargo xtask probe
+      # Each run's console with the time every line arrived (#147).
+      - name: keep the consoles of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-times-probe-${{ matrix.os }}
+          path: target/qemu-times/
+          if-no-files-found: ignore
 
   kernel:
     name: purg-kernel in QEMU aarch64 (${{ matrix.os }})
@@ -228,6 +236,14 @@ jobs:
         env:
           KERNEL_JOBS: 4
         run: cargo xtask kernel
+      # Each run's console with the time every line arrived (#147).
+      - name: keep the consoles of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-times-kernel-${{ matrix.os }}
+          path: target/qemu-times/
+          if-no-files-found: ignore
       - name: size report (docs/footprint.md)
         run: cargo xtask size
 
