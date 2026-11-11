@@ -323,3 +323,105 @@ fn idle_gate_queue_push_reaches_an_idle_cpu() {
         pusher.join().unwrap();
     });
 }
+
+/// A parker for the wait queue models: each thread has a permit under a
+/// mutex and waits for it on a condition variable, so a wakeup that is
+/// missed leaves the sleeper blocked for good, which loom reports.
+struct Permits {
+    me: usize,
+    all: Arc<Vec<(loom::sync::Mutex<bool>, loom::sync::Condvar)>>,
+}
+
+impl Permits {
+    fn new(threads: usize) -> Vec<Permits> {
+        let all = Arc::new(
+            (0..threads)
+                .map(|_| (loom::sync::Mutex::new(false), loom::sync::Condvar::new()))
+                .collect::<Vec<_>>(),
+        );
+        (0..threads)
+            .map(|me| Permits {
+                me,
+                all: all.clone(),
+            })
+            .collect()
+    }
+}
+
+impl purg_platform::waitq::Parker for Permits {
+    fn current(&self) -> usize {
+        self.me
+    }
+    fn park(&self, _deadline_ns: Option<u64>) -> bool {
+        let (m, cv) = &self.all[self.me];
+        let mut permit = m.lock().unwrap();
+        while !*permit {
+            permit = cv.wait(permit).unwrap();
+        }
+        *permit = false;
+        false
+    }
+    fn unpark(&self, id: usize) {
+        let (m, cv) = &self.all[id];
+        *m.lock().unwrap() = true;
+        cv.notify_one();
+    }
+}
+
+/// A sleeper on a wait queue is never left parked by a waker that
+/// changes the state and then wakes the queue, whichever comes first.
+#[test]
+fn waitq_wakeup_is_never_missed() {
+    use purg_platform::waitq::WaitQueue;
+    loom::model(|| {
+        let q = Arc::new(WaitQueue::new());
+        let ready = Arc::new(AtomicBool::new(false));
+        let mut ps = Permits::new(2);
+        let (waker_p, sleeper_p) = (ps.pop().unwrap(), ps.pop().unwrap());
+        let waker = {
+            let (q, ready) = (q.clone(), ready.clone());
+            thread::spawn(move || {
+                ready.store(true, Ordering::Release);
+                q.wake(&waker_p);
+            })
+        };
+        while !ready.load(Ordering::Acquire) {
+            q.wait(&sleeper_p, &mut || ready.load(Ordering::Acquire), None);
+        }
+        waker.join().unwrap();
+    });
+}
+
+/// Two sleepers and two changes: each waker wakes the whole queue, a
+/// sleeper may be woken for the other's change (and by a permit left
+/// from a wake that found it already awake), and both still finish.
+#[test]
+fn waitq_two_sleepers_two_wakers() {
+    use loom::sync::atomic::AtomicUsize;
+    use purg_platform::waitq::WaitQueue;
+    loom::model(|| {
+        let q = Arc::new(WaitQueue::new());
+        let n = Arc::new(AtomicUsize::new(0));
+        let mut ps = Permits::new(3);
+        let main_p = ps.pop().unwrap();
+        let sleepers: Vec<_> = ps
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let (q, n) = (q.clone(), n.clone());
+                thread::spawn(move || {
+                    while n.load(Ordering::Acquire) <= i {
+                        q.wait(&p, &mut || n.load(Ordering::Acquire) > i, None);
+                    }
+                })
+            })
+            .collect();
+        for _ in 0..2 {
+            n.fetch_add(1, Ordering::AcqRel);
+            q.wake(&main_p);
+        }
+        for s in sleepers {
+            s.join().unwrap();
+        }
+    });
+}

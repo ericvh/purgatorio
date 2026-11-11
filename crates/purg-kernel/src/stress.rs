@@ -333,8 +333,9 @@ impl System {
             Err(format!("stress: the runs left {grew} bytes of heap in use"))
         } else {
             Ok(format!(
-                "stress: {runs} runs in {secs} s, {bad} failed, nothing left behind; switches by cpu {}",
-                runs_by_cpu.join(" ")
+                "stress: {runs} runs in {secs} s, {bad} failed, nothing left behind; switches by cpu {}; {} sleeps ended by the safety timeout",
+                runs_by_cpu.join(" "),
+                purg_platform::sync::rescued()
             ))
         };
         self.verdict(&mut failed, v);

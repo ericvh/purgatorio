@@ -52,17 +52,29 @@
 //! With several CPUs a holder keeps running while its waiters block on
 //! other CPUs.
 //!
+//! # Sleeping
+//!
+//! A thread that sleeps on a `Rendez` parks ([`Sched::park`]): it leaves
+//! the run queue until [`Sched::unpark`] or its deadline, which CPU 0's
+//! tick checks. Park and unpark work as a permit, all under the table
+//! lock: an unpark of a thread that is not parked makes its next park
+//! return at once, so a wakeup between a sleeper's last look at its
+//! condition and its park is not lost (`purg_platform::waitq` has the
+//! protocol and its loom models). A thread unparked while its CPU is
+//! still switching away from it is requeued by that switch's second half.
+//!
 //! # Idle
 //!
-//! There is no blocked state; a sleeping thread stays runnable and polls
-//! its condition, calling [`Sched::block`] when it is false. When more
+//! A waiter for a contended facade lock does not park: it stays runnable
+//! and polls the lock, calling [`Sched::block`] when it is held. When more
 //! threads have blocked in a row, with no interrupt or [`Sched::wakeup`]
 //! in between, than there are threads that could still look (one per CPU,
 //! and those ready), nothing can change until an interrupt or another
 //! CPU's wakeup, so the blocker waits for one with `wfi`. [`IdleGate`]
 //! makes that decision race-free across CPUs: a wakeup sends an IPI to
-//! every CPU that is waiting or about to. The 100 Hz tick on every CPU
-//! bounds a wait, so `tsleep` deadlines still pass on time.
+//! every CPU that is waiting or about to. A CPU with nothing ready at all
+//! runs its idle thread, which waits the same way. The 100 Hz tick on
+//! every CPU bounds a wait.
 //!
 //! # Stacks
 //!
@@ -161,6 +173,8 @@ pub enum Left {
     Block,
     /// The timer preempted it.
     Preempt,
+    /// It parked: it sleeps until it is unparked or its deadline passes.
+    Park,
 }
 
 /// One thread, as [`Scheduler::dump`] reports it.
@@ -171,6 +185,8 @@ pub struct ThreadInfo {
     /// The CPU it is running on, or `None` if it is waiting to run.
     pub cpu: Option<usize>,
     pub left: Left,
+    /// It is parked: asleep, and not on the run queue.
+    pub parked: bool,
     /// Its preemption-disable count: the facade locks it holds.
     pub preempt: u32,
     /// Times it has been switched to.
@@ -197,6 +213,16 @@ struct Thread {
     idle_of: Option<usize>,
     left: Left,
     runs: u64,
+    /// Its slot in the table, which names it for [`Sched::unpark`].
+    id: usize,
+    /// Asleep and off the run queue, until an unpark or `deadline`.
+    parked: bool,
+    /// Unparked while it was not parked: its next park returns at once.
+    permit: bool,
+    /// When a parked thread wakes by itself, in monotonic ns; 0 for never.
+    deadline: u64,
+    /// Its last park ended at its deadline, not by an unpark.
+    timed_out: AtomicBool,
 }
 
 impl Thread {
@@ -225,6 +251,11 @@ impl Thread {
             idle_of: None,
             left: Left::New,
             runs: 0,
+            id: 0,
+            parked: false,
+            permit: false,
+            deadline: 0,
+            timed_out: AtomicBool::new(false),
         }
     }
 
@@ -248,6 +279,9 @@ struct Outgoing {
     /// It can run now (it was preempted or yielded, rather than blocked),
     /// so a waiting CPU should be interrupted to take it.
     runnable: bool,
+    /// It parked. It goes back on the queue only if it has been unparked
+    /// since.
+    parked: bool,
 }
 
 const NONE: usize = usize::MAX;
@@ -262,6 +296,8 @@ struct Threads {
     /// What each CPU last switched away from, for [`Scheduler::finish`].
     outgoing: [Option<Outgoing>; MAX_CPUS],
     ready: VecDeque<usize>,
+    /// Parked threads with a deadline, so a tick with none scans nothing.
+    timed: usize,
     /// Number of switches, for tests and `/dev/sysstat`-like reporting.
     switches: u64,
     /// Switches to a thread other than the idle thread, by CPU.
@@ -287,17 +323,45 @@ impl Threads {
     }
 
     /// Puts `th` in a free slot and returns its id.
-    fn insert(&mut self, th: Box<Thread>) -> usize {
+    fn insert(&mut self, mut th: Box<Thread>) -> usize {
         match self.all.iter().position(Option::is_none) {
             Some(i) => {
+                th.id = i;
                 self.all[i] = Some(th);
                 i
             }
             None => {
+                th.id = self.all.len();
                 self.all.push(Some(th));
                 self.all.len() - 1
             }
         }
+    }
+
+    /// Lets thread `id` run again if it is parked, or through its next
+    /// park if it is not. Returns whether it went on the run queue.
+    fn unpark(&mut self, id: usize) -> bool {
+        let switching = self.outgoing.iter().flatten().any(|o| o.id == id);
+        let Some(Some(th)) = self.all.get_mut(id) else {
+            return false;
+        };
+        if th.done || th.idle_of.is_some() {
+            return false;
+        }
+        if !th.parked {
+            th.permit = true;
+            return false;
+        }
+        th.parked = false;
+        if th.deadline != 0 {
+            th.deadline = 0;
+            self.timed -= 1;
+        }
+        // A CPU still switching away from it requeues it in `finish`.
+        if !switching {
+            self.ready.push_back(id);
+        }
+        !switching
     }
 
     /// Every thread but the idle threads.
@@ -428,6 +492,7 @@ impl Scheduler {
                 idle: [NONE; MAX_CPUS],
                 outgoing: [None; MAX_CPUS],
                 ready: VecDeque::new(),
+                timed: 0,
                 switches: 0,
                 cpu_runs: [0; MAX_CPUS],
                 peak: 0,
@@ -628,16 +693,35 @@ impl Scheduler {
     /// thread, if the running thread has exited), and returns once the
     /// running thread runs again. IRQs must be masked.
     fn switch(&self, how: Left) {
+        self.switch_until(how, None);
+    }
+
+    /// [`Scheduler::switch`]; with [`Left::Park`] the running thread
+    /// leaves the run queue until it is unparked or `deadline` passes,
+    /// unless it holds a permit, which this uses up instead.
+    fn switch_until(&self, how: Left, deadline: Option<u64>) {
         let cpu = cpu::id();
         let (from, to) = {
             let mut t = self.threads.lock();
             let cur = t.current[cpu];
             let done = t.current_mut(cpu).done;
+            let park = how == Left::Park && !done;
+            if park && core::mem::take(&mut t.current_mut(cpu).permit) {
+                return;
+            }
             let next = match t.ready.pop_front() {
                 Some(n) => n,
-                None if done => t.idle[cpu],
+                None if done || park => t.idle[cpu],
                 None => return,
             };
+            if park {
+                let th = t.current_mut(cpu);
+                th.parked = true;
+                th.deadline = deadline.map_or(0, |d| d.max(1));
+                if deadline.is_some() {
+                    t.timed += 1;
+                }
+            }
             let th = t.current_mut(cpu);
             if let Some(stack) = &th.stack
                 && stack.first_chunk() != Some(&[PAINT; 8])
@@ -650,6 +734,7 @@ impl Scheduler {
                 id: cur,
                 done,
                 runnable: how != Left::Block,
+                parked: park,
             });
             t.current[cpu] = next;
             t.switches += 1;
@@ -694,13 +779,16 @@ impl Scheduler {
                     (th, false)
                 }
                 Some(o) => {
-                    let idle = t.all[o.id].as_ref().is_some_and(|th| th.idle_of.is_some());
+                    let th = t.all[o.id].as_ref();
+                    // An idle thread is never queued, nor is a thread
+                    // that parked and is parked still.
+                    let idle = th.is_some_and(|th| th.idle_of.is_some() || (o.parked && th.parked));
                     if !idle {
                         t.ready.push_back(o.id);
                     }
                     // A thread that blocked would only look at its
                     // condition again on the CPU it wakes, and block.
-                    (None, !idle && o.runnable)
+                    (None, !idle && (o.runnable || o.parked))
                 }
             }
         };
@@ -724,6 +812,36 @@ impl Scheduler {
             return;
         }
         self.switch(Left::Preempt);
+    }
+
+    /// Unparks the threads whose deadlines have passed. CPU 0's tick
+    /// calls this, with IRQs masked, before it preempts.
+    pub fn expire(&self) {
+        let now = self.monotonic_ns();
+        let woke = {
+            let mut t = self.threads.lock();
+            if t.timed == 0 {
+                return;
+            }
+            let due: Vec<usize> = t
+                .all
+                .iter()
+                .flatten()
+                .filter(|th| th.parked && th.deadline != 0 && th.deadline <= now)
+                .map(|th| th.id)
+                .collect();
+            let mut woke = false;
+            for id in due {
+                if let Some(th) = &t.all[id] {
+                    th.timed_out.store(true, Ordering::Relaxed);
+                }
+                woke |= t.unpark(id);
+            }
+            woke
+        };
+        if woke {
+            self.kick(self.gate.waiting());
+        }
     }
 
     /// An event only this CPU can have missed, such as its own timer
@@ -787,6 +905,7 @@ impl Scheduler {
                 pid: th.pid,
                 cpu: t.cpu_of(id),
                 left: th.left,
+                parked: th.parked,
                 preempt: th.preempt.load(Ordering::Relaxed),
                 runs: th.runs,
             })
@@ -870,6 +989,41 @@ impl Sched for Scheduler {
 
     fn monotonic_ns(&self) -> u64 {
         timer::ticks_to_ns(timer::counter())
+    }
+
+    fn can_park(&self) -> bool {
+        true
+    }
+
+    fn current(&self) -> usize {
+        running().map_or(0, |th| th.id)
+    }
+
+    fn park(&self, deadline_ns: Option<u64>) -> bool {
+        let me = running();
+        if let Some(th) = me {
+            th.timed_out.store(false, Ordering::Relaxed);
+        }
+        let daif = irq_save();
+        self.switch_until(Left::Park, deadline_ns);
+        irq_restore(daif);
+        me.is_some_and(|th| th.timed_out.load(Ordering::Relaxed))
+    }
+
+    fn unpark(&self, id: usize) {
+        let _g = IrqGuard::new();
+        let queued = self.threads.lock().unpark(id);
+        if queued {
+            self.kick(self.gate.waiting());
+        }
+    }
+
+    fn irq_mask(&self) -> usize {
+        irq_save() as usize
+    }
+
+    fn irq_unmask(&self, saved: usize) {
+        irq_restore(saved as u64);
     }
 
     fn note(&self) -> Option<Arc<Note>> {

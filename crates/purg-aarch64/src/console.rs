@@ -8,7 +8,7 @@
 //! programs take no console input (the probe). The ring is shared with the interrupt
 //! handler, so it is a plain spinlock taken with IRQs masked, never a
 //! `purg_platform::sync` lock. Readers also drain the FIFO themselves, so
-//! input still arrives (at the tick rate) if the DTB names no interrupt.
+//! input still arrives (once a second, at the sleep safety period) if the DTB names no interrupt.
 //!
 //! Input is raw: the bytes the UART received, CR for Enter and no end of
 //! file. The console asks for the line discipline
