@@ -1,8 +1,12 @@
-//! lethe [-abc] [-k keyfile] [-u user] addr mtpt [path]: attach the Lethe
-//! tree served at `addr` (`docs/lethe.md`) on `mtpt`, in the style of
-//! `mount`. `path` is the subtree to attach (default `/`); the ticket is
-//! limited to it. The key is the authinfo `keyfile` if given, else
+//! lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]: attach the
+//! Lethe tree served at `addr` (`docs/lethe.md`) on `mtpt`, in the style
+//! of `mount`. `path` is the subtree to attach (default `/`); the ticket
+//! is limited to it. The key is the authinfo `keyfile` if given, else
 //! `/usr/<user>/keyring/default`, `/usr/<user>/key`, then the test key.
+//!
+//! `-A` asks for no authentication and no encryption, as `mount -A`
+//! does: requests go in the clear to a server started with `-A`, which
+//! answers them as the user `none`. It takes no key and no user.
 //!
 //! The connection is made by `#λ`, which keeps the key to renew its
 //! ticket and dials again on its own when a connection fails.
@@ -14,7 +18,7 @@ use purgatorio::arg::Arg;
 use purgatorio::auth::{self, fmt};
 use purgatorio::{Context, Error, dial};
 
-const USAGE: &str = "usage: lethe [-abc] [-k keyfile] [-u user] addr mtpt [path]";
+const USAGE: &str = "usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]";
 
 /// The seed and certificate to authenticate with.
 fn key(keyfile: Option<&str>, user: &str) -> Result<([u8; 32], Option<fmt::cert::Cert>), Error> {
@@ -59,30 +63,38 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let (mut order, mut create) = (mount::MREPL, 0);
     let (mut keyfile, mut user) = (None, None);
+    let mut noauth = false;
     while let Some(c) = arg.opt() {
         match c {
             'a' => order = mount::MAFTER,
             'b' => order = mount::MBEFORE,
             'c' => create = mount::MCREATE,
+            'A' => noauth = true,
             'k' => keyfile = Some(arg.earg()?),
             'u' => user = Some(arg.earg()?),
             _ => return Err(arg.usage()),
         }
     }
     let rest = arg.argv();
-    if rest.len() < 2 || rest.len() > 3 {
+    // -A is a mode of its own: a key or a user with it is a mistake.
+    if rest.len() < 2 || rest.len() > 3 || (noauth && (keyfile.is_some() || user.is_some())) {
         return Err(Error::from(USAGE));
     }
-    let user = user.unwrap_or_else(auth::user);
-    let (seed, cert) = key(keyfile.as_deref(), &user)?;
-    let addr = address(&rest[0])?;
-    let mut settings = format!(
-        "dial {addr}\nuser {user}\nkey {}\n",
-        fmt::hex::encode(&seed)
-    );
-    if let Some(c) = cert {
-        settings.push_str(&format!("cert {}\n", c.encode()));
-    }
+    let mut settings = if noauth {
+        format!("dial {}\nnoauth\n", address(&rest[0])?)
+    } else {
+        let user = user.unwrap_or_else(auth::user);
+        let (seed, cert) = key(keyfile.as_deref(), &user)?;
+        let mut s = format!(
+            "dial {}\nuser {user}\nkey {}\n",
+            address(&rest[0])?,
+            fmt::hex::encode(&seed)
+        );
+        if let Some(c) = cert {
+            s.push_str(&format!("cert {}\n", c.encode()));
+        }
+        s
+    };
     if let Some(p) = rest.get(2) {
         settings.push_str(&format!("path {p}\n"));
     }
