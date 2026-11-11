@@ -1,6 +1,6 @@
 [package]
 name = "purg-aarch64"
-description = "aarch64 bare-metal support shared by purg-kernel and purg-probe: boot, DTB, GIC, timer, exceptions, MMU, PL011, scheduler, virtio-net and smoltcp"
+description = "aarch64 bare-metal support shared by purg-kernel and purg-probe: boot, DTB, GIC, timer, exceptions, MMU, PL011, scheduler, virtio-net and smoltcp, virtio-9p and virtio-blk"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,13 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["net", "p9"]
+default = ["net", "p9", "blk"]
 # The virtio-net driver and the smoltcp stack behind `#I`.
 net = ["dep:smoltcp"]
 # The virtio-9p transport.
 p9 = []
+# The virtio-blk driver.
+blk = []
 
 [dependencies]
 purg-abi.workspace = true

@@ -3,7 +3,7 @@
 //! GIC, the timer and interrupt dispatch, exception vectors, the MMU, the
 //! PL011 console, the PL031 clock, a preemptive scheduler, the heap, a
 //! `purg_platform` `Platform`, virtio-mmio, a smoltcp network stack for
-//! `#I`, and a virtio-9p transport.
+//! `#I`, a virtio-9p transport and a virtio-blk driver.
 //!
 //! Pure code (the [`dtb`] parser, the [`mmu`] table builder and the
 //! [`board`] decisions) builds and is unit-tested on the host. Everything
@@ -18,6 +18,8 @@ pub mod board;
 pub mod dtb;
 pub mod mmu;
 
+#[cfg(all(target_arch = "aarch64", target_os = "none", feature = "blk"))]
+pub mod blk;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod boot;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
@@ -51,6 +53,6 @@ pub mod timer;
 #[cfg(all(
     target_arch = "aarch64",
     target_os = "none",
-    any(feature = "net", feature = "p9")
+    any(feature = "net", feature = "p9", feature = "blk")
 ))]
 pub mod virtio;
