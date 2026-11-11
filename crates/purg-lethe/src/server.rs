@@ -2,11 +2,15 @@
 //! (`docs/lethe.md`). [`Server::handle`] answers a frame from a
 //! [`Tree`], the trust files and the clock; the caller moves frames on and
 //! off the wire.
+//!
+//! A server answers sealed requests from clients it gave a ticket. With
+//! [`Server::clear`] set (`lethed -A`) it also answers clear requests,
+//! which carry no ticket and are not sealed, as the user `none`.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use purg_abi::auth::{FAILED, KIND_CERT, KIND_KEY};
+use purg_abi::auth::{FAILED, KIND_CERT, KIND_KEY, NO_TRUST, NOT_REQUIRED, REQUIRED};
 use purg_abi::error::{EISDIR, ENOTDIR, ENOTIMPL, EPERM, ESHORTSTAT};
 use purg_auth::cert::Cert;
 use purg_auth::proof::{Policy, check_cert};
@@ -17,7 +21,7 @@ use crate::crypto::{self, Keys};
 use crate::error::{MESSAGE, REQUEST_EXPIRED, TICKET_EXPIRED};
 use crate::msg::{self, Frame, Grant, Msg, Op, Reply, Request, Tauth, Undecoded};
 use crate::ticket::{self, Ticket, TicketKey};
-use crate::{MAX_COUNT, NONCE, path, rights};
+use crate::{MAX_COUNT, NONCE, NONE, path, rights};
 
 /// The tree a server serves. Paths are valid Lethe paths. Errors are
 /// Inferno strings. Permission checks are the server's, from the modes
@@ -96,6 +100,29 @@ pub enum Event {
 pub struct Server {
     pub config: Config,
     pub keys: Vec<TicketKey>,
+    /// Whether clear requests (`Tclear`) are answered: `lethed -A`. Off
+    /// by default; they are then refused with `authentication required`.
+    pub clear: bool,
+}
+
+/// Who a request is answered for.
+struct Who<'a> {
+    uname: &'a str,
+    rights: u8,
+    prefix: &'a str,
+    /// Whether the user can own a file. A clear request never does: it
+    /// gets the other bits whatever the tree says the owner is called.
+    owner: bool,
+}
+
+impl Who<'_> {
+    fn allowed(&self, d: &Dir, bit: u32) -> bool {
+        if self.owner {
+            allowed(self.uname, d, bit)
+        } else {
+            d.mode & bit != 0
+        }
+    }
 }
 
 /// Whether `user` may access `d` for `bit` (4 read, 1 search): the
@@ -110,7 +137,14 @@ impl Server {
         Server {
             config,
             keys: alloc::vec![TicketKey::new(key)],
+            clear: false,
         }
+    }
+
+    /// The server with clear requests allowed or not.
+    pub fn with_clear(mut self, clear: bool) -> Server {
+        self.clear = clear;
+        self
     }
 
     /// Answers one whole frame.
@@ -134,7 +168,58 @@ impl Server {
                 Ok(r) => r,
                 Err(e) => refuse(e),
             },
+            // The clear mode is asked for on both ends: a server that
+            // was not told to allow it says so and reads nothing.
+            Frame::Tclear { .. } if !self.clear => refuse(REQUIRED),
+            Frame::Tclear { request } => self.clear_request(tree, id, request),
             _ => refuse(MESSAGE),
+        }
+    }
+
+    /// Answers a clear request as `none`, for reads anywhere in the tree
+    /// that the other bits allow.
+    fn clear_request(&self, tree: &dyn Tree, id: u32, request: &[u8]) -> (Vec<u8>, Event) {
+        let who = Who {
+            uname: NONE,
+            rights: self.config.allow & rights::READ,
+            prefix: "/",
+            owner: false,
+        };
+        let (reply, op, p) = self.decoded(tree, &who, Op::decode(request).as_ref());
+        let (bytes, error) = match reply {
+            Ok(r) => (r, None),
+            Err(e) => (Reply::Error(&e).encode(), Some(e)),
+        };
+        (
+            msg::rclear(id, &bytes),
+            Event::Answered {
+                uname: String::from(NONE),
+                op,
+                path: p,
+                error,
+            },
+        )
+    }
+
+    /// The reply to a request that decoded or did not, with the op's name
+    /// and path for the log.
+    fn decoded(
+        &self,
+        tree: &dyn Tree,
+        who: &Who<'_>,
+        op: Result<&Op<'_>, &Undecoded>,
+    ) -> (Result<Vec<u8>, String>, &'static str, String) {
+        match op {
+            Ok(op) => (
+                self.answer(tree, who, op),
+                op.name(),
+                String::from(op.path()),
+            ),
+            Err(Undecoded::Write(_)) => (Err(String::from(EPERM)), "write", String::new()),
+            Err(Undecoded::Unsupported(_)) => {
+                (Err(String::from(ENOTIMPL)), "unknown", String::new())
+            }
+            Err(Undecoded::Bad) => (Err(String::from(MESSAGE)), "bad", String::new()),
         }
     }
 
@@ -154,11 +239,13 @@ impl Server {
             revoked: trust.revoked.as_deref(),
             now: env.now,
         };
-        // There is no unauthenticated mode: no key, nobody, refused as
-        // an export that trusts nothing refuses (`docs/auth.md`, "Trust
-        // by default").
+        // No key, nobody: refused as an export that trusts nothing
+        // refuses (`docs/auth.md`, "Trust by default"). A server that
+        // answers clear requests says so instead, as an export with `-A`
+        // answers a `Tauth`; the client decides what to do, and ours
+        // never falls back by itself.
         if !policy.requires_auth() {
-            return Err(purg_abi::auth::NO_TRUST);
+            return Err(if self.clear { NOT_REQUIRED } else { NO_TRUST });
         }
         let signed = t.message();
         match t.kind {
@@ -247,18 +334,14 @@ impl Server {
         if time.is_none_or(|t| t.abs_diff(env.now) > self.config.window) {
             return Err(REQUEST_EXPIRED);
         }
-        let (reply, op, p) = match &decoded {
-            Ok(req) => (
-                self.answer(tree, &tk, &req.op),
-                req.op.name(),
-                String::from(req.op.path()),
-            ),
-            Err((_, Undecoded::Write(_))) => (Err(String::from(EPERM)), "write", String::new()),
-            Err((_, Undecoded::Unsupported(_))) => {
-                (Err(String::from(ENOTIMPL)), "unknown", String::new())
-            }
-            Err((_, Undecoded::Bad)) => (Err(String::from(MESSAGE)), "bad", String::new()),
+        let who = Who {
+            uname: &tk.uname,
+            rights: tk.rights,
+            prefix: &tk.prefix,
+            owner: true,
         };
+        let op = decoded.as_ref().map(|r| &r.op).map_err(|(_, u)| u);
+        let (reply, op, p) = self.decoded(tree, &who, op);
         let (bytes, error) = match reply {
             Ok(r) => (r, None),
             Err(e) => (Reply::Error(&e).encode(), Some(e)),
@@ -277,13 +360,13 @@ impl Server {
         ))
     }
 
-    /// Checks the ticket's rights and prefix and the tree's permissions
+    /// Checks the requester's rights and prefix and the tree's permissions
     /// for `path`: search on every directory above it.
-    fn reach(&self, tree: &dyn Tree, tk: &Ticket, p: &str) -> Result<Dir, String> {
+    fn reach(&self, tree: &dyn Tree, tk: &Who<'_>, p: &str) -> Result<Dir, String> {
         if !path::valid(p) {
             return Err(String::from(purg_abi::error::EFILENAME));
         }
-        if tk.rights & rights::READ == 0 || !path::within(p, &tk.prefix) {
+        if tk.rights & rights::READ == 0 || !path::within(p, tk.prefix) {
             return Err(String::from(EPERM));
         }
         for a in path::ancestors(p) {
@@ -291,7 +374,7 @@ impl Server {
             if d.mode & DMDIR == 0 {
                 return Err(String::from(ENOTDIR));
             }
-            if !allowed(&tk.uname, &d, 1) {
+            if !tk.allowed(&d, 1) {
                 return Err(String::from(EPERM));
             }
         }
@@ -299,7 +382,7 @@ impl Server {
     }
 
     /// The encoded reply to `op`, or its error.
-    fn answer(&self, tree: &dyn Tree, tk: &Ticket, op: &Op<'_>) -> Result<Vec<u8>, String> {
+    fn answer(&self, tree: &dyn Tree, tk: &Who<'_>, op: &Op<'_>) -> Result<Vec<u8>, String> {
         let d = self.reach(tree, tk, op.path())?;
         let mut data = Vec::new();
         match *op {
@@ -313,7 +396,7 @@ impl Server {
                 if d.mode & DMDIR != 0 {
                     return Err(String::from(EISDIR));
                 }
-                if !allowed(&tk.uname, &d, 4) {
+                if !tk.allowed(&d, 4) {
                     return Err(String::from(EPERM));
                 }
                 if have == Some(d.qid.vers) {
@@ -342,7 +425,7 @@ impl Server {
                 if d.mode & DMDIR == 0 {
                     return Err(String::from(ENOTDIR));
                 }
-                if !allowed(&tk.uname, &d, 4) {
+                if !tk.allowed(&d, 4) {
                     return Err(String::from(EPERM));
                 }
                 let (qid, list) = tree.list(path)?;

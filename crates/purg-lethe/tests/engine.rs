@@ -611,3 +611,287 @@ fn reserved_ops() {
         Err(client::Failure::Clear(String::from(error::REQUEST_EXPIRED)))
     );
 }
+
+fn clear(rig: &mut Rig<'_>, op: &Op<'_>) -> Result<Owned, CallError> {
+    client::clear_call(rig, 7, op)
+}
+
+fn clear_read(rig: &mut Rig<'_>, path: &str, have: Option<u32>) -> Result<Owned, CallError> {
+    clear(
+        rig,
+        &Op::Read {
+            path,
+            offset: 0,
+            count: 8192,
+            have,
+        },
+    )
+}
+
+/// A server with `-A` and no trust: clear requests are answered as
+/// `none`, and nobody gets a ticket.
+#[test]
+fn clear_requests() {
+    let server = Server::new(Config::default(), [9; 32]).with_clear(true);
+    let t = tree();
+    t.add(
+        "/nones",
+        0o600,
+        "none",
+        Some(b"owned by a user called none"),
+    );
+    let now = Cell::new(T0);
+    let mut r = rig(&server, &t, &now, Trust::default());
+    let Ok(Owned::Stat(d)) = clear(&mut r, &Op::Stat { path: "/hello" }) else {
+        panic!()
+    };
+    assert_eq!((d.name.as_str(), d.length), ("hello", 13));
+    assert_eq!(
+        r.events[0],
+        Event::Answered {
+            uname: String::from("none"),
+            op: "stat",
+            path: String::from("/hello"),
+            error: None,
+        }
+    );
+    // The request and the reply are plain bytes: no ticket, no seal.
+    let sent = r.sent.last().unwrap();
+    assert_eq!(sent[5], purg_lethe::kind::TCLEAR);
+    assert_eq!(&sent[10..], Op::Stat { path: "/hello" }.encode());
+    let Ok(Owned::Read { qid, data, .. }) = clear_read(&mut r, "/hello", None) else {
+        panic!()
+    };
+    assert_eq!(data, b"hello, lethe\n");
+    let last = r.sent.last().unwrap().clone();
+    let reply = r.send(&last);
+    assert_eq!(reply[5], purg_lethe::kind::RCLEAR);
+    assert!(String::from_utf8_lossy(&reply).contains("hello, lethe"));
+    // Conditional reads and versions, as in the sealed form.
+    let Ok(Owned::Read {
+        unchanged, data, ..
+    }) = clear_read(&mut r, "/hello", Some(qid.vers))
+    else {
+        panic!()
+    };
+    assert!(unchanged && data.is_empty());
+    t.change("/hello", b"changed\n");
+    let Ok(Owned::Read {
+        unchanged, data, ..
+    }) = clear_read(&mut r, "/hello", Some(qid.vers))
+    else {
+        panic!()
+    };
+    assert!(!unchanged);
+    assert_eq!(data, b"changed\n");
+    // Paging.
+    let mut cookie = Vec::new();
+    let mut names = Vec::new();
+    loop {
+        let op = Op::Readdir {
+            path: "/many",
+            cookie: &cookie,
+            count: 1000,
+        };
+        let Ok(Owned::Readdir {
+            cookie: next,
+            entries,
+            ..
+        }) = clear(&mut r, &op)
+        else {
+            panic!()
+        };
+        names.extend(entries.into_iter().map(|d| d.name));
+        if next.is_empty() {
+            break;
+        }
+        cookie = next;
+    }
+    assert_eq!(names.len(), 200);
+    assert_eq!(names[199], "f199");
+    // `none` gets the other bits, never an owner's, whatever the owner
+    // is called; and needs search on every directory above.
+    for p in ["/secret", "/mine", "/nones"] {
+        assert_eq!(clear_read(&mut r, p, None), remote("permission denied"));
+    }
+    assert_eq!(
+        clear(&mut r, &Op::Stat { path: "/locked/x" }),
+        remote("permission denied")
+    );
+    assert_eq!(
+        clear(
+            &mut r,
+            &Op::Readdir {
+                path: "/locked",
+                cookie: b"",
+                count: 100
+            }
+        ),
+        remote("permission denied")
+    );
+    // The same file errors, and the same path rules.
+    assert_eq!(
+        clear(&mut r, &Op::Stat { path: "/nope" }),
+        remote("file does not exist")
+    );
+    assert_eq!(
+        clear_read(&mut r, "/lib", None),
+        remote("file is a directory")
+    );
+    for p in ["/a/../b", "/..", "lib", "/lib/", ""] {
+        assert_eq!(
+            clear(&mut r, &Op::Stat { path: p }),
+            remote("file name syntax"),
+            "{p:?}"
+        );
+    }
+    // Reserved ops and bodies that do not decode.
+    for (body, want) in [
+        (&[0x20u8][..], "permission denied"),
+        (&[0x40], "not implemented"),
+        (&[0x16], "not implemented"),
+        (&[], error::MESSAGE),
+        (&[0x10, 9], error::MESSAGE),
+    ] {
+        let frame = Msg {
+            id: 3,
+            frame: Frame::Tclear { request: body },
+        }
+        .encode();
+        let reply = r.send(&frame);
+        let Frame::Rclear { reply } = Msg::decode(&reply).unwrap().frame else {
+            panic!("{body:?}")
+        };
+        assert_eq!(
+            purg_lethe::msg::Reply::decode(reply),
+            Ok(purg_lethe::msg::Reply::Error(want)),
+            "{body:?}"
+        );
+    }
+    // A server that allows no reads allows none in the clear either.
+    let cfg = Config {
+        allow: 0,
+        ..Config::default()
+    };
+    let closed = Server::new(cfg, [9; 32]).with_clear(true);
+    let mut r = rig(&closed, &t, &now, Trust::default());
+    assert_eq!(
+        clear_read(&mut r, "/hello", None),
+        remote("permission denied")
+    );
+}
+
+/// Neither end falls back: each mismatch is an error with a name.
+#[test]
+fn clear_and_sealed_do_not_mix() {
+    let t = tree();
+    let now = Cell::new(T0);
+    // A clear request to a server without `-A`, whatever it trusts.
+    let sealed_only = Server::new(Config::default(), [9; 32]);
+    for trust in [direct(), Trust::default()] {
+        let mut r = rig(&sealed_only, &t, &now, trust);
+        assert_eq!(
+            clear_read(&mut r, "/hello", None),
+            remote("authentication required")
+        );
+        assert_eq!(error::AUTH_REQUIRED, "authentication required");
+        assert_eq!(r.events, [Event::Refused("authentication required")]);
+        // Refused before the request is looked at.
+        let junk = Msg {
+            id: 1,
+            frame: Frame::Tclear { request: &[0xff] },
+        }
+        .encode();
+        let reply = r.send(&junk);
+        assert!(matches!(
+            Msg::decode(&reply).unwrap().frame,
+            Frame::Rerror {
+                ename: "authentication required"
+            }
+        ));
+    }
+    // A sealed client and a server with `-A` that trusts no key: no
+    // ticket, and the client does not go on in the clear.
+    let clear_only = Server::new(Config::default(), [9; 32]).with_clear(true);
+    let mut r = rig(&clear_only, &t, &now, Trust::default());
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    assert_eq!(
+        read(&mut c, &mut r, "/hello", None),
+        remote("authentication not required")
+    );
+    assert_eq!(error::AUTH_NOT_REQUIRED, "authentication not required");
+    assert_eq!(r.sent.len(), 1);
+    assert_eq!(r.sent[0][5], purg_lethe::kind::TAUTH);
+    assert!(c.session.is_none());
+    // A clear client takes no sealed reply, a sealed client no clear one.
+    let mut r = rig(&clear_only, &t, &now, direct());
+    assert!(read(&mut c, &mut r, "/hello", None).is_ok());
+    let s = c.session.clone().unwrap();
+    let op = Op::Stat { path: "/hello" };
+    let (sealed, sealed_pending) = s.request(7, T0, &op, [4; NONCE]);
+    let (plain, plain_pending) = client::clear(7, &op);
+    let sealed_reply = r.send(&sealed);
+    let plain_reply = r.send(&plain);
+    assert!(s.reply(&sealed_pending, &sealed_reply).is_ok());
+    assert!(plain_pending.reply(&plain_reply).is_ok());
+    assert_eq!(
+        plain_pending.reply(&sealed_reply),
+        Err(client::Failure::Bad(error::MESSAGE))
+    );
+    assert_eq!(
+        s.reply(&sealed_pending, &plain_reply),
+        Err(client::Failure::Bad(error::MESSAGE))
+    );
+    // A reply for another request.
+    let (_, other) = client::clear(8, &op);
+    assert_eq!(
+        other.reply(&plain_reply),
+        Err(client::Failure::Bad(error::MESSAGE))
+    );
+}
+
+/// `-A` with trust: both forms are answered, each as who it is.
+#[test]
+fn mixed_mode() {
+    let server = Server::new(Config::default(), [9; 32]).with_clear(true);
+    let t = tree();
+    let now = Cell::new(T0);
+    let mut r = rig(&server, &t, &now, direct());
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    // glenda, with a ticket, reads her own file; `none` cannot.
+    let Ok(Owned::Read { data, .. }) = read(&mut c, &mut r, "/mine", None) else {
+        panic!()
+    };
+    assert_eq!(data, b"yes");
+    assert_eq!(
+        clear_read(&mut r, "/mine", None),
+        remote("permission denied")
+    );
+    assert!(clear_read(&mut r, "/hello", None).is_ok());
+    let who: Vec<&str> = r
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Answered { uname, .. } => Some(uname.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(who, ["glenda", "none", "none"]);
+    // A narrowed ticket stays narrow next to the clear mode.
+    let mut narrow = Client::new(creds(None), rights::READ, "/lib");
+    assert_eq!(
+        read(&mut narrow, &mut r, "/hello", None),
+        remote("permission denied")
+    );
+    // A stranger still gets no ticket: `-A` does not weaken the check.
+    let stranger = Creds {
+        user: String::from("glenda"),
+        seed: [5; 32],
+        cert: None,
+    };
+    let mut c = Client::new(stranger, rights::READ, "/");
+    assert_eq!(
+        read(&mut c, &mut r, "/hello", None),
+        remote("authentication failed")
+    );
+}

@@ -8,7 +8,7 @@
 //! - [`server`]: a server engine over a [`server::Tree`]: one frame in,
 //!   one frame out, nothing kept.
 //! - [`client`]: the client's side: the ticket exchange, sealed requests
-//!   and their replies.
+//!   and their replies, and clear requests for a server that allows them.
 //!
 //! The crate is `no_std` + `alloc`: the kernel's `#λ` device and the host
 //! server `lethed` share it.
@@ -39,6 +39,9 @@ pub const TAG: usize = 16;
 /// An X25519 public key.
 pub const EPH: usize = 32;
 
+/// The user a clear request runs as: Inferno's unauthenticated identity.
+pub const NONE: &str = "none";
+
 /// The rights a ticket can carry.
 pub mod rights {
     pub const READ: u8 = 1;
@@ -57,7 +60,13 @@ pub mod kind {
     pub const TREQ: u8 = 3;
     pub const RREQ: u8 = 4;
     pub const RERROR: u8 = 5;
-    /// Reserved for streams and later frames: 6 to 15.
+    /// A request with no ticket, not sealed: the clear mode
+    /// (`docs/lethe.md`, Section 4).
+    pub const TCLEAR: u8 = 9;
+    /// A reply, not sealed.
+    pub const RCLEAR: u8 = 10;
+    /// Reserved for streams and later frames: 6 to 15, less the two
+    /// clear frames above.
     pub const RESERVED: core::ops::RangeInclusive<u8> = 6..=15;
 }
 
@@ -88,6 +97,12 @@ pub mod error {
     pub const TICKET_EXPIRED: &str = "ticket expired";
     pub const REQUEST_EXPIRED: &str = "request expired";
     pub const MAC: &str = purg_auth::record::BAD_MAC;
+    /// A clear request (`Tclear`) to a server that was not started with
+    /// `-A`: Styx's answer to an attach without a proof.
+    pub const AUTH_REQUIRED: &str = purg_abi::auth::REQUIRED;
+    /// A `Tauth` to a server started with `-A` that trusts no key for the
+    /// user: Styx's answer to a `Tauth` on an export with `-A`.
+    pub const AUTH_NOT_REQUIRED: &str = purg_abi::auth::NOT_REQUIRED;
 
     /// Whether a client that gets `e` in the clear should authenticate
     /// again and resend.

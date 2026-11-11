@@ -2,6 +2,11 @@
 //! requests and their replies ([`Session`]), and [`Client`], which drives
 //! both over a [`Transport`] and renews the ticket when the server asks.
 //!
+//! A client that was told to use the clear mode sends [`clear`] requests
+//! instead: no ticket, no keys, nothing sealed. The two never mix: a
+//! sealed request's reply must be sealed and a clear request's clear, so
+//! neither side can be talked into the other mode by what comes back.
+//!
 //! Nothing here keeps a connection: a [`Session`] is only the ticket and
 //! its keys, so a request can go out on any connection, to any replica.
 
@@ -124,7 +129,8 @@ pub enum Failure {
     /// An error in the clear: the server could not open the ticket or the
     /// request ([`crate::error::renew`] says whether a new ticket helps).
     Clear(String),
-    /// The server's answer, sealed: a file error.
+    /// The server's answer about the file: sealed in an `Rreq`, or, for
+    /// a clear request, in its `Rclear`.
     Sealed(String),
     /// The reply did not open or decode.
     Bad(&'static str),
@@ -198,6 +204,45 @@ impl Session {
             .owned()
             .map_err(Failure::Sealed)
     }
+}
+
+/// A clear request waiting for its reply.
+pub struct ClearPending {
+    id: u32,
+}
+
+/// A `Tclear` for `op`: no ticket, not sealed. Only a server started
+/// with `-A` answers it; another says `authentication required`.
+pub fn clear(id: u32, op: &Op<'_>) -> (Vec<u8>, ClearPending) {
+    (msg::tclear(id, op), ClearPending { id })
+}
+
+impl ClearPending {
+    /// The reply to the request. A sealed reply is refused: a clear
+    /// client holds no key to open one.
+    pub fn reply(&self, frame: &[u8]) -> Result<Owned, Failure> {
+        let m = Msg::decode(frame).map_err(Failure::Bad)?;
+        if m.id != self.id {
+            return Err(Failure::Bad(MESSAGE));
+        }
+        match m.frame {
+            Frame::Rclear { reply } => Reply::decode(reply)
+                .map_err(Failure::Bad)?
+                .owned()
+                .map_err(Failure::Sealed),
+            Frame::Rerror { ename } => Err(Failure::Clear(String::from(ename))),
+            _ => Err(Failure::Bad(MESSAGE)),
+        }
+    }
+}
+
+/// Sends `op` in the clear over `t`.
+pub fn clear_call(t: &mut dyn Transport, id: u32, op: &Op<'_>) -> Result<Owned, CallError> {
+    let (frame, pending) = clear(id, op);
+    let reply = t.exchange(&frame).map_err(CallError::Transport)?;
+    pending
+        .reply(&reply)
+        .map_err(|f| CallError::Remote(String::from(f.text())))
 }
 
 /// Moves one frame to the server and its reply back.

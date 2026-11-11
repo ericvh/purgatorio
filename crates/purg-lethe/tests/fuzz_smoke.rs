@@ -55,6 +55,11 @@ fn corpus() -> Vec<Vec<u8>> {
         let (f, _) = s.request(5, lethe::NOW, &op, [6; 24]);
         v.push(lethe::handle(&f));
         v.push(f);
+        // The same in the clear: the request, its reply, the bare op.
+        let (f, _) = purg_lethe::client::clear(5, &op);
+        v.push(lethe::handle_clear(&f));
+        v.push(f);
+        v.push(op.encode());
         v.push(
             Request {
                 time: lethe::NOW,
