@@ -1002,7 +1002,7 @@ fn call(name: &str, args: &Value) -> Result<Value, String> {
         "ns" => {
             let me = purgatorio::pid();
             std::fs::read_to_string(format!("/prog/{me}/ns"))
-                .map(|ns| obj([("ns", ns.into())]))
+                .map(|ns| obj([("ns", purgatorio::ns::tidy(&ns, true).into())]))
                 .map_err(|e| err("ns", Error::from(e)))
         }
         "bind" => {

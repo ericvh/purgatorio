@@ -193,7 +193,8 @@ long build, an interactive program.
 `ns`, `bind`, `mount` and `unmount` change the session's namespace as the
 commands of the same names do, with the same error messages, and the
 change lasts until `reset`. `ns` reads the session prog's
-`/prog/n/ns`, which is what `ns` run by `run` prints. `bind` and
+`/prog/n/ns` and tidies it as the `ns` command does, so it gives what
+`ns` run by `run` prints. `bind` and
 `unmount` are done by the session prog itself. `mount` runs `/bin/mount`
 with the flags the arguments give, so a `{command}` source (such as
 `{memfs --serve}`) and authentication work as they do from sh.

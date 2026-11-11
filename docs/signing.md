@@ -238,7 +238,7 @@ The first `module` line is the prog's command. Each reactor it loaded adds
 a line. `digest` is 64 hex digits. `signers` is the signing keys of the
 trusted entries, in hex, joined with commas, or `-` when none was verified
 (the level was `none` at that load, or the check failed under `warn`).
-`path` is the name the module was loaded by, quoted as `ns` quotes names.
+`path` is the name the module was loaded by, quoted when it holds white space or a quote.
 
 This is also how a guest asks for its own digest: it reads
 `/prog/<its pid>/module`. No host call is added, and the ABI version

@@ -358,7 +358,7 @@ fn module_text(p: &crate::prog::Proc) -> String {
 }
 
 /// A line per frame, the innermost first: `<function index> <path>`, the
-/// path being the prog's command module, quoted as `ns` quotes names.
+/// path being the prog's command module, quoted when it holds white space or a quote.
 /// When the prog had more frames than a snapshot keeps, a last line
 /// `... <n>` counts the outer frames left out.
 fn stack_text(p: &crate::prog::Proc) -> Result<String> {

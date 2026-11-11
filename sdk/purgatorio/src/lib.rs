@@ -22,6 +22,7 @@ pub mod daytime;
 pub mod dial;
 pub mod env;
 pub mod file2chan;
+pub mod ns;
 pub mod styx;
 pub mod sys;
 pub mod task;

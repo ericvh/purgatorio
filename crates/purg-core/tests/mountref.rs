@@ -395,10 +395,10 @@ fn union_order_on_a_mounted_on_name() {
     // Binds are listed in the order they were made, as Inferno's mount
     // ids order them, so that running the list again builds the same
     // unions: the search order would replace `#B` with `#A`.
-    let want = "bind '#A' '#R/mnt/x'\n\
-                bind -b '#B' '#R/mnt/x'\n\
-                bind -a '#B' '#R/mnt/y'\n\
-                bind -a '#A' '#R/mnt/y'\n\
+    let want = "bind  #A #R/mnt/x\n\
+                bind -b #B #R/mnt/x\n\
+                bind -a #B #R/mnt/y\n\
+                bind -a #A #R/mnt/y\n\
                 cd /\n";
     assert!(ns.ends_with(want), "{ns}");
 }

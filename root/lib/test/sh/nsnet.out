@@ -1,0 +1,6 @@
+hi
+mount tcp!127.0.0.1!PORT /tmp/sh-nsnet/n
+bind -c /tmp /tmp/sh-nsnet/c
+mount /net/tcp/N/data /tmp/sh-nsnet/n
+mount  /net/tcp/N/data /tmp/sh-nsnet/n 
+bind -c #U/tmp /tmp/sh-nsnet/c
