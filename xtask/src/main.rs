@@ -32,6 +32,10 @@
 //! - `initrd [--names]`: `build-root`, then pack `root/bin` and `root/lib`
 //!   into a deterministic ustar archive at `target/initrd/root.tar`, the
 //!   kernel's root file system.
+//! - `diskimg [--size SIZE] [--bsize N] OUT [DIR]`: make `OUT` a purgfs
+//!   disk image (`docs/fs.md`) of `SIZE` bytes (64 MiB by default; `k`,
+//!   `m` and `g` suffixes) holding a copy of `DIR`, with `purg-fs`, the
+//!   format the kernel mounts. `diskimg --check IMAGE` checks one.
 //! - `size [--guests] [--small]`: build `purg-kernel` and print its section
 //!   sizes, its code by crate, and the sizes of the guests in `root/bin`
 //!   (with `--guests`, one line per module). `--small` builds the
@@ -51,6 +55,7 @@
 //!   `wasm32-wasip1`, and on the experimental guests in `appl/small`,
 //!   denying warnings.
 
+mod disk;
 mod size;
 mod tar;
 mod wasm;
@@ -1594,6 +1599,7 @@ fn main() -> ExitCode {
             Some(_) => initrd().map(|_| ExitCode::SUCCESS),
             None => Err(String::from("usage: cargo xtask initrd [--names]")),
         },
+        Some("diskimg") => disk::cmd(&rest).map(|()| ExitCode::SUCCESS),
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
         Some("sign") => sign(&rest).map(|()| ExitCode::SUCCESS),
         Some("probe") => match image_flags(&rest, true) {
@@ -1610,7 +1616,7 @@ fn main() -> ExitCode {
         Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {

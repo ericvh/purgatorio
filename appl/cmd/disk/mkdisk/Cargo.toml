@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-disk-mkdisk"
+description = "disk/mkdisk: make a purgfs file system in a disk image"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mkdisk"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+purg-fs = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

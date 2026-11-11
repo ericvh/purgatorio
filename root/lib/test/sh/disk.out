@@ -1,0 +1,12 @@
+/tmp/disktest/img: 0 files, 1 directories, 34 blocks used, 222 free
+/tmp/disktest/img: 2 files, 2 directories, 38 blocks used, 26 free
+status 
+/tmp/disktest/img: /: block 34 slot 0: bad entry checksum
+/tmp/disktest/img: block 35 is marked in use but nothing uses it
+status errors
+disk/chkdisk: /tmp/disktest/img: bad superblock checksum
+status fail:/tmp/disktest/img: bad superblock checksum
+disk/mkdisk: /tmp/disktest/none: file does not exist
+status fail:/tmp/disktest/none: file does not exist
+disk/mkdisk: /tmp/disktest/tiny: file system too small
+status fail:/tmp/disktest/tiny: file system too small
