@@ -406,6 +406,7 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         (true, false) => Mode::Test {
             memstat: has_bootarg(&info, "memstat"),
         },
+        (false, false) if has_bootarg(&info, "bench") => Mode::Bench,
         (false, false) => Mode::Interactive,
     };
     println!("kernel: root {from}");

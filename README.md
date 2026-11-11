@@ -186,6 +186,12 @@ semihosting does not work, so the kernel powers off through PSCI
 (`-append exit=psci`) and the result comes from the serial output. KVM on
 Apple silicon offers only GICv3 and no EL2, so CI uses the TCG runs.
 
+`cargo xtask bench` runs the benchmark suite (`docs/perf.md`): `cat` of
+a 100 MiB file from the RAM tree, through Styx mounts and from purgfs,
+an `sh` loop, spawns, file operations and a CPU-bound guest, on a
+release emu with each engine and on the kernel under KVM or TCG. It
+prints medians and writes every sample to `target/bench/results.json`.
+
 ## Building and running
 
 Use Rust 1.99.1. The file `rust-toolchain.toml` pins it: channel `1.99.1`,

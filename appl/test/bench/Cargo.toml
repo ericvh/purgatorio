@@ -1,0 +1,17 @@
+[package]
+name = "appl-test-bench"
+description = "Micro-benchmarks for cargo xtask bench: file operations and spawns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bench"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
