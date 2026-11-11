@@ -164,15 +164,18 @@ impl System {
     /// Attaches `tcp!10.0.2.2!port`, the host's `lethed` serving the
     /// shared directory read-only, with the test key, and reads it: a
     /// file, a directory of 300 entries (several pages) and a subtree.
+    /// Then the same server in the clear mode (`lethe -A`).
     fn lethe_host(&self, port: u16) -> core::result::Result<String, String> {
         let addr = format!("tcp!{HOST}!{port}");
-        let steps: [&[&str]; 6] = [
+        let steps: [&[&str]; 8] = [
             &["mkdir", "-p", "/n/lethe"],
             &["lethe", &addr, "/n/lethe"],
             &["cat", "/n/lethe/hello.txt", "/n/lethe/sub/inner.txt"],
             &["sh", "-c", "ls /n/lethe/many | wc -l"],
             &["lethe", &addr, "/n/lethe", "/sub"],
             &["ls", "/n/lethe"],
+            &["lethe", "-A", &addr, "/n/lethe"],
+            &["cat", "/n/lethe/hello.txt"],
         ];
         for argv in steps {
             match self.run(argv, None) {

@@ -218,6 +218,7 @@ hello from the host
 inner file
     300
 /n/lethe/inner.txt
+hello from the host
 kernel: ok
 kernel: net ready
 kernel: net served

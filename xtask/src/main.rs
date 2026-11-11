@@ -368,7 +368,8 @@ fn run_lethed(args: &[String]) -> Result<ExitCode> {
 }
 
 /// The host's `lethed` serving a kernel run's shared directory read-only
-/// on a free port, trusting the test key; killed when dropped.
+/// on a free port, trusting the test key and, with `-A`, answering
+/// clear requests too; killed when dropped.
 struct HostLethed {
     child: std::process::Child,
     port: u16,
@@ -378,7 +379,7 @@ impl HostLethed {
     fn start(ws: &Path, tree: &Path) -> Result<HostLethed> {
         let lethed = ws.join("target/debug/lethed");
         let mut child = Command::new(&lethed)
-            .args(["-a", "127.0.0.1:0", "-k"])
+            .args(["-a", "127.0.0.1:0", "-A", "-k"])
             .arg(ws.join("root/lib/test/auth.key.pub"))
             .arg(tree)
             .stdin(Stdio::null())
