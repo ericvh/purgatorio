@@ -166,6 +166,20 @@ impl Mux {
         }
     }
 
+    /// The caller sent the request on `tag` and will not wait for its
+    /// reply (its prog was killed). The tag stays taken until the reply
+    /// arrives, which is then dropped, or until the connection closes.
+    pub fn discard(&self, tag: u16) {
+        let mut slots = self.slots.lock();
+        match slots.get_mut(&tag) {
+            Some(slot) if slot.msg.is_none() => {
+                slot.flushed = true;
+                slot.frees = Some(tag);
+            }
+            _ => drop(slots.remove(&tag)),
+        }
+    }
+
     /// Tags in use.
     pub fn outstanding(&self) -> usize {
         self.slots.lock().len()
@@ -237,6 +251,24 @@ mod tests {
         let ftag = mux.begin().unwrap();
         assert!(mux.deliver(ftag, vec![4]));
         mux.abandon(ftag, old);
+        assert_eq!(mux.outstanding(), 0);
+    }
+
+    /// A request whose reply nobody waits for keeps its tag until the
+    /// reply arrives, and the reply is dropped.
+    #[test]
+    fn a_discarded_request_frees_its_tag_on_reply() {
+        let mux = Mux::new();
+        let t = mux.begin().unwrap();
+        mux.discard(t);
+        assert_eq!(mux.outstanding(), 1);
+        assert!(!mux.deliver(t, vec![1]));
+        assert_eq!(mux.outstanding(), 0);
+
+        // The reply came before the caller gave up.
+        let t = mux.begin().unwrap();
+        assert!(mux.deliver(t, vec![2]));
+        mux.discard(t);
         assert_eq!(mux.outstanding(), 0);
     }
 }
