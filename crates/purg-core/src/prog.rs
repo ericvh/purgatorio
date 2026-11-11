@@ -154,7 +154,10 @@ impl Proc {
     }
 
     pub fn set_fgrp(&self, fgrp: Arc<Fgrp>) {
-        *self.fgrp.lock() = fgrp;
+        // The old table may hold the last reference to a `#M` file, whose
+        // clunk waits for the file server; drop it after the lock.
+        let old = core::mem::replace(&mut *self.fgrp.lock(), fgrp);
+        drop(old);
     }
 
     pub fn set_pgrp(&self, pgrp: Arc<Pgrp>) {
@@ -550,8 +553,13 @@ impl Prog {
 impl Drop for Prog {
     fn drop(&mut self) {
         // Close fds first so a parent reading a pipe from this prog sees end
-        // of file no later than the exit message.
-        self.fgrp = Arc::new(Fgrp::new());
+        // of file no later than the exit message. The Proc's reference to
+        // the table goes too: anything holding the Proc (an open `#p`
+        // file, a syscall in another kproc) would otherwise keep the
+        // files open past the exit.
+        let empty = Arc::new(Fgrp::new());
+        self.proc.set_fgrp(empty.clone());
+        self.fgrp = empty;
         // Then the namespace, while the prog is still in the table, as
         // Inferno's `progexit` closes the pgrp before `delprog`. Releasing
         // a `#M` Chan clunks its fid and waits for the file server; a

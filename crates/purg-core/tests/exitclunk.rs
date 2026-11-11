@@ -1,6 +1,9 @@
+//! How a prog lets go of its files and mounts when it exits (issue #118).
+//!
 //! A prog killed while it waits for a clunk exits at once, and does not
 //! flush the clunk: the request stays out, and the mount's reader drops
-//! the reply when it comes (issue #118).
+//! the reply when it comes. Its fds close when it exits, even while
+//! something still holds its `Proc`.
 #![cfg(feature = "std")]
 
 mod common;
@@ -184,4 +187,28 @@ fn a_killed_progs_clunk_stays_out_for_a_late_server() {
 #[test]
 fn a_killed_progs_clunk_to_a_silent_server_leaves_no_kproc() {
     clunk_of_a_killed_prog(Server::Never);
+}
+
+/// A prog's files are closed when it exits, even while something else
+/// (here the test, as an open `#p` file or another kproc's syscall would)
+/// still holds its `Proc`: a reader of a pipe it wrote sees end of file.
+#[test]
+fn an_exited_progs_files_close_while_its_proc_is_held() {
+    let (mut p, _) = setup();
+    let [r, w] = p.pipe().unwrap();
+    let mut child = p.spawn(pctl::NEWFD, &[(w, 1)]).unwrap();
+    child.started();
+    p.close(w).unwrap();
+    child.write(1, b"bye").unwrap();
+    let held = p.kernel.procs.get(child.pid).unwrap();
+    drop(child);
+    let mut buf = [0u8; 8];
+    assert_eq!(p.read(r, &mut buf).unwrap(), 3);
+    let reader = p.chan(r).unwrap();
+    // Before the fix the writer stayed open, and this read never ended.
+    let n = within("end of file on the pipe", move || {
+        reader.dev.read(&reader, &mut [0u8; 8], 0)
+    });
+    assert_eq!(n.unwrap(), 0);
+    assert!(held.fgrp().get(1).is_err(), "the Proc keeps the fd table");
 }
