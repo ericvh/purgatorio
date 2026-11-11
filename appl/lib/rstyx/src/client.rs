@@ -7,13 +7,16 @@
 //! ([`crate::io::pump`]), copies the connection in, another copies
 //! standard input in, and `export` serves the namespace on a pipe
 //! whose other end this prog copies to and from STYX frames. The export
-//! is the kernel's, so the server authenticates to it as any mounter does.
+//! is the kernel's, so the server authenticates to it as any mounter does,
+//! unless the server has already proved itself on this connection: then
+//! the export asks no proof and runs in the clear inside the encrypted
+//! connection (`docs/rcmd.md`, "Encryption").
 
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 
-use purgatorio::abi::auth::{FAILED, NO_SESSION};
+use purgatorio::abi::auth::{FAILED, NO_SESSION, SERVER_NONE};
 use purgatorio::abi::pctl::NEWFD;
 use purgatorio::auth::fmt::proof::OFFER;
 use purgatorio::auth::fmt::session;
@@ -31,6 +34,9 @@ pub struct Opts {
     /// `-A`: prove nothing, ask no proof of the server, and speak in the
     /// clear. Without it the connection must be encrypted.
     pub noauth: bool,
+    /// `-S`: the server must prove itself with a key or certificate this
+    /// namespace trusts as a server's.
+    pub srvauth: bool,
     /// `-k`: the authinfo to make the proof from.
     pub keyfile: Option<String>,
     /// `-x`: the directory served as `/n/client` (default `/`).
@@ -59,12 +65,15 @@ fn text(d: &[u8]) -> String {
 }
 
 /// Runs the opening exchange on `net`, sends `cmd`, and returns the link
-/// the rest of the session goes over.
+/// the rest of the session goes over, and whether the server proved
+/// itself.
 ///
 /// Without `-A` the server must ask for a proof and offer a session key:
 /// a server that asks for none, or offers only a challenge, is refused
 /// with `no session key offered` rather than spoken to in the clear.
-fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<Link, Error> {
+/// With `-S` its OK must carry a proof of its own that this namespace
+/// takes (`auth::check_server`).
+fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<(Link, bool), Error> {
     let user = auth::user();
     net.write_all(&frame(
         kind::HELLO,
@@ -94,16 +103,27 @@ fn hello(net: &mut Fd, o: &Opts, cmd: &str) -> Result<Link, Error> {
         (proof, Some(keys))
     };
     net.write_all(&frame(kind::PROOF, &proof))?;
-    match proto::read_frame(net)? {
-        (kind::OK, _) => {}
+    let server = match proto::read_frame(net)? {
+        (kind::OK, d) => d,
         (kind::ERR, d) => return Err(Error(text(&d))),
         _ => return Err(Error::from(EPROTO)),
+    };
+    // The server's proof, in OK. It signs this session's keys, which only
+    // the real server shares, so it cannot be one from another session.
+    let proved = match &keys {
+        Some(k) => auth::check_server(k, &server),
+        None => Err(Error::from(SERVER_NONE)),
+    };
+    if o.srvauth {
+        proved.clone()?;
     }
+    let proved = proved.is_ok();
     let mut link = keys.as_ref().map_or_else(Link::clear, Link::client);
-    let mut exec = vec![if o.noauth { proto::NOAUTH } else { 0 }];
+    // A server that proved itself is not asked again by the export.
+    let mut exec = vec![if o.noauth || proved { proto::NOAUTH } else { 0 }];
     exec.extend_from_slice(cmd.as_bytes());
     net.write_all(&link.wire(kind::EXEC, &exec).map_err(Error::from)?)?;
-    Ok(link)
+    Ok((link, proved))
 }
 
 /// Runs `cmd` at `host` and returns its exit status (empty for success).
@@ -118,7 +138,7 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
         .ok_or_else(|| Error::from("no connection"))?
         .as_raw_fd();
     let mut net = Fd(data);
-    let mut link = hello(&mut net, o, cmd)?;
+    let (mut link, proved) = hello(&mut net, o, cmd)?;
 
     let mut children = Children::new();
     let pump = [String::from("pump"), String::from(crate::io::PUMP)];
@@ -140,7 +160,11 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
     drop(in_w);
     let [exp, exp_far] = purgatorio::pipe()?;
     let mut argv = vec![String::from("export")];
-    if o.noauth {
+    // The export asks the server for a proof of its own, and encrypts
+    // again, unless the server has proved itself to this namespace on
+    // the encrypted connection that carries the export: then the
+    // connection's keys already authenticate both ends of it.
+    if o.noauth || proved {
         argv.push(String::from("-A"));
     }
     argv.push(o.export.clone().unwrap_or_else(|| String::from("/")));

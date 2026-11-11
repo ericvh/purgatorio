@@ -1,4 +1,4 @@
-//! auxi/rstyxd [-A] [-k keyfile]: serve one `rcmd` or `cpu` client on file descriptor
+//! auxi/rstyxd [-A] [-e] [-k keyfile]: serve one `rcmd` or `cpu` client on file descriptor
 //! 0, a connection `listen` accepted:
 //!
 //! ```text
@@ -11,11 +11,14 @@
 //! `-A` asks for no proof. After a proof the connection is encrypted with
 //! the keys the version 3 handshake agrees (`rstyx::link`); with `-A`, or
 //! when this namespace trusts nothing, it stays in the clear, and a client
-//! that did not ask for that with `-A` itself goes away. A version 1 or 2
-//! proof, which carries no key, is refused. The client's export in turn
-//! asks this side for
-//! a proof when the client's namespace trusts anything; it is made from
-//! the authinfo `keyfile`, or else from this user's default keys. The
+//! that did not ask for that with `-A` itself goes away; with `-e` this
+//! side refuses to go on in the clear (`encryption required`). A version
+//! 1 or 2 proof, which carries no key, is refused. After the client's
+//! proof this side proves itself in the OK frame, with the authinfo
+//! `keyfile`, or else with this user's default keys. The client's export
+//! in turn asks this side for a proof when the client's namespace trusts
+//! anything and this side's proof did not satisfy it; it is made from
+//! the same key. The
 //! client's command then runs under `sh -c`
 //! in a copy of this namespace with the client's namespace mounted on
 //! `/n/client`, and its exit status is sent back. The protocol is in
@@ -34,7 +37,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 
-use purgatorio::abi::auth::NO_SESSION;
+use purgatorio::abi::auth::{ENCRYPTION_REQUIRED, NO_SESSION};
 use purgatorio::abi::mode::OWRITE;
 use purgatorio::abi::pctl::{FORKENV, FORKNS, NEWFD, NEWPGRP};
 use purgatorio::arg::Arg;
@@ -47,7 +50,7 @@ use rstyx::link::Link;
 use rstyx::proto::{self, EPROTO, frame, kind};
 
 const SELF: &str = "/bin/auxi/rstyxd.wasm";
-const USAGE: &str = "auxi/rstyxd [-A] [-k keyfile]";
+const USAGE: &str = "auxi/rstyxd [-A] [-e] [-k keyfile]";
 /// How long output may still arrive once the command has exited: a prog
 /// it left behind may hold the pipes open for ever.
 const DRAIN_MS: i32 = 300;
@@ -93,10 +96,21 @@ fn trust(uname: &str) -> Trust {
     }
 }
 
+/// How the opening goes.
+struct Hello<'a> {
+    /// `-A`: ask no proof, stay in the clear.
+    noauth: bool,
+    /// `-e`: refuse to go on in the clear.
+    encrypt: bool,
+    /// `-k`: the authinfo this side proves itself with.
+    keyfile: Option<&'a str>,
+}
+
 /// The opening exchange. Returns the EXEC flags, the command and the link
 /// the rest goes over, or the reason the client was refused (already sent
 /// to it).
-fn hello(net: &mut Fd, noauth: bool) -> Result<(u8, String, Link), String> {
+fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
+    let noauth = h.noauth;
     let refuse = |net: &mut Fd, why: &str| {
         let _ = net.write_all(&frame(kind::ERR, why.as_bytes()));
         String::from(why)
@@ -121,6 +135,9 @@ fn hello(net: &mut Fd, noauth: bool) -> Result<(u8, String, Link), String> {
         auth::Rng::fill(&mut random);
         Offer::new(challenge, random)
     });
+    if offer.is_none() && h.encrypt {
+        return Err(refuse(net, ENCRYPTION_REQUIRED));
+    }
     let chal = offer.as_ref().map_or(&[][..], |o| &o.offer[..]);
     net.write_all(&frame(kind::CHAL, chal))
         .map_err(|_| String::from(proto::EHUNGUP))?;
@@ -129,6 +146,8 @@ fn hello(net: &mut Fd, noauth: bool) -> Result<(u8, String, Link), String> {
         return Err(refuse(net, EPROTO));
     }
     let mut link = Link::clear();
+    // This side's proof, for the OK frame.
+    let mut mine = Vec::new();
     if let Some(offer) = &offer {
         if proof.is_empty() {
             return Err(refuse(net, purgatorio::abi::auth::REQUIRED));
@@ -141,8 +160,9 @@ fn hello(net: &mut Fd, noauth: bool) -> Result<(u8, String, Link), String> {
             return Err(refuse(net, NO_SESSION));
         };
         link = Link::server(&keys);
+        mine = auth::server_proof(&keys, &auth::user(), h.keyfile).unwrap_or_default();
     }
-    net.write_all(&frame(kind::OK, &[]))
+    net.write_all(&frame(kind::OK, &mine))
         .map_err(|_| String::from(proto::EHUNGUP))?;
     match link.read(net)? {
         (kind::EXEC, d) if !d.is_empty() => {
@@ -189,19 +209,25 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         _ => {}
     }
     let mut arg = Arg::new(args, USAGE);
-    let (mut noauth, mut keyfile) = (false, String::new());
+    let (mut noauth, mut encrypt, mut keyfile) = (false, false, String::new());
     while let Some(c) = arg.opt() {
         match c {
             'A' => noauth = true,
+            'e' => encrypt = true,
             'k' | 'f' => keyfile = arg.earg()?,
             _ => return Err(arg.usage()),
         }
     }
-    if !arg.argv().is_empty() {
+    if !arg.argv().is_empty() || (noauth && encrypt) {
         return Err(Error(format!("usage: {USAGE}")));
     }
     let mut net = Fd(0);
-    let Ok((flags, cmd, mut link)) = hello(&mut net, noauth) else {
+    let h = Hello {
+        noauth,
+        encrypt,
+        keyfile: Some(keyfile.as_str()).filter(|k| !k.is_empty()),
+    };
+    let Ok((flags, cmd, mut link)) = hello(&mut net, &h) else {
         // The client has the reason; a refused client is not an error here.
         return Ok(());
     };

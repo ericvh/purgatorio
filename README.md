@@ -55,7 +55,7 @@ a `; ` prompt.
 | W4 archive commands: `gettar gunzip gzip lstar puttar tar` (ustar and gzip code in `appl/archive`) | done |
 | Admin commands: `cron logfile mntgen ndb/query`; `mount {command}` | done |
 | Namespace and Styx tools: `styxchat styxmon iostats nsbuild lockfs trfs fcp tarfs archfs` | done |
-| Remote commands: `rcmd cpu auxi/rstyxd auxi/cpuslave`, authenticated with the mount proof and encrypted after it; `rcmd host mcpd` is a remote MCP server. See [docs/rcmd.md](docs/rcmd.md) | done |
+| Remote commands: `rcmd cpu auxi/rstyxd auxi/cpuslave`, authenticated with the mount proof both ways (`-S` requires the server's) and encrypted after it; `rcmd host mcpd` is a remote MCP server. See [docs/rcmd.md](docs/rcmd.md) | done |
 | Plan 9 interop: `9export -A` and `import -9 tree` (exportfs's opening, no `p9any`) | tested against each other only |
 | `dbfs`: the records of a text file as files (dbfs(4)) | done; `rawdbfs` remains |
 | `fs`: trees as values (`walk filter select merge write bundle unbundle exec query` and the gates) | done; fs(1)'s other modules remain |

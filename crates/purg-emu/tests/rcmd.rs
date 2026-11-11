@@ -262,6 +262,7 @@ fn relay(l: TcpListener, portfile: PathBuf, flip: Option<usize>) -> Arc<Mutex<Se
 fn relayed(
     vm: &str,
     tag: &str,
+    flags: &str,
     cmd: &str,
     flip: Option<usize>,
 ) -> (bool, String, Arc<Mutex<Seen>>) {
@@ -279,7 +280,7 @@ styxlisten tcp!127.0.0.1!0 /bin/auxi/rstyxd.wasm >[2] $d/l.tmp &
 lpid=$apid
 while {{! test -s $d/l.tmp}} {{sleep 0}}
 sed 's/styxlisten: //' $d/l.tmp > $d/l
-rcmd tcp!127.0.0.1!{relay_port} {cmd} </dev/null
+rcmd {flags} tcp!127.0.0.1!{relay_port} {cmd} </dev/null
 s=$status
 kill $lpid
 exit $s
@@ -310,7 +311,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 fn the_connection_is_encrypted() {
     for vm in VMS {
         let cmd = "'echo the-output-marker; cat /n/client/lib/probe/hello.txt'";
-        let (ok, out, seen) = relayed(vm, "seal", cmd, None);
+        let (ok, out, seen) = relayed(vm, "seal", "", cmd, None);
         assert!(ok, "{vm}: {out}");
         assert_eq!(
             out, "the-output-marker\nhello from the probe root\n",
@@ -333,15 +334,69 @@ fn the_connection_is_encrypted() {
                 "{vm}: {what} in the clear to the client"
             );
         }
-        // CHAL (5 + 64 bytes) and OK (5) open the server's stream; the
+        // CHAL (5 + 64 bytes) and OK (5, and the server's proof: a kind,
+        // a signature and the test key) open the server's stream; the
         // first record follows. Change a byte inside it.
-        let first_record = 5 + 64 + 5;
+        let first_record = 5 + 64 + 5 + 1 + 64 + 32;
         assert!(s.to_client.len() > first_record + 20, "{vm}");
         drop(s);
-        let (ok, out, _) = relayed(vm, "flip", "'echo never'", Some(first_record + 8));
+        let (ok, out, _) = relayed(vm, "flip", "", "'echo never'", Some(first_record + 8));
         assert!(!ok, "{vm}: {out}");
         assert!(out.contains("bad record mac"), "{vm}: {out}");
         assert!(!out.contains("never"), "{vm}: {out}");
+    }
+}
+
+/// The server proves itself in OK. `-S` requires that proof; one changed
+/// on the way fails it, while a client that does not require it goes on
+/// with the export asking the server for a proof of its own. A server
+/// whose certificate is from a signer the client does not trust is
+/// refused under `-S`.
+#[test]
+fn the_server_proves_itself() {
+    // The signature in the server's proof: after CHAL (5 + 64), OK's
+    // header (5) and the proof's kind byte.
+    let in_proof = 5 + 64 + 5 + 1 + 10;
+    for vm in VMS {
+        let cmd = "'cat /n/client/lib/probe/hello.txt'";
+        let (ok, out, _) = relayed(vm, "srv", "-S", cmd, None);
+        assert!(ok, "{vm}: {out}");
+        assert_eq!(out, "hello from the probe root\n", "{vm}");
+        let (ok, out, _) = relayed(vm, "srvflip", "-S", cmd, Some(in_proof));
+        assert!(!ok, "{vm}: {out}");
+        assert_eq!(out, "rcmd: server authentication failed\n", "{vm}");
+        let (ok, out, _) = relayed(vm, "srvflip2", "", cmd, Some(in_proof));
+        assert!(ok, "{vm}: {out}");
+        assert_eq!(out, "hello from the probe root\n", "{vm}");
+        let script = format!(
+            "load std
+d=/tmp/rcmd-impostor-{vm}
+rm -rf $d
+mkdir -p $d
+auth/createsignerkey -f $d/sk nobody > /dev/null
+auth/mkauthinfo -f $d/sk `{{cat /dev/user}} $d/info
+styxlisten tcp!127.0.0.1!0 /bin/auxi/rstyxd.wasm -k $d/info >[2] $d/l &
+lpid=$apid
+while {{! test -s $d/l}} {{sleep 0}}
+rcmd -S tcp!`{{sed 's/styxlisten: //' $d/l}} echo no </dev/null
+s=$status
+kill $lpid
+rm -rf $d
+exit $s
+"
+        );
+        let out = Command::new(env!("CARGO_BIN_EXE_emu"))
+            .arg("-r")
+            .arg(root())
+            .arg(format!("--vm={vm}"))
+            .args(["sh", "-c", &script])
+            .stdin(Stdio::null())
+            .output()
+            .expect("run emu");
+        let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+        assert!(!out.status.success(), "{vm}: {text}");
+        assert_eq!(text, "rcmd: server authentication failed\n", "{vm}");
     }
 }
 
