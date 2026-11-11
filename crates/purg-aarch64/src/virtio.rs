@@ -38,6 +38,7 @@ use core::ptr::{read_volatile, write_volatile};
 use alloc::borrow::Cow;
 use purg_platform::sync::{Rendez, current_note};
 
+use crate::cache;
 use crate::dtb::{self, Fdt};
 use crate::mmu;
 
@@ -590,7 +591,7 @@ impl Virtio9p {
         if (m.read(REG_QUEUE_NUM_MAX) as usize) < P9_DESCS {
             return Err("virtio queue is too small");
         }
-        let bsize = msize.next_multiple_of(64);
+        let bsize = msize.next_multiple_of(cache::dma_align());
         let desc = dma(16 * P9_DESCS);
         let avail = dma(4 + 2 * P9_DESCS + 2);
         let used = dma(4 + 8 * P9_DESCS + 2);
@@ -784,11 +785,12 @@ pub(crate) fn driver_features(m: &Mmio, features: u64) {
     m.write(REG_DRIVER_FEATURES, (features >> 32) as u32);
 }
 
-/// Zeroed heap memory for the device, in whole 64-byte cache lines so no
-/// other allocation shares a line that [`dcache_inval`] discards. Never
-/// freed.
+/// Zeroed heap memory for the device, aligned and padded to the cache
+/// writeback granule ([`cache::dma_align`]) so no other allocation shares
+/// a line that [`dcache_inval`] discards. Never freed.
 pub(crate) fn dma(size: usize) -> usize {
-    let layout = Layout::from_size_align(size.next_multiple_of(64), 64).expect("dma layout");
+    let align = cache::dma_align();
+    let layout = Layout::from_size_align(size.next_multiple_of(align), align).expect("dma layout");
     // SAFETY: a non-zero-size layout.
     let p = unsafe { alloc_zeroed(layout) };
     assert!(!p.is_null(), "out of memory");
@@ -803,16 +805,17 @@ pub(crate) fn dcache_inval(addr: usize, len: usize) {
     dcache(addr, len, false);
 }
 
-/// Cleans (`dc cvac`) or invalidates (`dc ivac`) the 64-byte lines over
-/// `addr..addr + len`. Every DMA region is whole lines ([`dma`]), so
-/// invalidating never discards a neighbour's data. (QEMU's cache line is
-/// 64 bytes; CTR_EL0 could say otherwise on hardware.)
+/// Cleans (`dc cvac`) or invalidates (`dc ivac`) the cache lines over
+/// `addr..addr + len`, stepping by the smallest line `CTR_EL0` reports.
+/// Every DMA region is whole writeback granules ([`dma`]), so
+/// invalidating never discards a neighbour's data.
 fn dcache(addr: usize, len: usize, clean: bool) {
     if len == 0 {
         return;
     }
-    let start = addr & !63;
-    let end = (addr + len + 63) & !63;
+    let line = cache::dline();
+    let start = addr & !(line - 1);
+    let end = (addr + len).next_multiple_of(line);
     let mut a = start;
     while a < end {
         // SAFETY: cache maintenance by VA on our own mapped memory.
@@ -823,7 +826,7 @@ fn dcache(addr: usize, len: usize, clean: bool) {
                 asm!("dc ivac, {}", in(reg) a, options(nostack));
             }
         }
-        a += 64;
+        a += line;
     }
     fence();
 }
