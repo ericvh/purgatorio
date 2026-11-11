@@ -1,0 +1,6 @@
+bind -b /n/client/dev /dev
+client
+nested
+status 
+cat: /n/client/tmp/sh-cpufork/nosuch: file does not exist
+status fail:errors
