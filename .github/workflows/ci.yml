@@ -218,6 +218,10 @@ jobs:
         run: >
           cargo clippy -p purg-kernel -p purg-aarch64
           --target aarch64-unknown-none --profile kernel --no-default-features -- -D warnings
+      - name: clippy (the experimental aot engine, docs/perf.md; built, not run)
+        run: >
+          cargo clippy -p purg-kernel -p purg-vm-aot
+          --target aarch64-unknown-none --profile kernel --features aot -- -D warnings
       # The four runs boot side by side: two run the whole sh corpus, the
       # other two a smoke subset, and each prints where its time went.
       - name: xtask kernel (TCG, GICv2, GICv3, EL2)

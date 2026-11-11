@@ -54,4 +54,20 @@ fn main() {
         vec![0; 1024]
     };
     fs::write(&out, archive).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+
+    // The AOT image set (the `aot` feature, docs/perf.md), or nothing.
+    println!("cargo:rerun-if-env-changed={AOT_ENV}");
+    let set = PathBuf::from(env::var("OUT_DIR").unwrap()).join("aot.bin");
+    let images = match env::var_os(AOT_ENV) {
+        Some(p) if env::var_os("CARGO_FEATURE_AOT").is_some() => {
+            let p = PathBuf::from(p);
+            println!("cargo:rerun-if-changed={}", p.display());
+            fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+        }
+        _ => Vec::new(),
+    };
+    fs::write(&set, images).unwrap_or_else(|e| panic!("{}: {e}", set.display()));
 }
+
+/// The image set `xtask bench --aot` built for the `aot` feature.
+const AOT_ENV: &str = "PURG_AOT_IMAGES";
