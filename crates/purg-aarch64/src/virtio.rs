@@ -660,6 +660,11 @@ impl Virtio9p {
         }
     }
 
+    /// Requests the device has not answered.
+    pub fn in_flight(&self) -> usize {
+        P9_SLOTS - self.free.count_ones() as usize
+    }
+
     /// Hands the T-message `req` to the device, to be answered with
     /// `cookie`. `Ok(false)` when every slot is in use.
     pub fn submit(&mut self, req: &[u8], cookie: u64) -> Result<bool, &'static str> {

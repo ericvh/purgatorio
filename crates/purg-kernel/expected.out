@@ -13,8 +13,11 @@ kernel: console: waiting for input
 kernel: console read "hello é" then end of input, and echoed the typing
 kernel: console: waiting for raw input
 kernel: raw console read 5 bytes unedited and echoed nothing
+kernel: sdV0: no file system: not a purgfs file system
+kernel: sdV1: purgfs, 512 blocks of 4096 bytes, 454 free
 kernel: #9/host: 9P2000 through 9P2000.u (the device answered 9P2000 with "unknown")
 kernel: #9/host mounted on /n/host
+kernel: sdV1 mounted on /n/disk
 kernel: run echo hello world
 hello world
 kernel: ok
@@ -138,6 +141,67 @@ rm: /n/host/sub: directory not empty
 kernel: failed as expected: fail:errors
 kernel: 9p: stat, wstat and errors
 kernel: ok
+kernel: 9p: kill a reader of a slow device, and flush its read
+kernel: killed, flushed, and the mounts work
+kernel: run ls /n/disk
+/n/disk/hello.txt
+/n/disk/many
+/n/disk/sub
+kernel: ok
+kernel: run cat /n/disk/hello.txt
+hello from the disk image
+kernel: ok
+kernel: run cat /n/disk/sub/inner.txt
+inner file
+kernel: ok
+kernel: run sh -c ls /n/disk/many | wc -l
+    300
+kernel: ok
+kernel: run sh -c echo written by the kernel > /n/disk/new.txt
+kernel: ok
+kernel: run cat /n/disk/new.txt
+written by the kernel
+kernel: ok
+kernel: run mv /n/disk/new.txt /n/disk/kept.txt
+kernel: ok
+kernel: run chmod 600 /n/disk/kept.txt
+kernel: ok
+kernel: run cp /bin/sh.wasm /n/disk/big.wasm
+kernel: ok
+kernel: run cmp /bin/sh.wasm /n/disk/big.wasm
+kernel: ok
+kernel: run rm /n/disk/big.wasm
+kernel: ok
+kernel: run mkdir /n/disk/newdir
+kernel: ok
+kernel: run cat /n/disk/nonexistent
+cat: /n/disk/nonexistent: file does not exist
+kernel: failed as expected: fail:errors
+kernel: run rm /n/disk/sub
+rm: /n/disk/sub: directory not empty
+kernel: failed as expected: fail:errors
+kernel: run ls -l /dev/sdV0 /dev/sdV1
+--r--r--r-- S 0 inferno inferno       0 Jan  1  1970 /dev/sdV0/ctl
+--r--r----- S 0 inferno inferno   65536 Jan  1  1970 /dev/sdV0/data
+--r--r--r-- S 0 inferno inferno       0 Jan  1  1970 /dev/sdV1/ctl
+--rw-rw---- S 0 inferno inferno 2097152 Jan  1  1970 /dev/sdV1/data
+kernel: ok
+kernel: run cat /dev/sdV0/ctl /dev/sdV1/ctl
+inquiry virtio-blk slow
+geometry 128 512
+part data 0 128
+inquiry virtio-blk disk
+geometry 4096 512
+part data 0 4096
+kernel: ok
+kernel: disk: stat, wstat and errors
+kernel: ok
+kernel: disk: fill it
+kernel: file system full after 452 blocks
+kernel: disk: check it
+kernel: 304 files, 4 directories, 60 blocks used, 452 free
+kernel: disk: kill a reader of a slow disk
+kernel: killed in the wait; its request finished unread
 kernel: mount the hosted emu's export on /n/remote
 /n/remote/lib/probe/hello.txt
 /n/remote/README

@@ -716,6 +716,8 @@ struct KernelRun {
     el: u32,
     /// Boot with `-initrd root.tar` instead of the compiled-in root.
     initrd: bool,
+    /// Boot a second time on the same disk, to check what the first left.
+    disk_reboot: bool,
 }
 
 /// The TCG runs: GICv2 and GICv3 at EL1, and GICv3 with EL2
@@ -728,12 +730,14 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         args: &["-M", "virt,gic-version=2", "-cpu", "cortex-a72"],
         el: 1,
         initrd: true,
+        disk_reboot: true,
     },
     KernelRun {
         name: "tcg cortex-a72 gicv3",
         args: &["-M", "virt,gic-version=3", "-cpu", "cortex-a72"],
         el: 1,
         initrd: false,
+        disk_reboot: false,
     },
     KernelRun {
         name: "tcg cortex-a72 gicv3 el2",
@@ -745,12 +749,14 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         ],
         el: 2,
         initrd: false,
+        disk_reboot: false,
     },
     KernelRun {
         name: "tcg max gicv3 el2",
         args: &["-M", "virt,gic-version=3,virtualization=on", "-cpu", "max"],
         el: 2,
         initrd: false,
+        disk_reboot: false,
     },
 ];
 
@@ -763,7 +769,82 @@ const KERNEL_KVM_RUN: KernelRun = KernelRun {
     args: &["-accel", "kvm", "-cpu", "host", "-M", "virt,gic-version=3"],
     el: 1,
     initrd: true,
+    disk_reboot: true,
 };
+
+/// What the second boot on a run's disk (`diskcheck`) must print, besides
+/// a last line of `kernel: ok` and no failures.
+const DISK_REBOOT_LINES: &[&str] = &[
+    "kernel: run cat /n/disk/persist.txt",
+    "written by the first boot",
+    "kernel: run cat /n/disk/kept.txt",
+    "written by the kernel",
+    "kernel: disk: check it",
+];
+
+/// Boots run `k` again on its disk (`disk_args`), with `diskcheck`: the
+/// kernel mounts the file system and checks that it holds what the first
+/// boot left, which a first boot cannot do across its own reboot.
+fn disk_reboot(
+    k: &KernelRun,
+    mem: &str,
+    kvm: bool,
+    image: &Path,
+    initrd: &str,
+    disk_args: &[String],
+) -> Result<()> {
+    let mut args: Vec<&str> = k.args.to_vec();
+    args.extend(["-m", mem, "-nographic"]);
+    if k.initrd {
+        args.extend(["-initrd", initrd]);
+    }
+    if !kvm {
+        args.push("-semihosting");
+    }
+    args.extend([
+        "-append",
+        if kvm {
+            "exit=psci diskcheck"
+        } else {
+            "diskcheck"
+        },
+    ]);
+    args.extend(disk_args.iter().map(String::as_str));
+    args.push("-kernel");
+    eprintln!(
+        "kernel: {}: second boot: qemu-system-aarch64 {}",
+        k.name,
+        args.join(" ")
+    );
+    let r = run_qemu(&args, image, KERNEL_TIMEOUT, &[], |_| Ok(()))?;
+    let lines: Vec<&str> = r.serial.lines().collect();
+    let problem = if !r.status.success() {
+        Some(format!("QEMU exited with {}", r.status))
+    } else if let Some(l) = lines.iter().find(|l| l.starts_with("kernel: FAIL")) {
+        Some(String::from(*l))
+    } else if lines.last() != Some(&"kernel: ok") {
+        Some(String::from("no final `kernel: ok`"))
+    } else {
+        DISK_REBOOT_LINES
+            .iter()
+            .find(|want| !lines.contains(want))
+            .map(|want| format!("no `{want}` line"))
+    };
+    match problem {
+        Some(p) => {
+            print!("{}", r.serial);
+            Err(format!("the second boot: {p}"))
+        }
+        None => {
+            eprintln!(
+                "kernel: {}: second boot passed in {:.2}s",
+                k.name,
+                r.elapsed.as_secs_f64()
+            );
+            Ok(())
+        }
+    }
+}
 
 /// Turns the kernel's or the probe's ELF into a raw arm64 `Image`: each loadable segment
 /// copied to its physical address, relative to the lowest one. The image
@@ -948,6 +1029,16 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
                 continue;
             }
         };
+        // The disks: a purgfs image on /n/disk, and a slow one.
+        let disks =
+            match disk::KernelDisks::create(&ws, k.name).and_then(|d| d.args().map(|a| (d, a))) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("kernel: {}: {e}", k.name);
+                    failed.push(k.name);
+                    continue;
+                }
+            };
         // `test` runs the conformance guests, the sh corpus and the
         // network checks instead of an interactive shell.
         let bootargs = format!(
@@ -969,6 +1060,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         args.extend(["-append", &bootargs]);
         args.extend(net.iter().map(String::as_str));
         args.extend(shared.1.iter().map(String::as_str));
+        args.extend(disks.1.iter().map(String::as_str));
         args.push("-kernel");
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
         let mut mounted = false;
@@ -1040,6 +1132,10 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             Some(String::from("the UDP echo server heard nothing"))
         } else if let Err(e) = shared.0.check() {
             Some(format!("the shared directory: {e}"))
+        } else if let Err(e) = disks.0.check() {
+            Some(format!("the disk: {e}"))
+        } else if k.disk_reboot {
+            disk_reboot(k, &opts.mem, kvm, &image, &initrd, &disks.1).err()
         } else {
             None
         };
@@ -1219,9 +1315,18 @@ impl Drop for HostExport {
 /// A directory on this host that a kernel run shares with the guest over
 /// virtio-9p (`-fsdev local` and `virtio-9p-device`, mount tag `host`),
 /// with the files the kernel's checks expect. Removed when dropped.
+///
+/// A second directory is shared as a second device, tagged `slow`, whose
+/// reads QEMU throttles to [`SLOW_9P_BPS`] bytes a second: the kernel
+/// kills a prog while one of its reads waits there.
 struct SharedDir {
     path: PathBuf,
+    slow: PathBuf,
 }
+
+/// The slow 9P device's read rate, in bytes a second: an 8 KiB read takes
+/// about a second.
+const SLOW_9P_BPS: u32 = 8192;
 
 /// What the kernel writes to `kept.txt` (see `purg-kernel`'s `host9p`).
 const SHARED_WRITTEN: &str = "written by the kernel\n";
@@ -1248,19 +1353,37 @@ impl SharedDir {
         for i in 0..SHARED_MANY {
             fs::write(path.join(format!("many/f{i:03}")), "").map_err(io)?;
         }
-        Ok(SharedDir { path })
+        let slow = path.with_extension("slow");
+        let io = |e: std::io::Error| format!("{}: {e}", slow.display());
+        if slow.exists() {
+            fs::remove_dir_all(&slow).map_err(io)?;
+        }
+        fs::create_dir_all(&slow).map_err(io)?;
+        fs::write(slow.join("big.bin"), vec![b'b'; 64 << 10]).map_err(io)?;
+        fs::write(slow.join("small.txt"), "small file\n").map_err(io)?;
+        Ok(SharedDir { path, slow })
     }
 
     fn args(&self) -> Result<Vec<String>> {
-        let path = self.path.to_str().ok_or("shared directory is not UTF-8")?;
-        if path.contains(',') {
-            return Err(format!("{path}: QEMU options cannot hold a comma"));
-        }
+        let utf8 = |p: &Path| -> Result<String> {
+            let p = p.to_str().ok_or("shared directory is not UTF-8")?;
+            if p.contains(',') {
+                return Err(format!("{p}: QEMU options cannot hold a comma"));
+            }
+            Ok(String::from(p))
+        };
+        let (path, slow) = (utf8(&self.path)?, utf8(&self.slow)?);
         Ok([
             "-fsdev",
             &format!("local,id=host,path={path},security_model=none"),
             "-device",
             "virtio-9p-device,fsdev=host,mount_tag=host",
+            "-fsdev",
+            &format!(
+                "local,id=slow,path={slow},security_model=none,throttling.bps-total={SLOW_9P_BPS}"
+            ),
+            "-device",
+            "virtio-9p-device,fsdev=slow,mount_tag=slow",
         ]
         .map(String::from)
         .to_vec())
@@ -1301,6 +1424,7 @@ impl SharedDir {
 impl Drop for SharedDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+        let _ = fs::remove_dir_all(&self.slow);
     }
 }
 

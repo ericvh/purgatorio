@@ -1058,13 +1058,17 @@ impl<D: Disk> Fs<D> {
             return Err(err(error::ENOSPACE));
         }
         let mut done = 0usize;
+        // Blocks a transaction takes on; fewer when the disk is nearly
+        // full, so the last blocks are used.
+        let mut step = STEP;
         while done < data.len() {
             let pos = off + done as u64;
-            let lim = (pos / bs + STEP) * bs;
+            let lim = (pos / bs + step) * bs;
             let stop = (end.min(lim) - off) as usize;
             let chunk = &data[done..stop];
             match self.op(|fs| fs.write_chunk(r, pos, chunk, user)) {
                 Ok(()) => done = stop,
+                Err(e) if e == error::ENOSPACE && step > 1 => step /= 2,
                 Err(e) if done == 0 => return Err(e),
                 Err(_) => break,
             }

@@ -16,7 +16,7 @@ bench = false
 # A small build leaves these out (`--no-default-features`); the test mode
 # needs all of them. docs/footprint.md has the sizes.
 [features]
-default = ["tls", "net", "p9", "lethe"]
+default = ["tls", "net", "p9", "lethe", "blk"]
 # `#D`, the TLS client device.
 tls = ["purg-core/tls"]
 # `#λ`, the Lethe client (docs/lethe.md). Without `net` it has nothing to dial.
@@ -25,6 +25,9 @@ lethe = ["purg-core/lethe"]
 net = ["purg-aarch64/net"]
 # `#9`, a host directory over virtio-9p, mounted on `/n/host`.
 p9 = ["purg-aarch64/p9"]
+# `#S`, the virtio-blk disks, and a purgfs on one of them as `#K` on
+# `/n/disk` (docs/fs.md).
+blk = ["purg-aarch64/blk", "dep:purg-fs"]
 
 [dependencies]
 purg-aarch64.workspace = true
@@ -35,6 +38,7 @@ purg-platform.workspace = true
 purg-abi.workspace = true
 purg-core.workspace = true
 purg-styx.workspace = true
+purg-fs = { workspace = true, features = ["dev"], optional = true }
 purg-vm.workspace = true
 purg-vm-wasmi.workspace = true
 spin.workspace = true
