@@ -401,17 +401,19 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         archive.iter().any(|&b| b != 0),
         "no root: build the guests (cargo xtask build-root) or boot with -initrd"
     );
-    let mode = match test {
-        true => Mode::Test {
+    let mode = match (test, has_bootarg(&info, "diskcheck")) {
+        (_, true) => Mode::DiskCheck,
+        (true, false) => Mode::Test {
             memstat: has_bootarg(&info, "memstat"),
         },
-        false => Mode::Interactive,
+        (false, false) => Mode::Interactive,
     };
     println!("kernel: root {from}");
     let net = system::net::open(&fdt, &info);
     let host = system::host9p::find(&fdt);
+    let blks = system::disk::find(&fdt);
     let rtc = info.rtc.map(|r| r.base as usize);
-    let failed = system::start(archive, cons, rtc, net, host, mode);
+    let failed = system::start(archive, cons, rtc, net, host, blks, mode);
     if failed != 0 {
         fail(format_args!("{failed} failed"));
     }

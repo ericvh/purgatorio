@@ -31,7 +31,7 @@ impl System {
         None
     }
 
-    pub fn host9p_tests(&self, _mounted: Option<bool>) -> usize {
+    pub fn host9p_tests(&self, _mounted: Option<bool>, _dev: Option<&Dev9p>) -> usize {
         0
     }
 }

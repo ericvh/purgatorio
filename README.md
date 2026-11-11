@@ -61,7 +61,7 @@ a `; ` prompt.
 | `dbfs`: the records of a text file as files (dbfs(4)) | done; `rawdbfs` remains |
 | `fs`: trees as values (`walk filter select merge write bundle unbundle exec query` and the gates) | done; fs(1)'s other modules remain |
 | Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd` | done |
-| System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext` | done |
+| System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext disk/mkdisk disk/chkdisk` | done |
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log; a `/prog` of its own progs only; remote sessions over encrypted `rcmd`, also on the kernel. See [docs/mcp.md](docs/mcp.md) | stage 3 |
 | Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
 | File and script tools: `basename cleanname touch chmod chgrp dd newer read test time xargs` | done |
@@ -88,8 +88,10 @@ crates/
   purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/;
                              the `lethed` binary, the Lethe server
   purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt, on purg-aarch64
-  purg-aarch64/      no_std  aarch64 support: boot, DTB, GICv2/v3, timer, vectors, MMU, PL011, scheduler, virtio-net, smoltcp, virtio-9p
-  purg-kernel/       no_std  the native kernel for QEMU virt (Phase K); #9 (virtio-9p)
+  purg-aarch64/      no_std  aarch64 support: boot, DTB, GICv2/v3, timer, vectors, MMU, PL011, scheduler, virtio-net, smoltcp, virtio-9p, virtio-blk
+  purg-fs/           no_std  purgfs, the journaled disk file system, its checker, and #K (docs/fs.md)
+  purg-system/       no_std  the bare-metal images' boot namespace and program runner
+  purg-kernel/       no_std  the native kernel for QEMU virt (Phase K); #9 (virtio-9p), #S (virtio-blk), #K
 sdk/
   purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
   purgatorio-macros/         #[purgatorio::main]
@@ -148,8 +150,20 @@ device's one 9P conversation as a file (writes take T-messages, reads give
 R-messages), and the kernel mounts it with `#M` on `/n/host` at boot. QEMU
 speaks only 9P2000.u and .L, so a translator (`purg_styx::dotu`) sits
 between `#M`, which speaks 9P2000, and the device. In test mode the kernel
-lists, reads, writes, renames, chmods and removes files there, and `xtask`
-checks the host side.
+lists, reads, writes, renames, chmods and removes files there, kills a
+prog whose read waits on a second, throttled device (the mount flushes the
+read through the translator), and `xtask` checks the host side.
+
+K3 storage, second pass: virtio-blk disks are `#S` (`/dev/sdV0/ctl` and
+`data`, after `/dev`), and the kernel mounts the first one holding a purgfs
+(`#K`, [docs/fs.md](docs/fs.md)) on `/n/disk`, interactively and in test
+mode. purgfs is kfs-like with a journal: a crash never leaves the metadata
+half changed. `disk/mkdisk` and `disk/chkdisk` make and check images (also
+`cargo xtask diskimg`). In test mode the kernel works on an image `xtask`
+builds (files, a rename, a large file, the disk filled to `file system
+full`, `disk/chkdisk` on the raw disk), kills a reader of a throttled disk
+in the middle of a request, and `xtask` checks the image on the host and
+boots a second time to check that the files persist.
 
 ```sh
 cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on cortex-a72 and max
@@ -161,7 +175,10 @@ qemu-system-aarch64 -accel kvm -cpu host -M virt,gic-version=3 -m 512M -nographi
   -device virtio-net-device,netdev=net0 \
   -fsdev local,id=host,path=$HOME,security_model=none \
   -device virtio-9p-device,fsdev=host,mount_tag=host \
+  -drive file=disk.img,if=none,id=disk,format=raw \
+  -device virtio-blk-device,drive=disk \
   -append exit=psci -kernel target/aarch64-unknown-none/kernel/purg-kernel.img
+# disk.img from: cargo xtask diskimg --size 64m disk.img [dir]
 ```
 
 Each run must match `crates/purg-kernel/expected.out`. Under KVM,

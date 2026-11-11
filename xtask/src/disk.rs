@@ -71,6 +71,152 @@ pub fn check(img: &Path) -> Result<Report> {
     Ok(mount(img)?.check())
 }
 
+/// The contents of file `path` (from the root) in image `img`.
+pub fn read(img: &Path, path: &str) -> Result<Vec<u8>> {
+    let mut fs = mount(img)?;
+    let at = |e: &dyn std::fmt::Display| format!("{}: {path}: {e}", img.display());
+    let loc = fs.walk_path(path, USER).map_err(|e| at(&e))?;
+    let len = fs.dentry(loc.me).map_err(|e| at(&e))?.length;
+    let mut buf = vec![0u8; len as usize];
+    let n = fs.read(loc.me, 0, &mut buf).map_err(|e| at(&e))?;
+    buf.truncate(n);
+    Ok(buf)
+}
+
+/// Whether `path` (from the root) is in image `img`.
+pub fn exists(img: &Path, path: &str) -> Result<bool> {
+    let mut fs = mount(img)?;
+    Ok(fs.walk_path(path, USER).is_ok())
+}
+
+/// The disks a kernel run attaches: a purgfs image it works on (and a
+/// second boot checks), and a small read-only disk throttled to a few
+/// requests a second, which the kill test reads. Removed when dropped.
+pub struct KernelDisks {
+    dir: std::path::PathBuf,
+    pub image: std::path::PathBuf,
+    slow: std::path::PathBuf,
+}
+
+/// The file system image's size: small, so filling it is quick.
+const KERNEL_DISK_SIZE: u64 = 2 << 20;
+/// The slow disk's size and its throttle, in requests a second.
+const SLOW_SIZE: usize = 64 << 10;
+const SLOW_IOPS: u32 = 2;
+/// Files in `many/`, enough for several directory blocks.
+const MANY: usize = 300;
+
+/// What a second boot reads back from `persist.txt`, and the first
+/// leaves in `kept.txt` (see `purg-kernel`'s `system/disk.rs`).
+pub const PERSIST: &str = "written by the first boot\n";
+pub const KEPT: &str = "written by the kernel\n";
+
+impl KernelDisks {
+    pub fn create(ws: &Path, run: &str) -> Result<KernelDisks> {
+        let name: String = run
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let dir = ws
+            .join("target/kernel-disk")
+            .join(format!("{}-{name}", std::process::id()));
+        let io = |e: std::io::Error| format!("{}: {e}", dir.display());
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).map_err(io)?;
+        }
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("sub")).map_err(io)?;
+        std::fs::create_dir_all(src.join("many")).map_err(io)?;
+        std::fs::write(src.join("hello.txt"), "hello from the disk image\n").map_err(io)?;
+        std::fs::write(src.join("sub/inner.txt"), "inner file\n").map_err(io)?;
+        for i in 0..MANY {
+            std::fs::write(src.join(format!("many/f{i:03}")), "").map_err(io)?;
+        }
+        let image = dir.join("disk.img");
+        build(&image, Some(&src), KERNEL_DISK_SIZE, BSIZE)?;
+        // Each sector of the slow disk says which it is.
+        let mut slow = vec![0u8; SLOW_SIZE];
+        for (i, sector) in slow.chunks_mut(512).enumerate() {
+            let tag = format!("slow sector {i}\n");
+            sector[..tag.len()].copy_from_slice(tag.as_bytes());
+        }
+        let slow_path = dir.join("slow.img");
+        std::fs::write(&slow_path, &slow).map_err(io)?;
+        Ok(KernelDisks {
+            dir,
+            image,
+            slow: slow_path,
+        })
+    }
+
+    /// QEMU's arguments for the two disks.
+    pub fn args(&self) -> Result<Vec<String>> {
+        let path = |p: &Path| -> Result<String> {
+            let s = p.to_str().ok_or("disk path is not UTF-8")?;
+            if s.contains(',') {
+                return Err(format!("{s}: QEMU options cannot hold a comma"));
+            }
+            Ok(String::from(s))
+        };
+        Ok(vec![
+            // Version 2 transports, as for the other virtio devices.
+            String::from("-global"),
+            String::from("virtio-mmio.force-legacy=off"),
+            String::from("-drive"),
+            format!(
+                "file={},if=none,id=disk,format=raw,cache=unsafe",
+                path(&self.image)?
+            ),
+            String::from("-device"),
+            String::from("virtio-blk-device,drive=disk,serial=disk"),
+            String::from("-drive"),
+            format!(
+                "file={},if=none,id=slow,format=raw,readonly=on,throttling.iops-total={SLOW_IOPS}",
+                path(&self.slow)?
+            ),
+            String::from("-device"),
+            String::from("virtio-blk-device,drive=slow,serial=slow"),
+        ])
+    }
+
+    /// Checks what the kernel left on the file system: consistent, with
+    /// `persist.txt` and `kept.txt`, and without what it removed.
+    pub fn check(&self) -> Result<()> {
+        let r = check(&self.image)?;
+        if !r.ok() {
+            return Err(format!("the disk image does not check: {:?}", r.errors));
+        }
+        for (path, want) in [
+            ("persist.txt", PERSIST),
+            ("kept.txt", KEPT),
+            ("hello.txt", "hello from the disk image\n"),
+        ] {
+            let got = read(&self.image, path)?;
+            if got != want.as_bytes() {
+                return Err(format!(
+                    "{path} holds {:?}, not {want:?}",
+                    String::from_utf8_lossy(&got)
+                ));
+            }
+        }
+        for gone in ["new.txt", "big.wasm", "fill", "renamed.txt"] {
+            if exists(&self.image, gone)? {
+                return Err(format!("{gone} is still on the disk"));
+            }
+        }
+        if !exists(&self.image, "newdir")? {
+            return Err(String::from("newdir was not made"));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for KernelDisks {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 const USAGE: &str =
     "usage: cargo xtask diskimg [--size SIZE] [--bsize N] OUT [DIR] | diskimg --check IMAGE";
 

@@ -234,6 +234,25 @@ Directories never shrink: a removed entry leaves a free slot that the
 next create in that directory reuses. There are no hard links, symbolic
 links, device files or extended attributes, as in Inferno.
 
+## In the kernel
+
+The kernel mounts the first virtio-blk disk that holds a purgfs on
+`/n/disk`, in test and interactive modes. `xtask kernel` builds a 2 MiB
+image per run and attaches it, with a second, read-only disk throttled to
+two requests a second for the kill test; after the run it checks the
+image on the host, and the first TCG run and the KVM run boot a second
+time (`diskcheck` in the boot arguments) to check that the files the
+first boot left are there.
+
+It could be the root, and should be able to: bind `#K` on `/` where the
+RAM tree from the initrd is now (or union it before the RAM tree, so the
+initrd still supplies `/bin` when the disk lacks it). What that takes: an
+image holding `/bin` and `/lib` (`cargo xtask diskimg OUT root` already
+makes one, about 14 MiB), a boot argument to choose it, and a decision on
+`/tmp` (on disk, or a RAM tree bound over it). Modules would then load
+from the disk; wasmi needs each whole module in memory anyway, so the cost
+is one read per `exec`, not resident memory.
+
 ## Tools
 
 - `disk/mkdisk [-b blocksize] [-j journal] [-s size] [-u user] [-r dir]
