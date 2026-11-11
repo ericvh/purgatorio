@@ -95,6 +95,17 @@ pub fn boot(
     })
 }
 
+/// A copy of `pgrp` with the test keys (`/lib/test/keys`: the public
+/// test key, for any user and any host) bound on `/lib/keys`, for the
+/// servers the test modes start for the host. Nothing else gets it: the
+/// boot namespace trusts no key.
+#[cfg(feature = "net")]
+pub fn with_test_keys(pgrp: &Pgrp) -> Result<Arc<Pgrp>, Error> {
+    let p = Arc::new(pgrp.fork());
+    p.bind("/lib/test/keys", "/lib/keys", MREPL)?;
+    Ok(p)
+}
+
 impl System {
     /// Runs `argv` in a fresh prog on this thread, in the boot namespace.
     /// Its fd 0 is the console, and fds 1 and 2 are the console or, given
@@ -129,11 +140,12 @@ impl System {
 
     /// [`System::run_test`] with `stdin` open for reading and writing as
     /// fd 0 and the console as fds 1 and 2, as `listen` starts a server on
-    /// a connection.
+    /// a connection. Its namespace trusts the test key, as the host's
+    /// client proves with it ([`with_test_keys`]).
     #[cfg(feature = "net")]
     pub fn run_test_on(&self, argv: &[&str], stdin: &str) -> Result<String, Error> {
         let threads = SCHED.live();
-        let mut prog = Prog::new(self.kernel.clone(), Arc::new(self.pgrp.fork()));
+        let mut prog = Prog::new(self.kernel.clone(), with_test_keys(&self.pgrp)?);
         let first = prog.pid;
         self.kernel.platform.set_current_pid(prog.pid);
         let opened = prog

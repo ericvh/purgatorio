@@ -30,6 +30,19 @@ pub fn netmkaddr(addr: &str) -> String {
     }
 }
 
+/// The host a dial string names, as written (not translated): `host` in
+/// `net!host!port`, `host!port` or a bare `host`. `None` for `*` or an
+/// empty host. A client that requires a server's proof checks it is for
+/// this name (`docs/auth.md`, "Servers per host").
+pub fn host(addr: &str) -> Option<String> {
+    let addr = match addr.split('!').count() {
+        1 => format!("tcp!{addr}!0"),
+        _ => netmkaddr(addr),
+    };
+    let host = addr.split('!').nth(1)?;
+    (!host.is_empty() && host != "*").then(|| String::from(host))
+}
+
 /// Connects to `addr` and returns the conversation. Each translation
 /// `/net/cs` gives is tried in turn; the last failure is returned.
 pub fn dial(addr: &str) -> Result<Connection, Error> {

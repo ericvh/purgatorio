@@ -1,0 +1,11 @@
+client file
+mount: mount: certificate name mismatch
+import: import: certificate name mismatch
+not required
+listed
+mount: mount: certificate name mismatch
+client file
+client file
+rcmd: certificate name mismatch
+rstyxd: mount /n/client: certificate name mismatch
+status fail:mount /n/client: certificate name mismatch

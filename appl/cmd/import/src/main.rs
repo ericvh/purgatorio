@@ -1,7 +1,8 @@
 //! import [-AS] [-k keyfile] [-9 tree] addr mtpt: dial `addr` and mount the
 //! 9P server there. The mount authenticates with `fauth` when the server
 //! asks, with the authinfo `keyfile` if given; `-A` skips authentication.
-//! `-S` requires the server to prove itself too, as `mount -S` does.
+//! `-S` requires the server to prove itself too, as `mount -S` does: with
+//! a key or certificate trusted for the host `addr` names.
 //!
 //! `-9 tree` (an addition) is for a Plan 9 `exportfs`, or `9export` here:
 //! before 9P, the name of the tree wanted is sent and the server's `OK`
@@ -68,7 +69,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if let Some(tree) = tree {
         plan9(fd, &tree).map_err(|e| Error(format!("import: {e}")))?;
     }
-    purgatorio::auth::amount_key(fd, &rest[1], flags, "", keyfile.as_deref())
+    let host = dial::host(&rest[0]);
+    purgatorio::auth::amount_host(fd, &rest[1], flags, "", keyfile.as_deref(), host.as_deref())
         .map_err(|e| Error(format!("import: {e}")))?;
     drop(conn);
     Ok(())

@@ -56,6 +56,12 @@ All keys are Ed25519. Hex is lowercase. Times are seconds since
 - **Key list:** text, one key per line: 64 hex digits, optionally followed
   by a space and a comment (usually a name). Blank lines and lines starting
   with `#` are ignored. Used for `/lib/keys/signers` and `/lib/keys/revoked`.
+- **Named key list:** text, one key per line, with the name it is trusted
+  for first: `<name> <key> [comment]`. The name is a user (in
+  `/lib/keys/users`) or a host (in `/lib/keys/servers`), compared with
+  ASCII case ignored, or `*` for any. Blank lines and lines starting with
+  `#` are ignored, and so is a line that does not parse: it grants nothing
+  and does not cancel the others (`purg_auth::keys::parse_named`).
 
 ### Certificate (`pgcert1`)
 
@@ -146,7 +152,8 @@ The `Tattach` that follows must use the same `uname` and `aname` as the
 Everything is read in the **exporter's own namespace**, at absolute paths,
 and never from under the exported tree:
 
-- `/usr/<uname>/key.pub` and `/lib/test/auth.key.pub`: directly held keys.
+- `/usr/<uname>/key.pub`, and the keys `/lib/keys/users` (a named key
+  list) gives for `uname` or `*`: directly held keys.
 - `/lib/keys/signers`: trusted signers (a key list).
 - `/lib/keys/revoked`: revoked keys (a key list). A line that does not
   parse, or a list that is there but cannot be read, makes every
@@ -163,13 +170,102 @@ server looked under the tree. Someone who can write into an exported
 subtree cannot add a key, a signer or a revocation.
 
 A server with no directly held key and no trusted signer in its namespace
-answers `Tauth` with `authentication not required`, as before. Note that
-the stock root holds the public test key `/lib/test/auth.key.pub`, so an
-export from an unchanged namespace asks for a proof whatever it exports,
-and any client holding the (public) test seed passes; deployments remove
-or hide that pair. `-A` (`MNOAUTH`) still
-skips `Tauth`, and a server that authenticates still rejects such an
-attach with `authentication required`.
+cannot authenticate anyone, so it lets nobody in: `Tauth` and `Tattach`
+fail with `server trusts no keys` (see "Trust by default"). `-A`
+(`MNOAUTH`) on the export asks for no proof and lets everyone in, and
+answers `Tauth` with `authentication not required`. `-A` on the mount
+skips `Tauth`, and a server that authenticates rejects such an attach
+with `authentication required`.
+
+### Trust by default
+
+The stock root trusts **no key**. `/lib/keys/signers`, `/lib/keys/users`
+and `/lib/keys/servers` are there with comments that say what goes in
+them, and nothing else. The public test pair stays in `/lib/test`
+(`auth.key`, `auth.key.pub`) because tests sign with it, but nothing reads
+`auth.key.pub` as trusted any more. Tests that want it trusted bind
+`/lib/test/keys` on `/lib/keys` in their own namespace: its `users` and
+`servers` lists name the test key for `*`. A client with no key of its
+own still falls back to proving with the test seed, which no stock server
+accepts.
+
+A server without `-A` that trusts nothing **fails closed**: an export
+answers every `Tauth` and `Tattach` with `server trusts no keys`, and
+`rstyxd` refuses every client with the same error. Before, such a server
+answered `authentication not required` and let everyone in, so an
+`export` or `rstyxd` started on a fresh system served its whole namespace
+to anyone who could reach it. This is the owner's decision in issue #91
+("tighten trust before mcpd gets real remote use"), and the reasoning is:
+
+- **Inferno does the same.** An Inferno listener that authenticates
+  (`listen` or `styxlisten` without `-A`) reads its keyring before it
+  serves anyone, and with no keyring it cannot authenticate anyone, so it
+  serves no one. A service meant for everyone says `-A`.
+- **The kernel cannot tell local from remote.** An export only sees a fd.
+  A pipe to a prog on the same system looks like a pipe to `rcmd`, which
+  relays it to the network (the client's `/n/client` export). Opening
+  pipes but closing connections would leave that hole, so every export
+  without `-A` follows the same rule.
+- **The cost is one flag.** An export to a prog on the same system that
+  does not want authentication says so: `mount {export -A dir} /n/x`, as
+  `mcpd` already did for its sessions' read-only exports. Nothing listens
+  on the network without trust material or an explicit `-A`.
+
+The kernel's and the probe's own exports (`netexport`, and the probe's
+export for the host) and the kernel test mode's `rstyxd` exist only in
+test mode, where the host connects as a test client. They run in a copy
+of the boot namespace with `/lib/test/keys` bound on `/lib/keys`. The
+interactive kernel and the corpus scripts run in the boot namespace,
+which trusts nothing; a corpus script that needs the test key binds
+`/lib/test/keys` itself.
+
+### Setting up keys
+
+Trust files live under `/lib/keys` in the namespace of the program that
+checks: the exporter (`export`, `rstyxd`) for its clients, the mounter
+(`mount -S`, `import -S`, `rcmd -S`) for its servers. Keep them writable
+only by the administrator.
+
+With a signer (one machine holds the signer key; servers and users get
+certificates):
+
+```sh
+# On the signer's machine: make the signer key, trust it here.
+auth/createsignerkey -f /keydb/signerkey mysigner >> /lib/keys/signers
+# Copy that line into /lib/keys/signers on every machine that should
+# accept the signer's certificates (clients and servers alike).
+
+# A user's key and certificate, made on the signer's machine and copied
+# to the user's /usr/<user>/keyring/default (mode 0600):
+auth/mkauthinfo -f /keydb/signerkey alice /usr/alice/keyring/default
+# or online, with a password checked by auth/signer, which the signer
+# runs under styxlisten with auth/keyfs mounted (see "Tools"):
+getauthinfo -s tcp!signer!infsigner default
+
+# A server's certificate names the host clients dial (the host field of
+# tcp!host!port, as they write it):
+auth/mkauthinfo -f /keydb/signerkey fs.example /keydb/fs.example
+styxlisten 'tcp!*!styx' export -k /keydb/fs.example / &
+listen 'tcp!*!rstyx' /bin/auxi/rstyxd.wasm -k /keydb/fs.example &
+```
+
+With keys held directly (no signer), list the public keys:
+
+```sh
+auth/getpk /usr/alice/keyring/default        # prints the key in hex
+echo alice <hex> >> /lib/keys/users           # on the server
+echo fs.example <hex> >> /lib/keys/servers    # on the clients
+```
+
+`/usr/<user>/key.pub` (32 raw bytes) still works for a user, as before.
+Revoke a key or a signer by adding its line (from `auth/getpk` or
+`auth/createsignerkey`) to `/lib/keys/revoked`.
+
+An export serves whatever is under its tree, so `export /` also serves
+`/keydb` and `/lib/keys`. Export a subtree, or load the server's key into
+the guest factotum (`auth/factotum /keydb/fs.example`, then remove the
+file and start the export without `-k`): the export then asks factotum
+for its proof and never reads the key (see "Factotum").
 
 ### Errors
 
@@ -188,9 +284,10 @@ tells an attacker nothing they do not already hold.
 
 ### Clients
 
-The `mount` command lets the kernel authenticate unless it is given `-k`
-or a guest factotum is mounted; then it uses the SDK, as `import` always
-does. The kernel's own mount (`mount` with `afd = -1`) and the SDK
+The `mount` command lets the kernel authenticate unless it is given `-k`,
+a guest factotum is mounted, or `-S` with a dial string (whose host the
+SDK checks, see "Servers per host"); then it uses the SDK, as `import`
+always does. The kernel's own mount (`mount` with `afd = -1`) and the SDK
 (`purgatorio::auth`, used by `mount`, `import` and `amount`) build the
 proof from the authinfo named by `-k keyfile` on `mount` or `import`, or
 else from the first source that has a key:
@@ -198,7 +295,8 @@ else from the first source that has a key:
 1. the guest factotum, `/mnt/factotum/rpc` (SDK only);
 2. `#¤`: its seed, plus the certificate loaded into it with `cert ...`;
 3. the authinfo `/usr/<user>/keyring/default`;
-4. `/usr/<user>/key`, then `/lib/test/auth.key` (direct key, kind 0).
+4. `/usr/<user>/key`, then `/lib/test/auth.key` (direct key, kind 0),
+   which no stock server trusts.
 
 The ABI version goes from 0.5 to 0.6, since a guest can now write a v2
 proof to an auth fd and needs a kernel that reads it. Guests built for 0.5
@@ -385,7 +483,7 @@ protection; a server that asks for no authentication lets anyone attach
 anyway; and it would be one more mode to review. Inferno likewise pushes
 `ssl` only with the secret its authentication agreed, and `-A` leaves the
 conversation in the clear. A user who wants an encrypted conversation
-gets a key (`getauthinfo`, or the test key) and authenticates.
+gets a key (`getauthinfo`, or `mkauthinfo`) and authenticates.
 
 ### Server authentication
 
@@ -417,11 +515,14 @@ value. And because it arrives sealed under the session's keys, it also
 confirms that the server holds them. The format is in
 `purg_auth::server`.
 
-The proof is made in the exporter's namespace, with the key the
-exporting user's own mount would prove with: `#¤` (with its certificate),
+The proof is made in the exporter's namespace. `export -k keyfile` (an
+authinfo; `purgatorio.export_key`) signs with that key. Otherwise the key
+is the guest factotum's, when one is mounted at `/mnt/factotum` and holds
+an `ed25519` key (`role=server`, see "Factotum"), so the exporting prog
+need not be able to read it; else the key the exporting user's own mount
+would prove with: `#¤` (with its certificate),
 `/usr/<user>/keyring/default`, `/usr/<user>/key`, then the public test
-key. `rstyxd` uses its `-k keyfile`, or the same default sources (the
-guest factotum is not asked: its protocol makes client proofs only). A
+key. `rstyxd` uses its `-k keyfile`, or the same default sources. A
 server with no key gives an empty read. The kernel's and the probe's own
 exports sign with the test key or `#¤`.
 
@@ -429,23 +530,63 @@ exports sign with the test key or `#¤`.
 is checked against the client's own signer list, the client checks the
 proof against files in its own namespace, read at each mount:
 
-- `/lib/keys/servers`: server keys held directly (a key list, as
-  `/lib/keys/signers` is), and the public test key
-  `/lib/test/auth.key.pub`;
-- `/lib/keys/signers`: certificates from these signers are taken;
+- `/lib/keys/servers`: server keys held directly, each for the host its
+  line names (a named key list: `<host> <key>`, or `*` for any host);
+- `/lib/keys/signers`: certificates from these signers are taken, for the
+  host the certificate names;
 - `/lib/keys/revoked`: refused, key or signer, as for clients.
 
-The certificate's name is not checked: any server a trusted signer
-certified is accepted, again as in Inferno. That means any holder of a
-certificate from a trusted signer, a user included, can pose as a server
-to a client that trusts that signer. A list of trusted servers per host
-(keyed by dial string) would close that, but the kernel's mount sees only
-an fd, not the address it was dialled at; it is left for later. A site
-that wants servers apart from users can give servers certificates from a
-signer only the clients' `/lib/keys/signers` lists, or list the servers'
-keys in `/lib/keys/servers`. The stock root trusts the public test key
-both ways, so an unchanged system proves and accepts it; deployments
-remove that pair.
+### Servers per host
+
+Inferno does not check a server certificate's name, so there any holder
+of a certificate from a trusted signer, a user included, can pose as any
+server. Here a client that requires the server's proof (`-S`) and knows
+the host it dialled requires that the proof is for that host:
+
+- the **host** is the host field of the dial string as written:
+  `fs.example` in `tcp!fs.example!styx` or `fs.example!styx`, `10.0.0.5`
+  in `tcp!10.0.0.5!564`. It is not translated: a certificate names what
+  clients type, and an address `/net/cs` returned would not match it.
+  Names are compared with ASCII case ignored.
+- a **key proof** passes when `/lib/keys/servers` lists the key for that
+  host or for `*`;
+- a **certificate** passes when its key is listed for that host or `*`, or
+  when its name is the host and a trusted signer made it. A certificate
+  from a trusted signer for any other name fails with `certificate name
+  mismatch`.
+
+So `-S` means "the server proved it is the host I dialled". A mount of a
+fd or a `{command}` has no host; there `-S` takes any server this
+namespace trusts, as before. `*` lines give the same any-host trust on
+purpose: the test keys use it.
+
+Where it is checked: the kernel's mount sees only a fd, never the address
+it was dialled at, so the host is checked in the guest (`mount`, `import`,
+`rcmd`, `cpu`, the SDK's `amount_host` and `check_server_host`). For a
+mount the guest cannot verify the proof's signature, which needs the
+session's keys, and the kernel cannot check the host. The two halves are
+joined by reading the proof once:
+
+1. after its proof, `mount -S` (through `fauth`; a dial string makes
+   `mount -S` take that path even without `-k`) reads the auth fd at
+   offset 64. The kernel fetches the server's proof from the server on
+   that first read and keeps it; every later read, and the mount's own
+   check, use those bytes.
+2. the guest checks who the proof says the server is for the host
+   (`purg_auth::server::check_identity`: the key or certificate, the
+   signer, the expiry, revocation, the name);
+3. the mount with `MSRVAUTH` makes the kernel verify the signature over
+   the session and the trust in the same bytes
+   (`purg_auth::server::check`, for any host).
+
+A server cannot show the guest one proof and the kernel another. `rcmd`
+and `cpu` hold the session's keys themselves and check everything at
+once (`purg_auth::server::check_host`).
+
+A site that also wants servers apart from users can give servers
+certificates from a signer only the clients' `/lib/keys/signers` lists:
+a user's certificate names a user, which a client will not dial unless a
+host has the same name.
 
 **Requiring it.** Checking is the client's choice:
 
@@ -457,10 +598,11 @@ remove that pair.
   (`docs/rcmd.md`).
 
 A server that sends no proof, asks for no proof itself, or a conversation
-that is not version 3, fails with `server did not authenticate`. A proof
-that does not verify, or a key or certificate the client does not trust,
-fails with `server authentication failed`; the client's own files say
-why. `-S` with `-A` is a usage error (`bad arg in system call` to
+that is not version 3, fails with `server did not authenticate`. A
+certificate for another host fails with `certificate name mismatch`. A
+proof that does not verify, or a key or certificate the client does not
+trust, fails with `server authentication failed`; the client's own files
+say why. `-S` with `-A` is a usage error (`bad arg in system call` to
 `mount`).
 
 ### Clients and the ABI
@@ -479,6 +621,15 @@ proof and the errors `server did not authenticate`, `server
 authentication failed`, `encryption required` and `conversation is
 encrypted`. The wire format does not change: a 0.7 client never reads
 offset 64, and a 0.8 client of a 0.7 server reads it as empty.
+
+Version 0.9 changes what a guest sees, not the wire: an export without
+`MNOAUTH` that trusts nothing refuses with `server trusts no keys`
+instead of letting everyone in; a read of the auth fd at offset 64 or
+later gives the server's proof as the kernel first read it, every time;
+`mount` with `afd = -1` and `fauth` on a fd whose session is still alive
+(an open auth fd, or a mount) fail with `device or object already in use`,
+where they used to race that session's reader; and
+`purgatorio.export_key` (`export -k`) is new.
 
 ## Password scheme
 
@@ -631,6 +782,15 @@ the reply (`ok [data]`, `done`, `needkey <attrs>`, `error <message>`).
 - `ed25519` with `role=modsign`: `write <digest[32] || abi>`, then `read`
   returns `ok <entry>`, a module signature entry (`docs/signing.md`).
   Factotum builds that message itself too.
+- `ed25519` with `role=server`: `write <transcript[32] || bind[32]>` (the
+  session's values, `purg_auth::server::SESSION` bytes), then `read`
+  returns `ok <server proof>` (see "Server authentication"). Factotum
+  builds the `pgauth3 server` message itself, so this role signs only
+  server proofs. The kernel's export asks for it on the first read of
+  its proof, and `rstyxd` through the SDK's `server_proof`: a server's
+  key loaded into factotum (`auth/factotum keyfile`) never has to be
+  readable by the exporting prog. Whoever can open factotum's `rpc` can
+  make server proofs with it, as for client proofs.
 - `pass`: `start proto=pass server=<s> [user=<u>]`, then `read` returns
   `ok <user> <password>`, both quoted.
 
@@ -668,8 +828,8 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   The server is authenticated only when the client asks (`-S`): without
   it, a client that dials a fake server talks to the fake server,
   encrypted. With it, the fake server needs a key or certificate the
-  client trusts as a server's, and cannot reuse the real server's proof
-  from another session. What a man in the middle cannot do either way is
+  client trusts as a server's for the host dialled (see "Servers per
+  host"), and cannot reuse the real server's proof from another session. What a man in the middle cannot do either way is
   relay the client's proof to the real server and keep the session,
   because the proof signs the real server's key. Conversations of older
   guests (version 1 and 2 proofs) are still in the clear and can be taken
@@ -688,8 +848,8 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   exporter's own `/lib/keys` or `/usr/*/key.pub` (through `export /`, say)
   can, so those files need permissions that keep clients out, and the
   exporter's namespace must not have an untrusted tree bound over `/lib`
-  or `/usr`. The public test key in the stock root is trusted until it is
-  removed.
+  or `/usr`. The stock root trusts no key; a server that trusts none lets
+  nobody in (see "Trust by default").
 - **Password guessing.** Online guessing is limited only by connection
   rate; the signer does not lock accounts. The stand-in answer for an
   unknown user uses the default Argon2id cost, so an account made with
@@ -752,6 +912,20 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   `crypt_reuse`; `srvauth.sh` in the corpus (`mount -S`, `rcmd -S`, an
   impostor `rstyxd`, `export -e`, `rstyxd -e`); and the hosted
   `rcmd` test, which changes a byte of the proof on the way.
+- Trust and per-host tests: `purg-auth`'s named key lists and
+  `a_server_is_checked_for_its_host` (a certificate from a trusted signer
+  for another host is refused, a key listed for the host passes, the
+  identity check alone ignores the signature); `styxcrypt`'s
+  `an_export_that_trusts_nothing_lets_nobody_in`,
+  `the_server_proof_is_read_once` (a fake server that would answer the
+  guest's read and the kernel's check differently) and
+  `a_live_session_keeps_its_conversation`; `m3`'s `untrusted`,
+  `server_proof_fd` and `in_use`; the corpus's `srvhost.sh` (`mount -S`
+  and `import -S` refuse a server certified for another host, a key
+  listed for the host passes and one listed for another does not, and
+  `rcmd` to such an impostor gets no `/n/client`: refused under `-S`, and
+  without `-S` its own mount of `/n/client` fails) and `srvauth.sh`
+  (nothing trusted: an export and `rstyxd` let nobody in).
 - Fuzzing: the `record` fuzz target also feeds its input to the server
   proof's check, and its smoke test (`cargo test -p purg-auth --test
   fuzz_smoke`) adds genuine server proofs, with keys and certificates,
@@ -788,6 +962,11 @@ Decided by the owner:
 - **Mutual authentication** (the server proving it holds a certificate
   from a signer the client trusts): done, at the client's request (issue
   #105; see "Server authentication").
+- **Trust by default** (issue #91): the stock root trusts no key, and a
+  server without `-A` that trusts nothing lets nobody in (see "Trust by
+  default").
+- **Servers per host** (issue #124): under `-S` a server must prove the
+  host dialled (see "Servers per host").
 
 Still open:
 
@@ -795,6 +974,6 @@ Still open:
    are stable, so a stolen keyfs entry is not password-equivalent?
 2. **Per-prog users.** `runas`, and servers that act for several users,
    need a user per prog rather than one per system.
-3. **Servers per host.** A client trusts a server key or signer for every
-   server it dials. A list keyed by dial string would bind a key to an
-   address, but the kernel's mount sees only an fd.
+3. **Separate signers for servers.** One `/lib/keys/signers` list serves
+   for users and servers, so a user's certificate could prove a host that
+   has the user's name. A list of server-only signers would close that.

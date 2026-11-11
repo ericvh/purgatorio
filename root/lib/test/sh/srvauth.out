@@ -6,5 +6,8 @@ proved
      32
 rcmd: server authentication failed
 status fail:server authentication failed
-mount: mount: encryption required
-rcmd: encryption required
+mount: mount: server trusts no keys
+mount: mount: server trusts no keys
+mount: mount: server trusts no keys
+rcmd: server trusts no keys
+rcmd: server trusts no keys

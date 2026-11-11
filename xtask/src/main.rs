@@ -1117,7 +1117,13 @@ fn mcp_guest(ws: &Path, port: u16) -> Result<()> {
         .arg("-r")
         .arg(ws.join("root"))
         .arg("--vm=wasmi")
-        .args(["rcmd", &format!("tcp!127.0.0.1!{port}"), "mcpd"])
+        // The kernel's rstyxd proves itself with the public test key, and
+        // its test mode trusts that key for this client: trust it back.
+        .args([
+            "sh",
+            "-c",
+            &format!("bind /lib/test/keys /lib/keys; rcmd tcp!127.0.0.1!{port} mcpd"),
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -19,7 +19,10 @@
 //! itself (`docs/auth.md`); it never signs arbitrary bytes. With
 //! `role=modsign`, `write <digest[32] || abi>` then `read` gives `ok
 //! <entry>`, a module signature entry (`docs/signing.md`) over a message
-//! factotum also builds itself. For `pass`,
+//! factotum also builds itself. With `role=server`, `write
+//! <transcript[32] || bind[32]>` then `read` gives `ok <server proof>`, a
+//! version 3 server's proof for that session (`docs/auth.md`, "Server
+//! authentication"), again over a message factotum builds. For `pass`,
 //! `start proto=pass server=<s> [user=<u>]`, then `read` gives `ok <user>
 //! <password>`, quoted.
 
@@ -228,8 +231,10 @@ impl Factotum {
                         let Some(ch) = &rpc.challenge else {
                             return b"error phase error".to_vec();
                         };
-                        if attr::get(attrs, "role") == Some("modsign") {
-                            return modsign(seed, cert.as_ref(), ch);
+                        match attr::get(attrs, "role") {
+                            Some("modsign") => return modsign(seed, cert.as_ref(), ch),
+                            Some("server") => return server(seed, cert.as_ref(), ch),
+                            _ => {}
                         }
                         let uname = attr::get(attrs, "user")
                             .map(String::from)
@@ -250,6 +255,26 @@ impl Factotum {
             _ => b"error unknown verb".to_vec(),
         }
     }
+}
+
+/// Makes a server proof: `request` is the session's transcript and bound
+/// value (`purg_auth::server::SESSION` bytes). The message, with its
+/// context string, is built here, so this signs nothing but server proofs.
+fn server(seed: &[u8; fmt::SEED], cert: Option<&Cert>, request: &[u8]) -> Vec<u8> {
+    use fmt::server::{SESSION, assemble, message_for};
+    let Some((transcript, bind)) = <&[u8; SESSION]>::try_from(request)
+        .ok()
+        .and_then(|s| Some((s[..32].try_into().ok()?, s[32..].try_into().ok()?)))
+    else {
+        return b"error bad session".to_vec();
+    };
+    let public = fmt::public_key(seed);
+    let cert = cert.filter(|c| c.key == public);
+    let (kind, body) = fmt::proof::body(cert, &public);
+    let sig = fmt::sign(seed, &message_for(transcript, bind, kind, &body));
+    let mut out = b"ok ".to_vec();
+    out.extend_from_slice(&assemble(kind, &sig, &body));
+    out
 }
 
 /// Signs a module: `request` is its digest followed by its ABI version.
