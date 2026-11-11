@@ -90,7 +90,9 @@ pub fn boot(
         root.add_dir("/tmp");
         Ok(root)
     })?;
-    let engine = Arc::new(Wasmi::new()?);
+    let engine: Arc<dyn purg_vm::Engine> = Arc::new(Wasmi::new()?);
+    #[cfg(feature = "aot")]
+    let engine = crate::aot::engine(engine)?;
     memstat::report("booted");
     Ok(System(purg_system::System::new(engine, ns, threads)))
 }

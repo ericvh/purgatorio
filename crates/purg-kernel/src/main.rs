@@ -42,6 +42,8 @@ fn main() {
 #[cfg(target_os = "none")]
 extern crate alloc;
 
+#[cfg(all(target_os = "none", feature = "aot"))]
+mod aot;
 #[cfg(target_os = "none")]
 mod devices;
 #[cfg(target_os = "none")]
