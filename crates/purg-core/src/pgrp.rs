@@ -13,7 +13,7 @@ use purg_platform::sync::{Mutex, RwLock};
 use crate::chan::{Chan, Member};
 use crate::dev::DevTab;
 use crate::error::{Error, Result};
-use crate::names::{cleanname, elements, sh_quote, split_device};
+use crate::names::{cleanname, elements, split_device};
 
 /// Devices a `NODEVS` namespace may still attach (Inferno's list).
 const NODEVS_ALLOWED: &[char] = &['e', 's', '|', 'M', '¤'];
@@ -503,18 +503,23 @@ impl Pgrp {
         Ok(cur)
     }
 
-    /// The namespace as `bind` and `mount` commands, then `cd`, as
-    /// Inferno's `/prog/n/ns`: one line for each bind or mount, in the
-    /// order they were made (Inferno's `mountid`), so that running the
+    /// The namespace as `bind` and `mount` lines, then `cd`, in the raw
+    /// form of Inferno's `/prog/n/ns`: one line for each bind or mount, in
+    /// the order they were made (Inferno's `mountid`), so that running the
     /// lines again builds the same unions. The underlying directory of a
-    /// union is not listed. Flags are `-a`, `-b`, `-c` and combinations;
-    /// replace has none.
+    /// union is not listed.
+    ///
+    /// Each line is `bind flags new old`, or `mount flags source old spec`,
+    /// with nothing quoted. The flags are `-a`, `-b`, `-c` and their
+    /// combinations, and are empty for a replacing bind, which leaves two
+    /// spaces after the command; an empty spec leaves a trailing space.
+    /// The `ns` command quotes and tidies these lines.
     ///
     /// A member is shown as a mount only when it is the root a mount
     /// attached, as Inferno decides from the Chan's name being `#M`: its
-    /// source is the file the 9P conversation is on, and the attach name
-    /// follows. A directory reached through a mounted tree and bound
-    /// elsewhere is a bind of its name.
+    /// source is the name of the file the 9P conversation is on (Inferno's
+    /// `mchan`), and the attach name follows. A directory reached through
+    /// a mounted tree and bound elsewhere is a bind of its name.
     pub fn namespace(&self) -> String {
         let mounts = self.mounts.read();
         let mut lines: Vec<(&Member, &Mount)> = mounts
@@ -529,23 +534,18 @@ impl Pgrp {
         let mut out = String::new();
         for (member, m) in lines {
             let c = &member.chan;
-            let old = sh_quote(&m.from.name);
-            let mut fl = flag_text(member.flags);
-            if !fl.is_empty() {
-                fl.push(' ');
-            }
+            let (fl, old) = (flag_text(member.flags), &m.from.name);
             let cmd = match c.dev.mount_source(c) {
                 Some(src) => {
-                    let src = sh_quote(&src);
-                    let spec = sh_quote(&c.dev.aname(c));
-                    alloc::format!("mount {fl}{src} {old} {spec}\n")
+                    let spec = c.dev.aname(c);
+                    alloc::format!("mount {fl} {src} {old} {spec}\n")
                 }
-                None => alloc::format!("bind {fl}{} {old}\n", sh_quote(&c.name)),
+                None => alloc::format!("bind {fl} {} {old}\n", c.name),
             };
             out.push_str(&cmd);
         }
         drop(mounts);
-        out.push_str(&alloc::format!("cd {}\n", sh_quote(&self.dot())));
+        out.push_str(&alloc::format!("cd {}\n", self.dot()));
         out
     }
 

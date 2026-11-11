@@ -97,8 +97,8 @@ fn namespace_lists_binds() {
     )
     .unwrap();
     let ns = p.pgrp.namespace();
-    assert!(ns.contains("bind -b '#c' /dev\n"), "{ns}");
-    assert!(ns.contains("bind -ac '#R' /\n"), "{ns}");
+    assert!(ns.contains("bind -b #c /dev\n"), "{ns}");
+    assert!(ns.contains("bind -ac #R /\n"), "{ns}");
     assert!(ns.ends_with("cd /\n"), "{ns}");
 }
 

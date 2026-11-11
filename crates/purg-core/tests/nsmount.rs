@@ -90,7 +90,7 @@ fn session(fork_in_slave: bool) {
     s.mount(3, -1, "#R/mnt", MREPL | MNOAUTH, "").unwrap();
     s.close(3).unwrap();
     let ns = s.pgrp.namespace();
-    assert!(ns.contains("mount '#|/data1' '#R/mnt' ''\n"), "{ns}");
+    assert!(ns.contains("mount  #|/data1 #R/mnt \n"), "{ns}");
 
     let mut slave = s.spawn(0, &[]).unwrap();
     slave.started();
@@ -100,7 +100,7 @@ fn session(fork_in_slave: bool) {
     }
     slave.bind("#R/mnt/dev", "#R/box", MBEFORE).unwrap();
     let ns = slave.pgrp.namespace();
-    assert!(ns.contains("bind -b '#R/mnt/dev' '#R/box'\n"), "{ns}");
+    assert!(ns.contains("bind -b #R/mnt/dev #R/box\n"), "{ns}");
     let mut child = slave.spawn(0, &[]).unwrap();
     child.started();
     enter(&mock, &child);
@@ -225,12 +225,12 @@ fn ns_tells_binds_from_mounts() {
     // Binding a union binds its other members after the first, by the
     // names they were bound by, as Inferno's cmount copies them.
     s.bind("#R/n", "#R/u", MBEFORE).unwrap();
-    let want = "mount -c '#|/data1' '#R/mnt' dev\n\
-                bind '#R/mnt/sub' '#R/u'\n\
-                bind -a '#R/u' '#R/n'\n\
-                bind -bc '#R/mnt' '#R/box'\n\
-                bind -b '#R/n' '#R/u'\n\
-                bind -b '#R/u' '#R/u'\n\
+    let want = "mount -c #|/data1 #R/mnt dev\n\
+                bind  #R/mnt/sub #R/u\n\
+                bind -a #R/u #R/n\n\
+                bind -bc #R/mnt #R/box\n\
+                bind -b #R/n #R/u\n\
+                bind -b #R/u #R/u\n\
                 cd /\n";
     let ns = s.pgrp.namespace();
     assert_eq!(ns, want);

@@ -69,7 +69,7 @@ fn bind_of_a_union_binds_every_member() {
     assert_eq!(names(&mut p, "#R/box"), ["in-a", "in-b", "in-box"]);
     let ns = p.pgrp.namespace();
     let at = |line: &str| ns.find(line).unwrap_or_else(|| panic!("{line} in {ns}"));
-    assert!(at("bind -b '#R/x' '#R/box'\n") < at("bind -b '#R/b' '#R/box'\n"));
+    assert!(at("bind -b #R/x #R/box\n") < at("bind -b #R/b #R/box\n"));
 }
 
 #[test]

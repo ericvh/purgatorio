@@ -166,7 +166,7 @@ Read-only. A line per frame, the innermost first:
 <function index> <path>
 ```
 
-`path` is the prog's command module, quoted as `ns` quotes names. A
+`path` is the prog's command module, quoted when it holds white space or a quote. A
 snapshot keeps the 256 innermost frames; when the prog had more, a last
 line `... <n>` gives the number left out. For a running prog it is the
 stack at its last host call or check point, so for a prog blocked in the
