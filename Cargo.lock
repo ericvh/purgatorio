@@ -587,6 +587,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-lethe"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-listen"
 version = "0.1.0"
 dependencies = [
@@ -2517,6 +2524,7 @@ dependencies = [
  "p256",
  "purg-abi",
  "purg-auth",
+ "purg-lethe",
  "purg-platform",
  "purg-styx",
  "rand_core 0.6.4",
@@ -2531,6 +2539,7 @@ dependencies = [
  "purg-abi",
  "purg-auth",
  "purg-core",
+ "purg-lethe",
  "purg-platform",
  "purg-styx",
  "purg-vm",

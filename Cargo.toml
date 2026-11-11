@@ -60,6 +60,7 @@ repository = "https://github.com/ericvh/purgatorio"
 [workspace.dependencies]
 purg-abi = { path = "crates/purg-abi" }
 purg-auth = { path = "crates/purg-auth", default-features = false }
+purg-lethe = { path = "crates/purg-lethe" }
 purg-styx = { path = "crates/purg-styx" }
 purg-platform = { path = "crates/purg-platform" }
 # Without default features: the kernel can be built without them (its

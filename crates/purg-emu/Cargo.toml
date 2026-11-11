@@ -6,9 +6,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "emu"
 path = "src/main.rs"
+
+# The Lethe server (docs/lethe.md): host files with #U's host semantics.
+[[bin]]
+name = "lethed"
+path = "src/bin/lethed.rs"
 
 [dependencies]
 purg-abi.workspace = true
@@ -17,7 +25,8 @@ purg-abi.workspace = true
 # "Cost"). The records are the same bytes; the kernel keeps the no_std
 # cipher.
 purg-auth = { workspace = true, features = ["ring"] }
-purg-core = { workspace = true, features = ["std", "tls"] }
+purg-lethe.workspace = true
+purg-core = { workspace = true, features = ["std", "tls", "lethe"] }
 purg-platform = { workspace = true, features = ["std"] }
 purg-styx.workspace = true
 purg-vm.workspace = true

@@ -13,10 +13,6 @@
 //! the first prog is loaded, with the trust lists read in the boot
 //! namespace.
 
-mod devfs;
-mod host;
-mod platform;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -25,6 +21,7 @@ use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_core::devroot::StaticTree;
 use purg_core::modsig::Level;
 use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
+use purg_emu::{devfs, platform};
 use purg_vm::{Ctx, Engine};
 
 struct Options {

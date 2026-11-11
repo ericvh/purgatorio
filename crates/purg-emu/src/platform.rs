@@ -62,6 +62,12 @@ impl Emu {
     }
 }
 
+impl Default for Emu {
+    fn default() -> Emu {
+        Emu::new()
+    }
+}
+
 impl Platform for Emu {
     fn now_ns(&self) -> u64 {
         SystemTime::now()
