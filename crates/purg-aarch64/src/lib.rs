@@ -54,6 +54,8 @@ pub mod sched;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod semihost;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub mod smp;
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod timer;
 #[cfg(all(
     target_arch = "aarch64",

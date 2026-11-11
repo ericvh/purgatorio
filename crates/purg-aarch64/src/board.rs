@@ -85,11 +85,16 @@ pub fn exit_method(fdt: &Fdt<'_>, info: &BootInfo<'_>) -> ExitMethod {
     if !has_bootarg(info, "exit=psci") {
         return ExitMethod::Semihosting;
     }
-    let smc = fdt
-        .find_path("/psci")
+    ExitMethod::Psci { smc: psci_smc(fdt) }
+}
+
+/// Whether PSCI is called with `smc` rather than `hvc`: the `/psci`
+/// node's `method`. QEMU says `smc` when it emulates EL2 (so PSCI is the
+/// firmware's at EL3) and `hvc` otherwise, KVM included.
+pub fn psci_smc(fdt: &Fdt<'_>) -> bool {
+    fdt.find_path("/psci")
         .and_then(|n| n.property_str("method"))
-        == Some("smc");
-    ExitMethod::Psci { smc }
+        == Some("smc")
 }
 
 /// The most stretches [`free_regions`] returns.

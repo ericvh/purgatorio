@@ -272,3 +272,103 @@ pub fn console_test(cons: &'static Pl011Console) {
         got.len()
     );
 }
+
+/// Threads in the SMP test: enough that every CPU gets some.
+const SMP_THREADS: usize = 16;
+/// Increments each makes.
+const SMP_ROUNDS: u64 = 2000;
+
+/// Many threads on every CPU increment a counter under a `purg_platform`
+/// Mutex: none may be lost, and every online CPU must have run some of
+/// them. Then a thread blocked on a `Rendez` with the CPUs idle must be
+/// woken by another CPU's wakeup, which with more than one CPU takes an
+/// IPI, long before its timeout.
+pub fn smp_test() {
+    use purg_aarch64::cpu;
+    use purg_aarch64::exception::IrqGuard;
+    static RAN_ON: AtomicU64 = AtomicU64::new(0);
+    static FINISHED: AtomicU32 = AtomicU32::new(0);
+    static TOTAL: AtomicU64 = AtomicU64::new(0);
+    let m = Arc::new(Mutex::new(0u64));
+    let done = Rendez::new();
+    let want = (1u64 << SCHED.online()) - 1;
+    // Under KVM the work is over in microseconds, before a CPU woken
+    // from `wfi` has taken a thread, so the threads go on until every CPU
+    // has run one (or a few seconds pass).
+    let until = SCHED.monotonic_ns() + 5_000 * MS;
+    for _ in 0..SMP_THREADS {
+        let (m, done) = (m.clone(), done.clone());
+        SCHED.spawn(Box::new(move || {
+            let mut i = 0;
+            while i < SMP_ROUNDS
+                || (RAN_ON.load(Ordering::Acquire) != want && SCHED.monotonic_ns() < until)
+            {
+                *m.lock() += 1;
+                if i % 64 == 0 {
+                    let g = IrqGuard::new();
+                    RAN_ON.fetch_or(1 << cpu::id(), Ordering::AcqRel);
+                    drop(g);
+                    SCHED.yield_now();
+                }
+                i += 1;
+            }
+            TOTAL.fetch_add(i, Ordering::AcqRel);
+            FINISHED.fetch_add(1, Ordering::AcqRel);
+            done.wakeup();
+        }));
+    }
+    let all = SMP_THREADS as u32;
+    if !done.tsleep(|| FINISHED.load(Ordering::Acquire) == all, 60_000 * MS) {
+        fail(format_args!(
+            "smp: {} of {SMP_THREADS} threads finished",
+            FINISHED.load(Ordering::Acquire)
+        ));
+    }
+    let count = *m.lock();
+    let total = TOTAL.load(Ordering::Acquire);
+    if count != total {
+        fail(format_args!(
+            "smp: a shared lock lost updates: {count} != {total}"
+        ));
+    }
+    let online = SCHED.online();
+    let ran = RAN_ON.load(Ordering::Acquire);
+    if ran != want {
+        fail(format_args!(
+            "smp: threads ran on cpus {ran:#x}, not all of {want:#x}"
+        ));
+    }
+
+    // A sleeper on its own thread, woken by this one.
+    static FLAG: AtomicBool = AtomicBool::new(false);
+    static WOKE: AtomicU64 = AtomicU64::new(0);
+    let r = Rendez::new();
+    {
+        let r = r.clone();
+        let done = done.clone();
+        SCHED.spawn(Box::new(move || {
+            let ok = r.tsleep(|| FLAG.load(Ordering::Acquire), 10_000 * MS);
+            WOKE.store(if ok { SCHED.monotonic_ns() } else { 1 }, Ordering::Release);
+            done.wakeup();
+        }));
+    }
+    // Let the sleeper block and its CPU go idle.
+    let pause = Rendez::new();
+    pause.tsleep(|| false, 100 * MS);
+    let t0 = SCHED.monotonic_ns();
+    FLAG.store(true, Ordering::Release);
+    r.wakeup();
+    if !done.tsleep(|| WOKE.load(Ordering::Acquire) != 0, 20_000 * MS) {
+        fail(format_args!("smp: the sleeper never ran"));
+    }
+    let woke = WOKE.load(Ordering::Acquire);
+    if woke == 1 {
+        fail(format_args!("smp: a wakeup from another cpu was missed"));
+    }
+    let took = woke.saturating_sub(t0);
+    if took > 5_000 * MS {
+        fail(format_args!("smp: a wakeup took {} ms", took / MS));
+    }
+    println!("kernel: smp: {online} cpus online");
+    println!("kernel: threads on every cpu shared a lock without losing an update");
+}
