@@ -296,4 +296,22 @@ impl Dev for DevSrv {
         let f = self.file(c)?;
         self.exchange(&f, c.qid.vers, true, &mut [], buf, offset)
     }
+
+    /// Tells the server the fid is closed, as Inferno does: a write with
+    /// no data and no reply channel (Limbo's `nil` `wc`), here reply
+    /// handle -1, on the write channel. The closer does not wait: if the
+    /// server's channel is full the event is dropped.
+    fn close(&self, c: &Chan) {
+        if c.qid.path == QROOT {
+            return;
+        }
+        let Ok(f) = self.file(c) else {
+            return;
+        };
+        let bytes = pack_write_hdr(0, c.qid.vers, -1).to_vec();
+        let _ = f.write.try_send(KMsg {
+            bytes,
+            caps: Vec::new(),
+        });
+    }
 }

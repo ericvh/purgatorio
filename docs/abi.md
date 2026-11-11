@@ -149,6 +149,17 @@ start (such as a missing module) produces no message.
 
 `exec` from v0.1 is gone; `emuinit` now spawns its command and waits for it.
 
+`file2chan` writes the server's read and write channel handles at
+`handles`. Each request is a message on one of them, in the format of
+`purg_abi::fio`: a read (offset, count, fid, reply handle), a write
+(offset, fid, reply handle, data) or a truncate. When a client closes the
+file, a write with no data and reply handle -1 arrives on the write
+channel for that fid, as Inferno sends a write with a nil reply channel.
+It takes no reply, and is dropped if the server's channel is full. The
+message format and the host calls are unchanged, so the ABI version is
+too. The SDK's `FileIO::recv` skips closes; `FileIO::recv_with_close`
+returns them, and `sh`'s `file2chan` runs its close command for each.
+
 ### Module digests and signatures
 
 Every module loaded by `spawn_prog` or `load` gets a digest, and a prog may

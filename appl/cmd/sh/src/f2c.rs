@@ -6,9 +6,8 @@
 //! the file with the kernel's file2chan and runs the commands for each
 //! request. The sub-shell gets the shell's modules and functions, and its
 //! variables through `/env`; like Inferno's thread, it keeps its own
-//! variables from then on. The kernel does not tell a file2chan server
-//! when a client closes the file, so a close command is accepted but never
-//! run.
+//! variables from then on. When a client closes the file, the close
+//! command runs (with no `$tag`: a close takes no reply).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -106,7 +105,16 @@ impl Shell {
         };
         file2chan::write_fd(ready.as_raw_fd(), b"R")?;
         drop(ready);
-        while let Some(req) = fio.recv()? {
+        while let Some(req) = fio.recv_with_close()? {
+            if req.is_close() {
+                if let Some(ccmd) = args.get(3) {
+                    let res = self.run_block(ccmd);
+                    if let Err(Stop::Exit(_)) = res {
+                        break;
+                    }
+                }
+                continue;
+            }
             if req.is_trunc() {
                 let _ = req.respond_write(0);
                 continue;
