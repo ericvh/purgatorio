@@ -306,7 +306,7 @@ on_each_vm! {
             "rm -rf /tmp/ia /tmp/ib; mkdir /tmp/ia /tmp/ib",
             "echo 1 > /tmp/ia/one; echo 2 > /tmp/ib/two",
             "bind -b /tmp/ia /tmp/ib; ls /tmp/ib",
-            "sleep 10 & ; echo bg",
+            "sleep 600 & ; echo bg",
             "echo a b c | cat | cat | wc -w",
             "unmount /tmp/ia /tmp/ib; rm -r /tmp/ia /tmp/ib",
         ];
@@ -316,8 +316,11 @@ on_each_vm! {
         let o = emu(vm, &[], input.as_bytes());
         let out = stdout(&o).replace("; ", "");
         assert!(o.status.success(), "{vm}: {o:?}");
+        // The background sleep is far longer than any loaded runner needs
+        // for the rest of the session, so finishing well before it ends
+        // shows the emu did not wait for it.
         assert!(
-            start.elapsed() < Duration::from_secs(10),
+            start.elapsed() < Duration::from_secs(120),
             "{vm}: waited for the background sleep"
         );
         let want = format!("{bins:>7}\nhello\n/tmp/ib/one\n/tmp/ib/two\nbg\n      3\n");
