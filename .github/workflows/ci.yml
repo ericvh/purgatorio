@@ -228,12 +228,12 @@ jobs:
         env:
           RUSTFLAGS: --cfg loom -D warnings
           CARGO_TARGET_DIR: target/loom
-        # Pull requests and pushes to next bound the preemptions loom
-        # explores (5 takes under a second; unbounded takes about half an
-        # hour, the longest job in CI). Pushes to main, which next reaches
-        # by fast-forward, run the models unbounded.
+        # Pull requests bound the preemptions loom explores (5 takes under
+        # a second; unbounded takes about half an hour, the longest job in
+        # CI). Pushes to next and main run the models unbounded: main is
+        # only promoted from a next commit whose unbounded run passed.
         run: |
-          if [ "${{ github.ref }}" != refs/heads/main ]; then export LOOM_MAX_PREEMPTIONS=5; fi
+          if [ "${{ github.event_name }}" = pull_request ]; then export LOOM_MAX_PREEMPTIONS=5; fi
           cargo test -p purg-core --features std --test loom --release
 
   no-std:
