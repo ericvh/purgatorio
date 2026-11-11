@@ -386,7 +386,8 @@ struct HostLethed {
 }
 
 impl HostLethed {
-    fn start(ws: &Path, tree: &Path) -> Result<HostLethed> {
+    /// `run` names the kernel run in what lethed prints on stderr.
+    fn start(ws: &Path, tree: &Path, run: &str) -> Result<HostLethed> {
         let lethed = ws.join("target/debug/lethed");
         let mut child = Command::new(&lethed)
             .args(["-a", "127.0.0.1:0", "-A", "-k"])
@@ -394,8 +395,13 @@ impl HostLethed {
             .arg(tree)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("{}: {e}", lethed.display()))?;
+        relay(
+            child.stderr.take().expect("piped stderr"),
+            format!("kernel: {run}: host lethed"),
+        );
         let mut line = String::new();
         let out = child.stdout.take().expect("piped stdout");
         std::io::BufRead::read_line(&mut std::io::BufReader::new(out), &mut line)
@@ -409,6 +415,26 @@ impl HostLethed {
             .ok_or_else(|| format!("lethed said {line:?}"))?;
         Ok(host)
     }
+
+    /// What became of lethed, if it is not running any more.
+    fn died(&mut self) -> Option<String> {
+        let status = self.child.try_wait().ok().flatten()?;
+        Some(format!(
+            "the host's lethed exited during the run ({status})"
+        ))
+    }
+}
+
+/// Prints each line of a helper's `stream` on stderr after `label`, on a
+/// thread of its own, until the helper closes it.
+fn relay(stream: impl Read + Send + 'static, label: String) {
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stream).lines() {
+            let Ok(line) = line else { break };
+            eprintln!("{label}: {line}");
+        }
+    });
 }
 
 impl Drop for HostLethed {
@@ -434,11 +460,26 @@ const GUEST_MAC: &str = "52:54:00:12:34:56";
 /// before it is used, but each run asking for its own means concurrent
 /// runs (TCG and KVM, or two worktrees) do not collide.
 fn free_port() -> Result<u16> {
-    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bind: {e}"))?;
-    l.local_addr()
-        .map(|a| a.port())
-        .map_err(|e| format!("bind: {e}"))
+    held_port().map(|(_, port)| port)
 }
+
+/// A free TCP port on 127.0.0.1 and the listener that holds it. Nothing
+/// else that binds port 0 is given the port until the listener is
+/// dropped, so hold it until just before the port's user starts: a port
+/// let go early can go to the next helper that asks for one (#147: the
+/// host's lethed was given the port QEMU was about to forward).
+fn held_port() -> Result<(std::net::TcpListener, u16)> {
+    let l = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bind: {e}"))?;
+    let port = l.local_addr().map_err(|e| format!("bind: {e}"))?.port();
+    Ok((l, port))
+}
+
+/// What QEMU says when a `hostfwd` port is not free.
+const HOSTFWD_REFUSED: &str = "Could not set up host forwarding rule";
+
+/// How many times a run is started again on new ports after
+/// [`HOSTFWD_REFUSED`].
+const HOSTFWD_RETRIES: usize = 3;
 
 /// QEMU arguments for a virtio-net card on user networking, with host port
 /// `fwd` forwarded to the guest's export port, and `rstyx`, when given, to
@@ -465,9 +506,64 @@ struct QemuRun {
     status: std::process::ExitStatus,
     /// The serial output, with `\r` removed.
     serial: String,
+    /// What QEMU itself wrote on its standard error.
+    stderr: String,
     elapsed: Duration,
     /// Each complete line of `serial` and when it arrived.
     lines: Vec<(Duration, String)>,
+    /// Why the run was killed: an error from `watch`, or the timeout.
+    killed: Option<String>,
+}
+
+impl QemuRun {
+    /// QEMU's exit status as a failure, with what QEMU said, and whether
+    /// the guest printed anything first: a status with no reason in the
+    /// console is QEMU's own (#147).
+    fn exit_problem(&self) -> Option<String> {
+        if self.status.success() {
+            return None;
+        }
+        let mut p = format!("QEMU exited with {}", self.status);
+        if self.serial.is_empty() {
+            p.push_str(" before the guest printed anything");
+        }
+        if !self.stderr.trim().is_empty() {
+            p.push_str(&format!("; QEMU said: {}", self.stderr.trim()));
+        }
+        Some(p)
+    }
+
+    /// Whether QEMU could not start for a forwarded port that was taken.
+    fn hostfwd_refused(&self) -> bool {
+        !self.status.success() && self.serial.is_empty() && self.stderr.contains(HOSTFWD_REFUSED)
+    }
+
+    /// For a run that is not shown beside others: prints what QEMU wrote
+    /// on its standard error, and, if the run was killed, its console,
+    /// and fails.
+    fn finished(self, who: &str) -> Result<QemuRun> {
+        for l in self.stderr.lines() {
+            eprintln!("{who}: qemu: {l}");
+        }
+        match &self.killed {
+            Some(e) => {
+                show_console(&self.serial);
+                Err(e.clone())
+            }
+            None => Ok(self),
+        }
+    }
+}
+
+/// Prints a console on stdout, whole: ended with a newline if it stopped
+/// in the middle of a line, and flushed, so that what is printed next on
+/// stderr comes after it.
+fn show_console(serial: &str) {
+    print!("{serial}");
+    if !serial.is_empty() && !serial.ends_with('\n') {
+        println!();
+    }
+    let _ = std::io::stdout().flush();
 }
 
 /// Bytes to type on a QEMU run's serial console once a prompt appears.
@@ -505,7 +601,9 @@ const KERNEL_ECHO: &str =
 /// Boots `image` with `qemu-system-aarch64` (or `$QEMU`) and `args` (which
 /// must end with `-kernel`), collecting the serial console from stdout.
 /// Every 20 ms `watch` sees the output so far; an error from it, or the
-/// run outliving `timeout`, kills QEMU, prints the output and fails.
+/// run outliving `timeout`, kills QEMU, and the run comes back with
+/// `killed` set. QEMU's standard error is collected too: the caller
+/// prints both, so that runs side by side do not mix theirs.
 /// With `input`, the serial console's input is a pipe, and each entry's
 /// bytes are typed into it, in order, [`INPUT_DELAY`] after its prompt
 /// line appears; otherwise the input is empty.
@@ -526,8 +624,15 @@ fn run_qemu(
             Stdio::null()
         })
         .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{qemu}: {e}"))?;
+    let mut qemu_stderr = child.stderr.take().expect("piped stderr");
+    let stderr_reader = std::thread::spawn(move || {
+        let mut said = Vec::new();
+        let _ = qemu_stderr.read_to_end(&mut said);
+        String::from_utf8_lossy(&said).into_owned()
+    });
     // Held until QEMU exits: closing it would be end of file on the serial
     // input.
     let mut stdin = child.stdin.take();
@@ -552,6 +657,7 @@ fn run_qemu(
     let start = Instant::now();
     let mut lines = Vec::new();
     let mut stamped = 0;
+    let mut killed = None;
     let status = loop {
         let now = text();
         // Complete lines are never rewritten: only a partial UTF-8
@@ -567,9 +673,12 @@ fn run_qemu(
             if prompted.is_some_and(|t| t.elapsed() >= INPUT_DELAY)
                 && let Some(w) = stdin.as_mut()
             {
-                w.write_all(inp.bytes)
-                    .and_then(|()| w.flush())
-                    .map_err(|e| format!("{qemu}: writing the serial input: {e}"))?;
+                if let Err(e) = w.write_all(inp.bytes).and_then(|()| w.flush()) {
+                    // QEMU is gone or going: keep what it printed.
+                    let _ = child.kill();
+                    killed = Some(format!("{qemu}: writing the serial input: {e}"));
+                    break child.wait().map_err(|e| format!("{qemu}: {e}"))?;
+                }
                 typed += 1;
                 prompted = None;
             }
@@ -583,10 +692,8 @@ fn run_qemu(
         };
         if let Some(e) = err {
             let _ = child.kill();
-            let _ = child.wait();
-            let _ = reader.join();
-            eprint!("{}", text());
-            return Err(e);
+            killed = Some(e);
+            break child.wait().map_err(|e| format!("{qemu}: {e}"))?;
         }
         if let Some(s) = child.try_wait().map_err(|e| format!("{qemu}: {e}"))? {
             break s;
@@ -604,8 +711,10 @@ fn run_qemu(
     Ok(QemuRun {
         status,
         serial,
+        stderr: stderr_reader.join().unwrap_or_default(),
         elapsed,
         lines,
+        killed,
     })
 }
 
@@ -681,18 +790,21 @@ fn probe(kvm: bool) -> Result<()> {
         }
         Ok(())
     })?;
-    print!("{}", r.serial);
+    // The stamped console is kept for a run that was killed too.
     phases::report(&ws, "probe", if kvm { "kvm" } else { "tcg" }, &r.lines);
+    let r = r.finished("probe")?;
+    show_console(&r.serial);
     let golden = ws.join("crates/purg-probe/expected.out");
     let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
     let want = expand_golden(&want, "probe", &ws, None)?;
-    if !r.status.success() {
-        return Err(format!("probe exited with {}", r.status));
+    if let Some(p) = r.exit_problem() {
+        return Err(format!("probe: {p}"));
     }
     if r.serial != want {
         return Err(format!(
-            "probe output differs from {}; expected:\n{want}",
-            golden.display()
+            "probe output differs from {} ({}); expected:\n{want}",
+            golden.display(),
+            first_difference(&r.serial, &want)
         ));
     }
     if !mounted {
@@ -874,8 +986,10 @@ fn disk_reboot(
     );
     let r = run_qemu(&args, image, KERNEL_SMOKE_TIMEOUT, &[], |_| Ok(()))?;
     let lines: Vec<&str> = r.serial.lines().collect();
-    let problem = if !r.status.success() {
-        Some(format!("QEMU exited with {}", r.status))
+    let problem = if let Some(e) = &r.killed {
+        Some(e.clone())
+    } else if let Some(p) = r.exit_problem() {
+        Some(p)
     } else if let Some(l) = lines.iter().find(|l| l.starts_with("kernel: FAIL")) {
         Some(String::from(*l))
     } else if lines.last() != Some(&"kernel: ok") {
@@ -887,10 +1001,11 @@ fn disk_reboot(
             .map(|want| format!("no `{want}` line"))
     };
     match problem {
-        Some(p) => {
-            print!("{}", r.serial);
-            Err(format!("the second boot: {p}"))
-        }
+        // The first boot's console comes first in the run's report.
+        Some(p) => Err(format!(
+            "the second boot: {p}; its console:\n{}",
+            r.serial.trim_end()
+        )),
         None => {
             eprintln!(
                 "kernel: {}: second boot passed in {:.2}s",
@@ -957,22 +1072,36 @@ struct KernelOpts {
     kvm: bool,
     /// QEMU's `-m`.
     mem: String,
+    /// Boot only the configurations whose names contain this.
+    only: Option<String>,
+    /// How many times to boot them, to look for a failure that comes and
+    /// goes; every round runs, and the last line counts the failed ones.
+    repeat: usize,
 }
 
 impl KernelOpts {
-    /// `--mem SIZE`, and the flags [`image_flags`] takes.
+    /// `--mem SIZE`, `--only NAME`, `--repeat N`, and the flags
+    /// [`image_flags`] takes.
     fn parse(args: &[String]) -> Option<KernelOpts> {
         let mut mem = String::from("512M");
+        let (mut only, mut repeat) = (None, 1);
         let mut rest = Vec::new();
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--mem" => mem = it.next()?.clone(),
+                "--only" => only = Some(it.next()?.clone()),
+                "--repeat" => repeat = it.next()?.parse().ok().filter(|&n| n > 0)?,
                 _ => rest.push(a.clone()),
             }
         }
         let kvm = image_flags(&rest, true)?;
-        Some(KernelOpts { kvm, mem })
+        Some(KernelOpts {
+            kvm,
+            mem,
+            only,
+            repeat,
+        })
     }
 }
 
@@ -1032,7 +1161,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
     // `KERNEL_CORPUS=full` runs the whole corpus on every configuration.
     let full = env::var("KERNEL_CORPUS").is_ok_and(|c| c == "full");
-    let runs: Vec<&KernelRun> = if kvm {
+    let mut runs: Vec<&KernelRun> = if kvm {
         if env::consts::ARCH != "aarch64" || !Path::new("/dev/kvm").exists() {
             eprintln!("kernel: skipping the KVM run: needs an aarch64 host with /dev/kvm");
             return Ok(());
@@ -1041,54 +1170,39 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
     } else {
         KERNEL_TCG_RUNS.iter().collect()
     };
+    if let Some(only) = &opts.only {
+        runs.retain(|k| k.name.contains(only.as_str()));
+        if runs.is_empty() {
+            return Err(format!("kernel: no run is named like {only:?}"));
+        }
+    }
     // `KERNEL_MEMSTAT=1 cargo xtask kernel` adds the `memstat` boot
     // argument: a `kernel: mem ...` line after each test, not compared.
     let memstat = env::var_os("KERNEL_MEMSTAT").is_some();
     // Each run has its own network peers, shared directory and disks, so
     // runs can boot at once.
     let run = |k: &KernelRun| -> KernelOutcome {
-        // The network peers on this host: an emu exporting its root, a
-        // UDP echo server, and a free port QEMU forwards to the kernel's
-        // export.
-        let (host, echo, fwd, rstyx) = match (
-            HostExport::start(&ws),
-            UdpEcho::start(),
-            free_port(),
-            free_port(),
-        ) {
-            (Ok(h), Ok(e), Ok(f), Ok(r)) => (h, e, f, r),
-            (h, e, f, r) => {
-                let e = h
-                    .err()
-                    .or(e.err())
-                    .or(f.err())
-                    .or(r.err())
-                    .unwrap_or_default();
-                return (String::new(), Err(e));
-            }
+        // The network peers on this host: an emu exporting its root and a
+        // UDP echo server.
+        let (mut host, echo) = match (HostExport::start(&ws, k.name), UdpEcho::start()) {
+            (Ok(h), Ok(e)) => (h, e),
+            (h, e) => return KernelOutcome::setup(h.err().or(e.err()).unwrap_or_default()),
         };
-        let net = net_args(fwd, Some(rstyx));
         // The directory the kernel mounts on /n/host over virtio-9p.
         let shared = match SharedDir::create(&ws, k.name).and_then(|d| d.args().map(|a| (d, a))) {
             Ok(s) => s,
-            Err(e) => {
-                return (String::new(), Err(e));
-            }
+            Err(e) => return KernelOutcome::setup(e),
         };
         // The host's lethed serves the same directory read-only.
-        let lethed = match HostLethed::start(&ws, &shared.0.path) {
+        let mut lethed = match HostLethed::start(&ws, &shared.0.path, k.name) {
             Ok(l) => l,
-            Err(e) => {
-                return (String::new(), Err(e));
-            }
+            Err(e) => return KernelOutcome::setup(e),
         };
         // The disks: a purgfs image on /n/disk, and a slow one.
         let disks =
             match disk::KernelDisks::create(&ws, k.name).and_then(|d| d.args().map(|a| (d, a))) {
                 Ok(d) => d,
-                Err(e) => {
-                    return (String::new(), Err(e));
-                }
+                Err(e) => return KernelOutcome::setup(e),
             };
         // `test` runs the conformance guests, the sh corpus and the
         // network checks instead of an interactive shell.
@@ -1108,48 +1222,76 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         );
         let want = match expand_golden(&golden_text, "kernel", &ws, smoke.then_some(KERNEL_SMOKE)) {
             Ok(w) => kernel_normalize(&w),
-            Err(e) => return (String::new(), Err(e)),
+            Err(e) => return KernelOutcome::setup(e),
         };
-        let mut args: Vec<&str> = k.args.to_vec();
-        args.extend(["-m", &opts.mem, "-nographic"]);
+        let mut head: Vec<&str> = k.args.to_vec();
+        head.extend(["-m", &opts.mem, "-nographic"]);
         if k.initrd {
-            args.extend(["-initrd", &initrd]);
+            head.extend(["-initrd", &initrd]);
         }
         if !kvm {
-            args.push("-semihosting");
+            head.push("-semihosting");
         }
-        args.extend(["-append", &bootargs]);
-        args.extend(net.iter().map(String::as_str));
-        args.extend(shared.1.iter().map(String::as_str));
-        args.extend(disks.1.iter().map(String::as_str));
-        args.push("-kernel");
-        eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
-        let mut mounted = false;
-        let mut mcp = false;
+        head.extend(["-append", &bootargs]);
         let timeout = if smoke {
             KERNEL_SMOKE_TIMEOUT
         } else {
             KERNEL_TIMEOUT
         };
-        let r = run_qemu(&args, &image, timeout, KERNEL_INPUT, |text| {
-            if !mounted && text.contains("kernel: net ready\n") {
-                mounted = true;
-                mount_guest(&ws, fwd, "kernel")?;
+        let mut refused = 0;
+        let (r, mounted, mcp) = loop {
+            // The ports QEMU forwards to the kernel's export and its
+            // rstyxd, asked for after every helper has its own port and
+            // held until QEMU starts. Something else can still take one
+            // before QEMU binds it; QEMU then exits at once, and the run
+            // starts again on new ports.
+            let ((fwd_held, fwd), (rstyx_held, rstyx)) =
+                match held_port().and_then(|f| Ok((f, held_port()?))) {
+                    Ok(p) => p,
+                    Err(e) => return KernelOutcome::setup(e),
+                };
+            let net = net_args(fwd, Some(rstyx));
+            let mut args = head.clone();
+            args.extend(net.iter().map(String::as_str));
+            args.extend(shared.1.iter().map(String::as_str));
+            args.extend(disks.1.iter().map(String::as_str));
+            args.push("-kernel");
+            eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
+            let (mut mounted, mut mcp) = (false, false);
+            drop((fwd_held, rstyx_held));
+            let r = run_qemu(&args, &image, timeout, KERNEL_INPUT, |text| {
+                if !mounted && text.contains("kernel: net ready\n") {
+                    mounted = true;
+                    mount_guest(&ws, fwd, "kernel")
+                        .map_err(|e| format!("the host's mount of the kernel's export: {e}"))?;
+                }
+                if !mcp && text.contains("kernel: rstyx ready\n") {
+                    mcp = true;
+                    mcp_guest(&ws, rstyx, k.name)
+                        .map_err(|e| format!("the host's MCP call: {e}"))?;
+                }
+                Ok(())
+            });
+            match r {
+                Ok(r) if r.hostfwd_refused() && refused < HOSTFWD_RETRIES => {
+                    refused += 1;
+                    eprintln!(
+                        "kernel: {}: starting again on new ports ({refused} of {HOSTFWD_RETRIES}); QEMU said: {}",
+                        k.name,
+                        r.stderr.trim()
+                    );
+                }
+                r => break (r, mounted, mcp),
             }
-            if !mcp && text.contains("kernel: rstyx ready\n") {
-                mcp = true;
-                mcp_guest(&ws, rstyx)?;
-            }
-            Ok(())
-        });
+        };
+        // A helper that died under the kernel explains its failed checks.
+        let helpers: Vec<String> = [host.died(), lethed.died()].into_iter().flatten().collect();
         drop(host);
         drop(lethed);
         let echoed = echo.stop();
         let r = match r {
             Ok(r) => r,
-            Err(e) => {
-                return (String::new(), Err(e));
-            }
+            Err(e) => return KernelOutcome::setup(e),
         };
         phases::report(&ws, "kernel", k.name, &r.lines);
         let el_line = format!("kernel: booted at EL{}", k.el);
@@ -1169,8 +1311,17 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             .filter(|l| !l.starts_with("kernel: mem "))
             .flat_map(|l| [l, "\n"])
             .collect();
-        let problem = if !r.status.success() {
-            Some(format!("QEMU exited with {}", r.status))
+        let problem = if let Some(e) = &r.killed {
+            Some(e.clone())
+        } else if let Some(p) = r.exit_problem() {
+            // The kernel's last line says what it counted.
+            Some(
+                match r.serial.lines().rfind(|l| l.starts_with("kernel: FAILED")) {
+                    Some(l) => format!("{p}; the kernel said: {l}"),
+                    None if r.serial.is_empty() => p,
+                    None => format!("{p}; the console has no `kernel: FAILED` line"),
+                },
+            )
         } else if !r.serial.lines().any(|l| l == el_line) {
             Some(format!("no `{el_line}` line"))
         } else if !r.serial.lines().any(|l| l == root_line) {
@@ -1181,8 +1332,9 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             ))
         } else if rest != want {
             Some(format!(
-                "output differs from {}; expected (less the EL line):\n{want}",
-                golden.display()
+                "output differs from {} ({}); expected (less the EL line):\n{want}",
+                golden.display(),
+                first_difference(&rest, &want)
             ))
         } else if !mounted {
             Some(format!(
@@ -1203,31 +1355,123 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         } else {
             None
         };
-        (r.serial, problem.map_or(Ok(r.elapsed), Err))
+        let problem = problem.map(|p| {
+            helpers
+                .iter()
+                .fold(p, |p, h| format!("{p}\nkernel: {}: {h}", k.name))
+        });
+        KernelOutcome {
+            serial: r.serial,
+            qemu_stderr: r.stderr,
+            verdict: problem.map_or(Ok(r.elapsed), Err),
+        }
     };
-    let outcomes = in_parallel(&runs, kernel_jobs(runs.len()), |k| run(k));
-    // Each run's console and verdict, in order.
+    let jobs = kernel_jobs(runs.len());
+    // What failed, each with the first line of why.
     let mut failed = Vec::new();
-    for (k, (serial, verdict)) in runs.iter().zip(outcomes) {
-        print!("{serial}");
-        match verdict {
-            Ok(t) => eprintln!("kernel: {}: passed in {:.2}s", k.name, t.as_secs_f64()),
-            Err(p) => {
-                eprintln!("kernel: {}: FAILED: {p}", k.name);
-                failed.push(k.name);
+    for round in 1..=opts.repeat {
+        if opts.repeat > 1 {
+            eprintln!("kernel: round {round} of {}", opts.repeat);
+        }
+        let outcomes = in_parallel(&runs, jobs, |k| run(k));
+        // Each run's console, whole, then what QEMU said and the verdict.
+        for (k, o) in runs.iter().zip(outcomes) {
+            eprintln!(
+                "kernel: {}: its console ({} lines):",
+                k.name,
+                o.serial.lines().count()
+            );
+            show_console(&o.serial);
+            for l in o.qemu_stderr.lines() {
+                eprintln!("kernel: {}: qemu: {l}", k.name);
+            }
+            match o.verdict {
+                Ok(t) => eprintln!("kernel: {}: passed in {:.2}s", k.name, t.as_secs_f64()),
+                Err(p) => {
+                    eprintln!("kernel: {}: FAILED: {p}", k.name);
+                    // The stamped console says why too: it is what CI keeps.
+                    let times = phases::file(&ws, "kernel", k.name);
+                    let said: String = o
+                        .qemu_stderr
+                        .lines()
+                        .map(|l| format!("qemu: {l}\n"))
+                        .collect();
+                    let _ = fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&times)
+                        .and_then(|mut f| writeln!(f, "{said}FAILED: {p}"));
+                    let mut kept = times.clone();
+                    if opts.repeat > 1 {
+                        // The next round writes over the file.
+                        kept.set_extension(format!("round{round}.txt"));
+                        let _ = fs::copy(&times, &kept);
+                    }
+                    eprintln!(
+                        "kernel: {}: the console with arrival times: {}",
+                        k.name,
+                        kept.display()
+                    );
+                    let why = p.lines().next().unwrap_or_default();
+                    failed.push(if opts.repeat > 1 {
+                        format!("{} in round {round} ({why})", k.name)
+                    } else {
+                        format!("{} ({why})", k.name)
+                    });
+                }
             }
         }
+    }
+    if opts.repeat > 1 {
+        eprintln!(
+            "kernel: {} of {} runs failed in {} rounds",
+            failed.len(),
+            runs.len() * opts.repeat,
+            opts.repeat
+        );
     }
     if failed.is_empty() {
         Ok(())
     } else {
-        Err(format!("kernel runs failed: {}", failed.join(", ")))
+        Err(format!("kernel runs failed: {}", failed.join("; ")))
     }
 }
 
-/// A finished `xtask kernel` run: its console, and the time it took or
-/// what was wrong.
-type KernelOutcome = (String, Result<Duration>);
+/// A finished `xtask kernel` run.
+struct KernelOutcome {
+    /// Its console, whole.
+    serial: String,
+    /// What QEMU wrote on its standard error.
+    qemu_stderr: String,
+    /// The time it took, or what was wrong.
+    verdict: Result<Duration>,
+}
+
+impl KernelOutcome {
+    /// A run that could not start.
+    fn setup(e: String) -> KernelOutcome {
+        KernelOutcome {
+            serial: String::new(),
+            qemu_stderr: String::new(),
+            verdict: Err(e),
+        }
+    }
+}
+
+/// Where two outputs first differ, for a failure's first line.
+fn first_difference(got: &str, want: &str) -> String {
+    let (mut g, mut w) = (got.lines(), want.lines());
+    let mut n = 1;
+    loop {
+        match (g.next(), w.next()) {
+            (Some(a), Some(b)) if a == b => n += 1,
+            (Some(a), Some(b)) => return format!("line {n}: got {a:?}, expected {b:?}"),
+            (Some(a), None) => return format!("line {n}: got {a:?} after the expected end"),
+            (None, Some(b)) => return format!("line {n}: the output ends, expected {b:?}"),
+            (None, None) => return String::from("line endings differ"),
+        }
+    }
+}
 
 /// How many `xtask kernel` runs boot at once: `KERNEL_JOBS`, or one per
 /// two CPUs (a TCG run keeps one busy, and the emus beside it want some
@@ -1315,7 +1559,7 @@ fn mount_guest(ws: &Path, port: u16, who: &str) -> Result<()> {
 /// QEMU's forward of `port` to the kernel's `auxi/rstyxd`, authenticated
 /// with the test key and encrypted. One `run` call must come back with
 /// its output.
-fn mcp_guest(ws: &Path, port: u16) -> Result<()> {
+fn mcp_guest(ws: &Path, port: u16, run: &str) -> Result<()> {
     let emu = ws.join("target/debug/emu");
     let meta = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"xtask","version":"0"},"io.modelcontextprotocol/clientCapabilities":{}}"#;
     let request = format!(
@@ -1367,7 +1611,7 @@ fn mcp_guest(ws: &Path, port: u16) -> Result<()> {
             "the MCP session on the kernel failed ({status})\n{stdout}{stderr}"
         ));
     }
-    eprintln!("kernel: an MCP session over virtio-net answered");
+    eprintln!("kernel: {run}: an MCP session over virtio-net answered");
     Ok(())
 }
 
@@ -1379,7 +1623,8 @@ struct HostExport {
 }
 
 impl HostExport {
-    fn start(ws: &Path) -> Result<HostExport> {
+    /// `run` names the kernel run in what the emu prints.
+    fn start(ws: &Path, run: &str) -> Result<HostExport> {
         let emu = ws.join("target/debug/emu");
         let mut child = Command::new(&emu)
             .arg("-r")
@@ -1387,8 +1632,11 @@ impl HostExport {
             .args(["styxlisten", "-A", "tcp!127.0.0.1!0", "export", "/"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("{}: {e}", emu.display()))?;
+        let label = format!("kernel: {run}: host emu");
+        relay(child.stderr.take().expect("piped stderr"), label.clone());
         // The guest's fd 2 is the emu's console, its stdout.
         let out = child.stdout.take().expect("piped stdout");
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1400,7 +1648,7 @@ impl HostExport {
                 if let Some(addr) = line.strip_prefix("styxlisten: ") {
                     let _ = tx.send(addr.to_owned());
                 } else {
-                    eprintln!("host emu: {line}");
+                    eprintln!("{label}: {line}");
                 }
             }
         });
@@ -1415,6 +1663,14 @@ impl HostExport {
             .and_then(|p| p.parse().ok())
             .ok_or_else(|| format!("styxlisten announced {addr:?}"))?;
         Ok(host)
+    }
+
+    /// What became of the emu, if it is not running any more.
+    fn died(&mut self) -> Option<String> {
+        let status = self.child.try_wait().ok().flatten()?;
+        Some(format!(
+            "the host emu exporting its root exited during the run ({status})"
+        ))
     }
 }
 
@@ -1847,7 +2103,7 @@ fn main() -> ExitCode {
         Some("kernel") => match KernelOpts::parse(&rest) {
             Some(o) => kernel(&o).map(|()| ExitCode::SUCCESS),
             None => Err(String::from(
-                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE]",
+                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE] [--only NAME] [--repeat N]",
             )),
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
@@ -1855,7 +2111,7 @@ fn main() -> ExitCode {
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         Some("bench") => bench::cmd(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--only NAME] [--repeat N] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
