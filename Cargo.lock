@@ -2554,6 +2554,9 @@ name = "purg-fs"
 version = "0.1.0"
 dependencies = [
  "purg-abi",
+ "purg-core",
+ "purg-platform",
+ "purg-styx",
 ]
 
 [[package]]

@@ -7,6 +7,30 @@ metadata is one atomic transaction. The code is `crates/purg-fs`, a
 `no_std` + `alloc` crate shared by the kernel, the `disk/` commands and
 `xtask`.
 
+## The device: `#K`
+
+A mounted purgfs is a kernel device, `#K` (`purg_fs::dev::DevFs`, the
+crate's `dev` feature). The kernel binds it on `/n/disk`; like any part of
+the namespace it is served over Styx to whoever exports or imports it.
+
+It is a device, not a kproc file server mounted with `#M`, because:
+
+- the operations run in the calling prog's thread, so a prog killed while
+  it waits for the disk stops at once, with no flush to send and no
+  server thread to wake;
+- there is no extra thread (whose stack would be 64 KiB) and no Styx
+  encoding or copying between the prog and the file system;
+- Inferno's native kernels serve their small disk file systems as devices
+  too, and `#K` is unused in Inferno and here.
+
+Inferno's own kfs is a user-level Styx server; a wasm guest could serve
+purgfs the same way over `#S`, but every block would then go through the
+interpreter.
+
+The raw disks are `#S` (Inferno's storage device letter), one directory
+per disk, `sdV0`, `sdV1`, ..., each with `ctl` (geometry and serial) and
+`data` (the bytes, at any offset).
+
 ## Layout
 
 The disk is an array of blocks of one size, 512 to 65536 bytes, a power of

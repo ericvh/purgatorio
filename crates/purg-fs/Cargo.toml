@@ -7,12 +7,26 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = []
+# Guests and xtask use the crate without default features.
+default = ["dev"]
 # `FileDisk`, a disk over a host file (xtask, the disk/ commands).
 std = []
+# `DevFs`, a mounted file system as a purg-core device.
+dev = ["dep:purg-core", "dep:purg-styx", "dep:purg-platform"]
 
 [dependencies]
 purg-abi.workspace = true
+purg-core = { workspace = true, optional = true }
+purg-styx = { workspace = true, optional = true }
+purg-platform = { workspace = true, optional = true }
+
+[dev-dependencies]
+purg-core = { workspace = true, features = ["std"] }
+purg-platform = { workspace = true, features = ["std"] }
+
+[[test]]
+name = "dev"
+required-features = ["dev"]
 
 [lints]
 workspace = true

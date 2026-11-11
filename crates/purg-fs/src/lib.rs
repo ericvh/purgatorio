@@ -21,6 +21,8 @@ extern crate alloc;
 
 mod check;
 pub mod crc;
+#[cfg(feature = "dev")]
+pub mod dev;
 #[cfg(feature = "std")]
 pub mod file;
 mod fs;
