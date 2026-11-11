@@ -330,9 +330,11 @@ Limits of this stage, stated plainly:
   A session can therefore reach a service another prog posted in `#s`,
   and can ask a factotum that holds a key to sign. A stock `emu mcpd` has
   neither.
-- There are no memory or CPU limits yet (stage 5). The `memfs` trees grow
-  with what is written to them, and a command can use a core until its
-  timeout.
+- `mcpd` sets no memory or CPU limits yet (stage 5). The kernel now has
+  per-prog and per-domain memory limits and a per-domain prog limit
+  (`docs/abi.md`, "Memory and prog limits"), which a session could set on
+  its domain. The `memfs` trees grow with what is written to them, and a
+  command can use a core until its timeout.
 - A prog that leaves its process group and whose parent has exited is not
   found when the session ends. No command in `/bin` does this. (Such a
   prog is still in the session's domain, so the session sees it; the

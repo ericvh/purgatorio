@@ -340,6 +340,39 @@ impl Wasmtime {
     }
 }
 
+/// The prog's memory limits as wasmtime's resource limiter: the store's
+/// data, seen as a limiter.
+#[repr(transparent)]
+struct Limiter(Ctx);
+
+impl Limiter {
+    fn of(ctx: &mut Ctx) -> &mut dyn wasmtime::ResourceLimiter {
+        // SAFETY: `Limiter` is `repr(transparent)` over `Ctx`, so the two
+        // have the same layout, and the borrow is the caller's.
+        unsafe { &mut *(ctx as *mut Ctx).cast::<Limiter>() }
+    }
+}
+
+impl wasmtime::ResourceLimiter for Limiter {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(purg_vm::memory_growing(&self.0, current, desired))
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(purg_vm::table_growing(&self.0, current, desired))
+    }
+}
+
 impl purg_vm::Engine for Wasmtime {
     fn name(&self) -> &'static str {
         "wasmtime"
@@ -347,6 +380,7 @@ impl purg_vm::Engine for Wasmtime {
 
     fn run(&self, wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
         let mut store = Store::new(&self.engine, ctx);
+        store.limiter(Limiter::of);
         let traced: Traced = Arc::new(Mutex::new(None));
         let ticked = traced.clone();
         store.epoch_deadline_callback(move |state| {

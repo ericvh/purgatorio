@@ -3,6 +3,17 @@
 //! `killgrp` to `ctl` interrupts it, and `modules warn` or `modules
 //! require` tightens its module policy (`docs/signing.md`).
 //!
+//! Memory limits (`docs/abi.md`): `memlimit N` on `ctl` limits the wasm
+//! memory the prog holds (linear memory, and tables at
+//! [`TABLE_ELEM_BYTES`](crate::prog::TABLE_ELEM_BYTES) an element) to `N`
+//! bytes (`k`, `m` and `g` multiply by 1024s); the progs it starts later
+//! inherit the limit. `domain memlimit N` and `domain proglimit N` limit
+//! the innermost domain the prog is in: the memory its members hold
+//! between them, and how many members it may have, past which a spawn
+//! fails with `no free procs`. A limit can only be lowered: raising one
+//! is `permission denied`. `mem` reads `<bytes held> <limit>`, the limit
+//! being `-` for none.
+//!
 //! `stack`, `exception` and `prof` are the debugging files
 //! (`docs/debug.md`): the call stack of a traced prog, the trap that broke
 //! it, and its profile. `trace on|off` and `prof on|off` on `ctl` set what
@@ -44,6 +55,7 @@ const QMODULE: u64 = 7;
 const QSTACK: u64 = 8;
 const QEXCEPTION: u64 = 9;
 const QPROF: u64 = 10;
+const QMEM: u64 = 11;
 
 /// The error of reading the `stack` of a prog started without tracing.
 pub const ENOTTRACED: &str = "prog is not traced";
@@ -53,6 +65,7 @@ const FILES: &[(&str, u64, u32)] = &[
     ("ctl", QCTL, 0o222),
     ("exception", QEXCEPTION, 0o444),
     ("fd", QFD, 0o444),
+    ("mem", QMEM, 0o444),
     ("module", QMODULE, 0o444),
     ("ns", QNS, 0o444),
     ("prof", QPROF, 0o444),
@@ -231,6 +244,7 @@ impl Dev for DevProg {
                 e => format!("{e}\n"),
             },
             QPROF => prof_text(&p),
+            QMEM => mem_text(&p),
             _ => return Err(Error::new(error::EPERM)),
         };
         Ok(crate::dev::read_str(text.as_bytes(), buf, offset))
@@ -307,6 +321,9 @@ impl Dev for DevProg {
             "trace off" => p.debug.set_trace(false),
             "prof on" => p.debug.set_prof(true),
             "prof off" => p.debug.set_prof(false),
+            _ if cmd.starts_with("memlimit ") || cmd.starts_with("domain ") => {
+                self.limit(&p, cmd)?
+            }
             _ => {
                 let level = cmd
                     .strip_prefix("modules ")
@@ -316,6 +333,60 @@ impl Dev for DevProg {
             }
         }
         Ok(buf.len())
+    }
+}
+
+impl DevProg {
+    /// `memlimit N`, `domain memlimit N` or `domain proglimit N`.
+    fn limit(&self, p: &crate::prog::Proc, cmd: &str) -> Result<()> {
+        let bad = || Error::new(error::EBADARG);
+        let mut words = cmd.split_ascii_whitespace();
+        let (domain, what) = match words.next() {
+            Some("domain") => (true, words.next().ok_or_else(bad)?),
+            Some(w) => (false, w),
+            None => return Err(bad()),
+        };
+        let n = words.next().and_then(parse_size).ok_or_else(bad)?;
+        if words.next().is_some() {
+            return Err(bad());
+        }
+        match (domain, what) {
+            (false, "memlimit") => p.set_memlimit(n),
+            (true, "memlimit" | "proglimit") => {
+                let d = *p.domains().last().ok_or_else(bad)?;
+                let mut l = self.procs.domain_limits(d);
+                if what == "memlimit" {
+                    l.mem = n;
+                } else {
+                    l.progs = n;
+                }
+                self.procs.set_domain_limits(d, l)
+            }
+            _ => Err(bad()),
+        }
+    }
+}
+
+/// A count of bytes or progs: digits, then `k`, `m` or `g` (either case)
+/// for 2^10, 2^20 or 2^30 times as many.
+pub fn parse_size(s: &str) -> Option<u64> {
+    let (digits, shift) = match s.as_bytes().last()? {
+        b'k' | b'K' => (&s[..s.len() - 1], 10),
+        b'm' | b'M' => (&s[..s.len() - 1], 20),
+        b'g' | b'G' => (&s[..s.len() - 1], 30),
+        _ => (s, 0),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok()?.checked_mul(1 << shift)
+}
+
+/// `<bytes held> <limit>`, with `-` for no limit.
+fn mem_text(p: &crate::prog::Proc) -> String {
+    match p.memlimit() {
+        crate::prog::UNLIMITED => format!("{} -\n", p.mem()),
+        l => format!("{} {l}\n", p.mem()),
     }
 }
 

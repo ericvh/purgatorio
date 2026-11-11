@@ -31,6 +31,7 @@ ok std_sleep
 ok files
 ok chdir_relative
 ok bind_and_unmount
+ok memlimit
 probe: ok
 probe: run /bin/test/m3.wasm
 ok file2chan

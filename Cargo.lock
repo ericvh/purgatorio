@@ -2664,6 +2664,7 @@ dependencies = [
  "purg-vm",
  "spin 0.10.1",
  "wasmi",
+ "wasmi_core",
 ]
 
 [[package]]

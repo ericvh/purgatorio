@@ -187,8 +187,57 @@ fn bind_and_unmount(base: &str) -> Result<(), String> {
     res
 }
 
+/// The limit the `memhog` child sets on itself.
+const MEMLIMIT: usize = 4 << 20;
+
+/// A child that limits its own wasm memory, checks that the limit cannot
+/// be raised, allocates within it, then far past it: the `memory.grow`
+/// fails, and Rust's allocator aborts the prog.
+fn memhog() -> Result<(), Error> {
+    let ctl = format!("/prog/{}/ctl", purgatorio::pid());
+    std::fs::write(&ctl, format!("memlimit {MEMLIMIT}")).map_err(|e| Error::from(e.to_string()))?;
+    match std::fs::write(&ctl, "memlimit 1g") {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+        r => return Err(Error::from(format!("raising the limit: {r:?}"))),
+    }
+    let mem = std::fs::read_to_string(format!("/prog/{}/mem", purgatorio::pid()))
+        .map_err(|e| Error::from(e.to_string()))?;
+    if !mem.ends_with(&format!(" {MEMLIMIT}\n")) {
+        return Err(Error::from(format!("mem reads {mem:?}")));
+    }
+    let small = vec![1u8; MEMLIMIT / 8];
+    println!("within the limit {}", small.len());
+    let big = vec![1u8; 4 * MEMLIMIT];
+    println!("past the limit {}", big.len());
+    Ok(())
+}
+
+/// A prog's `memlimit` holds `memory.grow` to it: a child that sets one
+/// and allocates past it fails, having allocated within it, and it cannot
+/// raise the limit again.
+fn memlimit() -> Result<(), String> {
+    let [r, w] = purgatorio::pipe().map_err(e)?;
+    let fd = w.as_raw_fd();
+    let argv = args(&["procs", "-child", "memhog"]);
+    let pid = purgatorio::spawn(SELF, &argv, 0, &[(fd, 1), (fd, 2)]).map_err(e)?;
+    drop(w);
+    let out = drain(r)?;
+    let msg = purgatorio::wait().map_err(e)?;
+    let within = format!("within the limit {}\n", MEMLIMIT / 8);
+    let failed = format!("memory allocation of {} bytes failed\n", 4 * MEMLIMIT);
+    if msg.pid != pid
+        || !out.starts_with(&within)
+        || !out[within.len()..].starts_with(&failed)
+        || !msg.status.starts_with("trap: ")
+    {
+        return Err(format!("out {out:?} exit {msg:?}"));
+    }
+    Ok(())
+}
+
 fn child(what: &str) -> Result<(), Error> {
     match what {
+        "memhog" => memhog()?,
         "env" => println!(
             "{}",
             std::env::var("PROCSVAR").unwrap_or_else(|_| "unset".into())
@@ -221,6 +270,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         ("files", files),
         ("chdir_relative", chdir_relative),
         ("bind_and_unmount", bind_and_unmount),
+        ("memlimit", |_| memlimit()),
     ];
     let mut failed = false;
     for (name, check) in checks {

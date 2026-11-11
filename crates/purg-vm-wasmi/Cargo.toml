@@ -11,6 +11,9 @@ purg-abi.workspace = true
 purg-core.workspace = true
 purg-vm.workspace = true
 wasmi.workspace = true
+# For `LimiterError`, which `wasmi::ResourceLimiter` names but wasmi does
+# not re-export.
+wasmi_core = { version = "2", default-features = false }
 spin.workspace = true
 
 [lints]

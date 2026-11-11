@@ -4,7 +4,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use purg_abi::{error, pctl};
 use purg_platform::Platform;
@@ -26,6 +26,31 @@ use crate::pgrp::Pgrp;
 /// Exit messages kept for a prog that has not read them; older ones are
 /// dropped.
 const MAXWAIT: usize = 1024;
+
+/// No limit, in [`Proc::memlimit`] and the domain limits.
+pub const UNLIMITED: u64 = u64::MAX;
+
+/// Bytes charged for each element of a wasm table, against the memory
+/// limits.
+pub const TABLE_ELEM_BYTES: u64 = 8;
+
+/// The limits of a prog domain (`#pdomain`), set through the `ctl` of a
+/// prog in it: the most wasm memory its members may hold between them,
+/// and the most members it may have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DomainLimits {
+    pub mem: u64,
+    pub progs: u64,
+}
+
+impl Default for DomainLimits {
+    fn default() -> DomainLimits {
+        DomainLimits {
+            mem: UNLIMITED,
+            progs: UNLIMITED,
+        }
+    }
+}
 
 /// The kernel-visible part of a prog: what devices such as `#e` and `#p`
 /// need to find from the calling kproc's pid.
@@ -56,6 +81,12 @@ pub struct Proc {
     /// the process group that founded it (`#pdomain`, see `devprog`).
     /// Inherited from the parent; a prog only ever adds to its own.
     domains: Mutex<Arc<[u32]>>,
+    /// The most wasm memory (linear memory, and tables at
+    /// [`TABLE_ELEM_BYTES`] an element) this prog may hold, in bytes;
+    /// [`UNLIMITED`] for none. Inherited by the progs it starts.
+    memlimit: AtomicU64,
+    /// The wasm memory it holds now, as its engine reported it.
+    mem: AtomicU64,
 }
 
 impl Proc {
@@ -131,6 +162,33 @@ impl Proc {
 
     pub fn group(&self) -> u32 {
         self.group.load(Ordering::Relaxed)
+    }
+
+    /// The prog's memory limit in bytes, [`UNLIMITED`] for none.
+    pub fn memlimit(&self) -> u64 {
+        self.memlimit.load(Ordering::Acquire)
+    }
+
+    /// Lowers the prog's memory limit to `bytes`. A limit can only be
+    /// lowered: raising it is [`error::EPERM`]. It applies to the memory
+    /// the prog grows from now on, and to the progs it starts.
+    pub fn set_memlimit(&self, bytes: u64) -> Result<()> {
+        self.memlimit
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                (bytes <= old).then_some(bytes)
+            })
+            .map(drop)
+            .map_err(|_| Error::new(error::EPERM))
+    }
+
+    /// The wasm memory the prog holds, in bytes.
+    pub fn mem(&self) -> u64 {
+        self.mem.load(Ordering::Acquire)
+    }
+
+    /// Forgets the memory charged so far: its engine is starting afresh.
+    pub fn clear_mem(&self) {
+        self.mem.store(0, Ordering::Release);
     }
 
     pub fn name(&self) -> String {
@@ -233,6 +291,9 @@ pub struct Procs {
     table: Mutex<BTreeMap<u32, Arc<Proc>>>,
     /// The module policy of progs with no parent.
     modpolicy: Mutex<ModPolicy>,
+    /// The limits set on prog domains, by domain. The lock also makes
+    /// each memory charge to a limited domain atomic with its check.
+    domain_limits: Mutex<BTreeMap<u32, DomainLimits>>,
 }
 
 impl Procs {
@@ -243,7 +304,79 @@ impl Procs {
             next_pid: AtomicU32::new(1),
             table: Mutex::new(BTreeMap::new()),
             modpolicy: Mutex::new(ModPolicy::default()),
+            domain_limits: Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// The limits of domain `id`.
+    pub fn domain_limits(&self, id: u32) -> DomainLimits {
+        self.domain_limits
+            .lock()
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Lowers the limits of domain `id` to those in `new` that are lower.
+    /// Raising one is [`error::EPERM`], and changes nothing.
+    pub fn set_domain_limits(&self, id: u32, new: DomainLimits) -> Result<()> {
+        let mut all = self.domain_limits.lock();
+        let cur = all.get(&id).copied().unwrap_or_default();
+        if new.mem > cur.mem || new.progs > cur.progs {
+            return Err(Error::new(error::EPERM));
+        }
+        all.insert(id, new);
+        Ok(())
+    }
+
+    /// The members of domain `id` now, and the wasm memory they hold.
+    pub fn domain_usage(&self, id: u32) -> (u64, u64) {
+        let table = self.table.lock();
+        let members = table.values().filter(|p| p.in_domain(id));
+        members.fold((0, 0), |(n, mem), p| (n + 1, mem + p.mem()))
+    }
+
+    /// Asks whether `p` may grow its wasm memory from `current` to
+    /// `desired` bytes, and charges it if so: it must stay within its own
+    /// limit and within the memory limit of every domain it is in. The
+    /// engines call this from their resource limiters.
+    pub fn charge_mem(&self, p: &Proc, current: u64, desired: u64) -> bool {
+        let grow = desired.saturating_sub(current);
+        if p.mem().saturating_add(grow) > p.memlimit() {
+            return false;
+        }
+        let domains = p.domains();
+        let all = self.domain_limits.lock();
+        for d in domains.iter() {
+            if let Some(l) = all.get(d)
+                && l.mem != UNLIMITED
+                && self.domain_usage(*d).1.saturating_add(grow) > l.mem
+            {
+                return false;
+            }
+        }
+        p.mem.fetch_add(grow, Ordering::AcqRel);
+        true
+    }
+
+    /// Whether a prog in `domains` may start another: every one of those
+    /// domains with a prog limit has fewer members than that. Fails with
+    /// [`error::ENOPROC`] otherwise.
+    fn check_prog_limit(&self, domains: &[u32]) -> Result<()> {
+        let limits: Vec<(u32, u64)> = {
+            let all = self.domain_limits.lock();
+            domains
+                .iter()
+                .filter_map(|d| all.get(d).map(|l| (*d, l.progs)))
+                .filter(|&(_, n)| n != UNLIMITED)
+                .collect()
+        };
+        for (d, n) in limits {
+            if self.domain_usage(d).0 >= n {
+                return Err(Error::new(error::ENOPROC));
+            }
+        }
+        Ok(())
     }
 
     /// Sets the system default module policy: that of every prog made
@@ -285,6 +418,8 @@ impl Procs {
             modules: Mutex::new(Vec::new()),
             debug: Debug::default(),
             domains: Mutex::new(Arc::from([])),
+            memlimit: AtomicU64::new(UNLIMITED),
+            mem: AtomicU64::new(0),
         });
         self.table.lock().insert(pid, p.clone());
         p
@@ -348,6 +483,8 @@ impl Procs {
         let Some(p) = self.get(pid) else {
             return;
         };
+        // Its engine has gone, and its memory with it.
+        p.mem.store(0, Ordering::Release);
         if p.debug.broken() && status.is_some() {
             *p.egrp.lock() = Arc::new(Egrp::new());
             p.set_fgrp(Arc::new(Fgrp::new()));
@@ -515,6 +652,8 @@ impl Prog {
             .iter()
             .map(|&(from, to)| Ok((to, self.fgrp.get(from)?)))
             .collect::<Result<Vec<_>>>()?;
+        let domains = self.proc.domains();
+        self.kernel.procs.check_prog_limit(&domains)?;
         let proc = self.kernel.procs.register(
             self.pid,
             Some(self.proc.group()),
@@ -523,8 +662,10 @@ impl Prog {
             self.pgrp.clone(),
             self.proc.module_policy(),
         );
+        // Set before the child runs, so nothing has charged it yet.
+        proc.memlimit.store(self.proc.memlimit(), Ordering::Release);
         proc.debug.inherit(&self.proc.debug);
-        *proc.domains.lock() = self.proc.domains();
+        *proc.domains.lock() = domains;
         let mut child = Prog {
             pid: proc.pid,
             proc,
