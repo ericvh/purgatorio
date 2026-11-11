@@ -117,6 +117,15 @@ pub enum Frame<'a> {
     Rerror {
         ename: &'a str,
     },
+    /// A request in the clear: an encoded [`Op`], with no ticket, no time
+    /// and no seal.
+    Tclear {
+        request: &'a [u8],
+    },
+    /// A reply in the clear: an encoded [`Reply`].
+    Rclear {
+        reply: &'a [u8],
+    },
 }
 
 /// A whole frame.
@@ -175,6 +184,8 @@ impl<'a> Msg<'a> {
                 sealed: sealed(&mut r)?,
             },
             kind::RERROR => Frame::Rerror { ename: r.str16()? },
+            kind::TCLEAR => Frame::Tclear { request: r.rest() },
+            kind::RCLEAR => Frame::Rclear { reply: r.rest() },
             _ => return Err(MESSAGE),
         };
         r.finish()?;
@@ -189,6 +200,8 @@ impl<'a> Msg<'a> {
             Frame::Treq { .. } => kind::TREQ,
             Frame::Rreq { .. } => kind::RREQ,
             Frame::Rerror { .. } => kind::RERROR,
+            Frame::Tclear { .. } => kind::TCLEAR,
+            Frame::Rclear { .. } => kind::RCLEAR,
         }
     }
 
@@ -225,12 +238,33 @@ impl<'a> Msg<'a> {
                 w.bytes(sealed);
             }
             Frame::Rerror { ename } => w.data16(ename.as_bytes()),
+            Frame::Tclear { request: b } | Frame::Rclear { reply: b } => w.bytes(b),
         }
         let mut out = Vec::with_capacity(HEADER + body.len());
         out.extend_from_slice(&header(self.ty(), self.id, HEADER + body.len()));
         out.extend_from_slice(&body);
         out
     }
+}
+
+/// A `Tclear` frame for `op`.
+pub fn tclear(id: u32, op: &Op<'_>) -> Vec<u8> {
+    Msg {
+        id,
+        frame: Frame::Tclear {
+            request: &op.encode(),
+        },
+    }
+    .encode()
+}
+
+/// An `Rclear` frame carrying `reply`, an encoded [`Reply`].
+pub fn rclear(id: u32, reply: &[u8]) -> Vec<u8> {
+    Msg {
+        id,
+        frame: Frame::Rclear { reply },
+    }
+    .encode()
 }
 
 /// A clear `Rerror` frame.
@@ -279,7 +313,7 @@ impl<'a> Grant<'a> {
     }
 }
 
-/// An operation inside a `Treq`.
+/// An operation: inside a `Treq`, or the body of a `Tclear`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op<'a> {
     Stat {
@@ -335,12 +369,9 @@ pub struct Request<'a> {
     pub op: Op<'a>,
 }
 
-impl<'a> Request<'a> {
-    pub fn encode(&self) -> Vec<u8> {
-        let mut v = Vec::new();
-        let mut w = Writer { buf: &mut v };
-        w.u64(self.time);
-        match &self.op {
+impl<'a> Op<'a> {
+    fn put(&self, w: &mut Writer<'_>) {
+        match self {
             Op::Stat { path } => {
                 w.u8(op::TSTAT);
                 w.data16(path.as_bytes());
@@ -369,15 +400,10 @@ impl<'a> Request<'a> {
                 w.u32(*count);
             }
         }
-        v
     }
 
-    /// Decodes a request. The time is returned even for a request whose
-    /// op does not decode, so the server can check it first.
-    pub fn decode(buf: &'a [u8]) -> Result<Request<'a>, (Option<u64>, Undecoded)> {
-        let mut r = Reader::new(buf);
-        let time = r.u64().map_err(|_| (None, Undecoded::Bad))?;
-        let bad = |_| (Some(time), Undecoded::Bad);
+    fn get(r: &mut Reader<'a>) -> Result<Op<'a>, Undecoded> {
+        let bad = |_| Undecoded::Bad;
         let code = r.u8().map_err(bad)?;
         let op = match code {
             op::TSTAT => Op::Stat {
@@ -392,7 +418,7 @@ impl<'a> Request<'a> {
                 let have = match (cond, vers) {
                     (0, 0) => None,
                     (1, v) => Some(v),
-                    _ => return Err((Some(time), Undecoded::Bad)),
+                    _ => return Err(Undecoded::Bad),
                 };
                 Op::Read {
                     path,
@@ -406,15 +432,47 @@ impl<'a> Request<'a> {
                 cookie: r.data16().map_err(bad)?,
                 count: r.u32().map_err(bad)?,
             },
-            c if op::WRITES.contains(&c) => return Err((Some(time), Undecoded::Write(c))),
-            c => return Err((Some(time), Undecoded::Unsupported(c))),
+            c if op::WRITES.contains(&c) => return Err(Undecoded::Write(c)),
+            c => return Err(Undecoded::Unsupported(c)),
         };
         r.finish().map_err(bad)?;
+        Ok(op)
+    }
+
+    /// `op u8 fields`: the body of a `Tclear`, and a `Treq`'s plaintext
+    /// after its time.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut v = Vec::new();
+        self.put(&mut Writer { buf: &mut v });
+        v
+    }
+
+    /// Decodes what [`Op::encode`] made, strictly.
+    pub fn decode(buf: &'a [u8]) -> Result<Op<'a>, Undecoded> {
+        Op::get(&mut Reader::new(buf))
+    }
+}
+
+impl<'a> Request<'a> {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut v = Vec::new();
+        let mut w = Writer { buf: &mut v };
+        w.u64(self.time);
+        self.op.put(&mut w);
+        v
+    }
+
+    /// Decodes a request. The time is returned even for a request whose
+    /// op does not decode, so the server can check it first.
+    pub fn decode(buf: &'a [u8]) -> Result<Request<'a>, (Option<u64>, Undecoded)> {
+        let mut r = Reader::new(buf);
+        let time = r.u64().map_err(|_| (None, Undecoded::Bad))?;
+        let op = Op::get(&mut r).map_err(|u| (Some(time), u))?;
         Ok(Request { time, op })
     }
 }
 
-/// The plaintext of an `Rreq`.
+/// The plaintext of an `Rreq`, and the body of an `Rclear`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply<'a> {
     Stat(Dir),
@@ -654,6 +712,87 @@ mod tests {
                 0, 0, 0, 0, // entries
             ]
         );
+    }
+
+    /// The clear form, byte for byte: a plain header and the op.
+    #[test]
+    fn clear_vectors() {
+        let op = Op::Read {
+            path: "/a",
+            offset: 7,
+            count: 8192,
+            have: Some(9),
+        };
+        let t = tclear(0x0403_0201, &op);
+        assert_eq!(
+            t,
+            [
+                32, 0, 0, 0, 1, 9, 1, 2, 3, 4, // size, version, Tclear, id
+                0x12, 2, 0, b'/', b'a', // op, path
+                7, 0, 0, 0, 0, 0, 0, 0, // offset
+                0, 0x20, 0, 0, // count
+                1, 9, 0, 0, 0, // cond, vers
+            ]
+        );
+        let m = Msg::decode(&t).unwrap();
+        let Frame::Tclear { request } = m.frame else {
+            panic!()
+        };
+        assert_eq!(Op::decode(request), Ok(op.clone()));
+        // The same op in a sealed request's plaintext, after the time.
+        assert_eq!(Request { time: 1, op }.encode()[8..], *request);
+        let s = tclear(5, &Op::Stat { path: "/" });
+        assert_eq!(s, [14, 0, 0, 0, 1, 9, 5, 0, 0, 0, 0x10, 1, 0, b'/']);
+        let d = tclear(
+            6,
+            &Op::Readdir {
+                path: "/d",
+                cookie: b"k",
+                count: 256,
+            },
+        );
+        assert_eq!(
+            d,
+            [
+                22, 0, 0, 0, 1, 9, 6, 0, 0, 0, // header
+                0x14, 2, 0, b'/', b'd', 1, 0, b'k', 0, 1, 0, 0,
+            ]
+        );
+        let q = Qid {
+            path: 5,
+            vers: 6,
+            qtype: 0,
+        };
+        let reply = Reply::Read {
+            qid: q,
+            unchanged: false,
+            data: b"hi",
+        }
+        .encode();
+        let r = round(&Msg {
+            id: 0x0403_0201,
+            frame: Frame::Rclear { reply: &reply },
+        });
+        assert_eq!(r, rclear(0x0403_0201, &reply));
+        assert_eq!(
+            r,
+            [
+                31, 0, 0, 0, 1, 10, 1, 2, 3, 4, // size, version, Rclear, id
+                0x13, 0, 6, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, // op, qid
+                0, 2, 0, 0, 0, b'h', b'i', // unchanged, data
+            ]
+        );
+        let e = rclear(1, &Reply::Error("permission denied").encode());
+        let mut want = alloc::vec![30, 0, 0, 0, 1, 10, 1, 0, 0, 0, 0x7f, 17, 0];
+        want.extend_from_slice(b"permission denied");
+        assert_eq!(e, want);
+        // Strict: a trailing byte, a bad cond, reserved ops.
+        let mut long = Op::Stat { path: "/" }.encode();
+        long.push(0);
+        assert_eq!(Op::decode(&long), Err(Undecoded::Bad));
+        assert_eq!(Op::decode(&[]), Err(Undecoded::Bad));
+        assert_eq!(Op::decode(&[0x21]), Err(Undecoded::Write(0x21)));
+        assert_eq!(Op::decode(&[0x16]), Err(Undecoded::Unsupported(0x16)));
     }
 
     #[test]

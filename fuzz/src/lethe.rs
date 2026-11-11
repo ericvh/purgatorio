@@ -7,7 +7,7 @@
 //! encodes back to the same bytes, and nothing panics on any input.
 
 use purg_lethe::client::{self, Creds, Session};
-use purg_lethe::msg::{Grant, Msg, Reply, Request};
+use purg_lethe::msg::{Frame, Grant, Msg, Op, Reply, Request};
 use purg_lethe::server::{Config, Env, Server, Tree, Trust};
 use purg_lethe::ticket::{self, TicketKey};
 use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
@@ -65,8 +65,17 @@ fn server() -> Server {
     Server::new(Config::default(), KEY)
 }
 
-/// One call to the engine.
+/// One call to the engine, which answers sealed requests only.
 pub fn handle(frame: &[u8]) -> Vec<u8> {
+    handle_with(&server(), frame)
+}
+
+/// One call to an engine that answers clear requests too (`lethed -A`).
+pub fn handle_clear(frame: &[u8]) -> Vec<u8> {
+    handle_with(&server().with_clear(true), frame)
+}
+
+fn handle_with(server: &Server, frame: &[u8]) -> Vec<u8> {
     let trust = Trust {
         keys: vec![purg_auth::public_key(&SEED)],
         signers: vec![],
@@ -78,7 +87,7 @@ pub fn handle(frame: &[u8]) -> Vec<u8> {
         random: &mut random,
         trust: &mut t,
     };
-    server().handle(&Small, &mut env, frame).0
+    server.handle(&Small, &mut env, frame).0
 }
 
 /// A session with the target's server, made through the real exchange.
@@ -103,6 +112,9 @@ pub fn lethe(data: &[u8]) {
     if let Ok(r) = Request::decode(data) {
         assert_eq!(r.encode(), data, "request round trip");
     }
+    if let Ok(o) = Op::decode(data) {
+        assert_eq!(o.encode(), data, "op round trip");
+    }
     if let Ok(r) = Reply::decode(data) {
         assert_eq!(r.encode(), data, "reply round trip");
         let _ = r.owned();
@@ -115,10 +127,40 @@ pub fn lethe(data: &[u8]) {
     // The server answers anything with a frame that decodes.
     let reply = handle(data);
     Msg::decode(&reply).expect("the server's reply is a frame");
+    // A sealed-only server never answers a clear request.
+    if let Ok(Msg {
+        frame: Frame::Tclear { .. },
+        ..
+    }) = Msg::decode(data)
+    {
+        let m = Msg::decode(&reply).expect("checked above");
+        assert!(
+            matches!(m.frame, Frame::Rerror { ename } if ename == purg_lethe::error::AUTH_REQUIRED),
+            "a clear request answered without -A"
+        );
+    }
+    // A server that takes clear requests answers anything with a frame
+    // too, and a clear reply holds a reply that decodes. The input is
+    // tried as a frame and as a clear request's body.
+    let body = &data[..data.len().min(purg_lethe::MAX_FRAME - purg_lethe::HEADER)];
+    let as_body = Msg {
+        id: 2,
+        frame: Frame::Tclear { request: body },
+    }
+    .encode();
+    for frame in [data, &as_body] {
+        let reply = handle_clear(frame);
+        let m = Msg::decode(&reply).expect("the clear server's reply is a frame");
+        if let Frame::Rclear { reply } = m.frame {
+            Reply::decode(reply).expect("a clear reply decodes");
+        }
+    }
     // The client takes any reply without panicking.
     let s = session();
-    let (_, pending) = s.request(9, NOW, &purg_lethe::msg::Op::Stat { path: "/" }, [4; 24]);
+    let (_, pending) = s.request(9, NOW, &Op::Stat { path: "/" }, [4; 24]);
     let _ = s.reply(&pending, data);
+    let (_, pending) = client::clear(9, &Op::Stat { path: "/" });
+    let _ = pending.reply(data);
     let creds = Creds {
         user: String::from("u"),
         seed: SEED,
