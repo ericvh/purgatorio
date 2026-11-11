@@ -1,0 +1,8 @@
+cmp same
+cmp differ fail:differ
+cmp missing fail:open
+cmp eof fail:EOF
+diff same
+diff some fail:some
+mkdir existing fail:error
+mkdir -p existing

@@ -1,0 +1,38 @@
+one apple
+matched
+status 
+no banana
+status 
+quiet match
+-s status fail:no matches
+if took plum
+if took else
+negated
+two pears
+every line has a character
+2:two pears
+/tmp/sh-grepstatus/a:1: one apple
+/tmp/sh-grepstatus/a:2: two pears
+/tmp/sh-grepstatus/b:1: three plums
+2
+0
+counted none
+/tmp/sh-grepstatus/a
+/tmp/sh-grepstatus/b
+/tmp/sh-grepstatus/a
+/tmp/sh-grepstatus/b
+-L status 
+/tmp/sh-grepstatus/a
+/tmp/sh-grepstatus/b
+-L none status fail:no matches
+one apple
+stdin
+/tmp/sh-grepstatus/a: one apple
+missing file status 
+grep: cannot open /tmp/sh-grepstatus/missing: file does not exist
+only missing status fail:no matches
+bad pattern status fail:bad regex
+grep: unmatched left paren
+usage status fail:usage
+usage: grep [-cilLnsv] pattern [file...]
+bad option status fail:usage

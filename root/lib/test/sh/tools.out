@@ -1,8 +1,8 @@
 hello
-/tmp/sh-tools/a:1:hello
+/tmp/sh-tools/a:1: hello
 /tmp/sh-tools/a:1
 /tmp/sh-tools/c:1
-/tmp/sh-tools/c:world
+/tmp/sh-tools/c: world
 same
 5d41402abc4b2a76b9719d911017c592  -
 world

@@ -48,7 +48,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     if failed {
-        purgatorio::exits("fail:errors");
+        purgatorio::exits("fail:error");
     }
     Ok(())
 }

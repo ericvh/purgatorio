@@ -1,4 +1,5 @@
-//! diff a b: a small line diff. Identical files produce no output.
+//! diff a b: a small line diff. Identical files produce no output; files
+//! that differ give the status `fail:some`, as in diff(1).
 
 use purgatorio::{Context, Error};
 
@@ -55,7 +56,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     for line in &lb[pre..sb] {
         println!("> {line}");
     }
-    purgatorio::exits("files differ");
+    purgatorio::exits("fail:some");
 }
 
 fn lines(path: &str) -> Result<Vec<String>, Error> {
