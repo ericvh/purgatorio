@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.7)
+# Purgatorio application ABI (v0.8)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.7`. The loader rejects a mismatched version. Modules
+section containing `0.8`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -88,7 +88,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.7
+## `purgatorio` imports in v0.8
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -222,7 +222,7 @@ The host writes `args` into a fresh page of the module's memory, the export
 overwrites that page with its result and returns the result length, and the
 host copies up to `olen` bytes of it to `out`.
 
-### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7)
+### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7, server proofs in v0.8)
 
 A mount authenticates before `Tattach` with an Ed25519 signature over a
 challenge from the server. This is not Inferno's keyring protocol, so real
@@ -256,17 +256,36 @@ and a security review.
   ...` on its `ctl`), an authinfo in `/usr/<user>/keyring/default`, or a
   seed in `/usr/<user>/key` (or the public test key `/lib/test/auth.key`).
   The SDK also asks the guest factotum at `/mnt/factotum` first.
+- Since v0.8 the server proves itself in turn: once a version 3 proof is
+  accepted, the auth fid reads at offset 64
+  (`purg_abi::auth::SERVER_PROOF_OFFSET`) as `kind || signature[64] ||
+  body`, signed with the exporting user's key over the session's
+  transcript hash and a value bound to its keys (`docs/auth.md`, "Server
+  authentication"). `MSRVAUTH` (`0x4000_0000`, `mount -S`) makes the
+  mount read and check it against `/lib/keys/servers`,
+  `/lib/keys/signers` and `/lib/test/auth.key.pub` in the mounter's
+  namespace, before the attach, both with `afd = -1` and with an `afd`.
+  No proof fails with `server did not authenticate`, a proof that does
+  not check with `server authentication failed`. `MSRVAUTH` with
+  `MNOAUTH` is `bad arg in system call`.
 - The `Tattach` must name the same uname and aname as the `Tauth`.
 - `MNOAUTH` (`0x8000_0000`, the `-A` flag) skips `Tauth`. A server that
   authenticates then rejects the attach.
+- A conversation that a version 3 proof switched to records, even a
+  refused one, cannot be started again in the clear: `mount` with `afd =
+  -1` and `fauth` on its fd fail with `conversation is encrypted` (v0.8).
 - With `afd = -1`, `mount` does all of this itself. A guest can instead run
   the exchange with `fauth` (below) and pass the auth fd to `mount`.
   `MNOAUTH` is ignored when an `afd` is given.
 
 ### Read-only `export`
 
-`export(fd, dir, dlen, flags)` takes `MNOAUTH` and `RDONLY`
-(`0x4000_0000`, `purg_abi::export::RDONLY`). A read-only export serves
+`export(fd, dir, dlen, flags)` takes `MNOAUTH`, `RDONLY`
+(`0x4000_0000`, `purg_abi::export::RDONLY`) and, since v0.8, `ENCRYPT`
+(`0x2000_0000`, `export -e`): an encrypting export answers a version 1 or
+2 proof, and an attach without a version 3 proof, with `encryption
+required`. `ENCRYPT` with `MNOAUTH` is `bad arg in system call`. A
+read-only export serves
 walks, stats and reads. It answers `permission denied` to an open for
 writing, with `OTRUNC` or with `ORCLOSE`, and to create, write, remove and
 wstat. The `export` command sets it with `-r`. This is how `mcpd` shows
@@ -285,7 +304,10 @@ made for this client: the bytes a version 3 proof signs. The kernel keeps
 the secret half. Writing that proof switches the conversation to records,
 and the kernel does the rest. A read of 32 bytes gives the bare challenge,
 for a version 1 or 2 proof and a conversation in the clear; a read of 96
-that returns fewer bytes means the server offers no key. Writing a proof
+that returns fewer bytes means the server offers no key. Since v0.8 the
+kernel makes one ephemeral key per auth fd: every read of the offer, from
+any thread, returns the same 96 bytes, so a read beside the write of the
+proof cannot change the key under it. Writing a proof
 (above) completes the exchange. A wrong proof fails that write. The
 caller then calls `mount(fd, afd, ...)` with the same `aname`, which
 attaches with the auth fid. An `afd` that did not authenticate makes the attach fail with

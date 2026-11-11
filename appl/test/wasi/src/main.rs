@@ -12,7 +12,7 @@ use std::time::Duration;
 // Only wasm has this section; Mach-O rejects a section name with no segment.
 #[used]
 #[cfg_attr(target_family = "wasm", unsafe(link_section = "purgatorio.abi"))]
-static ABI: [u8; 3] = *b"0.7";
+static ABI: [u8; 3] = *b"0.8";
 
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
 unsafe extern "C" {

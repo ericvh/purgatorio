@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.7";
+pub const ABI_VERSION: &str = "0.8";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -292,6 +292,13 @@ pub mod mount {
     /// A server that has a key rejects the attach; one that does not
     /// accepts it.
     pub const MNOAUTH: u32 = 0x8000_0000;
+    /// Require the server to prove itself after a version 3 handshake
+    /// (`mount -S`): the mount reads the server's proof from the auth fid
+    /// and checks it against `/lib/keys/servers`, `/lib/keys/signers` and
+    /// `/lib/test/auth.key.pub` in the mounter's namespace. A server that
+    /// gives none fails with [`super::auth::SERVER_NONE`], a proof that
+    /// does not check with [`super::auth::SERVER_FAILED`].
+    pub const MSRVAUTH: u32 = 0x4000_0000;
 }
 
 /// `export` flags, beside [`mount::MNOAUTH`].
@@ -300,6 +307,10 @@ pub mod export {
     /// remove-on-close, and create, write, remove and wstat, fail with
     /// `permission denied`. (Plan 9's `exportfs -R`.)
     pub const RDONLY: u32 = 0x4000_0000;
+    /// Refuse every attach that is not encrypted (`export -e`): version 1
+    /// and 2 proofs fail with [`super::auth::ENCRYPTION_REQUIRED`], and so
+    /// does an attach without a proof. Not with [`super::mount::MNOAUTH`].
+    pub const ENCRYPT: u32 = 0x2000_0000;
 }
 
 /// Mount authentication: an Ed25519 signature over a server challenge.
@@ -347,6 +358,23 @@ pub mod auth {
     /// The server did not offer a session key: it predates version 3, or
     /// something on the way removed the offer.
     pub const NO_SESSION: &str = "no session key offered";
+    /// A mount that requires the server's proof (`MSRVAUTH`) got none:
+    /// the server has no key, asked for no proof, or the conversation is
+    /// not version 3.
+    pub const SERVER_NONE: &str = "server did not authenticate";
+    /// The server's proof does not verify, or its key or certificate is
+    /// not one the client trusts as a server.
+    pub const SERVER_FAILED: &str = "server authentication failed";
+    /// An export with `ENCRYPT` refused a proof (or an attach) that would
+    /// leave the conversation in the clear.
+    pub const ENCRYPTION_REQUIRED: &str = "encryption required";
+    /// A conversation a version 3 proof switched to records cannot be
+    /// started again in the clear: mount it with its auth fd, or dial
+    /// again.
+    pub const ENCRYPTED: &str = "conversation is encrypted";
+    /// The offset on the auth fid where the server's proof is read, after
+    /// the [`OFFER`].
+    pub const SERVER_PROOF_OFFSET: u64 = OFFER as u64;
 }
 
 /// Error strings, worded exactly as Inferno's.

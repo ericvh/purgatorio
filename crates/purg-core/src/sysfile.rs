@@ -211,21 +211,43 @@ impl Prog {
     /// the caller has already authenticated) the attach uses that auth fid.
     /// With `afd = -1` the mount authenticates by itself through `Tauth`,
     /// unless `MNOAUTH` is set.
+    ///
+    /// With `MSRVAUTH` the server must prove itself too: the mount reads
+    /// its proof after the client's and checks it against what this
+    /// namespace trusts as a server (`docs/auth.md`).
     pub fn mount(&self, fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<()> {
-        let noauth = flags & purg_abi::mount::MNOAUTH != 0;
-        let flags = flags & !purg_abi::mount::MNOAUTH;
+        use purg_abi::mount::{MNOAUTH, MSRVAUTH};
+        let noauth = flags & MNOAUTH != 0;
+        let srvauth = flags & MSRVAUTH != 0;
+        if noauth && srvauth {
+            return Err(Error::new(error::EBADARG));
+        }
+        let flags = flags & !(MNOAUTH | MSRVAUTH);
         let fd = self.fgrp.get(fd)?;
         let user = String::from(self.kernel.procs.user());
+        let pgrp = self.pgrp.clone();
+        let platform = self.kernel.platform.clone();
+        let check = move |keys: &purg_auth::session::Keys, proof: &[u8]| {
+            let now = platform.now_ns() / 1_000_000_000;
+            crate::auth::check_server(&pgrp, now, keys, proof)
+        };
+        let server: Option<crate::devmnt::ServerCheck<'_>> =
+            if srvauth { Some(&check) } else { None };
         let root = if afd >= 0 {
             let afd = self.fgrp.get(afd)?;
-            self.kernel.mnt.mount_auth(&fd, &afd, aname, &user)?
-        } else {
-            let pgrp = self.pgrp.clone();
             self.kernel
                 .mnt
-                .mount(fd, aname, &user, noauth, |challenge| {
-                    crate::auth::client_proof(&pgrp, &user, aname, challenge)
-                })?
+                .mount_auth(&fd, &afd, aname, &user, server)?
+        } else {
+            let pgrp = self.pgrp.clone();
+            self.kernel.mnt.mount(
+                fd,
+                aname,
+                &user,
+                noauth,
+                |challenge| crate::auth::client_proof(&pgrp, &user, aname, challenge),
+                server,
+            )?
         };
         let old = absolute(old, &self.dot());
         self.pgrp.bind_chan(root, &old, flags)
@@ -292,18 +314,20 @@ impl Prog {
 
     /// `sys->export`: serve `dir` on `fd` until the client closes.
     /// `MNOAUTH` serves the tree even when the caller's namespace trusts a
-    /// key or a signer; `export::RDONLY` refuses every change to it.
+    /// key or a signer; `export::RDONLY` refuses every change to it;
+    /// `export::ENCRYPT` refuses every attach that is not encrypted. The
+    /// server's own proof is signed with the key the caller's mount would
+    /// prove with.
     pub fn export(&self, fd: i32, dir: &str, flags: u32) -> Result<()> {
         let fd = self.fgrp.get(fd)?;
         let dir = absolute(dir, &self.dot());
-        crate::export::serve(
-            self.pgrp.clone(),
-            &dir,
-            &fd,
-            &self.kernel.platform,
-            flags & purg_abi::mount::MNOAUTH != 0,
-            flags & purg_abi::export::RDONLY != 0,
-        )
+        let opts = crate::export::Opts {
+            noauth: flags & purg_abi::mount::MNOAUTH != 0,
+            rdonly: flags & purg_abi::export::RDONLY != 0,
+            encrypt: flags & purg_abi::export::ENCRYPT != 0,
+            user: String::from(self.kernel.procs.user()),
+        };
+        crate::export::serve_with(self.pgrp.clone(), &dir, &fd, &self.kernel.platform, &opts)
     }
 
     /// `sys->file2chan`. When `dir` is not on `#s`, the file is created in

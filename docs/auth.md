@@ -267,11 +267,28 @@ extra round trip:
   check), and seals every reply queued after the reply to that tag.
 
 The switch happens whether the proof is accepted or not: a refused proof's
-`Rerror` arrives in the clear, and the conversation is over. A client may
-not send anything else while the proof is outstanding, and does not flush
-it: a prog killed while it waits takes the whole session down instead.
-A conversation switches once; a later proof on it is checked but changes
-no keys.
+`Rerror` arrives in the clear, and the conversation is over. The client
+does not flush the proof: a prog killed while it waits takes the whole
+session down instead. A conversation switches once; a later proof on it
+is checked but changes no keys.
+
+The kernel enforces the rest:
+
+- **One key per auth fd.** The first read of the offer makes the
+  client's ephemeral key, and every later read, from any thread, returns
+  the same 96 bytes. A read beside the write of the proof therefore cannot
+  change the key under it. The proof itself is written under the
+  session's write lock, which also installs the sealer, so a request from
+  another thread goes either wholly before the proof (in the clear) or
+  wholly after it (sealed), and both ends switch at the same message.
+  Replies switch at the proof's reply in stream order on both ends, so a
+  reply to a request from another thread that overtakes or follows the
+  proof's reply is read the way it was sent. Nothing more is needed.
+- **No restart in the clear.** The device remembers every conversation
+  (by its fd) that went to records, even through a refused proof and
+  after its auth fd is closed. A `mount` with `afd = -1` or a `fauth` on
+  it fails with `conversation is encrypted`, rather than sending a
+  `Tversion` the server would read as a broken record.
 
 ### Record layer
 
@@ -293,6 +310,18 @@ every record after it. A stream that ends inside a record is a hangup
 (`i/o on hungup channel`). On the client every outstanding and later
 request on the mount fails with that error; the server drops the
 connection, and its `export` returns the error.
+
+Each direction carries at most 2^48 records (`purg_auth::record::LIMIT`).
+The record after that fails to seal, and one that arrives past it fails
+to open, with `record sequence exhausted`, which ends the conversation as
+a bad record does. There is no rekeying. The 64-bit nonce could count to
+2^64 without repeating; the limit is a clean error far short of that, so
+no arithmetic near the counter's end is ever used. At a million records
+a second, 2^48 takes nine years; a 2^64 count is unreachable in practice,
+and a conversation that long can dial again. ChaCha20-Poly1305 has no
+per-key data limit that comes into play before then: its integrity bound
+concerns forgery attempts, and here the first failed record ends the
+conversation.
 
 The record layer is in `purg_auth::record`, the exchange in
 `purg_auth::session`. In the kernel, `#M` holds the client's sealer under
@@ -316,6 +345,9 @@ work running:
 - Reading 16 MiB through a mount over an in-memory pipe takes 205 ms
   encrypted against 68 ms in the clear. That is the worst case: with no
   network in the way, the cipher is all the cost there is.
+- The server's proof (below) costs nothing unless a client asks for it:
+  the export signs on the first read at offset 64, one Ed25519 signature
+  per conversation.
 
 ### Compatibility and downgrade
 
@@ -326,7 +358,13 @@ work running:
   with `no session key offered`. Otherwise someone in the middle could cut
   the offer to 32 bytes and keep the conversation in the clear.
 - The server still takes version 1 and 2 proofs, so guests built before
-  this keep working. A server option to refuse them is not done yet.
+  this keep working. `export -e` (`purg_abi::export::ENCRYPT`) refuses
+  them with `encryption required`, and refuses an attach without a
+  version 3 proof the same way, so a listener can insist on encrypted
+  conversations (`styxlisten addr export -e /`). An export that trusts no
+  key cannot encrypt, so with `-e` it refuses everyone. `rstyxd` always
+  refused version 1 and 2 proofs; `rstyxd -e` also refuses to serve in
+  the clear when it trusts nothing.
 - `-A` and a server that answers `authentication not required` stay in the
   clear.
 
@@ -339,16 +377,81 @@ anyway; and it would be one more mode to review. Inferno likewise pushes
 conversation in the clear. A user who wants an encrypted conversation
 gets a key (`getauthinfo`, or the test key) and authenticates.
 
-### Server authentication, later
+### Server authentication
 
-The flow leaves room for the server to prove itself without a new
-version. After the proof, the auth fid reads at offset 64 as the server's
-own proof. Today that read is empty. A server with a key would return
-`kind || signature[64] || body`, with the signature over
-`"pgauth3 server" 0x00 || SHA-256(message)`, which binds its identity to
-both ephemeral keys and the client's proof. That read already travels in
-the records. A client that wants mutual authentication reads it and checks
-it against its trusted signers; one that does not never asks.
+Once a version 3 proof is accepted, the server proves itself in turn. No
+new version is needed: the flow reserved the read of the auth fid at
+offset 64 for it, which travels in the records, and a client that does
+not want it never asks.
+
+```
+C -> S  Tread afid 64 n                            (sealed)
+S -> C  Rread  server proof                        (sealed; empty if none)
+server proof = kind u8 || signature[64] || body
+message      = "pgauth3 server" 0x00 || transcript[32] || bind[32]
+                                     || kind u8 || body
+transcript   = SHA-256(the client's signed message)   (the HKDF salt)
+bind         = HKDF-Expand(prk, "pgauth3 server", 32)
+```
+
+`kind` and `body` are a public key (0) or a `pgcert1` line (1), as in
+the client's proof, and the signature is by the body's key. `transcript`
+fixes the challenge, both ephemeral keys, both names and the client's
+identity; `bind` is a third output of the session's key derivation, so
+only the two ends of this exchange can compute it. A proof is therefore
+good for one session alone. A relay that holds its own end of a session
+(it posed as the server, so it can seal records) cannot pass off a proof
+the real server made for another session, even one it got as a client of
+the real server: that proof signs another transcript and another bound
+value. And because it arrives sealed under the session's keys, it also
+confirms that the server holds them. The format is in
+`purg_auth::server`.
+
+The proof is made in the exporter's namespace, with the key the
+exporting user's own mount would prove with: `#¤` (with its certificate),
+`/usr/<user>/keyring/default`, `/usr/<user>/key`, then the public test
+key. `rstyxd` uses its `-k keyfile`, or the same default sources (the
+guest factotum is not asked: its protocol makes client proofs only). A
+server with no key gives an empty read. The kernel's and the probe's own
+exports sign with the test key or `#¤`.
+
+**What the client trusts.** As in Inferno, where the server's certificate
+is checked against the client's own signer list, the client checks the
+proof against files in its own namespace, read at each mount:
+
+- `/lib/keys/servers`: server keys held directly (a key list, as
+  `/lib/keys/signers` is), and the public test key
+  `/lib/test/auth.key.pub`;
+- `/lib/keys/signers`: certificates from these signers are taken;
+- `/lib/keys/revoked`: refused, key or signer, as for clients.
+
+The certificate's name is not checked: any server a trusted signer
+certified is accepted, again as in Inferno. That means any holder of a
+certificate from a trusted signer, a user included, can pose as a server
+to a client that trusts that signer. A list of trusted servers per host
+(keyed by dial string) would close that, but the kernel's mount sees only
+an fd, not the address it was dialled at; it is left for later. A site
+that wants servers apart from users can give servers certificates from a
+signer only the clients' `/lib/keys/signers` lists, or list the servers'
+keys in `/lib/keys/servers`. The stock root trusts the public test key
+both ways, so an unchanged system proves and accepts it; deployments
+remove that pair.
+
+**Requiring it.** Checking is the client's choice:
+
+- `mount -S` and `import -S` (`purg_abi::mount::MSRVAUTH`, an addition:
+  Inferno's mount(1) has no `-S`) read the proof before the attach and
+  check it. The kernel does this for the plain mount and for one with an
+  auth fd from `fauth`, so the SDK's `amount` gets it by passing the flag.
+- `rcmd -S` and `cpu -S` check the proof `rstyxd` sends in its OK frame
+  (`docs/rcmd.md`).
+
+A server that sends no proof, asks for no proof itself, or a conversation
+that is not version 3, fails with `server did not authenticate`. A proof
+that does not verify, or a key or certificate the client does not trust,
+fails with `server authentication failed`; the client's own files say
+why. `-S` with `-A` is a usage error (`bad arg in system call` to
+`mount`).
 
 ### Clients and the ABI
 
@@ -360,6 +463,12 @@ writes the proof; the kernel recognises it as the proof for its key and
 switches the conversation. A read of 32 bytes still gives the bare
 challenge. The ABI goes from 0.6 to 0.7: a guest built for 0.7 reads 96
 bytes and refuses a kernel that does not answer with them.
+
+Version 0.8 adds `MSRVAUTH`, `export::ENCRYPT`, the read of the server's
+proof and the errors `server did not authenticate`, `server
+authentication failed`, `encryption required` and `conversation is
+encrypted`. The wire format does not change: a 0.7 client never reads
+offset 64, and a 0.8 client of a 0.7 server reads it as empty.
 
 ## Password scheme
 
@@ -546,9 +655,12 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   integrity-protected, and its keys come from ephemeral secrets (forward
   secrecy). Someone who can rewrite the connection can break it, which
   the client sees as `bad record mac`, but not read it or take it over.
-  The server is not authenticated: a client that dials a fake server
-  talks to the fake server, encrypted. What a man in the middle cannot do
-  is relay the client's proof to the real server and keep the session,
+  The server is authenticated only when the client asks (`-S`): without
+  it, a client that dials a fake server talks to the fake server,
+  encrypted. With it, the fake server needs a key or certificate the
+  client trusts as a server's, and cannot reuse the real server's proof
+  from another session. What a man in the middle cannot do either way is
+  relay the client's proof to the real server and keep the session,
   because the proof signs the real server's key. Conversations of older
   guests (version 1 and 2 proofs) are still in the clear and can be taken
   over after the attach.
@@ -579,7 +691,8 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
 
 - `crates/purg-auth` (`no_std` + `alloc`): `cert`, `keys`, `attr`,
   `proof` (the handshake and the server's check), `session` (the version 3
-  X25519 exchange and key derivation), `record` (the record layer) and,
+  X25519 exchange and key derivation), `record` (the record layer),
+  `server` (the server's proof) and,
   behind the default `login` feature, `login` (`pglogin1`, Argon2id,
   sealed files, `crypt`'s chunks). The kernel (`purg-core`) uses it
   without `login`. It builds for `aarch64-unknown-none` and
@@ -613,6 +726,26 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   `crypt_*` checks do the same through two relay progs on both VMs. Every
   authenticated mount in the sh corpus (`auth.sh` and others) now runs
   encrypted in the emu, the probe and the kernel.
+- Server proof tests: `purg-auth`'s `server` tests (the key derivation
+  against values computed separately with Python's `hmac`, a fixed proof,
+  every changed byte, a proof for another session, a certified server,
+  expiry and revocation) and `record`'s end of the sequence;
+  `styxcrypt`: a mount requiring the server accepts the real one,
+  refuses an export with another key and accepts it once that key is in `/lib/keys/servers`, refuses a server that asks for no proof,
+  checks the proof after `fauth`, refuses a fake server that seals but
+  replays the real server's proof from another session (and accepts the
+  same fake server with a fresh proof), `export` with `ENCRYPT`, a
+  refused version 3 proof leaving the fd encrypted, and every read of the
+  offer giving one key; `m3`'s `crypt_server`, `crypt_required` and
+  `crypt_reuse`; `srvauth.sh` in the corpus (`mount -S`, `rcmd -S`, an
+  impostor `rstyxd`, `export -e`, `rstyxd -e`); and the hosted
+  `rcmd` test, which changes a byte of the proof on the way.
+- Fuzzing: the `record` fuzz target also feeds its input to the server
+  proof's check, and its smoke test (`cargo test -p purg-auth --test
+  fuzz_smoke`) adds genuine server proofs, with keys and certificates,
+  changed or cut short. A real run needs cargo-fuzz and a nightly
+  toolchain (`cargo +nightly fuzz run record` in `fuzz/`), which the
+  build hosts do not have.
 - Tests: unit tests in `purg-auth` (formats, the proof check, the exchange
   over an in-memory pipe, sealing, a netkey test vector); `purg-core`'s
   `m3` test mounts with a certificate from an authinfo and from `#¤`, is
@@ -641,8 +774,8 @@ Decided by the owner:
 - **Module signing (#33)** reuses `pgcert1`, the key-list format and the
   revocation list. The design is in `docs/signing.md`.
 - **Mutual authentication** (the server proving it holds a certificate
-  from a signer the client trusts): maybe later. Version 3 leaves a place
-  for it (see "Server authentication, later").
+  from a signer the client trusts): done, at the client's request (issue
+  #105; see "Server authentication").
 
 Still open:
 
@@ -650,3 +783,6 @@ Still open:
    are stable, so a stolen keyfs entry is not password-equivalent?
 2. **Per-prog users.** `runas`, and servers that act for several users,
    need a user per prog rather than one per system.
+3. **Servers per host.** A client trusts a server key or signer for every
+   server it dials. A list keyed by dial string would bind a key to an
+   address, but the kernel's mount sees only an fd.

@@ -49,6 +49,9 @@ ok amount
 ok crypt_wire
 ok crypt_clear
 ok crypt_tamper
+ok crypt_server
+ok crypt_required
+ok crypt_reuse
 ok stream_pipe_file
 ok stream_file_pipe
 ok stream_short_write

@@ -15,7 +15,7 @@
 // Only wasm has this section; Mach-O rejects a section name with no segment.
 #[used]
 #[cfg_attr(target_family = "wasm", unsafe(link_section = "purgatorio.abi"))]
-static ABI: [u8; 3] = *b"0.7";
+static ABI: [u8; 3] = *b"0.8";
 
 #[cfg(target_arch = "wasm32")]
 #[panic_handler]

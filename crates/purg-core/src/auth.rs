@@ -12,8 +12,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 pub use purg_abi::auth::{
-    CHALLENGE, EXPIRED, FAILED, NAME_MISMATCH, NO_KEY, NO_SESSION, NOT_REQUIRED, OFFER, PROOF,
-    PUBLIC, REQUIRED, REVOKED, SEED, SIGNATURE, SIGNED, UNTRUSTED,
+    CHALLENGE, ENCRYPTED, ENCRYPTION_REQUIRED, EXPIRED, FAILED, NAME_MISMATCH, NO_KEY, NO_SESSION,
+    NOT_REQUIRED, OFFER, PROOF, PUBLIC, REQUIRED, REVOKED, SEED, SERVER_FAILED, SERVER_NONE,
+    SERVER_PROOF_OFFSET, SIGNATURE, SIGNED, UNTRUSTED,
 };
 pub use purg_auth::cert::Cert;
 pub use purg_auth::{public_key, sign, verify};
@@ -74,17 +75,17 @@ enum Signer {
     Factotum([u8; PUBLIC]),
 }
 
-/// Builds the client's proof for the kernel's own mount (`afd = -1`). The
-/// key comes from `#¤` (with the certificate loaded into it), an authinfo
-/// in `/usr/<user>/keyring/default`, or a seed file: `/usr/<user>/key`,
-/// then the public test key. `challenge` is what the proof signs: the
-/// [`SIGNED`] bytes of a version 3 exchange.
-pub(crate) fn client_proof(
+/// Signs as `user` in `pgrp`'s namespace: finds the key, builds the
+/// message from the proof's kind and body with `message`, and returns the
+/// kind, the signature and the body. The key comes from `#¤` (with the
+/// certificate loaded into it), an authinfo in
+/// `/usr/<user>/keyring/default`, or a seed file: `/usr/<user>/key`, then
+/// the public test key.
+fn sign_as(
     pgrp: &Pgrp,
     user: &str,
-    aname: &str,
-    challenge: &[u8],
-) -> crate::error::Result<Vec<u8>> {
+    message: impl FnOnce(u8, &[u8]) -> Vec<u8>,
+) -> crate::error::Result<(u8, [u8; SIGNATURE], Vec<u8>)> {
     let (signer, cert) = client_key(pgrp, user)?;
     let public = match &signer {
         Signer::Seed(s) => public_key(s),
@@ -92,7 +93,7 @@ pub(crate) fn client_proof(
     };
     let cert = cert.filter(|c| c.key == public);
     let (kind, body) = purg_auth::proof::body(cert.as_ref(), &public);
-    let msg = purg_auth::proof::message(challenge, user, aname, kind, &body);
+    let msg = message(kind, &body);
     let sig = match signer {
         Signer::Seed(s) => sign(&s, &msg),
         Signer::Factotum(_) => {
@@ -102,7 +103,134 @@ pub(crate) fn client_proof(
                 .map_err(|_| crate::error::Error::new(NO_KEY))?
         }
     };
+    Ok((kind, sig, body))
+}
+
+/// Builds the client's proof for the kernel's own mount (`afd = -1`), with
+/// the key [`sign_as`] finds. `challenge` is what the proof signs: the
+/// [`SIGNED`] bytes of a version 3 exchange.
+pub(crate) fn client_proof(
+    pgrp: &Pgrp,
+    user: &str,
+    aname: &str,
+    challenge: &[u8],
+) -> crate::error::Result<Vec<u8>> {
+    let (kind, sig, body) = sign_as(pgrp, user, |kind, body| {
+        purg_auth::proof::message(challenge, user, aname, kind, body)
+    })?;
     Ok(purg_auth::proof::assemble(challenge, kind, &sig, &body))
+}
+
+/// The server's proof for a version 3 session (`purg_auth::server`), made
+/// as `user` with the key a mount by `user` in `pgrp` would prove with.
+/// `None` when there is no key.
+pub(crate) fn server_proof(
+    pgrp: &Pgrp,
+    user: &str,
+    keys: &purg_auth::session::Keys,
+) -> Option<Vec<u8>> {
+    let (kind, sig, body) = sign_as(pgrp, user, |kind, body| {
+        purg_auth::server::message(keys, kind, body)
+    })
+    .ok()?;
+    Some(purg_auth::server::assemble(kind, &sig, &body))
+}
+
+/// The longest key list read.
+const MAX_LIST: usize = 64 * 1024;
+/// Trusted signers, revoked keys and the keys a client trusts as servers'.
+const SIGNERS_LIST: &str = "/lib/keys/signers";
+const REVOKED_LIST: &str = "/lib/keys/revoked";
+const SERVERS: &str = "/lib/keys/servers";
+/// The public test key: held directly by servers and by clients.
+const TEST_KEY: &str = "/lib/test/auth.key.pub";
+
+/// What one side trusts: keys it holds directly, signers, and revoked keys
+/// (`None` when that list does not parse).
+pub(crate) struct Trust {
+    pub keys: Vec<[u8; PUBLIC]>,
+    pub signers: Vec<[u8; PUBLIC]>,
+    pub revoked: Option<Vec<[u8; PUBLIC]>>,
+}
+
+impl Trust {
+    /// Reads the signers and the revoked keys from `pgrp`'s namespace,
+    /// with `keys` as the directly held keys. A missing revocation list
+    /// revokes nothing; one that is there but cannot be read or parsed
+    /// fails closed.
+    fn read(pgrp: &Pgrp, keys: Vec<[u8; PUBLIC]>) -> Trust {
+        let signers = read_file(pgrp, SIGNERS_LIST, MAX_LIST)
+            .map(|t| purg_auth::keys::parse_list_lenient(&t))
+            .unwrap_or_default();
+        let revoked = match read_file(pgrp, REVOKED_LIST, MAX_LIST) {
+            Some(t) => purg_auth::keys::parse_list(&t),
+            None if pgrp.namec(REVOKED_LIST, "/").is_ok() => None,
+            None => Some(Vec::new()),
+        };
+        Trust {
+            keys,
+            signers,
+            revoked,
+        }
+    }
+
+    /// What a server in `pgrp` trusts for `uname`: the test key,
+    /// `/usr/<uname>/key.pub`, `/lib/keys/signers` and `/lib/keys/revoked`.
+    pub(crate) fn client(pgrp: &Pgrp, uname: &str) -> Trust {
+        let mut keys = Vec::new();
+        let mut paths = alloc::vec![String::from(TEST_KEY)];
+        if safe_user(uname) {
+            paths.push(alloc::format!("/usr/{uname}/key.pub"));
+        }
+        for path in paths {
+            if let Some(key) = read_key(pgrp, &path)
+                && !keys.contains(&key)
+            {
+                keys.push(key);
+            }
+        }
+        Trust::read(pgrp, keys)
+    }
+
+    /// What a client in `pgrp` trusts as a server: the keys listed in
+    /// `/lib/keys/servers`, the test key, and certificates from
+    /// `/lib/keys/signers`, less `/lib/keys/revoked`.
+    pub(crate) fn server(pgrp: &Pgrp) -> Trust {
+        let mut keys = read_file(pgrp, SERVERS, MAX_LIST)
+            .map(|t| purg_auth::keys::parse_list_lenient(&t))
+            .unwrap_or_default();
+        if let Some(k) = read_key(pgrp, TEST_KEY)
+            && !keys.contains(&k)
+        {
+            keys.push(k);
+        }
+        Trust::read(pgrp, keys)
+    }
+
+    pub(crate) fn policy(&self, now: u64) -> purg_auth::proof::Policy<'_> {
+        purg_auth::proof::Policy {
+            keys: &self.keys,
+            signers: &self.signers,
+            revoked: self.revoked.as_deref(),
+            now,
+        }
+    }
+
+    pub(crate) fn required(&self) -> bool {
+        self.policy(0).requires_auth()
+    }
+}
+
+/// Checks a server's proof for the session `keys` against what `pgrp`
+/// trusts as a server ([`Trust::server`]).
+pub(crate) fn check_server(
+    pgrp: &Pgrp,
+    now: u64,
+    keys: &purg_auth::session::Keys,
+    proof: &[u8],
+) -> crate::error::Result<()> {
+    let t = Trust::server(pgrp);
+    purg_auth::server::check(&t.policy(now), keys, proof).map_err(crate::error::Error::new)
 }
 
 fn client_key(pgrp: &Pgrp, user: &str) -> crate::error::Result<(Signer, Option<Cert>)> {

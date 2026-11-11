@@ -21,8 +21,7 @@
 
 use alloc::vec::Vec;
 
-use chacha20poly1305::aead::{AeadInPlace, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce, Tag};
+use cipher::Cipher;
 
 /// The length of a record's header.
 pub const HEADER: usize = 4;
@@ -38,8 +37,16 @@ pub const BAD_MAC: &str = "bad record mac";
 pub const TOO_LONG: &str = "record too long";
 /// A record too short to hold a tag.
 pub const TOO_SHORT: &str = "record too short";
-/// 2^64 records have been sent under one key.
+/// [`LIMIT`] records have gone one way under one key.
 pub const EXHAUSTED: &str = "record sequence exhausted";
+
+/// The most records one direction carries. The nonce is the 64-bit
+/// sequence number, so it could count to 2^64 without repeating; the
+/// limit stops 2^16 times short of that, with a clear error, so no
+/// arithmetic near the end of the counter is ever exercised. At a
+/// million records a second it takes nine years to reach: a conversation
+/// that does is ended, not rekeyed (`docs/auth.md`, "Record layer").
+pub const LIMIT: u64 = 1 << 48;
 
 /// The record layer's error for `s`, when it is one: lets a caller that
 /// only kept the text have the `'static` string back.
@@ -49,10 +56,47 @@ pub fn error(s: &str) -> Option<&'static str> {
         .find(|e| *e == s)
 }
 
-fn nonce(seq: u64) -> Nonce {
+fn nonce(seq: u64) -> [u8; 12] {
     let mut n = [0u8; 12];
     n[..8].copy_from_slice(&seq.to_le_bytes());
-    Nonce::from(n)
+    n
+}
+
+/// The AEAD itself: ChaCha20-Poly1305 from the RustCrypto crates, which
+/// are `no_std`.
+mod cipher {
+    use super::TAG;
+
+    /// ChaCha20-Poly1305 from the RustCrypto crates.
+    pub struct RustCrypto(chacha20poly1305::ChaCha20Poly1305);
+
+    impl RustCrypto {
+        pub fn new(key: &[u8; 32]) -> RustCrypto {
+            use chacha20poly1305::KeyInit;
+            RustCrypto(chacha20poly1305::ChaCha20Poly1305::new(key.into()))
+        }
+
+        pub fn seal(&self, nonce: [u8; 12], aad: &[u8], buf: &mut [u8]) -> Option<[u8; TAG]> {
+            use chacha20poly1305::aead::AeadInPlace;
+            self.0
+                .encrypt_in_place_detached(&nonce.into(), aad, buf)
+                .ok()
+                .map(Into::into)
+        }
+
+        /// Opens `buf`, the ciphertext followed by its tag, in place.
+        pub fn open(&self, nonce: [u8; 12], aad: &[u8], buf: &mut [u8]) -> Option<()> {
+            use chacha20poly1305::aead::AeadInPlace;
+            let at = buf.len().checked_sub(TAG)?;
+            let (body, tag) = buf.split_at_mut(at);
+            let tag = chacha20poly1305::Tag::clone_from_slice(tag);
+            self.0
+                .decrypt_in_place_detached(&nonce.into(), aad, body, &tag)
+                .ok()
+        }
+    }
+
+    pub type Cipher = RustCrypto;
 }
 
 /// The size of the record whose header is `header`, checked against the
@@ -71,17 +115,21 @@ pub fn size(header: [u8; HEADER], max_plain: usize) -> Result<usize, &'static st
 
 /// The sending end of one direction.
 pub struct Sealer {
-    aead: ChaCha20Poly1305,
+    aead: Cipher,
     seq: u64,
-    spent: bool,
 }
 
 impl Sealer {
     pub fn new(key: &[u8; 32]) -> Sealer {
+        Sealer::starting_at(key, 0)
+    }
+
+    /// A sealer whose next record is number `seq`: for tests of the
+    /// sequence's end.
+    pub fn starting_at(key: &[u8; 32], seq: u64) -> Sealer {
         Sealer {
-            aead: ChaCha20Poly1305::new(Key::from_slice(key)),
-            seq: 0,
-            spent: false,
+            aead: Cipher::new(key),
+            seq,
         }
     }
 
@@ -92,7 +140,7 @@ impl Sealer {
 
     /// `plain` as the next record.
     pub fn seal(&mut self, plain: &[u8]) -> Result<Vec<u8>, &'static str> {
-        if self.spent {
+        if self.seq >= LIMIT {
             return Err(EXHAUSTED);
         }
         let n = u32::try_from(plain.len() + OVERHEAD).map_err(|_| TOO_LONG)?;
@@ -102,20 +150,17 @@ impl Sealer {
         rec.extend_from_slice(plain);
         let tag = self
             .aead
-            .encrypt_in_place_detached(&nonce(self.seq), &header, &mut rec[HEADER..])
-            .map_err(|_| TOO_LONG)?;
+            .seal(nonce(self.seq), &header, &mut rec[HEADER..])
+            .ok_or(TOO_LONG)?;
         rec.extend_from_slice(&tag);
-        match self.seq.checked_add(1) {
-            Some(s) => self.seq = s,
-            None => self.spent = true,
-        }
+        self.seq += 1;
         Ok(rec)
     }
 }
 
 /// The receiving end of one direction.
 pub struct Opener {
-    aead: ChaCha20Poly1305,
+    aead: Cipher,
     seq: u64,
     /// A record failed: nothing more opens.
     failed: bool,
@@ -123,9 +168,15 @@ pub struct Opener {
 
 impl Opener {
     pub fn new(key: &[u8; 32]) -> Opener {
+        Opener::starting_at(key, 0)
+    }
+
+    /// An opener whose next record is number `seq`: for tests of the
+    /// sequence's end.
+    pub fn starting_at(key: &[u8; 32], seq: u64) -> Opener {
         Opener {
-            aead: ChaCha20Poly1305::new(Key::from_slice(key)),
-            seq: 0,
+            aead: Cipher::new(key),
+            seq,
             failed: false,
         }
     }
@@ -156,12 +207,14 @@ impl Opener {
         if size(header, usize::MAX)? != rec.len() {
             return Err(BAD_MAC);
         }
-        let body_end = rec.len() - TAG;
-        let tag = Tag::clone_from_slice(&rec[body_end..]);
+        if self.seq >= LIMIT {
+            return Err(EXHAUSTED);
+        }
         self.aead
-            .decrypt_in_place_detached(&nonce(self.seq), &header, &mut rec[HEADER..body_end], &tag)
-            .map_err(|_| BAD_MAC)?;
-        self.seq = self.seq.checked_add(1).ok_or(EXHAUSTED)?;
+            .open(nonce(self.seq), &header, &mut rec[HEADER..])
+            .ok_or(BAD_MAC)?;
+        self.seq += 1;
+        let body_end = rec.len() - TAG;
         rec.truncate(body_end);
         rec.drain(..HEADER);
         Ok(())
@@ -273,5 +326,23 @@ mod tests {
         assert_eq!(size(u32::MAX.to_le_bytes(), 8216), Err(TOO_LONG));
         assert_eq!(error("bad record mac"), Some(BAD_MAC));
         assert_eq!(error("i/o error"), None);
+    }
+
+    /// The last records before [`LIMIT`] go and open; the one after fails
+    /// cleanly on both ends.
+    #[test]
+    fn the_sequence_ends_with_an_error() {
+        let mut s = Sealer::starting_at(&KEY, LIMIT - 2);
+        let mut o = Opener::starting_at(&KEY, LIMIT - 2);
+        for m in [&b"a"[..], b"b"] {
+            assert_eq!(o.open(s.seal(m).unwrap()).unwrap(), m);
+        }
+        assert_eq!(s.sequence(), LIMIT);
+        assert_eq!(s.seal(b"c"), Err(EXHAUSTED));
+        // A record sealed past the limit by a peer that does not stop.
+        let rec = Sealer::starting_at(&KEY, LIMIT - 1).seal(b"x").unwrap();
+        let mut o = Opener::starting_at(&KEY, LIMIT);
+        assert_eq!(o.open(rec), Err(EXHAUSTED));
+        assert_eq!(error(EXHAUSTED), Some(EXHAUSTED));
     }
 }

@@ -1,8 +1,11 @@
-//! mount [-abrcA] [-k keyfile] fd-or-addr mtpt [spec]: mount a 9P
+//! mount [-abrcAS] [-k keyfile] fd-or-addr mtpt [spec]: mount a 9P
 //! connection at `mtpt`. `fd-or-addr` is a file descriptor, a dial string
 //! (`tcp!host!port`) or a `{command}` block, which is run by sh with a pipe
 //! as its fds 0 and 1. The mount authenticates when the server asks, with
-//! the authinfo `keyfile` if given (`docs/auth.md`); `-A` skips that.
+//! the authinfo `keyfile` if given (`docs/auth.md`); `-A` skips that. `-S`
+//! (an addition) requires the server to prove itself as well, with a key
+//! or certificate this namespace trusts as a server's
+//! (`/lib/keys/servers`, `/lib/keys/signers`).
 
 use std::os::fd::AsRawFd;
 
@@ -11,10 +14,12 @@ use purgatorio::arg::Arg;
 use purgatorio::dial;
 use purgatorio::{Context, Error};
 
+const USAGE: &str = "mount [-abrcAS] [-k keyfile] fd-or-addr mtpt [spec]";
+
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut arg = Arg::new(args, "mount [-abrcA] [-k keyfile] fd-or-addr mtpt [spec]");
-    let (mut order, mut create, mut noauth) = (mount::MREPL, 0, 0);
+    let mut arg = Arg::new(args, USAGE);
+    let (mut order, mut create, mut noauth, mut srvauth) = (mount::MREPL, 0, 0, 0);
     let mut keyfile = None;
     while let Some(c) = arg.opt() {
         match c {
@@ -23,15 +28,14 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'r' => order = mount::MREPL,
             'c' => create = mount::MCREATE,
             'A' => noauth = mount::MNOAUTH,
+            'S' => srvauth = mount::MSRVAUTH,
             'k' => keyfile = Some(arg.earg()?),
             _ => return Err(arg.usage()),
         }
     }
     let rest = arg.argv();
-    if rest.len() < 2 || rest.len() > 3 {
-        return Err(Error::from(
-            "usage: mount [-abrcA] [-k keyfile] fd-or-addr mtpt [spec]",
-        ));
+    if rest.len() < 2 || rest.len() > 3 || (noauth != 0 && srvauth != 0) {
+        return Err(Error(format!("usage: {USAGE}")));
     }
     let spec = rest.get(2).map(String::as_str).unwrap_or("");
     // A dial string has a `!`. The connection has to stay open for the mount.
@@ -62,7 +66,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         pipe = None;
         rest[0].parse().map_err(|_| Error::from("bad fd"))?
     };
-    let flags = order | create | noauth;
+    let flags = order | create | noauth | srvauth;
     // The kernel authenticates a plain mount itself, in one conversation.
     // A keyfile or a guest factotum means the proof is built here, with
     // fauth first.

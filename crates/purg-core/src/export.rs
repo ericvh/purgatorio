@@ -27,6 +27,10 @@
 //!   proof's reply is queued with the sealer behind it, and the thread
 //!   draining the queue seals every reply after that, so the records go
 //!   out in the order of their sequence numbers whichever worker answered.
+//! - Once a version 3 proof is accepted, a read of the auth fid at offset
+//!   64 gives this server's own proof (`purg_auth::server`), signed with
+//!   the key a mount by the exporting user would prove with. It is made
+//!   on the first such read, so a client that does not ask costs nothing.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -174,6 +178,10 @@ struct Conn {
     fd: Arc<Chan>,
     platform: Arc<dyn Platform>,
     noauth: bool,
+    /// Refuse what would leave the conversation in the clear.
+    encrypt: bool,
+    /// The exporting user, whose key signs this server's proof.
+    user: String,
     /// The exporting prog: workers serve files as it would.
     pid: u32,
     msize: AtomicU32,
@@ -187,6 +195,10 @@ struct Conn {
     /// The tag of the version 3 proof the reader switched on, and the
     /// sealer the replies take up once its reply is queued.
     switch: Mutex<Option<(u16, Sealer)>>,
+    /// The keys the conversation switched to, for this server's proof.
+    keys: Mutex<Option<purg_auth::session::Keys>>,
+    /// This server's proof for those keys, made when first asked for.
+    server: Mutex<Option<Vec<u8>>>,
     /// The sealer of this server's direction. Only the thread draining
     /// [`Conn::out`] touches it, so records go out in the order of their
     /// sequence numbers.
@@ -216,13 +228,50 @@ pub fn serve(
     noauth: bool,
     rdonly: bool,
 ) -> KResult<()> {
+    let opts = Opts {
+        noauth,
+        rdonly,
+        ..Opts::default()
+    };
+    serve_with(pgrp, root, fd, platform, &opts)
+}
+
+/// How an export serves, beside its tree.
+#[derive(Default, Clone)]
+pub struct Opts {
+    /// Ask no proof, even when the exporter's namespace trusts a key.
+    pub noauth: bool,
+    /// Refuse every change to the tree.
+    pub rdonly: bool,
+    /// Refuse version 1 and 2 proofs, and any attach that is not on an
+    /// encrypted conversation (`purg_abi::export::ENCRYPT`).
+    pub encrypt: bool,
+    /// The exporting user: its key, found as a mount by it would find
+    /// one, signs this server's proof. Empty finds only `#¤` and the test
+    /// key.
+    pub user: String,
+}
+
+/// [`serve`] with every option.
+pub fn serve_with(
+    pgrp: Arc<Pgrp>,
+    root: &str,
+    fd: &Arc<Chan>,
+    platform: &Arc<dyn Platform>,
+    opts: &Opts,
+) -> KResult<()> {
+    if opts.noauth && opts.encrypt {
+        return Err(Error::new(error::EBADARG));
+    }
     let mut fs = Export::new(pgrp, root)?;
-    fs.rdonly = rdonly;
+    fs.rdonly = opts.rdonly;
     let conn = Arc::new(Conn {
         fs,
         fd: fd.clone(),
         platform: platform.clone(),
-        noauth,
+        noauth: opts.noauth,
+        encrypt: opts.encrypt,
+        user: opts.user.clone(),
         pid: platform.current_pid(),
         msize: AtomicU32::new(purg_styx::MAX_MSIZE),
         afids: Mutex::new(BTreeMap::new()),
@@ -231,6 +280,8 @@ pub fn serve(
         work: WorkQ::new(MAX_WORKERS, KEEP_IDLE),
         out: OutQ::new(),
         switch: Mutex::new(None),
+        keys: Mutex::new(None),
+        server: Mutex::new(None),
         sealer: Mutex::new(None),
         wnote: Arc::new(Note::new()),
         dead: AtomicBool::new(false),
@@ -272,6 +323,7 @@ impl Conn {
                 // and opens everything after the proof's reply.
                 let (sealer, o) = keys.server();
                 *self.switch.lock() = Some((tag, sealer));
+                *self.keys.lock() = Some(keys);
                 opener = Some(o);
             }
             let for_worker = match &msg.fcall {
@@ -366,7 +418,7 @@ impl Conn {
             return rerr(req.tag, error::EIO);
         };
         if !self.noauth
-            && let Some(bytes) = auth_reply(&self.afids, self.platform.as_ref(), &self.fs, &msg)
+            && let Some(bytes) = auth_reply(self, &msg)
         {
             return bytes;
         }
@@ -397,7 +449,7 @@ impl Conn {
             if switch.as_ref().is_some_and(|(t, _)| *t == tag)
                 && let Some((_, sealer)) = switch.take()
             {
-                self.out.push(Out::Key(sealer));
+                self.out.push(Out::Key(Box::new(sealer)));
             }
             drop(switch);
             flights.is_empty()
@@ -476,6 +528,24 @@ impl Conn {
         a.kx.keys(&a.uname, &a.aname, data)
     }
 
+    /// This server's proof for the conversation's keys (`purg_auth::server`),
+    /// signed with the exporting user's key on the first call, with no
+    /// lock held. Empty when the conversation is not encrypted or there is
+    /// no key.
+    fn server_proof(&self) -> Vec<u8> {
+        if let Some(p) = self.server.lock().clone() {
+            return p;
+        }
+        let Some(keys) = self.keys.lock().clone() else {
+            return Vec::new();
+        };
+        let p = crate::auth::server_proof(&self.fs.pgrp, &self.user, &keys).unwrap_or_default();
+        if !p.is_empty() {
+            *self.server.lock() = Some(p.clone());
+        }
+        p
+    }
+
     /// Writes queued replies, unless another thread is already writing.
     /// The drainer is the only writer, so it seals them in queue order.
     fn write_replies(&self) {
@@ -483,7 +553,7 @@ impl Conn {
             let bytes = match item {
                 Out::Msg(b) => b,
                 Out::Key(s) => {
-                    *self.sealer.lock() = Some(s);
+                    *self.sealer.lock() = Some(*s);
                     return;
                 }
             };
@@ -549,7 +619,7 @@ enum Out {
     /// A reply.
     Msg(Vec<u8>),
     /// Seal every reply after this one.
-    Key(Sealer),
+    Key(Box<Sealer>),
 }
 
 struct Afid {
@@ -558,68 +628,15 @@ struct Afid {
     uname: String,
     aname: String,
     ok: bool,
+    /// The proof accepted was version 3.
+    v3: bool,
 }
-
-/// What the exporter trusts for one user: keys it holds directly,
-/// signers, and revoked keys (`None` when that list does not parse).
-struct Trust {
-    keys: Vec<[u8; crate::auth::PUBLIC]>,
-    signers: Vec<[u8; crate::auth::PUBLIC]>,
-    revoked: Option<Vec<[u8; crate::auth::PUBLIC]>>,
-}
-
-/// The longest key list read.
-const MAX_LIST: usize = 64 * 1024;
-/// Trusted signers and revoked keys, in the exporter's namespace.
-const SIGNERS: &str = "/lib/keys/signers";
-const REVOKED: &str = "/lib/keys/revoked";
 
 /// Reads the trust material for `uname` from the exporter's own namespace
 /// (`fs.pgrp`), at absolute paths. Nothing is read from under the exported
 /// tree, so a client that can write there cannot add a key or a signer.
-fn trust(fs: &Export, uname: &str) -> Trust {
-    let mut keys = Vec::new();
-    let mut paths = alloc::vec![String::from("/lib/test/auth.key.pub")];
-    if crate::auth::safe_user(uname) {
-        paths.push(alloc::format!("/usr/{uname}/key.pub"));
-    }
-    for path in paths {
-        if let Some(key) = crate::auth::read_key(&fs.pgrp, &path)
-            && !keys.contains(&key)
-        {
-            keys.push(key);
-        }
-    }
-    let signers = crate::auth::read_file(&fs.pgrp, SIGNERS, MAX_LIST)
-        .map(|t| purg_auth::keys::parse_list_lenient(&t))
-        .unwrap_or_default();
-    // A missing list revokes nothing. One that is there but cannot be read
-    // or parsed fails closed.
-    let revoked = match crate::auth::read_file(&fs.pgrp, REVOKED, MAX_LIST) {
-        Some(t) => purg_auth::keys::parse_list(&t),
-        None if fs.pgrp.namec(REVOKED, "/").is_ok() => None,
-        None => Some(Vec::new()),
-    };
-    Trust {
-        keys,
-        signers,
-        revoked,
-    }
-}
-
-impl Trust {
-    fn policy(&self, now: u64) -> purg_auth::proof::Policy<'_> {
-        purg_auth::proof::Policy {
-            keys: &self.keys,
-            signers: &self.signers,
-            revoked: self.revoked.as_deref(),
-            now,
-        }
-    }
-
-    fn required(&self) -> bool {
-        self.policy(0).requires_auth()
-    }
+fn trust(fs: &Export, uname: &str) -> crate::auth::Trust {
+    crate::auth::Trust::client(&fs.pgrp, uname)
 }
 
 fn reply(tag: u16, fcall: Fcall<'_>) -> Vec<u8> {
@@ -630,17 +647,28 @@ fn rerr(tag: u16, ename: &'static str) -> Vec<u8> {
     reply(tag, Fcall::Rerror { ename })
 }
 
+/// What the auth fid `fid` reads as at `offset`: the offer (the challenge,
+/// then the ephemeral key; a version 2 client reads only the challenge),
+/// and after it, once a version 3 proof on it is accepted, this server's
+/// own proof for the conversation's keys. `None` when `fid` is no auth fid.
+fn auth_read(conn: &Conn, fid: u32, offset: u64) -> Option<Vec<u8>> {
+    let (offer, v3) = conn.afids.lock().get(&fid).map(|a| (a.kx.offer, a.v3))?;
+    let start = usize::try_from(offset).unwrap_or(usize::MAX);
+    if let Some(d) = offer.get(start..).filter(|d| !d.is_empty()) {
+        return Some(d.to_vec());
+    }
+    let start = start - offer.len();
+    let proof = if v3 { conn.server_proof() } else { Vec::new() };
+    Some(proof.get(start..).unwrap_or(&[]).to_vec())
+}
+
 /// Handles `Tauth`, the auth fid and `Tattach` when this export
 /// authenticates. `None` means the message belongs to the file tree.
 ///
 /// The auth fids are locked only to look at or change the table: the trust
-/// files are read, and a proof is checked, with no lock held.
-fn auth_reply(
-    afids: &Mutex<BTreeMap<u32, Afid>>,
-    platform: &dyn Platform,
-    fs: &Export,
-    msg: &Msg<'_>,
-) -> Option<Vec<u8>> {
+/// files are read, and a proof is checked or made, with no lock held.
+fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
+    let (afids, platform, fs) = (&conn.afids, conn.platform.as_ref(), &conn.fs);
     let tag = msg.tag;
     if let Fcall::Tauth { afid, uname, aname } = &msg.fcall {
         if !trust(fs, uname).required() {
@@ -663,6 +691,7 @@ fn auth_reply(
                 uname: String::from(*uname),
                 aname: String::from(*aname),
                 ok: false,
+                v3: false,
             },
         );
         return Some(reply(
@@ -678,18 +707,11 @@ fn auth_reply(
     }
     // Each look at the table is a statement of its own, so its lock is
     // released before anything else happens.
-    // The auth fid reads as the offer: the challenge, then the ephemeral
-    // key. A version 2 client reads only the challenge. What follows the
-    // offer is where a server's own proof would go (`docs/auth.md`); this
-    // server has none, so a read there is empty.
-    if let Fcall::Tread { fid, offset, count } = &msg.fcall {
-        let offer = afids.lock().get(fid).map(|a| a.kx.offer);
-        if let Some(offer) = offer {
-            let start = usize::try_from(*offset).unwrap_or(usize::MAX);
-            let data = offer.get(start..).unwrap_or(&[]);
-            let n = (*count as usize).min(data.len());
-            return Some(reply(tag, Fcall::Rread { data: &data[..n] }));
-        }
+    if let Fcall::Tread { fid, offset, count } = &msg.fcall
+        && let Some(data) = auth_read(conn, *fid, *offset)
+    {
+        let n = (*count as usize).min(data.len());
+        return Some(reply(tag, Fcall::Rread { data: &data[..n] }));
     }
     if let Fcall::Twrite { fid, data, .. } = &msg.fcall {
         let held = afids
@@ -700,11 +722,19 @@ fn auth_reply(
             // The proof is one write.
             let now = platform.now_ns() / 1_000_000_000;
             let t = trust(fs, &uname);
-            let checked = purg_auth::proof::check(&t.policy(now), &offer, &uname, &aname, data);
+            let v3 = purg_auth::proof::parse_v3(data).is_some();
+            let checked = if conn.encrypt && !v3 {
+                Err(crate::auth::ENCRYPTION_REQUIRED)
+            } else {
+                purg_auth::proof::check(&t.policy(now), &offer, &uname, &aname, data)
+            };
             // The fid may have been clunked meanwhile, or clunked and made
             // again with another challenge.
             match afids.lock().get_mut(fid) {
-                Some(a) if a.kx.offer == offer => a.ok = checked.is_ok(),
+                Some(a) if a.kx.offer == offer => {
+                    a.ok = checked.is_ok();
+                    a.v3 = a.ok && v3;
+                }
                 _ => return Some(rerr(tag, UNKNOWN_FID)),
             }
             return Some(match checked {
@@ -728,14 +758,16 @@ fn auth_reply(
         afid, uname, aname, ..
     } = &msg.fcall
     {
+        // With `encrypt`, only an attach on a version 3 proof's fid.
         let proved = afids
             .lock()
             .get(afid)
-            .map(|a| a.ok && a.uname == *uname && a.aname == *aname);
+            .map(|a| a.ok && a.uname == *uname && a.aname == *aname && (!conn.encrypt || a.v3));
         return match proved {
             Some(true) => None,
             Some(false) => Some(rerr(tag, crate::auth::REQUIRED)),
             None if trust(fs, uname).required() => Some(rerr(tag, crate::auth::REQUIRED)),
+            None if conn.encrypt => Some(rerr(tag, crate::auth::ENCRYPTION_REQUIRED)),
             None => None,
         };
     }

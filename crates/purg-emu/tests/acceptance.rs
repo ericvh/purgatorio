@@ -171,6 +171,9 @@ fn m3_conformance() {
             "crypt_wire",
             "crypt_clear",
             "crypt_tamper",
+            "crypt_server",
+            "crypt_required",
+            "crypt_reuse",
             "stream_kill",
         ] {
             assert!(out.contains(&format!("ok {check}\n")), "{vm}:\n{out}");
