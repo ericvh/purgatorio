@@ -23,12 +23,17 @@ jobs:
       matrix:
         os: [ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
       - name: install QEMU
-        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-arm
+        # Bounded: a mirror outage once left this step hanging for hours.
+        timeout-minutes: 10
+        run: |
+          apt="sudo apt-get -q -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          $apt update && $apt install -y qemu-system-arm
       - name: bench
         env:
           ARGS: ${{ inputs.args }}

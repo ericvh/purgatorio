@@ -416,6 +416,10 @@ Found and not fixed:
   mount reader copies it out, and `devmnt` copies it into the caller's
   buffer. Under KVM the copies cost less than the thread switches
   between the reader, the export worker and the prog.
+- **The emu's numbers predate the fix to hosted TCP reads**, which
+  polled every 5 ms instead of blocking (the `lethe-perf` work). The
+  suite's Styx mounts run over pipes, not TCP, so `cat-styx` should not
+  change, but the emu rows were not measured again after it.
 - **The emu's Styx path is slower than the kernel's** (`cat-styx` 0.52 s
   on the emu with wasmtime against 0.21 s in the kernel with AOT): each
   message wakes two host threads through condition variables.
