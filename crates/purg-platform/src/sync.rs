@@ -59,7 +59,15 @@ mod lockops {
 ///   until the holder releases the lock and wakes it. This also keeps a
 ///   holder that sleeps with the lock held from deadlocking its waiters:
 ///   these locks are Inferno qlocks, and `purg-core` does sleep holding
-///   some (the `#c/cons` line buffer, for one).
+///   some (the `#c/cons` line buffer, for one). On several CPUs the holder
+///   may be running elsewhere; the waiter still blocks, and the
+///   scheduler runs something else or waits for the release's wakeup.
+/// - The waiter's "wake me" flag and the lock word are a store-buffering
+///   pair: the waiter sets the flag and then tries the lock, the holder
+///   releases the lock and then reads the flag. A sequentially
+///   consistent fence on each side, between the two, makes sure one of
+///   them sees the other, so a release never misses a waiter that then
+///   blocks.
 ///
 /// With no scheduler registered the hooks do nothing and a contended lock
 /// spins, as before.
@@ -67,7 +75,7 @@ mod lockops {
 mod imp {
     use core::mem::ManuallyDrop;
     use core::ops::{Deref, DerefMut};
-    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::sync::atomic::{AtomicBool, Ordering, fence};
 
     fn preempt_disable() {
         if let Some(s) = super::SCHED.get() {
@@ -92,6 +100,7 @@ mod imp {
                 return g;
             }
             waiters.store(true, Ordering::Release);
+            fence(Ordering::SeqCst);
             // A release between the failed attempt and the store did not
             // see `waiters`; try again before blocking.
             if let Some(g) = try_lock() {
@@ -107,6 +116,7 @@ mod imp {
 
     /// Called after the lock word is released.
     fn release(waiters: &AtomicBool) {
+        fence(Ordering::SeqCst);
         if waiters.swap(false, Ordering::AcqRel)
             && let Some(s) = super::SCHED.get()
         {
