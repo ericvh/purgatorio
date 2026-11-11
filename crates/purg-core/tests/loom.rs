@@ -241,3 +241,85 @@ fn workq_wakes_an_idle_worker() {
         worker.join().unwrap();
     });
 }
+
+/// A CPU that decides to wait for an interrupt while another CPU makes
+/// the change it waits for always gets an IPI: either the waker sees it
+/// in the waiting set, or it sees the waker's reset and does not wait.
+/// The threshold is 1: the sleeper's own block after the change must not
+/// let it wait. `pre` blocks counted before it looks put the count at or
+/// past the threshold already.
+fn idle_gate_model(pre: usize) {
+    use loom::sync::atomic::AtomicUsize;
+    use purg_platform::idle::IdleGate;
+    loom::model(move || {
+        let gate = Arc::new(IdleGate::new());
+        for _ in 0..pre {
+            gate.block();
+        }
+        let ready = Arc::new(AtomicBool::new(false));
+        let ipi = Arc::new(AtomicUsize::new(0));
+        let waker = {
+            let (gate, ready, ipi) = (gate.clone(), ready.clone(), ipi.clone());
+            thread::spawn(move || {
+                ready.store(true, Ordering::Release);
+                if gate.wake() & 1 != 0 {
+                    ipi.fetch_add(1, Ordering::Release);
+                }
+            })
+        };
+        let waited = !ready.load(Ordering::Acquire) && gate.block() > 1 && gate.enter(0, 1);
+        waker.join().unwrap();
+        // The IPI stays pending, so a wait that starts before it arrives
+        // ends when it does.
+        assert!(
+            !waited || ipi.load(Ordering::Acquire) > 0,
+            "a CPU waited through a change with no IPI"
+        );
+    });
+}
+
+#[test]
+fn idle_gate_wake_reaches_a_waiting_cpu() {
+    idle_gate_model(1);
+}
+
+#[test]
+fn idle_gate_wake_reaches_a_cpu_past_the_threshold() {
+    idle_gate_model(3);
+}
+
+/// An idle CPU that finds its run queue empty and waits, while another
+/// CPU queues a thread, is interrupted: the queue is under a lock, the
+/// waiting set is the gate's.
+#[test]
+fn idle_gate_queue_push_reaches_an_idle_cpu() {
+    use loom::sync::Mutex;
+    use loom::sync::atomic::AtomicUsize;
+    use purg_platform::idle::IdleGate;
+    loom::model(|| {
+        let gate = Arc::new(IdleGate::new());
+        let queue = Arc::new(Mutex::new(0usize));
+        let ipi = Arc::new(AtomicUsize::new(0));
+        let pusher = {
+            let (gate, queue, ipi) = (gate.clone(), queue.clone(), ipi.clone());
+            thread::spawn(move || {
+                *queue.lock().unwrap() += 1;
+                if gate.waiting() & 1 != 0 {
+                    ipi.fetch_add(1, Ordering::Release);
+                }
+            })
+        };
+        loop {
+            gate.announce(0);
+            if *queue.lock().unwrap() != 0 {
+                gate.leave(0);
+                break;
+            }
+            while ipi.load(Ordering::Acquire) == 0 {
+                thread::yield_now();
+            }
+            gate.leave(0);
+        }
+        pusher.join().unwrap();
+    });
+}

@@ -1,7 +1,8 @@
 //! aarch64 bare-metal support for QEMU `virt`, shared by `purg-kernel` and
 //! `purg-probe`: the boot path and the shared link script, the DTB, the
 //! GIC, the timer and interrupt dispatch, exception vectors, the MMU, the
-//! PL011 console, the PL031 clock, a preemptive scheduler, the heap, a
+//! PL011 console, the PL031 clock, a preemptive SMP scheduler and secondary
+//! CPU bring-up, the heap, a
 //! `purg_platform` `Platform`, virtio-mmio, a smoltcp network stack for
 //! `#I`, a virtio-9p transport and a virtio-blk driver.
 //!
@@ -26,6 +27,8 @@ pub mod boot;
 pub mod cache;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod console;
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub mod cpu;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod exception;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
