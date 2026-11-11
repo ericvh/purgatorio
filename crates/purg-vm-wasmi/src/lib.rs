@@ -402,6 +402,54 @@ impl Wasmi {
     }
 }
 
+/// The prog's memory limits as wasmi's resource limiter: the store's data,
+/// seen as a limiter.
+#[repr(transparent)]
+struct Limiter(Ctx);
+
+impl Limiter {
+    fn of(ctx: &mut Ctx) -> &mut dyn wasmi::ResourceLimiter {
+        // SAFETY: `Limiter` is `repr(transparent)` over `Ctx`, so the two
+        // have the same layout, and the borrow is the caller's.
+        unsafe { &mut *(ctx as *mut Ctx).cast::<Limiter>() }
+    }
+}
+
+/// wasmi's own defaults for the counts.
+const LIMITER_COUNT: usize = 10_000;
+
+impl wasmi::ResourceLimiter for Limiter {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool, wasmi_core::LimiterError> {
+        Ok(purg_vm::memory_growing(&self.0, current, desired))
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> Result<bool, wasmi_core::LimiterError> {
+        Ok(purg_vm::table_growing(&self.0, current, desired))
+    }
+
+    fn instances(&self) -> usize {
+        LIMITER_COUNT
+    }
+
+    fn tables(&self) -> usize {
+        LIMITER_COUNT
+    }
+
+    fn memories(&self) -> usize {
+        LIMITER_COUNT
+    }
+}
+
 impl purg_vm::Engine for Wasmi {
     fn name(&self) -> &'static str {
         "wasmi"
@@ -415,6 +463,7 @@ impl purg_vm::Engine for Wasmi {
         };
         let engine = Engine::new(config);
         let mut store = Store::new(&engine, ctx);
+        store.limiter(Limiter::of);
         let res = Wasmi::call(&engine, &mut store, wasm);
         (store.into_data(), res)
     }

@@ -225,6 +225,42 @@ is added and the ABI version is unchanged.
   `/prog` and then gives up devices, and from then on nothing it runs can
   get the whole table back.
 
+### Memory and prog limits (K4)
+
+A prog's wasm memory can be limited, and so can a domain's. Inferno has
+no direct analogue (its pools are system-wide). The limits are `ctl`
+messages and a file, not host calls, and what a guest sees when one is
+reached is ordinary wasm behavior, so the ABI version is unchanged.
+
+- Writing `memlimit N` to `/prog/<pid>/ctl` limits the wasm memory the
+  prog holds to `N` bytes: its linear memories and its tables, at 8 bytes
+  a table element. `N` may end in `k`, `m` or `g` (2^10, 2^20, 2^30).
+  The limit applies to growth from then on, and every prog the prog
+  starts afterwards gets the same limit for itself.
+- `domain memlimit N` limits the memory all members of the prog's
+  innermost domain (`#pdomain`) hold between them, and `domain proglimit
+  N` the number of members. A spawn that would pass the prog limit fails
+  with `no free procs`. A prog in no domain gets `bad arg in system call`.
+  A prog is held to its own limit and to the limit of every domain it is
+  in, so a domain founded inside a limited one cannot escape it.
+- A limit can only be lowered. Writing a higher one fails with
+  `permission denied` and changes nothing.
+- `/prog/<pid>/mem` reads `<bytes held> <limit>`, with `-` for no limit.
+
+Past a limit, `memory.grow` returns -1, as the wasm spec allows. The
+guest decides what that means. Rust's `std` allocator then calls
+`handle_alloc_error`: the prog prints `memory allocation of N bytes
+failed` on its stderr and aborts, and its parent sees the status ``trap:
+wasm `unreachable` instruction executed`` under wasmi (wasmtime says
+``trap: wasm trap: wasm `unreachable` instruction executed``). A module whose initial memory is already past the
+limit fails to instantiate. Both engines enforce the limits through
+their resource limiters (`purg_vm::memory_growing`), so the emu and the
+kernel behave alike.
+
+Not counted: the prog's kernel thread stack, the engine's compiled code,
+and what the prog's files hold in the kernel (a RAM file system grows
+with what is written to it). A domain's prog limit bounds the first two.
+
 `load` and `call` (v0.4) are registered by each engine rather than in the
 shared host functions, because they need the engine's store. `load`
 instantiates a reactor module (no `_start`; loadable modules live in
