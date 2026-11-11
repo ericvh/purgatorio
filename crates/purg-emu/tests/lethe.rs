@@ -1,8 +1,10 @@
 //! Lethe end to end (`docs/lethe.md`): `lethed` serving a scratch tree on
 //! loopback, and the `lethe` command and `#λ` in the emu on both WASM
 //! backends reading it. A test client built on `purg_lethe` checks what
-//! the guest cannot: tampered and replayed requests. Requires `cargo
-//! xtask build-root` first.
+//! the guest cannot: tampered and replayed requests. The clear mode
+//! (`lethed -A`, `lethe -A`) gets the same checks, the two mismatches, and
+//! a relay that shows it is plaintext. Requires `cargo xtask build-root`
+//! first.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -618,4 +620,318 @@ fn tampered_and_replayed_requests_are_rejected() {
     assert_eq!(l.count("refused: request expired"), 1);
     // The ticket is opaque: nothing of the user's name in it.
     assert!(!session.ticket().windows(6).any(|x| x == b"glenda"));
+}
+
+// The clear mode (`lethed -A`, `lethe -A`): no authentication and no
+// encryption, asked for on both ends.
+
+#[test]
+fn clear_mode_reads_stats_and_lists() {
+    let s = Scratch::new("clear");
+    // No key at all: -A alone is enough to start.
+    let l = Lethed::start(&["-a", "127.0.0.1:0", "-A"], &s.srv());
+    let g = &s.guest;
+    let script = format!(
+        "lethe -A {addr} {g}/n || exit
+cat {g}/n/hello.txt {g}/n/in
+ls {g}/n
+ls {g}/n/many | wc -l
+ls {g}/n/many/f299
+ls -l {g}/n/hello.txt | sed 's/.* ([0-9]+) [A-Z][a-z][a-z] .*/\\1/'
+cat {g}/n/sub/inner
+cat {g}/n/nope
+cat {g}/n/out
+ls {g}/n/up
+cat {g}/n/hello.txt/x
+echo x > {g}/n/hello.txt
+cmp {g}/n/big {g}/srv/big && echo same
+lethe -A {addr} {g}/n /sub && ls {g}/n
+lethe -A {addr} {g}/n /nope",
+        addr = l.addr(),
+    );
+    let want = format!(
+        "{HELLO}{HELLO}{g}/n/big
+{g}/n/hello.txt
+{g}/n/in
+{g}/n/many
+{g}/n/sub
+    300
+{g}/n/many/f299
+{len}
+inner file
+cat: {g}/n/nope: file does not exist
+cat: {g}/n/out: file does not exist
+ls: {g}/n/up: file does not exist
+cat: {g}/n/hello.txt/x: not a directory
+sh: {g}/n/hello.txt: permission denied
+same
+{g}/n/inner
+lethe: file does not exist
+",
+        len = HELLO.len()
+    );
+    for vm in VMS {
+        let (out, _) = emu(vm, &script);
+        assert_eq!(out, want, "{vm}");
+    }
+    // Everything was answered for `none`, in pages, and nobody got a ticket.
+    assert!(l.count("none read /hello.txt") >= 2, "{}", l.log());
+    assert!(l.count("none readdir /many") >= 2 * 3, "{}", l.log());
+    assert_eq!(l.count("ticket for"), 0, "{}", l.log());
+    assert_eq!(l.count("refused"), 0, "{}", l.log());
+}
+
+/// Clear requests run as `none`: the other bits, and search on every
+/// directory above. The same server still gives the owner a ticket, and
+/// through it the owner's bits.
+#[test]
+fn clear_mode_runs_as_none() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Scratch::new("none");
+    let srv = s.srv();
+    let mode = |p: &Path, m: u32| {
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+    };
+    std::fs::write(srv.join("private"), "for the owner\n").unwrap();
+    std::fs::create_dir(srv.join("closed")).unwrap();
+    std::fs::write(srv.join("closed/x"), "behind a closed directory\n").unwrap();
+    std::fs::create_dir(srv.join("unlisted")).unwrap();
+    std::fs::write(srv.join("unlisted/x"), "in an unlisted directory\n").unwrap();
+    mode(&srv.join("hello.txt"), 0o644);
+    mode(&srv.join("private"), 0o640);
+    mode(&srv.join("closed/x"), 0o644);
+    mode(&srv.join("closed"), 0o750);
+    mode(&srv.join("unlisted/x"), 0o644);
+    mode(&srv.join("unlisted"), 0o711);
+    // -u none: even a tree whose owner is called none gives a clear
+    // request only the other bits.
+    for owner in ["glenda", "none"] {
+        let l = Lethed::start(
+            &["-a", "127.0.0.1:0", "-A", "-u", owner, "-k", &test_key()],
+            &srv,
+        );
+        let g = &s.guest;
+        let a = l.addr();
+        let script = format!(
+            "lethe -A {a} {g}/n || exit
+cat {g}/n/hello.txt
+cat {g}/n/private
+cat {g}/n/closed/x
+ls {g}/n/closed
+cat {g}/n/unlisted/x
+ls {g}/n/unlisted
+lethe -A {a} {g}/n /closed
+ls {g}/n
+lethe -u {owner} {a} {g}/n || exit
+cat {g}/n/private {g}/n/closed/x
+ls {g}/n/unlisted"
+        );
+        let want = format!(
+            "{HELLO}cat: {g}/n/private: permission denied
+cat: {g}/n/closed/x: permission denied
+ls: {g}/n/closed: permission denied
+in an unlisted directory
+ls: {g}/n/unlisted: permission denied
+ls: {g}/n: permission denied
+for the owner
+behind a closed directory
+{g}/n/unlisted/x
+"
+        );
+        for vm in VMS {
+            let (out, _) = emu(vm, &script);
+            assert_eq!(out, want, "{vm}, owner {owner}");
+        }
+        assert!(
+            l.count("none read /private: permission denied") >= 2,
+            "{}",
+            l.log()
+        );
+        assert!(l.count(&format!("ticket for {owner}")) >= 2, "{}", l.log());
+    }
+    // Let the scratch tree be removed.
+    mode(&srv.join("closed"), 0o755);
+}
+
+/// Neither end falls back to the other mode: each mismatch is an error.
+#[test]
+fn clear_and_sealed_modes_do_not_mix() {
+    let s = Scratch::new("mismatch");
+    let sealed = Lethed::start(&["-a", "127.0.0.1:0", "-k", &test_key()], &s.srv());
+    let clear = Lethed::start(&["-a", "127.0.0.1:0", "-A"], &s.srv());
+    let g = &s.guest;
+    let script = format!(
+        "lethe -A {sealed} {g}/n
+ls {g}/n
+lethe {clear} {g}/n
+ls {g}/n
+lethe -A -k {g}/key {clear} {g}/n
+lethe -A -u glenda {clear} {g}/n
+echo 'dial {clear}
+noauth
+user glenda' > '#λ/clone'
+echo end",
+        sealed = sealed.addr(),
+        clear = clear.addr(),
+    );
+    let want = "lethe: authentication required
+lethe: authentication not required
+lethe: usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]
+lethe: usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]
+echo: bad arg in system call
+end
+";
+    for vm in VMS {
+        let (out, _) = emu(vm, &script);
+        assert_eq!(out, want, "{vm}");
+    }
+    // The sealed server read nothing for the clear client, and the clear
+    // server gave the sealed client no ticket and no data.
+    assert_eq!(
+        sealed.count("refused: authentication required"),
+        2,
+        "{}",
+        sealed.log()
+    );
+    assert_eq!(sealed.count("none "), 0, "{}", sealed.log());
+    assert_eq!(
+        clear.count("refused: authentication not required"),
+        2,
+        "{}",
+        clear.log()
+    );
+    assert_eq!(clear.count("none "), 0, "{}", clear.log());
+    // The same from a client on the wire: a clear request is refused in
+    // an outer Rerror, and a sealed-only server never sends an Rclear.
+    let mut w = Wire(TcpStream::connect(("127.0.0.1", sealed.port)).unwrap());
+    let op = Op::Stat { path: "/hello.txt" };
+    let (f, p) = client::clear(1, &op);
+    let reply = w.send(&f);
+    assert_eq!(
+        clear_error(&reply).as_deref(),
+        Some("authentication required")
+    );
+    assert_eq!(
+        p.reply(&reply),
+        Err(client::Failure::Clear(String::from(
+            "authentication required"
+        )))
+    );
+    let mut w = Wire(TcpStream::connect(("127.0.0.1", clear.port)).unwrap());
+    let (f, p) = client::clear(2, &op);
+    match p.reply(&w.send(&f)).unwrap() {
+        Owned::Stat(d) => assert_eq!(d.name, "hello.txt"),
+        o => panic!("{o:?}"),
+    }
+    let creds = Creds {
+        user: String::from("glenda"),
+        seed: TEST_SEED,
+        cert: None,
+    };
+    let (f, pending) = client::auth(&creds, 3, 1, "/", [8; 32]);
+    assert_eq!(
+        pending.finish(&w.send(&f), now()).err().as_deref(),
+        Some("authentication not required")
+    );
+}
+
+/// Without -A and without a key to trust, lethed does not start.
+#[test]
+fn lethed_fails_closed() {
+    let s = Scratch::new("closed");
+    let o = Command::new(env!("CARGO_BIN_EXE_lethed"))
+        .args(["-a", "127.0.0.1:0"])
+        .arg(s.srv())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    assert!(o.stdout.is_empty());
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("no client can authenticate"), "{err}");
+}
+
+fn crossed(seen: &[u8], needle: &str) -> bool {
+    seen.windows(needle.len()).any(|w| w == needle.as_bytes())
+}
+
+/// The clear mode really is plaintext, and on the same server (-A with a
+/// trusted key) the sealed mode still is not.
+#[test]
+fn the_clear_wire_is_plaintext_and_the_sealed_one_is_not() {
+    let s = Scratch::new("clearwire");
+    let l = Lethed::start(&["-a", "127.0.0.1:0", "-A", "-k", &test_key()], &s.srv());
+    let g = &s.guest;
+    let needles = [
+        "hello from lethe",
+        "hello.txt",
+        "inner",
+        "secretname",
+        "does not exist",
+    ];
+    for (flag, clear) in [("-A ", true), ("", false)] {
+        let (port, seen) = relay(l.port);
+        let script = format!(
+            "lethe {flag}tcp!127.0.0.1!{port} {g}/n || exit
+cat {g}/n/hello.txt
+ls {g}/n/sub
+cat {g}/n/secretname"
+        );
+        for vm in VMS {
+            let (out, _) = emu(vm, &script);
+            assert!(out.starts_with(HELLO), "{vm}: {out}");
+        }
+        let seen = seen.lock().unwrap();
+        assert!(seen.len() > 500, "{}", seen.len());
+        for needle in needles {
+            assert_eq!(
+                crossed(&seen, needle),
+                clear,
+                "{needle:?} with {flag:?}: clear {clear}"
+            );
+        }
+    }
+    assert!(l.count("none read /hello.txt") >= 2, "{}", l.log());
+    assert!(l.count("ticket for") >= 2, "{}", l.log());
+}
+
+/// The cache, the version check and the redial work the same in the
+/// clear: a file changed underneath is read fresh, and a server restarted
+/// in the middle of a read costs the reader nothing.
+#[test]
+fn clear_mode_sees_changes_and_survives_a_restart() {
+    let s = Scratch::new("clearrestart");
+    let g = &s.guest;
+    for (i, vm) in VMS.into_iter().enumerate() {
+        std::fs::write(s.srv().join("hello.txt"), HELLO).unwrap();
+        let first = Lethed::start(&["-a", "127.0.0.1:0", "-A"], &s.srv());
+        let addr = format!("127.0.0.1:{}", first.port);
+        let script = format!(
+            "lethe -A {} {g}/n || exit
+cat {g}/n/hello.txt
+cat {g}/n/hello.txt
+{{read 8192 > {g}/part1; echo ready; read < /dev/cons > /dev/null; cat > {g}/part2}} < {g}/n/big
+cat {g}/n/hello.txt
+echo done",
+            first.addr()
+        );
+        let changed = format!("changed underneath, {i}\n");
+        let mut second = None;
+        let out = emu_paused(vm, &script, || {
+            std::fs::write(s.srv().join("hello.txt"), &changed).unwrap();
+            // The second read of hello.txt was conditional.
+            assert!(first.count("none read /hello.txt") >= 2, "{}", first.log());
+            drop(first);
+            second = Some(Lethed::start(&["-a", &addr, "-A"], &s.srv()));
+        });
+        assert_eq!(out, format!("{HELLO}{HELLO}ready\n{changed}done\n"), "{vm}");
+        let big = std::fs::read(s.srv().join("big")).unwrap();
+        let mut got = std::fs::read(s.host.join("part1")).unwrap();
+        assert_eq!(got.len(), 8192, "{vm}");
+        got.extend(std::fs::read(s.host.join("part2")).unwrap());
+        assert!(got == big, "{vm}: the read across the restart differs");
+        let second = second.unwrap();
+        assert!(second.count("none read /big") > 0, "{}", second.log());
+        assert_eq!(second.count("ticket for"), 0, "{}", second.log());
+    }
 }
