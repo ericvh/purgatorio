@@ -34,6 +34,8 @@ mount -k $d/old $srv $d/n
 auth/mkauthinfo -f $d/sk2 $u $d/other
 mount -k $d/other $srv $d/n
 auth/getpk $d/info > $d/lib/keys/revoked
+emuinit auth/getpk $d/info > $d/pk
+cmp $d/pk $d/lib/keys/revoked && echo emuinit auth/getpk
 mount -k $d/info $srv $d/n
 rm $d/lib/keys/revoked
 mount -A $srv $d/n

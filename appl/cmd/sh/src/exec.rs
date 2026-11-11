@@ -1089,24 +1089,12 @@ fn glob_match(word: &str, pat: &str) -> bool {
     filepat::matches_marked(&filepat::marks(pat), word)
 }
 
-/// The module a command name runs. A name starting with `/`, `./` or `../`
-/// is used as given, or with `.wasm` added; any other name, such as `ls` or
-/// `ndb/query`, is looked up under `/bin` with `.wasm` added.
+/// The module a command name runs ([`purgatorio::find_command`]): `ls` and
+/// `ndb/query` are under `/bin`, a name starting with `/`, `./`, `../` or
+/// `#` is a path.
 fn resolve(name: &str) -> Result<String, Error> {
-    let candidates = if name.starts_with('/') || name.starts_with("./") || name.starts_with("../") {
-        vec![String::from(name), format!("{name}.wasm")]
-    } else {
-        vec![format!("/bin/{name}.wasm")]
-    };
-    for c in &candidates {
-        if purgatorio::stat(c).is_ok_and(|d| !d.qid.is_dir()) {
-            return Ok(c.clone());
-        }
-    }
-    Err(Error(format!(
-        "{name}: {}",
-        purgatorio::abi::error::ENONEXIST
-    )))
+    purgatorio::find_command(name)
+        .map_err(|_| Error(format!("{name}: {}", purgatorio::abi::error::ENONEXIST)))
 }
 
 #[cfg(test)]

@@ -141,14 +141,21 @@ pub fn init_preopens(prog: &mut Prog) -> Result<(), Error> {
     Ok(())
 }
 
-/// Maps a command name to its binary: `cat` is `/bin/cat.wasm`; names
-/// containing `/` are used as given.
+/// Maps a command name to its binary, as Inferno's sh does: a name that
+/// starts with `/`, `./`, `../` or `#` is a path and is used as given; any
+/// other name, `cat` or `disk/chkdisk`, is looked up under `/bin` with
+/// `.wasm` added (`/bin/disk/chkdisk.wasm`).
 pub fn command_path(cmd: &str) -> String {
-    if cmd.contains('/') {
+    if is_path(cmd) {
         String::from(cmd)
     } else {
         alloc::format!("/bin/{cmd}.wasm")
     }
+}
+
+/// Whether a command name is a path rather than a name under `/bin`.
+fn is_path(cmd: &str) -> bool {
+    cmd.starts_with(['/', '#']) || cmd.starts_with("./") || cmd.starts_with("../")
 }
 
 /// The prog name shown in exit messages: the module's base name without
@@ -354,3 +361,19 @@ macro_rules! for_each_import {
 pub const WASI: &str = purg_abi::wasi::MODULE;
 #[doc(hidden)]
 pub const PURGATORIO: &str = purg_abi::MODULE;
+
+#[cfg(test)]
+mod tests {
+    use super::command_path;
+
+    #[test]
+    fn command_paths() {
+        assert_eq!(command_path("cat"), "/bin/cat.wasm");
+        assert_eq!(command_path("disk/chkdisk"), "/bin/disk/chkdisk.wasm");
+        assert_eq!(command_path("auth/keyfs"), "/bin/auth/keyfs.wasm");
+        assert_eq!(command_path("/bin/ls.wasm"), "/bin/ls.wasm");
+        assert_eq!(command_path("./x.wasm"), "./x.wasm");
+        assert_eq!(command_path("../x.wasm"), "../x.wasm");
+        assert_eq!(command_path("#U/bin/ls.wasm"), "#U/bin/ls.wasm");
+    }
+}

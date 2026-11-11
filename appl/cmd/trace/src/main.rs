@@ -15,25 +15,6 @@ use purgatorio::{Context, Error};
 
 const USAGE: &str = "usage: trace command [arg ...]";
 
-/// Finds `name` as the shell would: a path as given or with `.wasm`, or
-/// a bare name in /bin.
-fn resolve(name: &str) -> Result<String, Error> {
-    let candidates = if name.starts_with('/') || name.starts_with("./") || name.starts_with("../") {
-        vec![String::from(name), format!("{name}.wasm")]
-    } else {
-        vec![format!("/bin/{name}.wasm")]
-    };
-    let mut err = String::from(purgatorio::abi::error::ENONEXIST);
-    for c in &candidates {
-        match purgatorio::stat(c) {
-            Ok(d) if !d.qid.is_dir() => return Ok(c.clone()),
-            Ok(_) => err = String::from(purgatorio::abi::error::EISDIR),
-            Err(e) => err = e.0,
-        }
-    }
-    Err(Error(err))
-}
-
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let argv = &args[1.min(args.len())..];
@@ -42,7 +23,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let ctl = format!("/prog/{}/ctl", purgatorio::pid());
     std::fs::write(&ctl, "trace on").map_err(|e| Error(format!("{ctl}: {}", Error::from(e))))?;
-    let path = resolve(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
+    let path =
+        purgatorio::find_command(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
     // spawn's error already names the module.
     let pid = purgatorio::spawn(&path, argv, 0, &[])?;
     loop {

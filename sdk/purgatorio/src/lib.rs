@@ -357,6 +357,29 @@ pub fn pid() -> u32 {
     pctl(0, &[]).unwrap_or(0)
 }
 
+/// Finds the module a command name runs, as sh does. A name that starts
+/// with `/`, `./`, `../` or `#` is a path, tried as given and then with
+/// `.wasm` added; any other name, `ls` or `disk/chkdisk`, is
+/// `/bin/<name>.wasm`. A directory does not count. The error is the last
+/// one seen.
+pub fn find_command(name: &str) -> Result<String, Error> {
+    let candidates =
+        if name.starts_with(['/', '#']) || name.starts_with("./") || name.starts_with("../") {
+            vec![String::from(name), format!("{name}.wasm")]
+        } else {
+            vec![format!("/bin/{name}.wasm")]
+        };
+    let mut err = Error::from(abi::error::ENONEXIST);
+    for c in candidates {
+        match stat(&c) {
+            Ok(d) if !d.qid.is_dir() => return Ok(c),
+            Ok(_) => err = Error::from(abi::error::EISDIR),
+            Err(e) => err = e,
+        }
+    }
+    Err(err)
+}
+
 /// Starts `cmd` (resolved like a shell command: `cat` is `/bin/cat.wasm`)
 /// as a new prog with arguments `argv`, and returns its pid. The child
 /// shares this prog's namespace, fds and environment except as `flags`

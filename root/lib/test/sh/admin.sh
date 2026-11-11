@@ -25,6 +25,7 @@ ls $d/n
 
 # ndb/query against /lib/ndb/local.
 ndb/query sys fs
+emuinit ndb/query sys fs
 ndb/query sys gate ip
 ndb/query -a sys gate ip
 ndb/query ip 10.0.1.1 sys

@@ -10,6 +10,7 @@ chmod 600 $d/src/a
 # An empty file system, then one holding a copy of $d/src.
 disk/mkdisk -s 256k -b 1k $d/img
 disk/chkdisk -v $d/img
+emuinit disk/chkdisk $d/img && echo emuinit disk/chkdisk
 disk/mkdisk -s 256k -r $d/src $d/img
 disk/chkdisk -v $d/img
 echo status $status
