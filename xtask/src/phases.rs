@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// How many of the slowest steps the summary names.
@@ -61,13 +61,19 @@ pub fn report(ws: &Path, who: &str, name: &str, lines: &[(Duration, String)]) {
     }
     out.pop();
     eprintln!("{out}");
-    let dir = ws.join("target/qemu-times");
-    let file = dir.join(format!("{who}-{}.txt", name.replace(' ', "-")));
+    let file = file(ws, who, name);
     let text: String = lines
         .iter()
         .map(|(t, l)| format!("{:8.2} {l}\n", t.as_secs_f64()))
         .collect();
-    if let Err(e) = fs::create_dir_all(&dir).and_then(|()| fs::write(&file, text)) {
+    let dir = file.parent().unwrap_or(ws);
+    if let Err(e) = fs::create_dir_all(dir).and_then(|()| fs::write(&file, text)) {
         eprintln!("{who}: {}: {e}", file.display());
     }
+}
+
+/// Where [`report`] writes the stamped console of run `name` of `who`.
+pub fn file(ws: &Path, who: &str, name: &str) -> PathBuf {
+    ws.join("target/qemu-times")
+        .join(format!("{who}-{}.txt", name.replace(' ', "-")))
 }

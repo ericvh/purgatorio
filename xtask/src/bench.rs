@@ -367,7 +367,7 @@ fn run_kernel(image: &Path, initrd: &str, disk: &Path, kvm: bool, s: &mut Sample
         "bench: kernel {which}: qemu-system-aarch64 {}",
         args.join(" ")
     );
-    let r = run_qemu(&args, image, RUN_TIMEOUT, &[], |_| Ok(()))?;
+    let r = run_qemu(&args, image, RUN_TIMEOUT, &[], |_| Ok(()))?.finished("bench")?;
     if !r.status.success() || r.serial.contains("kernel: bench: ") {
         eprint!("{}", r.serial);
         return Err(format!("kernel {which}: QEMU exited with {}", r.status));
