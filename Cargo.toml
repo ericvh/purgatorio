@@ -74,6 +74,7 @@ purg-core = { path = "crates/purg-core", default-features = false }
 purg-vm = { path = "crates/purg-vm" }
 purg-vm-wasmtime = { path = "crates/purg-vm-wasmtime" }
 purg-vm-wasmi = { path = "crates/purg-vm-wasmi" }
+purg-vm-aot = { path = "crates/purg-vm-aot", default-features = false }
 purg-aarch64 = { path = "crates/purg-aarch64", default-features = false }
 purgatorio = { path = "sdk/purgatorio" }
 purgatorio-macros = { path = "sdk/purgatorio-macros" }
@@ -89,6 +90,9 @@ libc = "0.2"
 dlmalloc = { version = "0.2", features = ["global"] }
 wasmi = { version = "2", default-features = false, features = ["stable", "validate", "libm", "auto-dispatch"] }
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
+# The runtime alone, without std, for precompiled modules in the kernel
+# (purg-vm-aot, docs/perf.md). Must be the same version as `wasmtime`.
+wasmtime-runtime = { package = "wasmtime", version = "50", default-features = false, features = ["runtime", "custom-sync-primitives", "pulley"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -172,6 +176,15 @@ opt-level = 3
 opt-level = 3
 
 [profile.kernel.package.wasmi_collections]
+opt-level = 3
+
+# The same for the experimental `aot` feature's engine (docs/perf.md):
+# Pulley's interpreter, and wasmtime's runtime under native code. They
+# are not in a kernel built without it.
+[profile.kernel.package.pulley-interpreter]
+opt-level = 3
+
+[profile.kernel.package.wasmtime]
 opt-level = 3
 
 # The smallest kernel: the interpreter built for size as well. Used with
