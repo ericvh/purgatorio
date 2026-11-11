@@ -366,7 +366,9 @@ that share tickets but not caches accept a replay at most once each.
   formats. `lethed` reads them from host paths given on its command line,
   at every `Tauth`, so an edit takes effect on the next ticket. A damaged
   revocation list fails closed. A server with no key and no signer refuses
-  every client: there is no unauthenticated mode.
+  every client with `server trusts no keys`, as an export that trusts
+  nothing does (`docs/auth.md`, "Trust by default"): there is no
+  unauthenticated mode.
 - **What a ticket may do.** The identity in the ticket is checked against
   the tree's permissions at every request, as Inferno checks a user against
   a file's mode: the owner's bits when the ticket's user is the file's
@@ -593,8 +595,10 @@ lethed [-v] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
 - `root`: the host directory served, read only.
 - `-a`: the TCP address to listen on (default `127.0.0.1:5640`; port 0
   picks one). It prints `lethed: listening on <addr>` once ready.
-- `-k`: a public key file (32 bytes) trusted for any user name, as an
-  export trusts `lib/test/auth.key.pub`; repeatable. `-U`: a directory of
+- `-k`: a public key file (32 bytes) trusted for any user name, as a
+  `* <key>` line of `/lib/keys/users` is for an export; repeatable. The
+  tests pass the public test key, `lib/test/auth.key.pub`; nothing trusts
+  it by default. `-U`: a directory of
   `<uname>/key.pub` files, each trusted for its user only, as an export
   trusts `usr/<uname>/key.pub`. `-s` and `-r`: a trusted signer list and a
   revocation list (`/lib/keys` formats); a revocation list that is there

@@ -430,12 +430,12 @@ fn certificates_and_refusals() {
         read(&mut c, &mut r, "/hello", None),
         remote("certificate name mismatch")
     );
-    // A server trusting nobody refuses everybody.
+    // A server trusting nobody refuses everybody, as an export does.
     r.trust = Trust::default();
     let mut c = Client::new(creds(Some(cert(0))), rights::READ, "/");
     assert_eq!(
         read(&mut c, &mut r, "/hello", None),
-        remote("authentication failed")
+        remote("server trusts no keys")
     );
     // A changed Tauth: the signature no longer verifies.
     r.trust = direct();
