@@ -14,9 +14,9 @@ an Inferno `rstyxd`.
 ## Commands
 
 ```
-rcmd [-A] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]
-cpu  [-A] [-k keyfile] [-C alg] [net!]host [command [arg...]]
-auxi/rstyxd [-A] [-k keyfile]
+rcmd [-AS] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]
+cpu  [-AS] [-k keyfile] [-C alg] [net!]host [command [arg...]]
+auxi/rstyxd [-A] [-e] [-k keyfile]
 auxi/cpuslave [command [arg...]]
 ```
 
@@ -29,14 +29,18 @@ auxi/cpuslave [command [arg...]]
   `dir` here.
 - `-A` skips authentication in both directions and leaves the connection
   in the clear. `-k` names the authinfo to prove with (`-f` is accepted,
-  as Inferno spells it).
+  as Inferno spells it). `-S` (an addition) requires the server to prove
+  itself (see "Authentication"); it does not go with `-A`.
 - Without `-A` the connection is encrypted after the proof (see
   "Encryption"). `-e` and `-C` name the algorithm: `chacha20poly1305`,
   the only one and the default, or `none` (or `clear`), which is accepted
   only with `-A`. `rcmd -e none` without `-A` fails with `an
   authenticated connection is always encrypted; use -A for none`.
-- `auxi/rstyxd` serves one client on fd 0. Start it from `listen` or
-  `styxlisten` with its module path:
+- `auxi/rstyxd` serves one client on fd 0. `-k` is the authinfo it
+  proves itself with. `-e` makes it refuse to go on in the clear: with
+  nothing trusted it cannot ask for a proof, so it refuses every client
+  with `encryption required`. Start it from `listen` or `styxlisten` with
+  its module path:
 
   ```
   listen 'tcp!*!rstyx' /bin/auxi/rstyxd.wasm &
@@ -67,15 +71,31 @@ Both directions use the mount proof of `docs/auth.md`.
   one gets the error a mount would (`untrusted signer`, `certificate
   expired`, ...). A version 1 or 2 proof is refused with `no session key
   offered`, since it carries no key to encrypt with.
-- **Server to client.** The client serves its namespace with the
-  kernel's `export`, which asks whoever mounts it for a proof when the
-  client's namespace trusts anything. The server answers from `-k
-  keyfile` on `rstyxd`, or else from its user's default keys.
+- **Server to client.** After an accepted proof the server proves itself
+  in the OK frame: its data is a server proof (`docs/auth.md`, "Server
+  authentication"), signed over this session's transcript and a value
+  bound to its keys, from `-k keyfile` on `rstyxd`, or else from its
+  user's default keys (`#¤`, `/usr/<user>/keyring/default`,
+  `/usr/<user>/key`, the test key). The client checks it against what
+  its namespace trusts as a server: `/lib/keys/servers`,
+  `/lib/keys/signers` and the test key. With `-S` a missing or failing
+  proof ends the session with `server did not authenticate` or `server
+  authentication failed`. Without `-S` the client goes on either way.
+- **The client's export.** The client serves its namespace with the
+  kernel's `export`. When the server's proof checked, the export asks no
+  proof of its own and runs in the clear inside the encrypted connection
+  (see "Encryption"). Otherwise it asks whoever mounts it for a proof when
+  the client's namespace trusts anything, and the server answers from the
+  same key.
 
 `rstyxd -A` asks for no proof. `rcmd -A` gives none and exports without
 asking for one. Without `-A`, `rcmd` refuses a server that asks for no
 proof, or that sends a bare 32-byte challenge, with `no session key
 offered`: it does not go on in the clear unless told to.
+
+Older clients ignore OK's data, so the server's proof needed no new
+protocol version. It travels in the clear, as OK does: it holds only the
+server's public key or certificate and a signature for this session.
 
 ## Encryption
 
@@ -99,17 +119,33 @@ record layer. A record that is changed, replayed, reordered or dropped
 fails to open, and the end that sees it stops with `bad record mac`.
 `rcmd` prints it and exits; `rstyxd` closes the connection.
 
-The 9P conversation inside STYX frames runs its own handshake, so the
-client's export to the server is a version 3 mount over the encrypted
-connection and is sealed twice. That costs a second cipher pass on
-`/n/client` traffic and nothing else.
+The 9P conversation inside STYX frames is the client's export. When the
+server has proved itself, the export runs without a handshake of its own
+(EXEC flag 1, and `export -A` on the client), in the clear inside the
+encrypted connection. That is safe because the connection already
+authenticates both ends: the client's proof and the server's are bound to
+its keys, only the two of them hold those keys, and every frame is sealed
+under them, so nobody else can speak in the 9P conversation. Being a
+server this namespace trusts is then what gets the server `/n/client`,
+in place of being a user the export trusts; with the stock root both are
+the test key. When the server's proof is missing or does not check, the
+export authenticates the server and encrypts again, as before, so a
+server that does not prove itself still has to prove its user.
 
-What is not done: the server does not prove itself to the client. An
-attacker who can answer for the server's address can pose as the server
-(the client's proof is for that attacker's key, so it cannot be replayed
-to the real one). The client's export still asks the server for a proof
-before serving `/n/client` when the client's namespace trusts any key, as
-it does with the stock test key.
+Measured on an Apple Silicon host under Linux with the release emu and
+wasmtime, copying 16 MiB from `/n/client` with `rcmd host 'cat
+/n/client/f | wc -c'` takes 12.3 to 14.0 s (mean 13.0 s) with the export
+in the clear and 12.5 to 14.0 s (mean 13.3 s) sealed twice, five runs
+each: within the noise. The session's cost is in the guests (the WASM
+pumps and the connection's own cipher in `rcmd` and `rstyxd`); the
+export's cipher is the kernel's, which is native and, in the emu, `ring`.
+What the change saves is the second handshake per session and one cipher
+pass in the kernel.
+
+An attacker who can answer for the server's address can still pose as
+the server to a client without `-S` (the client's proof is for that
+attacker's key, so it cannot be replayed to the real one); `-S` closes
+that.
 
 The stock root holds the public test key pair, so an unchanged system
 authenticates with it in both directions. Deployments remove it.
@@ -124,7 +160,7 @@ data`, with at most 64 KiB of data.
 | 1 | HELLO | C to S | `pgrstyx2 <user>` |
 | 2 | CHAL | S to C | `challenge[32] || S[32]`, or empty when no proof is wanted |
 | 3 | PROOF | C to S | a version 3 proof, or empty |
-| 4 | OK | S to C | empty |
+| 4 | OK | S to C | the server's proof, or empty when it has none |
 | 5 | ERR | S to C | the reason the client is refused |
 | 6 | EXEC | C to S | `flags u8`, then the command line |
 | 7 | STYX | both | bytes of the 9P conversation |
@@ -167,7 +203,9 @@ in its own prog on the client.
 
 ## Limits
 
-- The server does not authenticate itself (above).
+- The server authenticates itself only to a client that asks with `-S`,
+  and it is trusted as a server, not for its address: any server key or
+  certified server the client trusts will do (`docs/auth.md`).
 - The remote command runs as the server's user.
 - The client's namespace is served by the kernel's `export`, which
   serves requests concurrently, so a remote read that blocks (of

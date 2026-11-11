@@ -1,0 +1,10 @@
+     32
+mount: mount: server did not authenticate
+mount: usage: mount [-abrcAS] [-k keyfile] fd-or-addr mtpt [spec]
+encrypted
+proved
+     32
+rcmd: server authentication failed
+status fail:server authentication failed
+mount: mount: encryption required
+rcmd: encryption required
