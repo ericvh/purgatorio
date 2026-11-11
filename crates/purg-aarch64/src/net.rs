@@ -30,7 +30,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use purg_platform::Result;
 use purg_platform::net::{Conn, Listener, Net, UdpDemux};
@@ -709,6 +709,11 @@ struct Loopback {
     listeners: Mutex<Vec<(u16, Weak<LoopListen>)>>,
     udp: Arc<LoopUdpPorts>,
     next: AtomicU16,
+    /// Fresh listening ports handed out, for the next one in the
+    /// ephemeral range; kept apart from `next`, which every dial takes
+    /// from, so that a port comes round again only after some sixteen
+    /// thousand listeners.
+    listens: AtomicU32,
 }
 
 impl Loopback {
@@ -717,6 +722,7 @@ impl Loopback {
             listeners: Mutex::new(Vec::new()),
             udp: Arc::new(Mutex::new(Vec::new())),
             next: AtomicU16::new(1),
+            listens: AtomicU32::new(0),
         }
     }
 
@@ -768,15 +774,41 @@ impl Loopback {
         self.next.fetch_add(1, Ordering::Relaxed).max(1)
     }
 
+    /// A fresh listening port: the ephemeral range, round and round.
+    fn listen_port(&self) -> u16 {
+        let range = u32::from(u16::MAX - FIRST_EPHEMERAL) + 1;
+        let n = self.listens.fetch_add(1, Ordering::Relaxed) % range;
+        FIRST_EPHEMERAL + n as u16
+    }
+
+    /// Listens on loopback TCP port `port` (0: a fresh one). A fresh
+    /// port comes from the ephemeral range and skips ports with a live
+    /// listener, and a port that has one is `address in use`: two
+    /// listeners on one port would each get the other's calls. Before,
+    /// fresh ports came from the counter dials use, from 1 up; it wrapped
+    /// often enough under load that a dial to a server that had gone
+    /// reached another prog's.
     fn announce(&self, port: u16) -> Result<Arc<dyn Listener>> {
-        let port = if port == 0 { self.port() } else { port };
+        let mut listeners = self.listeners.lock();
+        listeners.retain(|(_, w)| w.strong_count() > 0);
+        let used = |p: u16| listeners.iter().any(|(q, _)| *q == p);
+        let port = if port == 0 {
+            loop {
+                let p = self.listen_port();
+                if !used(p) {
+                    break p;
+                }
+            }
+        } else if used(port) {
+            return Err(Cow::Borrowed("address in use"));
+        } else {
+            port
+        };
         let listen = Arc::new(LoopListen {
             port,
             waiting: Mutex::new(VecDeque::new()),
             ready: Rendez::new(),
         });
-        let mut listeners = self.listeners.lock();
-        listeners.retain(|(_, w)| w.strong_count() > 0);
         listeners.push((port, Arc::downgrade(&listen)));
         Ok(listen)
     }
