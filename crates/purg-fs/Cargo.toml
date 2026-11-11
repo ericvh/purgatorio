@@ -1,0 +1,18 @@
+[package]
+name = "purg-fs"
+description = "purgfs: the native disk file system (format, journal, checker), and its device"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# `FileDisk`, a disk over a host file (xtask, the disk/ commands).
+std = []
+
+[dependencies]
+purg-abi.workspace = true
+
+[lints]
+workspace = true
