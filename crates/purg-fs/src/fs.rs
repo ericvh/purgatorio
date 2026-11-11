@@ -1104,7 +1104,7 @@ impl<D: Disk> Fs<D> {
 
     /// Cuts file (or empty directory) `r` to `len` bytes, [`STEP`] blocks
     /// a transaction.
-    pub(crate) fn truncate(&mut self, r: Ref, len: u64) -> Result<()> {
+    pub fn truncate(&mut self, r: Ref, len: u64) -> Result<()> {
         while !self.op(|fs| fs.shrink_step(r, len))? {}
         Ok(())
     }
