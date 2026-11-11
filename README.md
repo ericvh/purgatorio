@@ -165,12 +165,25 @@ full`, `disk/chkdisk` on the raw disk), kills a reader of a throttled disk
 in the middle of a request, and `xtask` checks the image on the host and
 boots a second time to check that the files persist.
 
+K4 SMP: the kernel starts every CPU the DTB lists (PSCI `CPU_ON`, under
+TCG and KVM) and runs kernel threads, and so progs, on all of them from
+one run queue. A CPU with nothing to run waits in `wfi`, and a wakeup
+sends it an IPI. `--smp N` boots QEMU with N CPUs, and `--stress SECS`
+boots once in a stress mode that runs the sh corpus and the conformance
+guests in many progs at once for that long, with a watchdog and a leak
+check. A prog's wasm memory, and a `#pdomain` domain's memory and number
+of progs, can be limited with `memlimit` messages on `/prog/<pid>/ctl`
+([docs/abi.md](docs/abi.md)); past a limit `memory.grow` fails, on the
+emu as on the kernel.
+
 ```sh
 cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on cortex-a72 and max
 # The whole sh corpus runs on GICv2 and on max, a smoke subset on the other two
 # (KERNEL_CORPUS=full runs it on all four). Runs boot side by side, one per two
 # CPUs; KERNEL_JOBS=N sets how many.
+cargo xtask kernel --smp 4  # the same with four CPUs each, so fewer side by side
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
+cargo xtask kernel --kvm --smp 4 --stress 3600   # an hour of the stress mode on four CPUs
 cargo xtask initrd          # target/initrd/root.tar, the same archive the kernel compiles in
 # an interactive shell on the kernel (^D at the start of a line ends it):
 qemu-system-aarch64 -accel kvm -cpu host -M virt,gic-version=3 -m 512M -nographic \

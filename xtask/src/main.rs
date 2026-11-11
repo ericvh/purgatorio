@@ -35,7 +35,10 @@
 //!   `--mem` sets QEMU's `-m` (512M by default), `--smp` its `-smp` (1 by
 //!   default; the kernel must report that many CPUs online). With N CPUs
 //!   each run keeps N host threads busy, so N times fewer boot at once,
-//!   and the timeouts are longer. `KERNEL_MEMSTAT=1` in
+//!   and the timeouts are longer. `--stress SECS`
+//!   boots once instead (under KVM with `--kvm`, else the first TCG machine), in
+//!   the kernel's stress mode for SECS seconds, printing its console as it
+//!   runs. `KERNEL_MEMSTAT=1` in
 //!   the environment adds `memstat` to the bootargs: the kernel then
 //!   prints `kernel: mem ...` lines about its memory use, which the
 //!   comparison skips.
@@ -918,6 +921,61 @@ fn disk_reboot(
     }
 }
 
+/// Boots run `k`'s machine once in the kernel's stress mode
+/// (`stress=SECS`, see `crates/purg-kernel/src/stress.rs`), with no
+/// network, host directory or disk, printing the serial console as it
+/// comes. Passes if the kernel ends with `kernel: ok` and no failure.
+fn kernel_stress(
+    opts: &KernelOpts,
+    k: &KernelRun,
+    secs: u64,
+    image: &Path,
+    initrd: &str,
+) -> Result<()> {
+    let smp = opts.smp.to_string();
+    let bootargs = format!(
+        "{}stress={secs}{}",
+        if opts.kvm { "exit=psci " } else { "" },
+        if env::var_os("KERNEL_MEMSTAT").is_some() {
+            " memstat"
+        } else {
+            ""
+        }
+    );
+    let mut args: Vec<&str> = k.args.to_vec();
+    args.extend(["-m", &opts.mem, "-smp", &smp, "-nographic"]);
+    args.extend(["-initrd", initrd]);
+    if !opts.kvm {
+        args.push("-semihosting");
+    }
+    args.extend(["-append", &bootargs, "-kernel"]);
+    eprintln!("kernel: stress: qemu-system-aarch64 {}", args.join(" "));
+    // The boot and the self-tests, the run, and the watchdog's grace.
+    let timeout = Duration::from_secs(secs) + opts.scale(KERNEL_TIMEOUT);
+    let mut shown = 0;
+    let r = run_qemu(&args, image, timeout, &[], |text| {
+        if let Some(end) = text.rfind('\n')
+            && end + 1 > shown
+        {
+            eprint!("{}", &text[shown..end + 1]);
+            shown = end + 1;
+        }
+        Ok(())
+    })?;
+    let lines: Vec<&str> = r.serial.lines().collect();
+    if let Some(l) = lines.iter().find(|l| l.contains("kernel: FAIL")) {
+        return Err(format!("kernel: stress: {l}"));
+    }
+    if !r.status.success() || lines.last() != Some(&"kernel: ok") {
+        return Err(format!(
+            "kernel: stress: QEMU exited with {} and no final `kernel: ok`",
+            r.status
+        ));
+    }
+    eprintln!("kernel: stress: passed in {:.0}s", r.elapsed.as_secs_f64());
+    Ok(())
+}
+
 /// Turns the kernel's or the probe's ELF into a raw arm64 `Image`: each loadable segment
 /// copied to its physical address, relative to the lowest one. The image
 /// starts with the arm64 Image header (see `purg_aarch64::boot`), so QEMU
@@ -975,6 +1033,8 @@ struct KernelOpts {
     mem: String,
     /// QEMU's `-smp`: the CPUs the kernel must bring up.
     smp: usize,
+    /// `--stress SECS`: one boot in the kernel's stress mode instead.
+    stress: Option<u64>,
 }
 
 impl KernelOpts {
@@ -982,17 +1042,24 @@ impl KernelOpts {
     fn parse(args: &[String]) -> Option<KernelOpts> {
         let mut mem = String::from("512M");
         let mut smp = 1;
+        let mut stress = None;
         let mut rest = Vec::new();
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--mem" => mem = it.next()?.clone(),
                 "--smp" => smp = it.next()?.parse().ok().filter(|&n| (1..=8).contains(&n))?,
+                "--stress" => stress = Some(it.next()?.parse().ok()?),
                 _ => rest.push(a.clone()),
             }
         }
         let kvm = image_flags(&rest, true)?;
-        Some(KernelOpts { kvm, mem, smp })
+        Some(KernelOpts {
+            kvm,
+            mem,
+            smp,
+            stress,
+        })
     }
 }
 
@@ -1061,6 +1128,9 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
     } else {
         KERNEL_TCG_RUNS.iter().collect()
     };
+    if let Some(secs) = opts.stress {
+        return kernel_stress(opts, runs[0], secs, &image, &initrd);
+    }
     // `KERNEL_MEMSTAT=1 cargo xtask kernel` adds the `memstat` boot
     // argument: a `kernel: mem ...` line after each test, not compared.
     let memstat = env::var_os("KERNEL_MEMSTAT").is_some();
@@ -1872,7 +1942,7 @@ fn main() -> ExitCode {
         Some("kernel") => match KernelOpts::parse(&rest) {
             Some(o) => kernel(&o).map(|()| ExitCode::SUCCESS),
             None => Err(String::from(
-                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE] [--smp N]",
+                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS]",
             )),
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
@@ -1880,7 +1950,7 @@ fn main() -> ExitCode {
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         Some("bench") => bench::cmd(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
