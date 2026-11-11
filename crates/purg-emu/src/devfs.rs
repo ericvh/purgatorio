@@ -68,25 +68,35 @@ impl DevFs {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default()
         };
-        let mut perm = md.mode() & 0o777;
-        if md.is_dir() {
-            perm |= DMDIR;
-        }
-        let uid = host::owner_name(md.uid());
-        Dir {
-            dtype: 'U' as u16,
-            dev: 0,
-            qid: qid(md),
-            mode: perm,
-            atime: md.atime() as u32,
-            mtime: md.mtime() as u32,
-            length: if md.is_dir() { 0 } else { md.size() },
-            name,
-            muid: uid.clone(),
-            uid,
-            gid: host::group_name(md.gid()),
-        }
+        entry(name, md)
     }
+}
+
+/// The directory entry `#U` (and `lethed`) shows for a host file.
+pub fn entry(name: String, md: &Metadata) -> Dir {
+    let mut perm = md.mode() & 0o777;
+    if md.is_dir() {
+        perm |= DMDIR;
+    }
+    let uid = host::owner_name(md.uid());
+    Dir {
+        dtype: 'U' as u16,
+        dev: 0,
+        qid: qid(md),
+        mode: perm,
+        atime: md.atime() as u32,
+        mtime: md.mtime() as u32,
+        length: if md.is_dir() { 0 } else { md.size() },
+        name,
+        muid: uid.clone(),
+        uid,
+        gid: host::group_name(md.gid()),
+    }
+}
+
+/// The qid of a host file.
+pub fn host_qid(md: &Metadata) -> Qid {
+    qid(md)
 }
 
 impl Dev for DevFs {
