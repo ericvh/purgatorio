@@ -28,6 +28,12 @@ pub trait Dev: Send + Sync {
     fn init(&self, _tab: &DevTab) {}
 
     fn attach(&self, spec: &str) -> Result<Walked>;
+    /// The device instance (`Chan::devno`) an attach to `spec` gives, so
+    /// that the files of two instances never share a mount-table key.
+    /// Called after a successful [`Dev::attach`].
+    fn devno(&self, _spec: &str) -> u32 {
+        0
+    }
     /// Walks from directory `c` to its child `name`.
     fn walk(&self, c: &Chan, name: &str) -> Result<Walked>;
     fn stat(&self, c: &Chan) -> Result<Dir>;
@@ -114,7 +120,7 @@ impl DevTab {
         let mut name = String::from("#");
         name.push(dc);
         name.push_str(spec);
-        Ok(Chan::new(dev.clone(), 0, w.qid, name, w.aux))
+        Ok(Chan::new(dev.clone(), dev.devno(spec), w.qid, name, w.aux))
     }
 }
 
