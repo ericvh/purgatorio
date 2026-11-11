@@ -165,3 +165,87 @@ pub fn entropy(buf: &mut [u8]) {
         assert_eq!(rc, 0, "getentropy failed");
     }
 }
+
+/// Ends the process with `code`, without running the C library's exit
+/// handlers and library destructors.
+///
+/// The emu exits when its first prog does, while other progs' threads
+/// still run, and `exit` is not safe then. libgcc's destructor frees its
+/// table of registered unwind frames; a prog thread that is dropping a
+/// compiled module at that moment calls `__deregister_frame`, finds the
+/// table gone, and aborts the process (issue #145). Nothing the emu owns
+/// needs an exit handler: standard output and error are flushed here.
+pub fn exit(code: u8) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: _exit only ends the process.
+    unsafe { libc::_exit(i32::from(code)) }
+}
+
+/// Makes an abort say where it happened. A Rust panic is reported by the
+/// panic hook, but `abort` called from C (libgcc, the allocator) kills
+/// the process with SIGABRT and often not a word; this prints the thread
+/// and its prog first, then lets the abort go on to the default action
+/// (and the core dump).
+pub fn report_aborts() {
+    // SAFETY: the action is fully initialised, and the handler only
+    // makes async-signal-safe calls.
+    unsafe {
+        let mut sa: libc::sigaction = core::mem::zeroed();
+        sa.sa_sigaction = on_abort as extern "C" fn(libc::c_int) as usize;
+        sa.sa_flags = libc::SA_RESETHAND;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(libc::SIGABRT, &sa, core::ptr::null_mut());
+    }
+}
+
+/// The SIGABRT handler: one `write` of a line built on the stack, with
+/// no allocation and no lock, since the abort may have come from inside
+/// the allocator.
+extern "C" fn on_abort(sig: libc::c_int) {
+    let mut line = [0u8; 160];
+    let mut n = 0;
+    let mut put = |bytes: &[u8]| {
+        for &b in bytes {
+            if n < line.len() {
+                line[n] = b;
+                n += 1;
+            }
+        }
+    };
+    put(b"emu: abort (SIGABRT) on thread '");
+    let mut name = [0u8; 64];
+    // SAFETY: name is valid for writes of its length, and the call
+    // NUL-terminates what it writes.
+    let named = unsafe {
+        libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr().cast(), name.len())
+    };
+    let len = name.iter().position(|&b| b == 0).unwrap_or(0);
+    put(if named == 0 && len > 0 {
+        &name[..len]
+    } else {
+        b"?"
+    });
+    put(b"', prog ");
+    let mut digits = [0u8; 10];
+    let mut pid = crate::platform::current_pid();
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (pid % 10) as u8;
+        pid /= 10;
+        if pid == 0 {
+            break;
+        }
+    }
+    put(&digits[at..]);
+    put(b"\n");
+    // SAFETY: line is valid for reads of n bytes. The default action is
+    // back in place (SA_RESETHAND), so the raise ends the process when
+    // this handler returns, whoever sent the signal.
+    unsafe {
+        libc::write(libc::STDERR_FILENO, line.as_ptr().cast(), n);
+        libc::raise(sig);
+    }
+}
