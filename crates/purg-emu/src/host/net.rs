@@ -19,16 +19,7 @@ pub struct HostNet;
 impl net::Net for HostNet {
     fn dial_tcp(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
         let stream = TcpStream::connect((host, port)).map_err(io_err)?;
-        stream.set_nodelay(true).ok();
-        stream.set_nonblocking(true).map_err(io_err)?;
-        let local = endpoint(stream.local_addr().map_err(io_err)?);
-        let remote = endpoint(stream.peer_addr().map_err(io_err)?);
-        Ok(Arc::new(TcpConn {
-            stream: Mutex::new(stream),
-            local,
-            remote,
-            dead: AtomicBool::new(false),
-        }))
+        tcp_conn(stream)
     }
 
     fn announce_tcp(&self, host: &str, port: u16) -> Result<Arc<dyn Listener>> {
@@ -98,11 +89,31 @@ fn announce_any(port: u16) -> Result<Arc<dyn Listener>> {
     }))
 }
 
+/// How long a blocked TCP read or write waits before it looks again for
+/// a note (a kill) or a hangup. Data wakes it at once.
+const TCP_POLL: Duration = Duration::from_millis(5);
+
+/// A TCP connection. The socket blocks, with [`TCP_POLL`] as its read and
+/// write timeouts, so a read returns as soon as data arrives and a killed
+/// prog still gets out within one timeout. (A non-blocking socket polled
+/// with a sleep added the sleep to every round trip.) Reads and writes go
+/// through `&TcpStream`, so a reader blocked on one thread does not hold
+/// up a writer on another.
 struct TcpConn {
-    stream: Mutex<TcpStream>,
+    stream: TcpStream,
     local: String,
     remote: String,
     dead: AtomicBool,
+}
+
+/// A timeout of the blocking socket: nothing yet, look again.
+fn timed_out(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted
+    )
 }
 
 impl Conn for TcpConn {
@@ -112,13 +123,9 @@ impl Conn for TcpConn {
                 return Ok(0);
             }
             interrupted()?;
-            let mut stream = self.stream.lock().map_err(|_| poison())?;
-            match stream.read(buf) {
+            match (&self.stream).read(buf) {
                 Ok(n) => return Ok(n),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    drop(stream);
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                Err(e) if timed_out(&e) => {}
                 Err(e) => return Err(io_err(e)),
             }
         }
@@ -130,14 +137,10 @@ impl Conn for TcpConn {
         }
         loop {
             interrupted()?;
-            let mut stream = self.stream.lock().map_err(|_| poison())?;
-            match stream.write(buf) {
+            match (&self.stream).write(buf) {
                 Ok(0) => return Err(std::borrow::Cow::Borrowed("connection closed")),
                 Ok(n) => return Ok(n),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    drop(stream);
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                Err(e) if timed_out(&e) => {}
                 Err(e) => return Err(io_err(e)),
             }
         }
@@ -153,9 +156,7 @@ impl Conn for TcpConn {
 
     fn hangup(&self) {
         self.dead.store(true, Ordering::Release);
-        if let Ok(stream) = self.stream.lock() {
-            stream.shutdown(Shutdown::Both).ok();
-        }
+        self.stream.shutdown(Shutdown::Both).ok();
     }
 }
 
@@ -220,11 +221,15 @@ fn accept_one(listener: &TcpListener) -> Result<Arc<dyn Conn>> {
 
 fn tcp_conn(stream: TcpStream) -> Result<Arc<dyn Conn>> {
     stream.set_nodelay(true).ok();
-    stream.set_nonblocking(true).map_err(io_err)?;
+    // An accepted socket inherits the listener's non-blocking flag on BSD
+    // and macOS, not on Linux; set it either way.
+    stream.set_nonblocking(false).map_err(io_err)?;
+    stream.set_read_timeout(Some(TCP_POLL)).map_err(io_err)?;
+    stream.set_write_timeout(Some(TCP_POLL)).map_err(io_err)?;
     let local = endpoint(stream.local_addr().map_err(io_err)?);
     let remote = endpoint(stream.peer_addr().map_err(io_err)?);
     Ok(Arc::new(TcpConn {
-        stream: Mutex::new(stream),
+        stream,
         local,
         remote,
         dead: AtomicBool::new(false),
