@@ -297,6 +297,16 @@ impl Dentry {
     }
 
     /// Reads a slot ([`DENTRY`] bytes of `b`).
+    /// Whether the slot `b` is in use and holds `name`, checked without
+    /// decoding it: a directory search decodes only the entry it finds.
+    pub fn has_name(b: &[u8], name: &str) -> bool {
+        b.len() >= DENTRY
+            && b[D_USED] == 1
+            && name.len() <= NAME_MAX
+            && usize::from(b[D_NAMELEN]) == name.len()
+            && &b[D_NAME..D_NAME + name.len()] == name.as_bytes()
+    }
+
     pub fn decode(b: &[u8]) -> Slot {
         if b.len() < DENTRY {
             return Slot::Bad("short entry");

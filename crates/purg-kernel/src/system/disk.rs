@@ -94,6 +94,21 @@ pub fn find(fdt: &purg_aarch64::dtb::Fdt<'_>) -> Blks {
     blks.into_iter().map(Arc::new).collect()
 }
 
+/// Metadata blocks the kernel's mount caches: 512 KiB at most, enough
+/// for a directory of 2,000 entries and its parents. With purgfs's
+/// default of 32, a search of a directory of more than 32 blocks (500
+/// entries) evicted each block before the next search needed it, and
+/// every create, walk or stat there read the whole directory from the
+/// disk again (`docs/perf.md`).
+const CACHE_BLOCKS: usize = 128;
+
+fn mount_options() -> Mount {
+    Mount {
+        cache_blocks: CACHE_BLOCKS,
+        ..Mount::default()
+    }
+}
+
 /// Mounts the first disk that holds a purgfs. Runs on a kernel thread
 /// (it waits for the disks).
 pub fn open(blks: Blks, platform: &Arc<dyn Platform>) -> Disks {
@@ -102,7 +117,7 @@ pub fn open(blks: Blks, platform: &Arc<dyn Platform>) -> Disks {
         ..Disks::default()
     };
     for (u, b) in disks.blks.iter().enumerate() {
-        match Fs::mount(BlkDisk(b.clone()), &Mount::default()) {
+        match Fs::mount(BlkDisk(b.clone()), &mount_options()) {
             Ok(fs) => {
                 let use_ = fs.usage();
                 crate::kernel::println!(

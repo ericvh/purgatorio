@@ -886,12 +886,32 @@ impl<D: Disk> Fs<D> {
         Ok(out)
     }
 
+    /// The entry `name` in directory `d`. Only the slot whose name
+    /// matches is decoded (and its checksum checked), and the search stops
+    /// there.
     fn lookup(&mut self, d: &mut Dentry, name: &str) -> Result<Option<Ref>> {
-        Ok(self
-            .entries(d)?
-            .into_iter()
-            .find(|(_, e)| e.name == name)
-            .map(|(r, _)| r))
+        let per = self.bs / DENTRY;
+        for idx in 0..d.length / self.bs as u64 {
+            let (b, _) = self.bmap(d, idx, None)?;
+            if b == 0 {
+                continue;
+            }
+            let buf = self.meta(u64::from(b))?;
+            for s in 0..per {
+                let raw = &buf[s * DENTRY..(s + 1) * DENTRY];
+                if !Dentry::has_name(raw, name) {
+                    continue;
+                }
+                if let Slot::Used(e) = Dentry::decode(raw) {
+                    return Ok(Some(Ref {
+                        block: b,
+                        slot: s as u16,
+                        path: e.qpath,
+                    }));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// A free slot in directory `d`, which grows by a block if it has
