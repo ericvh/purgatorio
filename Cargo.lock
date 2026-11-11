@@ -1286,6 +1286,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-test-bench"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-test-debug"
 version = "0.1.0"
 dependencies = [
