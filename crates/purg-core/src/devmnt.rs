@@ -246,9 +246,32 @@ impl Session {
         self.next_fid.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// `Tclunk`. A server clunks the fid whatever it answers, so a prog
+    /// that is killed while it waits does not flush the request, which
+    /// could leave the fid open on the server: the request stands, the
+    /// prog goes on (usually it is exiting), and the reader drops the
+    /// reply when it comes. A server that never answers keeps the tag
+    /// until the connection hangs up.
     fn clunk(&self, fid: u32) -> Result<()> {
-        let buf = self.rpc(Fcall::Tclunk { fid })?;
-        self.decode(&buf).map(drop)
+        let tag = self.mux.begin()?;
+        let bytes = Msg {
+            tag,
+            fcall: Fcall::Tclunk { fid },
+        }
+        .encode()
+        .map_err(|_| Error::new(error::EIO))?;
+        if let Err(e) = self.send(&bytes) {
+            self.mux.forget(tag);
+            return Err(e);
+        }
+        match self.mux.wait(tag) {
+            Ok(buf) => self.decode(&buf).map(drop),
+            Err(e) if e.as_str() == error::EINTR => {
+                self.mux.discard(tag);
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// `Some(afid)` when the server asked for a proof. `None` when it does
