@@ -1,6 +1,7 @@
-# cargo-fuzz targets for the Styx codec and the 9P2000.u shim. Not a
-# workspace member: it needs a nightly toolchain and libFuzzer, and normal
-# builds must not. See "Fuzzing" in docs/plan.md Section 9.3.
+# cargo-fuzz targets for the Styx codec, the 9P2000.u shim, the record
+# layer and the Lethe codec. Not a workspace member: it needs a nightly
+# toolchain and libFuzzer, and normal builds must not. See "Fuzzing" in
+# docs/plan.md Section 9.3.
 [package]
 name = "purg-styx-fuzz"
 description = "Fuzz targets for purg-styx"
@@ -16,6 +17,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 purg-styx = { path = "../crates/purg-styx" }
 purg-auth = { path = "../crates/purg-auth", default-features = false }
+purg-lethe = { path = "../crates/purg-lethe" }
 
 [[bin]]
 name = "decode"
@@ -27,6 +29,13 @@ bench = false
 [[bin]]
 name = "dotu"
 path = "fuzz_targets/dotu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lethe"
+path = "fuzz_targets/lethe.rs"
 test = false
 doc = false
 bench = false

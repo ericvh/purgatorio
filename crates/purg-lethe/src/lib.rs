@@ -1,0 +1,97 @@
+//! Lethe, a stateless protocol for reading static file trees
+//! (`docs/lethe.md`).
+//!
+//! - [`msg`]: frames and the requests and replies inside them.
+//! - [`path`]: the path rules.
+//! - [`crypto`]: the key schedule and the XChaCha20-Poly1305 sealing.
+//! - [`ticket`]: tickets, sealed under a key only the servers hold.
+//! - [`server`]: a server engine over a [`server::Tree`]: one frame in,
+//!   one frame out, nothing kept.
+//! - [`client`]: the client's side: the ticket exchange, sealed requests
+//!   and their replies.
+//!
+//! The crate is `no_std` + `alloc`: the kernel's `#λ` device and the host
+//! server `lethed` share it.
+#![no_std]
+
+extern crate alloc;
+
+pub mod client;
+pub mod crypto;
+pub mod msg;
+pub mod path;
+pub mod server;
+pub mod ticket;
+mod wire;
+
+/// The protocol version, the fifth byte of every frame.
+pub const VERSION: u8 = 1;
+/// A frame's header: `size[4] version[1] type[1] id[4]`.
+pub const HEADER: usize = 10;
+/// The largest frame.
+pub const MAX_FRAME: usize = 65536;
+/// The largest `count` of a read or a directory read.
+pub const MAX_COUNT: u32 = 32768;
+/// An XChaCha20-Poly1305 nonce.
+pub const NONCE: usize = 24;
+/// An XChaCha20-Poly1305 tag.
+pub const TAG: usize = 16;
+/// An X25519 public key.
+pub const EPH: usize = 32;
+
+/// The rights a ticket can carry.
+pub mod rights {
+    pub const READ: u8 = 1;
+    pub const WRITE: u8 = 2;
+    pub const STREAM: u8 = 4;
+    /// Reserved: asks for the server's proof in `Rauth` (later).
+    pub const SERVER_PROOF: u8 = 0x80;
+    /// The bits a server may grant.
+    pub const GRANTABLE: u8 = READ | WRITE | STREAM;
+}
+
+/// Outer frame types.
+pub mod kind {
+    pub const TAUTH: u8 = 1;
+    pub const RAUTH: u8 = 2;
+    pub const TREQ: u8 = 3;
+    pub const RREQ: u8 = 4;
+    pub const RERROR: u8 = 5;
+    /// Reserved for streams and later frames: 6 to 15.
+    pub const RESERVED: core::ops::RangeInclusive<u8> = 6..=15;
+}
+
+/// Inner request and reply codes.
+pub mod op {
+    pub const TSTAT: u8 = 0x10;
+    pub const RSTAT: u8 = 0x11;
+    pub const TREAD: u8 = 0x12;
+    pub const RREAD: u8 = 0x13;
+    pub const TREADDIR: u8 = 0x14;
+    pub const RREADDIR: u8 = 0x15;
+    /// Reserved: the SHA-256 of a file's content.
+    pub const TDIGEST: u8 = 0x16;
+    pub const RDIGEST: u8 = 0x17;
+    /// Reserved for writes.
+    pub const WRITES: core::ops::RangeInclusive<u8> = 0x20..=0x2f;
+    /// Reserved for streams.
+    pub const STREAMS: core::ops::RangeInclusive<u8> = 0x40..=0x4f;
+    pub const RERROR: u8 = 0x7f;
+}
+
+/// Errors Lethe adds to Inferno's (`docs/lethe.md`, Section 7).
+pub mod error {
+    pub const VERSION: &str = "unknown lethe version";
+    pub const MESSAGE: &str = "bad lethe message";
+    pub const TICKET: &str = "bad ticket";
+    pub const TICKET_KEY: &str = "unknown ticket key";
+    pub const TICKET_EXPIRED: &str = "ticket expired";
+    pub const REQUEST_EXPIRED: &str = "request expired";
+    pub const MAC: &str = purg_auth::record::BAD_MAC;
+
+    /// Whether a client that gets `e` in the clear should authenticate
+    /// again and resend.
+    pub fn renew(e: &str) -> bool {
+        [TICKET, TICKET_KEY, TICKET_EXPIRED, REQUEST_EXPIRED].contains(&e)
+    }
+}
