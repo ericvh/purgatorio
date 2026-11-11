@@ -145,6 +145,12 @@ kernel: ok
 kernel: run /bin/test/net.wasm --udp (the host's UDP echo)
 ok udp_echo
 kernel: ok
+kernel: attach the host's lethed on /n/lethe
+hello from the host
+inner file
+    300
+/n/lethe/inner.txt
+kernel: ok
 kernel: net ready
 kernel: net served
 kernel: rstyx ready

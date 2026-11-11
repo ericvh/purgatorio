@@ -8,6 +8,8 @@
 //!   and list it.
 //! - `udpecho=PORT`: send a datagram to the host's UDP echo server at
 //!   `udp!10.0.2.2!PORT` and check the echo.
+//! - `lethed=PORT`: attach the host's `lethed` at `tcp!10.0.2.2!PORT` on
+//!   `/n/lethe` with the `lethe` command and read it (`docs/lethe.md`).
 //! - `netexport`: announce `tcp!*!6666` and export `/` to the first
 //!   connection, which the host mounts through a QEMU `hostfwd`.
 //! - `rstyx`: announce `tcp!*!6668` and run `auxi/rstyxd` on the first
@@ -43,6 +45,7 @@ pub const RSTYX_PORT: u16 = 6668;
 pub struct Checks {
     host_export: Option<u16>,
     udp_echo: Option<u16>,
+    lethed: Option<u16>,
     export: bool,
     rstyx: bool,
 }
@@ -66,6 +69,7 @@ pub fn open(fdt: &Fdt<'_>, info: &BootInfo<'_>) -> (NetStack, Checks) {
     let checks = Checks {
         host_export: port("hostexport"),
         udp_echo: port("udpecho"),
+        lethed: port("lethed"),
         export: has_bootarg(info, "netexport"),
         rstyx: has_bootarg(info, "rstyx"),
     };
@@ -89,6 +93,11 @@ impl System {
                 Ok(s) => Err(format!("status {s:?}")),
                 Err(e) => Err(format!("error: {e}")),
             };
+            self.verdict(&mut failed, v);
+        }
+        if let Some(port) = checks.lethed {
+            self.say("kernel: attach the host's lethed on /n/lethe");
+            let v = self.lethe_host(port);
             self.verdict(&mut failed, v);
         }
         if checks.export && failed == 0 {
@@ -136,6 +145,29 @@ impl System {
             &["mount", "-A", &addr, "/n/remote"],
             &["ls", "/n/remote/lib/probe"],
             &["ls", "-d", "/n/remote/README"],
+        ];
+        for argv in steps {
+            match self.run(argv, None) {
+                Ok(s) if s.is_empty() => {}
+                Ok(s) => return Err(format!("{}: status {s:?}", argv[0])),
+                Err(e) => return Err(format!("{}: {e}", argv[0])),
+            }
+        }
+        Ok(String::from("ok"))
+    }
+
+    /// Attaches `tcp!10.0.2.2!port`, the host's `lethed` serving the
+    /// shared directory read-only, with the test key, and reads it: a
+    /// file, a directory of 300 entries (several pages) and a subtree.
+    fn lethe_host(&self, port: u16) -> core::result::Result<String, String> {
+        let addr = format!("tcp!{HOST}!{port}");
+        let steps: [&[&str]; 6] = [
+            &["mkdir", "-p", "/n/lethe"],
+            &["lethe", &addr, "/n/lethe"],
+            &["cat", "/n/lethe/hello.txt", "/n/lethe/sub/inner.txt"],
+            &["sh", "-c", "ls /n/lethe/many | wc -l"],
+            &["lethe", &addr, "/n/lethe", "/sub"],
+            &["ls", "/n/lethe"],
         ];
         for argv in steps {
             match self.run(argv, None) {

@@ -1,0 +1,9 @@
+#λ/clone
+#λ/clone
+echo: bad arg in system call
+echo: bad arg in system call
+read: read error: inappropriate use of fd
+ls: #λ99: file does not exist
+lethe: usage: lethe [-abc] [-k keyfile] [-u user] addr mtpt [path]
+lethe: /nonexistent: file does not exist
+lethe: connection refused
