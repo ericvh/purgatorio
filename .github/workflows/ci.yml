@@ -61,6 +61,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Pushes to main and next save the caches; pull requests restore
+          # them and do not save their own, which took a minute per job
+          # and pushed the base branches' caches out of the quota.
+          save-if: ${{ github.event_name != 'pull_request' }}
       - run: cargo fmt --all --check
       - name: clippy (guests, wasm32-wasip1)
         run: cargo xtask clippy-guests
@@ -82,6 +87,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: clippy (host)
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: build guest binaries into root/
@@ -161,6 +168,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: install QEMU
         run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-arm
       - name: clippy
@@ -183,6 +192,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: install QEMU
         run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-arm
       - name: clippy
@@ -193,7 +204,11 @@ jobs:
         run: >
           cargo clippy -p purg-kernel -p purg-aarch64
           --target aarch64-unknown-none --profile kernel --no-default-features -- -D warnings
+      # The four runs boot side by side: two run the whole sh corpus, the
+      # other two a smoke subset, and each prints where its time went.
       - name: xtask kernel (TCG, GICv2, GICv3, EL2)
+        env:
+          KERNEL_JOBS: 4
         run: cargo xtask kernel
       - name: size report (docs/footprint.md)
         run: cargo xtask size
@@ -207,15 +222,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: loom
         env:
           RUSTFLAGS: --cfg loom -D warnings
           CARGO_TARGET_DIR: target/loom
-        # Pull requests bound the preemptions loom explores (5 takes under a
-        # second; unbounded takes about 20 minutes). Pushes to main run the
-        # models unbounded, after every merge.
+        # Pull requests and pushes to next bound the preemptions loom
+        # explores (5 takes under a second; unbounded takes about half an
+        # hour, the longest job in CI). Pushes to main, which next reaches
+        # by fast-forward, run the models unbounded.
         run: |
-          if [ "${{ github.event_name }}" = pull_request ]; then export LOOM_MAX_PREEMPTIONS=5; fi
+          if [ "${{ github.ref }}" != refs/heads/main ]; then export LOOM_MAX_PREEMPTIONS=5; fi
           cargo test -p purg-core --features std --test loom --release
 
   no-std:
@@ -231,6 +249,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
       - name: build
         run: >
           cargo build --target aarch64-unknown-none
