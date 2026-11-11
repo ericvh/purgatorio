@@ -92,6 +92,23 @@ fn mux_deliver_or_flush() {
     });
 }
 
+/// A reply racing the caller giving up on it: either way the tag is
+/// free afterwards.
+#[test]
+fn mux_discard_or_deliver() {
+    loom::model(|| {
+        let mux = Arc::new(Mux::new());
+        let tag = mux.begin().unwrap();
+        let other = mux.clone();
+        let reader = thread::spawn(move || {
+            other.deliver(tag, b"x".to_vec());
+        });
+        mux.discard(tag);
+        reader.join().unwrap();
+        assert_eq!(mux.outstanding(), 0);
+    });
+}
+
 #[test]
 fn kchan_send_reaches_recv() {
     loom::model(|| {
