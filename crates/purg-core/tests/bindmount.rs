@@ -4,8 +4,8 @@
 
 mod common;
 
-use purg_abi::mode;
-use purg_abi::mount::{MAFTER, MBEFORE, MREPL};
+use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
+use purg_abi::{error, mode};
 use purg_core::Prog;
 use purg_styx::DMDIR;
 
@@ -136,4 +136,58 @@ fn the_current_directory_does_not_follow_a_later_mount() {
     assert_eq!(p.pgrp.dot(), "#R/x");
     // `..` is lexical: it is the parent of the name.
     p.stat("../a/in-a").unwrap();
+}
+
+/// Inferno's `cmount` refuses `MCREATE` when the source is a mount point
+/// that is a union, or that was not mounted with `MCREATE`.
+#[test]
+fn bind_c_of_a_mount_point_needs_one_member_made_with_c() {
+    let mut p = setup();
+    for d in ["#R/z", "#R/w"] {
+        mkdir(&mut p, d);
+    }
+    let emount = |r: purg_core::Result<()>| {
+        assert_eq!(r.unwrap_err().as_str(), error::EISMOUNT);
+    };
+    // `mount fd /root; bind -c /root /`: the mount was made without -c.
+    p.bind("#R/a", "#R/x", MREPL).unwrap();
+    emount(p.bind("#R/x", "#R/y", MREPL | MCREATE));
+    // `mount -c fd /root; bind -c /root /` works.
+    p.bind("#R/a", "#R/z", MREPL | MCREATE).unwrap();
+    p.bind("#R/z", "#R/y", MREPL | MCREATE).unwrap();
+    // A union, even of -c members, cannot be bound with -c.
+    p.bind("#R/b", "#R/z", MAFTER | MCREATE).unwrap();
+    emount(p.bind("#R/z", "#R/w", MBEFORE | MCREATE));
+    // Nor one made with -b on a directory nothing was mounted on.
+    p.bind("#R/a", "#R/w", MBEFORE | MCREATE).unwrap();
+    emount(p.bind("#R/w", "#R/b", MREPL | MCREATE));
+    // Without -c all of these bind.
+    p.bind("#R/x", "#R/y", MREPL).unwrap();
+    p.bind("#R/z", "#R/w", MBEFORE).unwrap();
+    // A directory that is not a mount point binds with -c.
+    p.bind("#R/b", "#R/a", MAFTER | MCREATE).unwrap();
+}
+
+#[test]
+fn bind_errors_are_inferno_strings() {
+    let mut p = setup();
+    mkdir(&mut p, "#R/d");
+    let fd = p.create("#R/f", mode::OWRITE, 0o644).unwrap();
+    p.close(fd).unwrap();
+    let fd = p.create("#R/g", mode::OWRITE, 0o644).unwrap();
+    p.close(fd).unwrap();
+    let err = |r: purg_core::Result<()>| String::from(r.unwrap_err().as_str());
+    // A file cannot be a union.
+    assert_eq!(err(p.bind("#R/g", "#R/f", MAFTER)), error::EISMOUNT);
+    assert_eq!(err(p.bind("#R/g", "#R/f", MBEFORE)), error::EISMOUNT);
+    // A file and a directory do not mix.
+    assert_eq!(err(p.bind("#R/d", "#R/f", MREPL)), error::EISMOUNT);
+    // Bad flags, and both orders at once.
+    assert_eq!(err(p.bind("#R/d", "#R/box", 0x10)), error::EBADARG);
+    assert_eq!(
+        err(p.bind("#R/d", "#R/box", MBEFORE | MAFTER)),
+        error::EBADARG
+    );
+    // A file bound on a file is fine.
+    p.bind("#R/g", "#R/f", MREPL).unwrap();
 }
