@@ -232,9 +232,30 @@ pub mod wasi {
 
     /// Resolves `path` relative to the directory open on `dirfd`. The `.`
     /// preopen always means the prog's current dot.
+    ///
+    /// A relative name that starts with `#` is a device name, as it is for
+    /// `namec`. wasi-libc makes a relative name absolute with its copy of
+    /// the current directory (kept equal to dot by the SDK) and passes it
+    /// relative to the `/` preopen, so `#c/sysname` arrives as
+    /// `usr/me/#c/sysname`: the part after dot is taken back out. An
+    /// absolute name with a `#` element right after dot, or right after
+    /// `/`, is read the same way, as such a file cannot be told apart.
     fn at_path(ctx: &Ctx, dirfd: i32, path: &str) -> Result<String, Error> {
         if path.starts_with('/') {
             return Ok(String::from(path));
+        }
+        if path.starts_with('#') {
+            return Ok(String::from(path));
+        }
+        if dirfd == PREOPEN_ROOT_FD {
+            let dot = ctx.prog.dot();
+            let cwd = dot.trim_start_matches('/');
+            if let Some(rest) = path.strip_prefix(cwd).and_then(|r| r.strip_prefix('/'))
+                && !cwd.is_empty()
+                && rest.starts_with('#')
+            {
+                return Ok(String::from(rest));
+            }
         }
         let base = if dirfd == PREOPEN_DOT_FD {
             ctx.prog.dot()

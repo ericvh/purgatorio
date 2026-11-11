@@ -90,6 +90,7 @@ kernel: ok
 kernel: run /bin/test/wasi.wasm
 ok read
 ok readdir
+ok devname
 ok files
 ok allocate
 ok nolink
