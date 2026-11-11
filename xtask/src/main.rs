@@ -11,7 +11,7 @@
 //!   `aarch64-unknown-none`, boot it in `qemu-system-aarch64` (or `$QEMU`)
 //!   under TCG (or, with `--kvm`, under KVM) and check its serial output
 //!   and exit status.
-//! - `kernel [--kvm] [--names] [--mem SIZE]`: build `purg-kernel` for `aarch64-unknown-none` and
+//! - `kernel [--kvm] [--names] [--mem SIZE] [--smp N]`: build `purg-kernel` for `aarch64-unknown-none` and
 //!   boot it under QEMU TCG with GICv2, GICv3, and GICv3 at EL2 (or, with
 //!   `--kvm`, once under KVM), checking each run's exit status and serial
 //!   output against `crates/purg-kernel/expected.out`. Each run types
@@ -25,7 +25,8 @@
 //!   also shares a fresh directory under `target/kernel-9p/` over
 //!   virtio-9p, which the kernel mounts on `/n/host` and works on, and
 //!   whose final contents are checked here.
-//!   `--mem` sets QEMU's `-m` (512M by default). `KERNEL_MEMSTAT=1` in
+//!   `--mem` sets QEMU's `-m` (512M by default), `--smp` its `-smp` (1 by
+//!   default; the kernel must report that many CPUs online). `KERNEL_MEMSTAT=1` in
 //!   the environment adds `memstat` to the bootargs: the kernel then
 //!   prints `kernel: mem ...` lines about its memory use, which the
 //!   comparison skips.
@@ -707,6 +708,15 @@ fn expand_golden(text: &str, prefix: &str, ws: &Path) -> Result<String> {
 /// As `PROBE_TIMEOUT`: generous, so a slow runner does not fail a good run.
 const KERNEL_TIMEOUT: Duration = Duration::from_secs(300);
 
+impl KernelOpts {
+    /// [`KERNEL_TIMEOUT`], longer with more CPUs: under TCG every vCPU
+    /// is a host thread, and the idle ones poll, so on a busy host a run
+    /// with four CPUs took up to twice as long as one with one.
+    fn timeout(&self) -> Duration {
+        KERNEL_TIMEOUT * (1 + self.smp as u32 / 2)
+    }
+}
+
 /// One QEMU configuration `xtask kernel` boots: a name, the machine
 /// arguments before `-kernel`, and the exception level the kernel must
 /// report booting at.
@@ -787,14 +797,15 @@ const DISK_REBOOT_LINES: &[&str] = &[
 /// boot left, which a first boot cannot do across its own reboot.
 fn disk_reboot(
     k: &KernelRun,
-    mem: &str,
-    kvm: bool,
+    opts: &KernelOpts,
     image: &Path,
     initrd: &str,
     disk_args: &[String],
 ) -> Result<()> {
+    let kvm = opts.kvm;
+    let smp = opts.smp.to_string();
     let mut args: Vec<&str> = k.args.to_vec();
-    args.extend(["-m", mem, "-nographic"]);
+    args.extend(["-m", &opts.mem, "-smp", &smp, "-nographic"]);
     if k.initrd {
         args.extend(["-initrd", initrd]);
     }
@@ -816,7 +827,7 @@ fn disk_reboot(
         k.name,
         args.join(" ")
     );
-    let r = run_qemu(&args, image, KERNEL_TIMEOUT, &[], |_| Ok(()))?;
+    let r = run_qemu(&args, image, opts.timeout(), &[], |_| Ok(()))?;
     let lines: Vec<&str> = r.serial.lines().collect();
     let problem = if !r.status.success() {
         Some(format!("QEMU exited with {}", r.status))
@@ -901,22 +912,26 @@ struct KernelOpts {
     kvm: bool,
     /// QEMU's `-m`.
     mem: String,
+    /// QEMU's `-smp`: the CPUs the kernel must bring up.
+    smp: usize,
 }
 
 impl KernelOpts {
-    /// `--mem SIZE`, and the flags [`image_flags`] takes.
+    /// `--mem SIZE`, `--smp N`, and the flags [`image_flags`] takes.
     fn parse(args: &[String]) -> Option<KernelOpts> {
         let mut mem = String::from("512M");
+        let mut smp = 1;
         let mut rest = Vec::new();
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
                 "--mem" => mem = it.next()?.clone(),
+                "--smp" => smp = it.next()?.parse().ok().filter(|&n| (1..=8).contains(&n))?,
                 _ => rest.push(a.clone()),
             }
         }
         let kvm = image_flags(&rest, true)?;
-        Some(KernelOpts { kvm, mem })
+        Some(KernelOpts { kvm, mem, smp })
     }
 }
 
@@ -926,7 +941,7 @@ impl KernelOpts {
 fn kernel_normalize(serial: &str) -> String {
     let mut out = String::new();
     for l in serial.lines() {
-        if l.starts_with("kernel: mem ") {
+        if l.starts_with("kernel: mem ") || l.starts_with("kernel: smp: ") {
             continue;
         }
         match (l.strip_prefix("kernel: heap: "), l.find(" MiB block ok")) {
@@ -1049,8 +1064,9 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             lethed.port,
             if memstat { " memstat" } else { "" }
         );
+        let smp = opts.smp.to_string();
         let mut args: Vec<&str> = k.args.to_vec();
-        args.extend(["-m", &opts.mem, "-nographic"]);
+        args.extend(["-m", &opts.mem, "-smp", &smp, "-nographic"]);
         if k.initrd {
             args.extend(["-initrd", &initrd]);
         }
@@ -1065,7 +1081,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
         let mut mounted = false;
         let mut mcp = false;
-        let r = run_qemu(&args, &image, KERNEL_TIMEOUT, KERNEL_INPUT, |text| {
+        let r = run_qemu(&args, &image, opts.timeout(), KERNEL_INPUT, |text| {
             if !mounted && text.contains("kernel: net ready\n") {
                 mounted = true;
                 mount_guest(&ws, fwd, "kernel")?;
@@ -1089,6 +1105,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         };
         print!("{}", r.serial);
         let el_line = format!("kernel: booted at EL{}", k.el);
+        let smp_line = format!("kernel: smp: {} cpus online", opts.smp);
         let root_line = if k.initrd {
             "kernel: root from the initrd"
         } else {
@@ -1109,6 +1126,8 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             Some(format!("QEMU exited with {}", r.status))
         } else if !r.serial.lines().any(|l| l == el_line) {
             Some(format!("no `{el_line}` line"))
+        } else if !r.serial.lines().any(|l| l == smp_line) {
+            Some(format!("no `{smp_line}` line"))
         } else if !r.serial.lines().any(|l| l == root_line) {
             Some(format!("no `{root_line}` line"))
         } else if !echoed_typing {
@@ -1135,7 +1154,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         } else if let Err(e) = disks.0.check() {
             Some(format!("the disk: {e}"))
         } else if k.disk_reboot {
-            disk_reboot(k, &opts.mem, kvm, &image, &initrd, &disks.1).err()
+            disk_reboot(k, opts, &image, &initrd, &disks.1).err()
         } else {
             None
         };
@@ -1739,14 +1758,14 @@ fn main() -> ExitCode {
         Some("kernel") => match KernelOpts::parse(&rest) {
             Some(o) => kernel(&o).map(|()| ExitCode::SUCCESS),
             None => Err(String::from(
-                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE]",
+                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE] [--smp N]",
             )),
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
