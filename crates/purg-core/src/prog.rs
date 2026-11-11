@@ -525,6 +525,14 @@ impl Drop for Prog {
         // Close fds first so a parent reading a pipe from this prog sees end
         // of file no later than the exit message.
         self.fgrp = Arc::new(Fgrp::new());
+        // Then the namespace, while the prog is still in the table, as
+        // Inferno's `progexit` closes the pgrp before `delprog`. Releasing
+        // a `#M` Chan clunks its fid and waits for the file server; a
+        // prog that has left the table could not be killed out of that
+        // wait, and its thread would outlive it (issue #110).
+        let empty = self.pgrp.exited();
+        self.proc.set_pgrp(empty.clone());
+        self.pgrp = empty;
         self.kernel.srv.remove_server(self.pid);
         self.kernel
             .procs

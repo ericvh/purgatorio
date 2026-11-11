@@ -1,14 +1,14 @@
 //! auxi/cpuslave [command [arg...]]: the remote half of `cpu`, started by
-//! `auxi/rstyxd` with the caller's namespace on `/n/client`, in the
-//! session's own copy of the namespace. It binds the
-//! caller's `/dev` before this system's, so that the console and the
+//! `auxi/rstyxd` with the caller's namespace on `/n/client`. In a copy of
+//! the session's namespace, it binds the caller's `/dev` before this
+//! system's, so that the console and the
 //! other device files the caller has are the ones `command` (default
 //! `sh`) opens, runs the command with the standard input, output and
 //! error it was given, and exits with the command's status. One word is a
 //! command line for `sh`; several are one command.
 
 use purgatorio::abi::mount::MBEFORE;
-use purgatorio::abi::pctl::NEWFD;
+use purgatorio::abi::pctl::{FORKNS, NEWFD};
 use purgatorio::{Context, Error};
 
 const CLIENT: &str = "/n/client/dev";
@@ -20,10 +20,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         return Err(Error::from("usage: auxi/cpuslave [command [arg...]]"));
     }
     purgatorio::stat(CLIENT).map_err(|e| Error(format!("{CLIENT}: {e}")))?;
-    // The namespace is the session's own copy (rstyxd starts the session
-    // with FORKNS), so the bind needs no fork here. A fork here, with the
-    // bind in it, leaves the mount's reader behind in the kernel when the
-    // session ends.
+    purgatorio::pctl(FORKNS, &[])?;
     purgatorio::bind(CLIENT, "/dev", MBEFORE).map_err(|e| Error(format!("bind /dev: {e}")))?;
     let argv: Vec<String> = match words {
         [] => vec![String::from("sh")],
