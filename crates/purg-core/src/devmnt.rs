@@ -624,6 +624,15 @@ impl Dev for DevMnt {
         Session::spec_of(c)
     }
 
+    /// The attached root keeps the name `attach` gave it, `#M` and the
+    /// mount id, until it is resolved by name: the mount table then gives
+    /// it the path (Inferno's test of `#M`).
+    fn mount_source(&self, c: &Chan) -> Option<String> {
+        let f = file(c).ok()?;
+        let root = alloc::format!("#M{}", f.session.id);
+        (c.name == root).then(|| f.session.fd.name.clone())
+    }
+
     fn walk(&self, c: &Chan, name: &str) -> Result<Walked> {
         let f = file(c)?;
         let newfid = f.session.alloc_fid();

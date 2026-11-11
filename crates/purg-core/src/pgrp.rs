@@ -5,7 +5,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use purg_abi::{error, mount};
 use purg_platform::sync::{Mutex, RwLock};
@@ -240,6 +240,7 @@ impl Pgrp {
         let mut to = vec![Member {
             chan: Arc::new(to),
             flags,
+            id: 0,
         }];
         if let Some(rest) = rest {
             let order = match flags & mount::MORDER {
@@ -249,6 +250,7 @@ impl Pgrp {
             to.extend(rest.iter().skip(1).map(|m| Member {
                 chan: m.chan.clone(),
                 flags: order,
+                id: 0,
             }));
         }
         // Chans released by this bind are dropped after the lock: dropping a
@@ -265,12 +267,18 @@ impl Pgrp {
                     vec![Member {
                         chan: from.clone(),
                         flags: 0,
+                        id: next_mount_id(),
                     }]
                 };
                 mounts.push(Mount { from, to });
                 mounts.len() - 1
             }
         };
+        // Ids are taken under the lock, in the order `cmount` takes them:
+        // the new member, then the union members that follow it.
+        for member in &mut to {
+            member.id = next_mount_id();
+        }
         let m = &mut mounts[idx];
         match flags & mount::MORDER {
             mount::MBEFORE => drop(m.to.splice(0..0, to)),
@@ -475,35 +483,48 @@ impl Pgrp {
         Ok(cur)
     }
 
-    /// The namespace as `bind` and `mount` commands, then `cd`, in the order
-    /// the unions were created. The underlying directory of a union is not
-    /// listed. Flags are `-a`, `-b`, `-c` and combinations; replace has none.
+    /// The namespace as `bind` and `mount` commands, then `cd`, as
+    /// Inferno's `/prog/n/ns`: one line for each bind or mount, in the
+    /// order they were made (Inferno's `mountid`), so that running the
+    /// lines again builds the same unions. The underlying directory of a
+    /// union is not listed. Flags are `-a`, `-b`, `-c` and combinations;
+    /// replace has none.
+    ///
+    /// A member is shown as a mount only when it is the root a mount
+    /// attached, as Inferno decides from the Chan's name being `#M`: its
+    /// source is the file the 9P conversation is on, and the attach name
+    /// follows. A directory reached through a mounted tree and bound
+    /// elsewhere is a bind of its name.
     pub fn namespace(&self) -> String {
         let mounts = self.mounts.read();
+        let mut lines: Vec<(&Member, &Mount)> = mounts
+            .iter()
+            .flat_map(|m| {
+                m.to.iter()
+                    .filter(|member| !m.is_original(member))
+                    .map(move |member| (member, m))
+            })
+            .collect();
+        lines.sort_by_key(|&(member, _)| member.id);
         let mut out = String::new();
-        for m in mounts.iter() {
-            for member in &m.to {
-                if m.is_original(member) {
-                    continue;
-                }
-                let new = sh_quote(&member.chan.name);
-                let old = sh_quote(&m.from.name);
-                let fl = flag_text(member.flags);
-                let cmd = if member.chan.dev.dc() == 'M' {
-                    let spec = sh_quote(&member.chan.dev.aname(&member.chan));
-                    if fl.is_empty() {
-                        alloc::format!("mount {new} {old} {spec}\n")
-                    } else {
-                        alloc::format!("mount {fl} {new} {old} {spec}\n")
-                    }
-                } else if fl.is_empty() {
-                    alloc::format!("bind {new} {old}\n")
-                } else {
-                    alloc::format!("bind {fl} {new} {old}\n")
-                };
-                out.push_str(&cmd);
+        for (member, m) in lines {
+            let c = &member.chan;
+            let old = sh_quote(&m.from.name);
+            let mut fl = flag_text(member.flags);
+            if !fl.is_empty() {
+                fl.push(' ');
             }
+            let cmd = match c.dev.mount_source(c) {
+                Some(src) => {
+                    let src = sh_quote(&src);
+                    let spec = sh_quote(&c.dev.aname(c));
+                    alloc::format!("mount {fl}{src} {old} {spec}\n")
+                }
+                None => alloc::format!("bind {fl}{} {old}\n", sh_quote(&c.name)),
+            };
+            out.push_str(&cmd);
         }
+        drop(mounts);
         out.push_str(&alloc::format!("cd {}\n", sh_quote(&self.dot())));
         out
     }
@@ -524,6 +545,13 @@ impl Pgrp {
             None => c,
         }
     }
+}
+
+/// The next id for a mount-table member: Inferno's `mountid`, shared by
+/// every namespace so that a fork keeps its parent's order.
+fn next_mount_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 fn flag_text(flags: u32) -> String {
