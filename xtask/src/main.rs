@@ -5,6 +5,8 @@
 //!   tests as `root/bin/test/<name>.wasm`, each with its function names
 //!   beside it in `<name>.names` (`docs/debug.md`).
 //! - `lethed [-- lethed args]`: build `lethed` and run it (`docs/lethe.md`).
+//! - `lethe-perf [--reps N] [--parts ...]`: the Lethe and Styx study
+//!   (`docs/lethe-perf.md`); not a test.
 //! - `run-emu [-- emu args]`: `build-root`, build `emu`, and run it on
 //!   `root/` with stdin, stdout and stderr passed through.
 //! - `probe [--kvm] [--names]`: `build-root`, build `purg-probe` for
@@ -61,6 +63,7 @@
 //!   denying warnings.
 
 mod disk;
+mod letheperf;
 mod phases;
 mod size;
 mod tar;
@@ -1821,6 +1824,7 @@ fn main() -> ExitCode {
             };
             run_lethed(&lethed_args)
         }
+        Some("lethe-perf") => letheperf::cmd(&rest).map(|()| ExitCode::SUCCESS),
         Some("initrd") => match image_flags(&rest, false) {
             Some(_) => initrd().map(|_| ExitCode::SUCCESS),
             None => Err(String::from("usage: cargo xtask initrd [--names]")),
@@ -1842,7 +1846,7 @@ fn main() -> ExitCode {
         Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
