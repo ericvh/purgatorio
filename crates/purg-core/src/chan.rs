@@ -19,6 +19,10 @@ pub type Aux = Option<Arc<dyn Any + Send + Sync>>;
 pub struct Member {
     pub chan: Arc<Chan>,
     pub flags: u32,
+    /// When the member was added to its mount table, as Inferno's
+    /// `mountid`: `ns` lists binds and mounts in this order. A forked
+    /// namespace keeps its parent's ids.
+    pub id: u64,
 }
 
 impl Member {

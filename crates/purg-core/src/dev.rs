@@ -66,6 +66,14 @@ pub trait Dev: Send + Sync {
         String::new()
     }
 
+    /// For the root a mount attached (`#M`), the name of the file the 9P
+    /// conversation is on, which `ns` shows as the mount's source. `None`
+    /// for every other Chan, including the files walked to below that
+    /// root: `ns` shows those as binds.
+    fn mount_source(&self, _c: &Chan) -> Option<String> {
+        None
+    }
+
     /// Whether a read (`write == false`) or write would not block.
     fn ready(&self, _c: &Chan, _write: bool) -> bool {
         true
