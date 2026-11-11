@@ -154,9 +154,11 @@ impl Server {
             revoked: trust.revoked.as_deref(),
             now: env.now,
         };
-        // There is no unauthenticated mode: no key, nobody.
+        // There is no unauthenticated mode: no key, nobody, refused as
+        // an export that trusts nothing refuses (`docs/auth.md`, "Trust
+        // by default").
         if !policy.requires_auth() {
-            return Err(FAILED);
+            return Err(purg_abi::auth::NO_TRUST);
         }
         let signed = t.message();
         match t.kind {
