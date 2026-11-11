@@ -58,7 +58,7 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     name: fmt and lints
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
@@ -232,7 +232,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.loom == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/toolchain
