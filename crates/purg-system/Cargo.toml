@@ -1,0 +1,17 @@
+[package]
+name = "purg-system"
+description = "The bare-metal images' boot namespace and program runner, shared by purg-kernel and purg-probe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+purg-abi.workspace = true
+purg-core.workspace = true
+purg-platform.workspace = true
+purg-styx.workspace = true
+purg-vm.workspace = true
+
+[lints]
+workspace = true

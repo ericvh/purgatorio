@@ -235,13 +235,13 @@ jobs:
         run: >
           cargo build --target aarch64-unknown-none
           -p purg-abi -p purg-auth -p purg-lethe -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
-          -p purg-fs
+          -p purg-fs -p purg-system
           -p purg-aarch64
       - name: clippy
         run: >
           cargo clippy --target aarch64-unknown-none
           -p purg-abi -p purg-auth -p purg-lethe -p purg-styx -p purg-platform -p purg-core -p purg-vm -p purg-vm-wasmi
-          -p purg-fs
+          -p purg-fs -p purg-system
           -p purg-aarch64
           -- -D warnings
 
