@@ -19,6 +19,12 @@ thread_local! {
     static CURRENT_PID: Cell<u32> = const { Cell::new(0) };
 }
 
+/// The pid of the prog the calling thread runs or works for, or 0 for a
+/// thread with none (the epoch ticker, a network relay).
+pub fn current_pid() -> u32 {
+    CURRENT_PID.with(Cell::get)
+}
+
 /// The emu's console: the process's stdin and stdout.
 struct StdConsole;
 
@@ -96,7 +102,7 @@ impl Platform for Emu {
     }
 
     fn current_pid(&self) -> u32 {
-        CURRENT_PID.with(Cell::get)
+        current_pid()
     }
 
     fn set_current_pid(&self, pid: u32) {

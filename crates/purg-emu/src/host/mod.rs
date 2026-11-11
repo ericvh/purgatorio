@@ -21,6 +21,6 @@ compile_error!("purg-emu supports Linux and macOS hosts");
 pub use net::{HostNet, start_command};
 pub use os::{exact_name_exists, hidden_entry, memory_usage};
 pub use unix::{
-    entropy, error_string, file_id, group_name, host_name, owner_name, read_at, set_console_raw,
-    user_name, write_at,
+    entropy, error_string, exit, file_id, group_name, host_name, owner_name, read_at,
+    report_aborts, set_console_raw, user_name, write_at,
 };

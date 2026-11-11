@@ -7,21 +7,29 @@
 //! after it and taking creates, `#c` before `/dev`, `#e` on `/env` and `#p`
 //! on `/prog`), then runs `/bin/<cmd>.wasm` as the first prog, or
 //! `/bin/emuinit.wasm` when no command is given. The emu exits when the first
-//! prog does: with 0 when its exit status is empty and 1 otherwise.
+//! prog does: with 0 when its exit status is empty and 1 otherwise. Other
+//! progs may still be running then, so the process ends without the C
+//! library's exit handlers (`host::exit`).
+//!
+//! A panic is reported with its thread, its prog and a backtrace, whatever
+//! `RUST_BACKTRACE` says, and an abort from C with its thread and prog
+//! (`host::report_aborts`): the emu's tests run it with its standard error
+//! captured, and a crash has to explain itself there.
 //!
 //! `--modules` sets the system's module policy (`docs/signing.md`) before
 //! the first prog is loaded, with the trust lists read in the boot
 //! namespace.
 
+use std::backtrace::Backtrace;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::ExitCode;
 use std::sync::Arc;
 
 use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_core::devroot::StaticTree;
 use purg_core::modsig::Level;
 use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
-use purg_emu::{devfs, platform};
+use purg_emu::{devfs, host, platform};
 use purg_vm::{Ctx, Engine};
 
 struct Options {
@@ -31,11 +39,11 @@ struct Options {
     argv: Vec<String>,
 }
 
-fn usage() -> ExitCode {
+fn usage() -> u8 {
     eprintln!(
         "usage: emu [-r root] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
     );
-    ExitCode::from(2)
+    2
 }
 
 fn parse_args() -> Option<Options> {
@@ -109,7 +117,30 @@ fn engine(name: &str) -> Result<Arc<dyn Engine>, Error> {
     }
 }
 
-fn main() -> ExitCode {
+/// Reports a panic in one write, so that panics on several threads do
+/// not interleave: the thread, the prog it ran or worked for (0 for
+/// none), the message and place, and a backtrace.
+fn report_panics() {
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let report = format!(
+            "emu: panic on thread '{}', prog {}: {info}\n{}\n",
+            thread.name().unwrap_or("?"),
+            platform::current_pid(),
+            Backtrace::force_capture()
+        );
+        let _ = std::io::stderr().write_all(report.as_bytes());
+    }));
+}
+
+fn main() {
+    report_panics();
+    host::report_aborts();
+    host::exit(run());
+}
+
+/// Runs the emu; returns the process's exit status.
+fn run() -> u8 {
     let Some(opts) = parse_args() else {
         return usage();
     };
@@ -125,7 +156,7 @@ fn main() -> ExitCode {
         Ok(v) => v,
         Err(e) => {
             eprintln!("emu: {e}");
-            return ExitCode::FAILURE;
+            return 1;
         }
     };
     let ctx = Ctx::new(prog, argv, engine);
@@ -139,11 +170,11 @@ fn main() -> ExitCode {
         Err(e) => Err(Error::from(format!("no free procs: {e}"))),
     };
     match res {
-        Ok(status) if status.is_empty() => ExitCode::SUCCESS,
-        Ok(_) => ExitCode::FAILURE,
+        Ok(status) if status.is_empty() => 0,
+        Ok(_) => 1,
         Err(e) => {
             eprintln!("emu: {e}");
-            ExitCode::FAILURE
+            1
         }
     }
 }
