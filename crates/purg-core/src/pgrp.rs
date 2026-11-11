@@ -137,6 +137,26 @@ impl Pgrp {
         }))
     }
 
+    /// An empty namespace on the same devices, rooted at `#/`, for a prog
+    /// that is exiting: it replaces the prog's namespace so that what
+    /// that held is released before the prog leaves the prog table.
+    pub fn exited(&self) -> Arc<Pgrp> {
+        let root = match self.devtab.attach('/', "") {
+            Ok(mut c) => {
+                c.name = String::from("/");
+                Arc::new(c)
+            }
+            Err(_) => self.root.clone(),
+        };
+        Arc::new(Pgrp {
+            devtab: self.devtab.clone(),
+            root,
+            mounts: RwLock::new(Vec::new()),
+            dot: Mutex::new(Dot::root()),
+            nodevs: AtomicBool::new(true),
+        })
+    }
+
     /// Forbids attaching devices other than `#e #s #| #M` (`NODEVS`).
     pub fn set_nodevs(&self) {
         self.nodevs.store(true, Ordering::Relaxed);
