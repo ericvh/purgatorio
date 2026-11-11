@@ -434,9 +434,10 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
     let host = system::host9p::find(&fdt);
     let blks = system::disk::find(&fdt);
     let rtc = info.rtc.map(|r| r.base as usize);
-    let failed = system::start(archive, cons, rtc, net, host, blks, mode);
+    let (failed, what) = system::start(archive, cons, rtc, net, host, blks, mode);
     if failed != 0 {
-        fail(format_args!("{failed} failed"));
+        // The one line a failed run always ends with: what was counted.
+        fail(format_args!("{failed} failed: {}", what));
     }
     println!("kernel: ok");
     exit::exit(0)

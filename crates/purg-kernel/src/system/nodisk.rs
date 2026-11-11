@@ -37,7 +37,7 @@ impl System {
     }
 
     pub fn disk_persist(&self, _disks: &Disks, _bound: Option<bool>) -> usize {
-        self.say("kernel: FAIL built without the blk feature");
+        self.failure("kernel", "built without the blk feature");
         1
     }
 }

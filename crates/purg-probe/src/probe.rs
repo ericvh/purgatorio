@@ -160,7 +160,12 @@ fn script(platform: MetalPlatform) -> Result<usize, Error> {
         && let Err(e) = serve_export(&sys)
     {
         println!("probe: net fail {e}");
+        sys.note_failure(&format!("net: {e}"));
         failed += 1;
+    }
+    if failed != 0 {
+        // Before the final count: what was counted.
+        println!("probe: failed: {}", sys.failures(failed));
     }
     Ok(failed)
 }
