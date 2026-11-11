@@ -160,11 +160,12 @@ impl System {
         (HEAP.memory().0, SCHED.live())
     }
 
-    /// Runs the conformance guests and the sh corpus, then checks that
-    /// they left no kernel thread and no more than [`LEAK_LIMIT`] of heap
-    /// behind; returns the number that failed. With `memstat`, prints
-    /// [`System::memstat`] after each.
-    pub fn run_tests(&self, memstat: bool) -> usize {
+    /// Runs the conformance guests and the sh corpus (only the scripts
+    /// named in `sh`, a comma-separated list, when given), then checks
+    /// that they left no kernel thread and no more than [`LEAK_LIMIT`] of
+    /// heap behind; returns the number that failed. With `memstat`,
+    /// prints [`System::memstat`] after each.
+    pub fn run_tests(&self, memstat: bool, sh: Option<&str>) -> usize {
         let mut failed = 0;
         let (heap, threads) = self.in_use();
         if memstat {
@@ -191,7 +192,12 @@ impl System {
                 return failed + 1;
             }
         };
-        for base in names.iter().filter_map(|n| n.strip_suffix(".sh")) {
+        let wanted = |base: &str| sh.is_none_or(|l| l.split(',').any(|n| n == base));
+        for base in names
+            .iter()
+            .filter_map(|n| n.strip_suffix(".sh"))
+            .filter(|b| wanted(b))
+        {
             let script = format!("{SH_CORPUS}/{base}.sh");
             self.say(&format!("kernel: sh {script}"));
             let want = self
@@ -233,8 +239,12 @@ impl System {
 pub enum Mode {
     /// Run the conformance guests and the sh corpus (`bootargs` has `test`).
     /// `memstat` (`bootargs` has `memstat` too) prints a line of heap
-    /// figures after each.
-    Test { memstat: bool },
+    /// figures after each. `sh=a,b` (`sh`) runs only those corpus
+    /// scripts.
+    Test {
+        memstat: bool,
+        sh: Option<&'static str>,
+    },
     /// `sh -l` on the console.
     Interactive,
     /// The second boot of `xtask kernel` (`bootargs` has `diskcheck`):
@@ -281,8 +291,8 @@ pub fn start(
         let result = match booted {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
             Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref()), sys.bind_disk(&disks)) {
-                (Mode::Test { memstat }, host, bound) => {
-                    let failed = sys.run_tests(memstat)
+                (Mode::Test { memstat, sh }, host, bound) => {
+                    let failed = sys.run_tests(memstat, sh)
                         + sys.host9p_tests(host, p9.as_deref())
                         + sys.disk_tests(&disks, bound)
                         + sys.net_tests(&checks);

@@ -7,7 +7,7 @@ use core::alloc::Layout;
 use core::arch::asm;
 use core::fmt::{self, Write};
 
-use purg_aarch64::board::{FREE_REGIONS, board, exit_method, free_regions, has_bootarg};
+use purg_aarch64::board::{FREE_REGIONS, board, bootarg, exit_method, free_regions, has_bootarg};
 use purg_aarch64::boot::{self, DtbError, find_dtb};
 use purg_aarch64::console::{self, Input, Raw};
 use purg_aarch64::dtb::{self, BootInfo, Fdt};
@@ -405,6 +405,7 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         (_, true) => Mode::DiskCheck,
         (true, false) => Mode::Test {
             memstat: has_bootarg(&info, "memstat"),
+            sh: bootarg(&info, "sh"),
         },
         (false, false) => Mode::Interactive,
     };
