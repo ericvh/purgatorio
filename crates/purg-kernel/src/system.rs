@@ -117,6 +117,9 @@ const LEAK_LIMIT: u64 = 1 << 20;
 /// The `sh` scripts; each `x.sh` runs with its output compared with `x.out`.
 const SH_CORPUS: &str = "/lib/test/sh";
 
+/// The benchmark suite's script (`cargo xtask bench`, `docs/perf.md`).
+const BENCH_SCRIPT: &str = "/lib/bench/bench.sh";
+
 impl System {
     /// Prints `kernel: <v>` or `kernel: FAIL <v>`, counting a failure.
     pub(crate) fn verdict(&self, failed: &mut usize, v: core::result::Result<String, String>) {
@@ -227,6 +230,22 @@ impl System {
         failed
     }
 
+    /// The benchmark suite (`bootargs` has `bench`; `cargo xtask bench`):
+    /// `sh /lib/bench/bench.sh` with its output on the console.
+    pub fn bench(&self) -> usize {
+        match self.run(&["sh", BENCH_SCRIPT], None) {
+            Ok(s) if s.is_empty() => 0,
+            Ok(s) => {
+                self.say(&format!("kernel: bench: {s}"));
+                1
+            }
+            Err(e) => {
+                self.say(&format!("kernel: bench: {e}"));
+                1
+            }
+        }
+    }
+
     /// Boots like the emu: `emuinit` runs `sh -l` on the console.
     pub fn interactive(&self) -> Result<String, Error> {
         memstat::sampler();
@@ -247,6 +266,8 @@ pub enum Mode {
     },
     /// `sh -l` on the console.
     Interactive,
+    /// The benchmark suite (`bootargs` has `bench`).
+    Bench,
     /// The second boot of `xtask kernel` (`bootargs` has `diskcheck`):
     /// only check that the disk holds what the first boot left.
     DiskCheck,
@@ -302,6 +323,7 @@ pub fn start(
                     failed
                 }
                 (Mode::DiskCheck, _, bound) => sys.disk_persist(&disks, bound),
+                (Mode::Bench, _, _) => sys.bench(),
                 (Mode::Interactive, _, _) => match sys.interactive() {
                     Ok(s) if s.is_empty() => 0,
                     Ok(s) => {

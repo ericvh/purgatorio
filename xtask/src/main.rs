@@ -48,6 +48,12 @@
 //!   features (TLS, virtio-9p, networking).
 //!   `size --elf FILE` reports on a kernel built earlier.
 //!   See `docs/footprint.md`.
+//! - `bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=wasmtime,wasmi]
+//!   [--rounds N] [--boots N] [--features F,...] [--profile P] [--label L]
+//!   [--out FILE]`: run the benchmark suite (`root/lib/bench/bench.sh`,
+//!   `docs/perf.md`) on a release emu with each engine and on the kernel
+//!   under KVM (or TCG), print each benchmark's median and spread, and
+//!   write the samples to `target/bench/results.json`.
 //! - `small`: build the experimental `no_std` and multi-call guests in
 //!   `appl/small` (its own workspace) and compare their sizes with the
 //!   `std` commands in `root/bin`.
@@ -60,6 +66,7 @@
 //!   `wasm32-wasip1`, and on the experimental guests in `appl/small`,
 //!   denying warnings.
 
+mod bench;
 mod disk;
 mod phases;
 mod size;
@@ -1841,8 +1848,9 @@ fn main() -> ExitCode {
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
         Some("small") => small().map(|()| ExitCode::SUCCESS),
+        Some("bench") => bench::cmd(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
