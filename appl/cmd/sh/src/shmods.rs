@@ -80,6 +80,42 @@ fn usage(form: &str) -> Fail {
     Fail::raise("usage", &format!("usage: {form}"))
 }
 
+/// `pctl flag... [fd...]`, from sh-std(1): changes this shell's prog as
+/// `sys->pctl` does. The flags are `newfd`, `forkfd`, `newns`, `forkns`,
+/// `newpgrp` and `nodevs`; the fds are the ones `newfd` keeps.
+fn pctl(argv: &[String]) -> Result<String, Fail> {
+    let (flags, keep) = pctl_args(argv)?;
+    purgatorio::pctl(flags, &keep).map_err(|e| Fail::plain(&format!("pctl: {e}")))?;
+    Ok(String::new())
+}
+
+/// The flags and fds of a `pctl` command.
+fn pctl_args(argv: &[String]) -> Result<(u32, Vec<i32>), Fail> {
+    use purgatorio::abi::pctl::*;
+    if argv.len() < 2 {
+        return Err(usage("pctl option... [fdnum...]"));
+    }
+    let (mut flags, mut keep) = (0, Vec::new());
+    for w in &argv[1..] {
+        flags |= match w.as_str() {
+            "newfd" => NEWFD,
+            "forkfd" => FORKFD,
+            "newns" => NEWNS,
+            "forkns" => FORKNS,
+            "newpgrp" => NEWPGRP,
+            "nodevs" => NODEVS,
+            _ => match w.parse::<i32>() {
+                Ok(fd) if fd >= 0 => {
+                    keep.push(fd);
+                    0
+                }
+                _ => return Err(Fail::raise("usage", &format!("pctl: unknown flag {w}"))),
+            },
+        };
+    }
+    Ok((flags, keep))
+}
+
 /// Limbo's `int s`: the leading decimal number, or 0.
 fn int(s: &str) -> i64 {
     let (neg, d) = match s.strip_prefix('-') {
@@ -142,6 +178,7 @@ impl Shell {
     /// Runs command `argv[0]` of module `m`.
     pub(crate) fn mod_cmd(&mut self, m: Module, argv: &[String], io: &Io) -> Flow<String> {
         let res: Result<String, Ex> = match m {
+            Module::Std if argv[0] == "pctl" => pctl(argv).map_err(Ex::from),
             Module::Std => return self.std_cmd(argv),
             Module::Expr => crate::num::ntest(argv, false).map_err(Ex::from),
             Module::Mpexpr => crate::num::ntest(argv, true).map_err(Ex::from),
@@ -487,5 +524,20 @@ mod tests {
         assert_eq!(int("12abc"), 12);
         assert_eq!(int("-3"), -3);
         assert_eq!(int("x"), 0);
+    }
+
+    #[test]
+    fn pctl_flags() {
+        use purgatorio::abi::pctl::*;
+        let v = |s: &[&str]| s.iter().map(|s| String::from(*s)).collect::<Vec<_>>();
+        let (flags, keep) = pctl_args(&v(&["pctl", "newpgrp", "forkns", "newfd", "0", "2"]))
+            .ok()
+            .unwrap();
+        assert_eq!(flags, NEWPGRP | FORKNS | NEWFD);
+        assert_eq!(keep, [0, 2]);
+        let bad = pctl_args(&v(&["pctl", "forkenv"])).err().unwrap();
+        assert_eq!(bad.name.as_deref(), Some("usage"));
+        assert_eq!(bad.msg, "pctl: unknown flag forkenv");
+        assert!(pctl_args(&v(&["pctl"])).is_err());
     }
 }

@@ -1,0 +1,12 @@
+group running
+kill status 
+first gone
+second gone
+shell survives
+leader already exited
+usage: pctl option... [fdnum...]
+usage status usage
+pctl: unknown flag bogus
+unknown status usage
+forkns bind
+bind stayed in the sub-shell

@@ -319,6 +319,12 @@ impl Shell {
     /// functions, if it has any, as Inferno's sh shares them with the
     /// shells it forks.
     pub(crate) fn sh_argv(&self) -> Vec<String> {
+        self.sh_argv_with(false)
+    }
+
+    /// As `sh_argv`; with `locals`, the prelude also sets this shell's
+    /// local variables, as `@` gives its sub-shell a copy of them.
+    fn sh_argv_with(&self, locals: bool) -> Vec<String> {
         let mut prelude = String::new();
         if !self.loaded.is_empty() {
             let names: Vec<String> = self.loaded.iter().map(|l| quote(l.name())).collect();
@@ -333,11 +339,42 @@ impl Shell {
         for (name, body) in fns {
             prelude.push_str(&format!("fn {} {body}\n", quote(name)));
         }
+        if locals {
+            let mut names: Vec<&String> = self.locals.iter().collect();
+            names.sort();
+            for name in names {
+                let value: Vec<String> = self.var(name).iter().map(|v| quote(v)).collect();
+                prelude.push_str(&format!("{name} := {}\n", value.join(" ")));
+            }
+        }
         let mut argv = vec![String::from("sh")];
         if !prelude.is_empty() {
             argv.extend([String::from("-P"), prelude]);
         }
         argv
+    }
+
+    /// `@ command`: runs `command` in a sub-shell, a new prog with copies
+    /// of this shell's variables, fds, environment and namespace, so `cd`,
+    /// assignments, `load`, `bind` and `mount` in it do not change this
+    /// shell, and waits for it. Its status is the command's.
+    fn subshell(&mut self, argv: &[String], io: &Io) -> Result<String, Error> {
+        if argv.len() < 2 {
+            return Err(Error::from("usage: @ command"));
+        }
+        let words: Vec<String> = argv[1..]
+            .iter()
+            .map(|w| match w.starts_with('{') && w.ends_with('}') {
+                true => w.clone(),
+                false => quote(w),
+            })
+            .collect();
+        let mut args = self.sh_argv_with(true);
+        args.extend([String::from("-c"), words.join(" "), String::from("--")]);
+        args.extend(self.var("*"));
+        let flags = pctl::NEWFD | pctl::FORKNS | pctl::FORKENV;
+        let pid = purgatorio::spawn(SH, &args, flags, &io.fdmap())?;
+        Ok(self.wait_for(&[pid]).pop().unwrap_or_default())
     }
 
     fn spawn_simple(&mut self, cmd: &Cmd, io: &Io) -> Result<u32, Error> {
@@ -481,6 +518,10 @@ impl Shell {
                 Ok(())
             }
             "load" => self.load(&argv[1..], io),
+            "@" => match self.subshell(argv, io) {
+                Ok(status) => return Ok(status),
+                Err(e) => Err(e),
+            },
             _ => unreachable!("not a builtin"),
         };
         Ok(match res {
@@ -959,10 +1000,12 @@ fn concat(a: Vec<Glob>, b: Vec<Glob>) -> Result<Vec<Glob>, Error> {
 }
 
 /// The list builtins of `load std`: `${hd list}`, `${tl list}`,
-/// `${index n list}`, `${quote list}` and `${unquote arg}`.
+/// `${index n list}`, `${quote list}` and `${unquote arg}`, and `${pid}`,
+/// this prog's pid.
 fn std_subst(argv: &[String]) -> Result<Vec<String>, Error> {
     let list = &argv[1..];
     Ok(match argv[0].as_str() {
+        "pid" => vec![purgatorio::pid().to_string()],
         "hd" => list.first().cloned().into_iter().collect(),
         "tl" => list.iter().skip(1).cloned().collect(),
         "index" => {
@@ -1037,7 +1080,7 @@ fn head_name(w: &Word) -> Option<&str> {
 }
 
 fn is_builtin(name: &str) -> bool {
-    matches!(name, "cd" | "exit" | "run" | "wait" | "load")
+    matches!(name, "cd" | "exit" | "run" | "wait" | "load" | "@")
 }
 
 /// `~`: whether the whole of `word` matches `pat`. The pattern has the

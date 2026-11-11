@@ -62,7 +62,9 @@ impl Module {
     /// The commands the module adds.
     pub fn cmds(self) -> &'static [&'static str] {
         match self {
-            Module::Std => &["if", "while", "for", "and", "or", "not", "~", "fn", "raise"],
+            Module::Std => &[
+                "if", "while", "for", "and", "or", "not", "~", "fn", "raise", "pctl",
+            ],
             Module::Expr | Module::Mpexpr => &["ntest"],
             Module::String => crate::string::CMDS,
             Module::Regex => &["match"],
@@ -88,7 +90,7 @@ impl Module {
     /// The `${}` substitutions the module adds.
     pub fn substs(self) -> &'static [&'static str] {
         match self {
-            Module::Std => &["hd", "tl", "index", "quote", "unquote"],
+            Module::Std => &["hd", "tl", "index", "quote", "unquote", "pid"],
             Module::Expr | Module::Mpexpr => &["expr"],
             Module::String => crate::string::SUBSTS,
             Module::Regex => &["re"],

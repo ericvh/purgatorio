@@ -8,9 +8,10 @@
 //! `$status`, `$apid`), `` `{command} ``
 //! substitution, `${expr ...}` and comments. Variables are exported through
 //! `/env` unless declared with `:=`. Builtins: `cd`, `exit`, `run`, `wait`,
-//! `load`. `load std` adds `if`, `while`, `for`, `and`, `or`, `not`, `~`,
-//! `fn`, `raise` and `${hd}`, `${tl}`, `${index}`, `${quote}` and
-//! `${unquote}`. `load expr` and `load mpexpr` add `${expr}` and `ntest`.
+//! `load` and `@`, which runs a command in a sub-shell with its own copies
+//! of the variables, environment, fds and namespace. `load std` adds `if`,
+//! `while`, `for`, `and`, `or`, `not`, `~`, `fn`, `raise`, `pctl` and
+//! `${hd}`, `${tl}`, `${index}`, `${quote}`, `${unquote}` and `${pid}`. `load expr` and `load mpexpr` add `${expr}` and `ntest`.
 //! `load string` adds the sh-string(1) builtins and `load regex` adds
 //! `match` and `${re}`. `load arg`, `csv`, `echo`, `file2chan`, `mload`,
 //! `sexprs` and `test` add the builtins of their sh-*(1) pages. All of
