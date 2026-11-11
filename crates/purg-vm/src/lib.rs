@@ -165,6 +165,28 @@ pub fn module_name(path: &str) -> &str {
     base.strip_suffix(".wasm").unwrap_or(base)
 }
 
+/// Whether the prog may grow a linear memory from `current` to `desired`
+/// bytes, charging it if so: the engines' resource limiters call this for
+/// `memory.grow` and for the memories a module starts with. A refused
+/// `memory.grow` returns -1 to the guest; a refused initial memory fails
+/// the instantiation. See `memlimit` in `devprog` and `docs/abi.md`.
+pub fn memory_growing(ctx: &Ctx, current: usize, desired: usize) -> bool {
+    ctx.prog
+        .kernel
+        .procs
+        .charge_mem(&ctx.prog.proc, current as u64, desired as u64)
+}
+
+/// [`memory_growing`] for a table growing from `current` to `desired`
+/// elements, charged at [`purg_core::prog::TABLE_ELEM_BYTES`] each.
+pub fn table_growing(ctx: &Ctx, current: usize, desired: usize) -> bool {
+    let bytes = |n: usize| (n as u64).saturating_mul(purg_core::prog::TABLE_ELEM_BYTES);
+    ctx.prog
+        .kernel
+        .procs
+        .charge_mem(&ctx.prog.proc, bytes(current), bytes(desired))
+}
+
 /// Runs an already loaded module in `ctx`'s prog until it exits. Returns the
 /// Inferno exit status (`""` is success), or an error prefixed with `path`.
 pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, Error>) {
@@ -178,6 +200,7 @@ pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, E
         return (ctx, Ok(String::from(KILLED)));
     }
     let engine = ctx.engine.clone();
+    ctx.prog.proc.clear_mem();
     let (ctx, res) = engine.run(wasm, ctx);
     platform.set_note(None);
     let res = match res {
