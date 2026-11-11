@@ -392,9 +392,11 @@ fn union_order_on_a_mounted_on_name() {
         ["x", "only-b", "x", "only-a", "sub"]
     );
     let ns = p.pgrp.namespace();
-    // Members are listed in search order.
-    let want = "bind -b '#B' '#R/mnt/x'\n\
-                bind '#A' '#R/mnt/x'\n\
+    // Binds are listed in the order they were made, as Inferno's mount
+    // ids order them, so that running the list again builds the same
+    // unions: the search order would replace `#B` with `#A`.
+    let want = "bind '#A' '#R/mnt/x'\n\
+                bind -b '#B' '#R/mnt/x'\n\
                 bind -a '#B' '#R/mnt/y'\n\
                 bind -a '#A' '#R/mnt/y'\n\
                 cd /\n";

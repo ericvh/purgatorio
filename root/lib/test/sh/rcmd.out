@@ -10,7 +10,7 @@ carried
 local
 sh: nosuchcommand: file does not exist
 status fail:nosuchcommand: file does not exist
-mount -b /n/client/dev /dev ''
+bind -b /n/client/dev /dev
 a  b
 rcmd: authentication required
 rcmd: unknown algorithm rc4

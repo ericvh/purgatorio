@@ -1,0 +1,9 @@
+mount -c '#|/data1' /tmp/sh-nsbind/fs ''
+bind /tmp/sh-nsbind/fs/sub /tmp/sh-nsbind/u
+bind -a /tmp/sh-nsbind/u /tmp/sh-nsbind/n
+bind -bc /tmp/sh-nsbind/fs /tmp/sh-nsbind/b
+bind -c /tmp/sh-nsbind/c /tmp/sh-nsbind/c
+bind -b /tmp/sh-nsbind/n /tmp/sh-nsbind/c
+bind -b /tmp/sh-nsbind/u /tmp/sh-nsbind/c
+in sub
+0
