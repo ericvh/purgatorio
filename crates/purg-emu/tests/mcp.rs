@@ -1282,8 +1282,12 @@ fn jobs_run_alongside_other_calls() {
         assert!(int_of(&v, "next_offset") <= int_of(&v, "offset") + 10);
 
         // Jobs end with reset.
+        // The job's shell starts the sleep after job_start answers.
         m.ok("job_start", r#"{"command":"sleep 300"}"#);
-        assert_eq!(m.run("ps | grep -c sleep").stdout, "1\n", "{vm}");
+        let start = Instant::now();
+        while m.run("ps | grep -c sleep").stdout != "1\n" {
+            assert!(start.elapsed() < Duration::from_secs(30), "{vm}");
+        }
         m.ok("reset", "{}");
         assert_eq!(m.run("ps | grep -c sleep").stdout, "0\n", "{vm}");
         let l = m.ok("job_list", "{}");
