@@ -15,7 +15,7 @@ use purg_abi::error::{EISDIR, ENOTDIR, ENOTIMPL, EPERM, ESHORTSTAT};
 use purg_auth::cert::Cert;
 use purg_auth::proof::{Policy, check_cert};
 use purg_auth::session::Ephemeral;
-use purg_styx::{DMDIR, Dir, Qid};
+use purg_styx::{DMDIR, Dir, Qid, STATFIXLEN};
 
 use crate::crypto::{self, Keys};
 use crate::error::{MESSAGE, REQUEST_EXPIRED, TICKET_EXPIRED};
@@ -31,8 +31,12 @@ pub trait Tree {
     /// Reads `path` at `offset`; returns the file's qid at the time of
     /// the read and the count.
     fn read(&self, path: &str, offset: u64, buf: &mut [u8]) -> Result<(Qid, usize), String>;
-    /// The directory's qid and its entries, sorted by name (as bytes).
-    fn list(&self, path: &str) -> Result<(Qid, Vec<Dir>), String>;
+    /// The directory's qid and at most `limit` of its entries whose
+    /// names sort after `after` (as bytes), in that order. A server is
+    /// stateless, so each page of a listing asks again; the limit lets a
+    /// tree stat only the entries a page can hold, not the whole
+    /// directory every time.
+    fn list(&self, path: &str, after: &[u8], limit: usize) -> Result<(Qid, Vec<Dir>), String>;
 }
 
 /// The keys a server trusts for one user, read when a `Tauth` comes in.
@@ -428,11 +432,14 @@ impl Server {
                 if !tk.allowed(&d, 4) {
                     return Err(String::from(EPERM));
                 }
-                let (qid, list) = tree.list(path)?;
                 let max = count.min(MAX_COUNT) as usize;
+                // No entry packs smaller than STATFIXLEN, so one more than
+                // this many cannot fit: a full list always overflows the
+                // page, and a shorter one is the end of the directory.
+                let (qid, list) = tree.list(path, cookie, max / STATFIXLEN + 1)?;
                 let mut last: &[u8] = &[];
                 let mut more = false;
-                for e in list.iter().filter(|e| e.name.as_bytes() > cookie) {
+                for e in &list {
                     if data.len() + e.packed_len() > max {
                         more = true;
                         break;
