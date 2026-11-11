@@ -259,9 +259,16 @@ fn remount_keeps_everything() {
         );
     }
     let usage = fs.usage();
+    // Without a sync the journal holds the last transaction; after one it
+    // is empty.
+    let image = fs.disk().image();
+    let mut again = Fs::mount(MemDisk::from_image(image, 512), &Mount::default()).unwrap();
+    assert!(again.check().replayed.is_some());
+    fs.sync().unwrap();
     let image = fs.into_disk().image();
     let mut fs = Fs::mount(MemDisk::from_image(image, 512), &Mount::default()).unwrap();
     assert_eq!(fs.usage(), usage);
+    assert_eq!(fs.check().replayed, None);
     let f = fs.walk_path("d/f", USER).unwrap();
     assert_eq!(read_all(&mut fs, f), data);
     assert_eq!(names(&mut fs, root).len(), 41);
@@ -302,6 +309,10 @@ fn workload(fs: &mut Fs<MemDisk>) {
         return;
     };
     if fs.wstat(f0, &w, USER).is_err() {
+        return;
+    }
+    // A clean point: the journal is emptied.
+    if fs.sync().is_err() {
         return;
     }
     let short = WStat {

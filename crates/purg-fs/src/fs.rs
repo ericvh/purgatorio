@@ -577,11 +577,15 @@ impl<D: Disk> Fs<D> {
         Ok(())
     }
 
-    /// Flushes the disk: everything committed so far is home.
+    /// Makes everything committed so far stable at home, then empties the
+    /// journal, so the next mount has nothing to replay: a clean unmount.
     pub fn sync(&mut self) -> Result<()> {
-        if self.ro {
+        if self.ro || self.broken {
             return Ok(());
         }
+        self.disk.flush()?;
+        let empty = vec![0u8; self.bs];
+        self.disk.write(self.sb.jstart * self.bs as u64, &empty)?;
         self.disk.flush()
     }
 

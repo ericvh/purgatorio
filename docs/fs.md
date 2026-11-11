@@ -135,7 +135,10 @@ to the disk. The commit:
 
 At mount, a journal whose checksum matches is written home again. This
 is idempotent: the journal holds the newest copy of each of its blocks.
-A read-only mount keeps the images in memory instead.
+A read-only mount keeps the images in memory instead. `Fs::sync` (a
+clean unmount) flushes and then zeroes the journal header, so the next
+mount has nothing to replay; a journal that is still there means the
+file system was not synced since its last change.
 
 The rules that make this safe:
 
@@ -230,6 +233,21 @@ bounce buffers per disk.
 Directories never shrink: a removed entry leaves a free slot that the
 next create in that directory reuses. There are no hard links, symbolic
 links, device files or extended attributes, as in Inferno.
+
+## Tools
+
+- `disk/mkdisk [-b blocksize] [-j journal] [-s size] [-u user] [-r dir]
+  image` makes a new file system in an image file or a disk's
+  `data` file, optionally holding a copy of `dir`.
+- `disk/chkdisk [-v] image` checks one without changing it: each problem
+  on a line, exit status `errors` if there are any; `-v` adds a summary.
+- `cargo xtask diskimg [--size SIZE] [--bsize N] OUT [DIR]` makes an image
+  on the build host from a host directory, with the same crate, and
+  `cargo xtask diskimg --check IMAGE` checks one. `xtask kernel` uses
+  both.
+
+`disk/mkfs` is Inferno's prototype-driven archiver, not a file system
+maker, so the new commands have new names.
 
 ## Checking
 
