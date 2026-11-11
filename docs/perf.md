@@ -13,7 +13,11 @@ the workspace: the load average was 5 to 12 during the runs. Every
 figure is the median of six samples (three rounds in each of two boots),
 with the fastest sample in brackets, in seconds. Under that load the
 fastest sample is the better estimate of the cost; the medians show
-what the load added. The spread was up to ±200% for some rows, so
+what the load added. The host has four fast cores (Firestorm) and four
+slow ones (Icestorm): a run whose vCPU the host scheduled on a slow core
+is three times slower throughout (one run after the rebase measured the
+16 MiB hash at 6.7 s, the next four at 2.2 s), which is another reason
+to read the fastest sample. The spread was up to ±200% for some rows, so
 differences under about 20% between configurations are not meaningful.
 
 ## 1. Summary
