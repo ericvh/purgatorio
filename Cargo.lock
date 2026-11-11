@@ -2550,6 +2550,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "purg-fs"
+version = "0.1.0"
+dependencies = [
+ "purg-abi",
+]
+
+[[package]]
 name = "purg-kernel"
 version = "0.1.0"
 dependencies = [

@@ -31,7 +31,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --target aarch64-unknown-none \
   -p purg-abi -p purg-styx -p purg-auth -p purg-platform -p purg-core -p purg-vm \
-  -p purg-vm-wasmi -p purg-lethe -p purg-aarch64
+  -p purg-vm-wasmi -p purg-lethe -p purg-aarch64 -p purg-fs
 RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \
   cargo test -p purg-core --features std --test loom --release
 ```
@@ -45,7 +45,8 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 ## Rules
 
 - **Shared crates are `no_std` + `alloc`:** `purg-abi`, `purg-styx`, `purg-auth`,
-  `purg-aarch64`, `purg-platform`, `purg-core`, `purg-vm`, `purg-vm-wasmi`, `purg-lethe`. They must build for
+  `purg-aarch64`, `purg-platform`, `purg-core`, `purg-vm`, `purg-vm-wasmi`, `purg-lethe`,
+  `purg-fs`. They must build for
   `aarch64-unknown-none` unchanged; the kernel reuses them. Only `purg-emu`
   and `purg-vm-wasmtime` use `std`.
 - **No `cfg(target_os)` outside `crates/purg-emu/src/host/`.** POSIX-common
@@ -80,6 +81,7 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 
 ```
 crates/purg-{abi,styx,platform,core,vm,vm-wasmi}   no_std shared core
+crates/purg-fs                                     purgfs, the disk file system (docs/fs.md)
 crates/purg-vm-wasmtime                            wasmtime backend (std)
 crates/purg-lethe                                  no_std Lethe codec, tickets, server engine, client
 crates/purg-emu                                    the emu and lethed binaries; host code in src/host/
