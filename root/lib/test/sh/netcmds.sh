@@ -41,15 +41,19 @@ echo private > tftp/secret
 chmod 600 tftp/secret
 touch tftp/up
 chmod 666 tftp/up
-ip/tftpd -p 127.0.0.1!46969 -h $d/tftp &
+# The port comes from the system, so runs in parallel do not collide;
+# -d's first line says which it is, and its traces go to $d/tl too.
+ip/tftpd -d -p 127.0.0.1!0 -h $d/tftp > $d/tl &
 tp=$apid
-test/netsrv tftp get udp!127.0.0.1!46969 file
-test/netsrv tftp get udp!127.0.0.1!46969 missing
-test/netsrv tftp get udp!127.0.0.1!46969 secret
-test/netsrv tftp get udp!127.0.0.1!46969 ../netcmds/tftp/file
-test/netsrv tftp put udp!127.0.0.1!46969 up uploaded by tftp
+while {! test -s $d/tl} {sleep 0}
+ta=udp!`{sed 's/tftpd: announced //' $d/tl}
+test/netsrv tftp get $ta file
+test/netsrv tftp get $ta missing
+test/netsrv tftp get $ta secret
+test/netsrv tftp get $ta ../netcmds/tftp/file
+test/netsrv tftp put $ta up uploaded by tftp
 cat tftp/up
-test/netsrv tftp put udp!127.0.0.1!46969 file over
+test/netsrv tftp put $ta file over
 
 kill $tp ${tl $h} ${tl $w} ${tl $t} ${tl $n}
 cd /
