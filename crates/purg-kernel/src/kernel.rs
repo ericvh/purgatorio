@@ -413,7 +413,14 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         archive.iter().any(|&b| b != 0),
         "no root: build the guests (cargo xtask build-root) or boot with -initrd"
     );
+    let arg = |key: &str| bootarg(&info, key).and_then(|v| v.parse().ok());
+    let stress = arg("stress").map(|secs| Mode::Stress {
+        secs,
+        workers: arg("stressprogs").map_or(crate::stress::WORKERS, |n: u64| n as usize),
+        watch: arg("stresswatch").unwrap_or(crate::stress::WATCH_SECS),
+    });
     let mode = match (test, has_bootarg(&info, "diskcheck")) {
+        _ if stress.is_some() => stress.unwrap_or(Mode::Interactive),
         (_, true) => Mode::DiskCheck,
         (true, false) => Mode::Test {
             memstat: has_bootarg(&info, "memstat"),

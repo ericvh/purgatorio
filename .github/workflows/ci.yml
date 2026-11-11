@@ -255,6 +255,8 @@ jobs:
       # two the smoke subset.
       - name: xtask kernel --smp 4 (TCG, GICv2, GICv3, EL2)
         run: cargo xtask kernel --smp 4
+      - name: xtask kernel --smp 4 --stress 60 (TCG)
+        run: cargo xtask kernel --smp 4 --stress 60
       - name: xtask kernel --kvm --smp 4 (skipped without /dev/kvm)
         run: cargo xtask kernel --kvm --smp 4
 
