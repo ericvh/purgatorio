@@ -1,10 +1,10 @@
 //! The probe proper: bring-up, the boot namespace and the script.
 
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::{format, vec};
 use core::fmt::Write;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -21,13 +21,11 @@ use purg_aarch64::net::{Ipv4Config, NetStack};
 use purg_aarch64::platform::MetalPlatform;
 use purg_aarch64::sched::Scheduler;
 use purg_abi::mode;
-use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_core::devram::RamTree;
-use purg_core::devroot::StaticTree;
-use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
+use purg_core::{Error, Platform, Prog};
 use purg_platform::Console;
 use purg_platform::sync::Rendez;
-use purg_vm::{Ctx, Engine};
+use purg_system::{Boot, System};
 use purg_vm_wasmi::Wasmi;
 
 mod embedded {
@@ -51,22 +49,17 @@ static SCHED: Scheduler = Scheduler::new(STACK_SIZE);
 /// Timer interrupts per second; the tick preempts.
 const TICK_HZ: u64 = 100;
 
-/// How a script command must end.
-enum Want {
-    Ok,
-    Fail,
-}
-
-/// Commands run with the console as fds 0, 1 and 2.
-const SCRIPT: &[(&[&str], Want)] = &[
-    (&["echo", "hello", "world"], Want::Ok),
-    (&["cat", "/lib/probe/hello.txt"], Want::Ok),
-    (&["cat", "/nonexistent"], Want::Fail),
-    (&["/bin/test/abi.wasm"], Want::Ok),
-    (&["/bin/test/procs.wasm"], Want::Ok),
-    (&["/bin/test/m3.wasm"], Want::Ok),
-    (&["/bin/test/net.wasm"], Want::Ok),
-    (&["/bin/test/wasi.wasm"], Want::Ok),
+/// Commands run with the console as fds 0, 1 and 2, and whether each
+/// must succeed. The kernel runs the same list.
+const SCRIPT: &[(&[&str], bool)] = &[
+    (&["echo", "hello", "world"], true),
+    (&["cat", "/lib/probe/hello.txt"], true),
+    (&["cat", "/nonexistent"], false),
+    (&["/bin/test/abi.wasm"], true),
+    (&["/bin/test/procs.wasm"], true),
+    (&["/bin/test/m3.wasm"], true),
+    (&["/bin/test/net.wasm"], true),
+    (&["/bin/test/wasi.wasm"], true),
 ];
 
 /// The sh scripts run with their output captured and compared with the
@@ -86,7 +79,7 @@ fn embedded(path: &str) -> Option<&'static [u8]> {
 
 /// The probe's `#U`: a RAM tree seeded with the embedded files, standing in
 /// for the emu's host tree so the boot namespace is the same.
-fn ram_root(owner: &str, platform: &Arc<dyn Platform>) -> RamTree {
+fn ram_root(owner: &str, platform: &Arc<dyn Platform>) -> Result<RamTree, Error> {
     let t = RamTree::new('U', "ramfs", owner, platform.clone());
     for &(path, data) in embedded::FILES {
         let perm = if path.ends_with(".wasm") {
@@ -97,91 +90,12 @@ fn ram_root(owner: &str, platform: &Arc<dyn Platform>) -> RamTree {
         t.add_file(path, data, perm);
     }
     t.add_dir("/tmp");
-    t
+    Ok(t)
 }
 
-/// Builds the emu's boot namespace.
-fn boot(platform: MetalPlatform) -> Result<(Arc<Kernel>, Arc<Pgrp>), Error> {
-    let platform: Arc<dyn Platform> = Arc::new(platform);
-    let procs = Procs::new(platform.clone());
-    let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
-    let portable = purg_core::portable_devices(&platform, &procs);
-    devs.extend(portable.devs);
-    devs.push(Arc::new(ram_root(procs.user(), &platform)));
-    let devtab = DevTab::new(devs);
-    let kernel = Kernel::new(platform, devtab.clone(), procs, portable.srv, portable.mnt);
-    let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "")?);
-    pgrp.bind("#U", "/", MAFTER | MCREATE)?;
-    pgrp.bind("#c", "/dev", MBEFORE)?;
-    pgrp.bind("#e", "/env", MREPL | MCREATE)?;
-    pgrp.bind("#p", "/prog", MREPL)?;
-    pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
-    pgrp.bind("#d", "/fd", MREPL)?;
-    pgrp.bind("#I", "/net", MREPL)?;
-    pgrp.bind("#C", "/cmd", MREPL)?;
-    Ok((kernel, pgrp))
-}
-
-struct System {
-    engine: Arc<dyn Engine>,
-    kernel: Arc<Kernel>,
-    pgrp: Arc<Pgrp>,
-}
-
-impl System {
-    /// Runs `argv` in a fresh prog on this thread. Its fd 0 is the console,
-    /// and fds 1 and 2 are the console or, given `out`, that file.
-    fn run(&self, argv: &[&str], out: Option<&str>) -> Result<String, Error> {
-        let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
-        self.kernel.platform.set_current_pid(prog.pid);
-        match out {
-            None => purg_vm::init_fds(&mut prog)?,
-            Some(out) => {
-                prog.open("/dev/cons", mode::OREAD)?;
-                prog.create(out, mode::OWRITE, 0o644)?;
-                prog.dup(1, 2)?;
-                purg_vm::init_preopens(&mut prog)?;
-            }
-        }
-        let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
-        let path = purg_vm::command_path(&argv[0]);
-        purg_vm::run_command(Ctx::new(prog, argv, self.engine.clone()), &path).1
-    }
-
-    fn read_file(&self, path: &str) -> Result<Vec<u8>, Error> {
-        let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
-        let fd = prog.open(path, mode::OREAD)?;
-        let mut out = Vec::new();
-        let mut buf = [0u8; 512];
-        loop {
-            let n = prog.read(fd, &mut buf)?;
-            if n == 0 {
-                return Ok(out);
-            }
-            out.extend_from_slice(&buf[..n]);
-        }
-    }
-
-    /// Runs one corpus script; `Err` describes how it went wrong.
-    fn sh_script(&self, script: &str, want: &[u8]) -> Result<(), String> {
-        let name = script.trim_start_matches(SH_CORPUS);
-        let out = format!("/tmp/probe-{name}.got");
-        let status = self
-            .run(&["sh", script], Some(&out))
-            .map_err(|e| format!("error: {e}"))?;
-        let got = self.read_file(&out).map_err(|e| format!("{out}: {e}"))?;
-        if got != want {
-            return Err(format!(
-                "output differs\n--- got\n{}--- want\n{}---",
-                String::from_utf8_lossy(&got),
-                String::from_utf8_lossy(want)
-            ));
-        }
-        if !status.is_empty() {
-            return Err(format!("status {status:?}"));
-        }
-        Ok(())
-    }
+/// Live kernel threads, for [`System::reap`].
+fn threads() -> usize {
+    SCHED.live()
 }
 
 /// Announces `tcp!*!6666` and serves `/` to the first connection. The host
@@ -219,34 +133,19 @@ fn serve_export(sys: &System) -> Result<(), Error> {
     Ok(())
 }
 
-fn report(failed: &mut usize, verdict: Result<String, String>) {
-    match verdict {
-        Ok(v) => println!("probe: {v}"),
-        Err(v) => {
-            println!("probe: FAIL {v}");
-            *failed += 1;
-        }
-    }
-}
-
 fn script(platform: MetalPlatform) -> Result<usize, Error> {
-    let (kernel, pgrp) = boot(platform)?;
-    let sys = System {
-        engine: Arc::new(Wasmi::new()?),
-        kernel,
-        pgrp,
+    let boot = Boot {
+        platform: Arc::new(platform),
+        native: Vec::new(),
+        extra: Vec::new(),
+        cmd: true,
     };
-    let mut failed = 0;
-    for (argv, want) in SCRIPT {
-        println!("probe: run {}", argv.join(" "));
-        let verdict = match (sys.run(argv, None), want) {
-            (Ok(s), Want::Ok) if s.is_empty() => Ok(String::from("ok")),
-            (Ok(s), Want::Fail) if !s.is_empty() => Ok(format!("failed as expected: {s}")),
-            (Ok(s), _) => Err(format!("status {s:?}")),
-            (Err(e), _) => Err(format!("error: {e}")),
-        };
-        report(&mut failed, verdict);
-    }
+    let sys = System::new(
+        Arc::new(Wasmi::new()?),
+        purg_system::boot(boot, ram_root)?,
+        threads,
+    );
+    let mut failed = sys.run_script("probe", SCRIPT, false);
     for &(path, _) in embedded::FILES {
         let Some(base) = path
             .strip_prefix(SH_CORPUS)
@@ -256,10 +155,10 @@ fn script(platform: MetalPlatform) -> Result<usize, Error> {
         };
         println!("probe: sh {path}");
         let want = embedded(&format!("{SH_CORPUS}{base}.out")).unwrap_or_default();
-        report(
-            &mut failed,
-            sys.sh_script(path, want).map(|()| String::from("ok")),
-        );
+        let v = sys
+            .sh_script("probe", path, want)
+            .map(|()| String::from("ok"));
+        sys.verdict("probe", &mut failed, v);
     }
     if failed == 0
         && let Err(e) = serve_export(&sys)

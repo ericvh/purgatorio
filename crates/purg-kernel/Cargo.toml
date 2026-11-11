@@ -38,6 +38,7 @@ purg-platform.workspace = true
 purg-abi.workspace = true
 purg-core.workspace = true
 purg-styx.workspace = true
+purg-system.workspace = true
 purg-fs = { workspace = true, features = ["dev"], optional = true }
 purg-vm.workspace = true
 purg-vm-wasmi.workspace = true
