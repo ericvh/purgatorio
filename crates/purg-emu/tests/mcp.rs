@@ -8,7 +8,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 mod json;
 
 use json::Value;
+
+mod common;
 
 const VMS: [&str; 2] = ["wasmtime", "wasmi"];
 const PRIMER: &str = include_str!("../../../appl/cmd/mcpd/src/primer.txt");
@@ -34,7 +36,8 @@ fn root() -> PathBuf {
 
 struct Mcp {
     vm: &'static str,
-    child: Child,
+    /// The emu; a failing test prints what became of it.
+    emu: common::Watched,
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     next_id: i64,
@@ -53,17 +56,16 @@ impl Mcp {
     /// Starts the emu running `argv`, which must end up serving MCP on its
     /// standard input and output.
     fn launch(vm: &'static str, argv: &[&str]) -> Mcp {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_emu"))
-            .arg("-r")
-            .arg(root())
-            .arg(format!("--vm={vm}"))
-            .args(argv)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn emu");
-        let stdout = child.stdout.take().unwrap();
+        let mut emu = common::Watched::spawn(
+            Command::new(env!("CARGO_BIN_EXE_emu"))
+                .arg("-r")
+                .arg(root())
+                .arg(format!("--vm={vm}"))
+                .args(argv)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped()),
+        );
+        let stdout = emu.child.stdout.take().unwrap();
         let (tx, lines) = channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -74,8 +76,8 @@ impl Mcp {
         });
         Mcp {
             vm,
-            stdin: child.stdin.take(),
-            child,
+            stdin: emu.child.stdin.take(),
+            emu,
             lines,
             next_id: 1,
             early: Vec::new(),
@@ -271,31 +273,18 @@ impl Mcp {
     /// Closes the server's input and checks that it exits cleanly.
     fn finish(mut self) {
         drop(self.stdin.take());
-        let start = Instant::now();
-        loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                assert!(status.success(), "{}: {status}", self.vm);
-                break;
-            }
-            assert!(
-                start.elapsed() < Duration::from_secs(30),
-                "{}: the server did not exit at end of input",
-                self.vm
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let (status, stderr) = self.emu.finish(Duration::from_secs(30));
+        assert!(
+            status.success(),
+            "{}: {}",
+            self.vm,
+            common::failure(status, &stderr)
+        );
         assert!(
             self.lines.recv_timeout(Duration::from_secs(5)).is_err(),
             "{}: output after the last reply",
             self.vm
         );
-    }
-}
-
-impl Drop for Mcp {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 

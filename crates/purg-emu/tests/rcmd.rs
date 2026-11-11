@@ -20,6 +20,8 @@ mod json;
 
 use json::Value;
 
+mod common;
+
 const VMS: [&str; 2] = ["wasmtime", "wasmi"];
 const REPLY: Duration = Duration::from_secs(120);
 
@@ -67,18 +69,17 @@ fn recv(vm: &str, lines: &Receiver<String>) -> Value {
 #[test]
 fn mcp_session_over_rcmd() {
     for vm in VMS {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_emu"))
-            .arg("-r")
-            .arg(root())
-            .arg(format!("--vm={vm}"))
-            .args(["sh", "-c", &script(vm, "mcp", "", "mcpd")])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn emu");
-        let mut stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        let mut emu = common::Watched::spawn(
+            Command::new(env!("CARGO_BIN_EXE_emu"))
+                .arg("-r")
+                .arg(root())
+                .arg(format!("--vm={vm}"))
+                .args(["sh", "-c", &script(vm, "mcp", "", "mcpd")])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped()),
+        );
+        let mut stdin = emu.child.stdin.take().unwrap();
+        let stdout = emu.child.stdout.take().unwrap();
         let (tx, lines) = channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -141,12 +142,11 @@ fn mcp_session_over_rcmd() {
 
         // End of input ends mcpd, and with it rcmd, with a clean status.
         drop(stdin);
-        let out = child.wait_with_output().expect("wait");
+        let (status, stderr) = emu.finish(REPLY);
         assert!(
-            out.status.success(),
-            "{vm}: {:?}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr)
+            status.success(),
+            "{vm}: {}",
+            common::failure(status, &stderr)
         );
         assert!(
             lines.recv_timeout(REPLY).is_err(),
@@ -161,23 +161,14 @@ fn mcp_session_over_rcmd() {
 fn status_namespace_and_refusal() {
     for vm in VMS {
         let run = |flags: &str, cmd: &str, input: &str| {
-            let mut child = Command::new(env!("CARGO_BIN_EXE_emu"))
-                .arg("-r")
-                .arg(root())
-                .arg(format!("--vm={vm}"))
-                .args(["sh", "-c", &script(vm, "st", flags, cmd)])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("spawn emu");
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            let out = child.wait_with_output().expect("wait");
+            let out = common::output(
+                Command::new(env!("CARGO_BIN_EXE_emu"))
+                    .arg("-r")
+                    .arg(root())
+                    .arg(format!("--vm={vm}"))
+                    .args(["sh", "-c", &script(vm, "st", flags, cmd)]),
+                input.as_bytes(),
+            );
             // The emu's console carries both the guest's fd 1 and fd 2.
             let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
             text.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -294,14 +285,14 @@ kill $lpid
 exit $s
 "
     );
-    let out = Command::new(env!("CARGO_BIN_EXE_emu"))
-        .arg("-r")
-        .arg(root())
-        .arg(format!("--vm={vm}"))
-        .args(["sh", "-c", &script])
-        .stdin(Stdio::null())
-        .output()
-        .expect("run emu");
+    let out = common::output(
+        Command::new(env!("CARGO_BIN_EXE_emu"))
+            .arg("-r")
+            .arg(root())
+            .arg(format!("--vm={vm}"))
+            .args(["sh", "-c", &script]),
+        b"",
+    );
     let _ = std::fs::remove_dir_all(&host_dir);
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
@@ -394,28 +385,18 @@ rm -rf $d
 exit $s
 "
         );
-        let out = Command::new(env!("CARGO_BIN_EXE_emu"))
-            .arg("-r")
-            .arg(root())
-            .arg(format!("--vm={vm}"))
-            .args(["sh", "-c", &script])
-            .stdin(Stdio::null())
-            .output()
-            .expect("run emu");
+        let out = common::output(
+            Command::new(env!("CARGO_BIN_EXE_emu"))
+                .arg("-r")
+                .arg(root())
+                .arg(format!("--vm={vm}"))
+                .args(["sh", "-c", &script]),
+            b"",
+        );
         let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
         text.push_str(&String::from_utf8_lossy(&out.stderr));
         assert!(!out.status.success(), "{vm}: {text}");
         assert_eq!(text, "rcmd: server authentication failed\n", "{vm}");
-    }
-}
-
-/// Kills a child process on drop.
-struct Reaper(std::process::Child);
-
-impl Drop for Reaper {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
     }
 }
 
@@ -427,7 +408,7 @@ impl Drop for Reaper {
 #[test]
 fn an_mcp_client_reaches_another_system() {
     for vm in VMS {
-        let mut server = Reaper(
+        let mut server = common::Watched::spawn(
             Command::new(env!("CARGO_BIN_EXE_emu"))
                 .arg("-r")
                 .arg(root())
@@ -438,33 +419,27 @@ fn an_mcp_client_reaches_another_system() {
                     &format!("{TEST_KEYS}; styxlisten tcp!127.0.0.1!0 /bin/auxi/rstyxd.wasm"),
                 ])
                 .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("spawn the server emu"),
+                .stdout(Stdio::piped()),
         );
         let mut first = String::new();
-        BufReader::new(server.0.stdout.take().unwrap())
+        BufReader::new(server.child.stdout.take().unwrap())
             .read_line(&mut first)
             .unwrap();
         let addr = first
             .trim()
             .strip_prefix("styxlisten: ")
             .unwrap_or_else(|| panic!("{vm}: {first:?}"));
-        let mut client = Reaper(
+        let mut client = common::Watched::spawn(
             Command::new(env!("CARGO_BIN_EXE_emu"))
                 .arg("-r")
                 .arg(root())
                 .arg(format!("--vm={vm}"))
                 .args(["sh", "-c", &format!("{TEST_KEYS}; rcmd tcp!{addr} mcpd")])
                 .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("spawn the client emu"),
+                .stdout(Stdio::piped()),
         );
-        let mut stdin = client.0.stdin.take().unwrap();
-        let stdout = client.0.stdout.take().unwrap();
+        let mut stdin = client.child.stdin.take().unwrap();
+        let stdout = client.child.stdout.take().unwrap();
         let (tx, lines) = channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
@@ -508,7 +483,7 @@ fn an_mcp_client_reaches_another_system() {
         drop(stdin);
         let start = Instant::now();
         let status = loop {
-            if let Some(st) = client.0.try_wait().unwrap() {
+            if let Some(st) = client.child.try_wait().unwrap() {
                 break st;
             }
             assert!(start.elapsed() < REPLY, "{vm}: rcmd did not exit");
