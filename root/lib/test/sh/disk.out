@@ -1,4 +1,5 @@
 /tmp/disktest/img: 0 files, 1 directories, 34 blocks used, 222 free
+emuinit disk/chkdisk
 /tmp/disktest/img: 2 files, 2 directories, 38 blocks used, 26 free
 status 
 /tmp/disktest/img: /: block 34 slot 0: bad entry checksum

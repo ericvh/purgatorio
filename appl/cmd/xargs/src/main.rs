@@ -7,25 +7,6 @@ use std::io::{self, BufRead};
 
 use purgatorio::{Context, Error};
 
-/// Finds `name` as the shell would: a path as given or with `.wasm`, or
-/// a bare name in /bin.
-fn resolve(name: &str) -> Result<String, Error> {
-    let candidates = if name.starts_with('/') || name.starts_with("./") || name.starts_with("../") {
-        vec![String::from(name), format!("{name}.wasm")]
-    } else {
-        vec![format!("/bin/{name}.wasm")]
-    };
-    for c in &candidates {
-        if purgatorio::stat(c).is_ok_and(|d| !d.qid.is_dir()) {
-            return Ok(c.clone());
-        }
-    }
-    Err(Error(format!(
-        "can't load {name}: {}",
-        purgatorio::abi::error::ENONEXIST
-    )))
-}
-
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() < 2 {
@@ -34,7 +15,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         ));
     }
     let cmd = &args[1];
-    let path = resolve(cmd)?;
+    let path = purgatorio::find_command(cmd).map_err(|_| {
+        Error(format!(
+            "can't load {cmd}: {}",
+            purgatorio::abi::error::ENONEXIST
+        ))
+    })?;
     let mut status = String::new();
     let mut input = io::stdin().lock();
     let mut line = Vec::new();

@@ -7,25 +7,6 @@ use std::time::Instant;
 
 use purgatorio::{Context, Error};
 
-/// Finds `name` as the shell would: a path as given or with `.wasm`, or
-/// a bare name in /bin.
-fn resolve(name: &str) -> Result<String, Error> {
-    let candidates = if name.starts_with('/') || name.starts_with("./") || name.starts_with("../") {
-        vec![String::from(name), format!("{name}.wasm")]
-    } else {
-        vec![format!("/bin/{name}.wasm")]
-    };
-    let mut err = String::from(purgatorio::abi::error::ENONEXIST);
-    for c in &candidates {
-        match purgatorio::stat(c) {
-            Ok(d) if !d.qid.is_dir() => return Ok(c.clone()),
-            Ok(_) => err = String::from(purgatorio::abi::error::EISDIR),
-            Err(e) => err = e.0,
-        }
-    }
-    Err(Error(err))
-}
-
 /// C's `%.4g`: four significant digits, trailing zeros dropped.
 fn g4(x: f64) -> String {
     if x == 0.0 {
@@ -59,7 +40,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let argv = args[1..].to_vec();
     let t0 = Instant::now();
-    let path = resolve(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
+    let path =
+        purgatorio::find_command(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
     let pid =
         purgatorio::spawn(&path, &argv, 0, &[]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
     let t1 = Instant::now();

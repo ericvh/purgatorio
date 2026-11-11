@@ -29,25 +29,6 @@ use wasmobj::{Kind, Names};
 
 const USAGE: &str = "prof [-n lines] command [arg ...]";
 
-/// Finds `name` as the shell would: a path as given or with `.wasm`, or
-/// a bare name in /bin.
-fn resolve(name: &str) -> Result<String, Error> {
-    let candidates = if name.starts_with('/') || name.starts_with("./") || name.starts_with("../") {
-        vec![String::from(name), format!("{name}.wasm")]
-    } else {
-        vec![format!("/bin/{name}.wasm")]
-    };
-    let mut err = String::from(purgatorio::abi::error::ENONEXIST);
-    for c in &candidates {
-        match purgatorio::stat(c) {
-            Ok(d) if !d.qid.is_dir() => return Ok(c.clone()),
-            Ok(_) => err = String::from(purgatorio::abi::error::EISDIR),
-            Err(e) => err = e.0,
-        }
-    }
-    Err(Error(err))
-}
-
 /// The function names of the module at `path`.
 fn module_names(path: &str) -> Names {
     if let Ok(text) = std::fs::read_to_string(wasmobj::names_path(path)) {
@@ -91,7 +72,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if argv.is_empty() {
         return Err(Error(format!("usage: {USAGE}")));
     }
-    let path = resolve(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
+    let path =
+        purgatorio::find_command(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
     let me = purgatorio::pid();
     ctl(me, "prof on")?;
     let child =

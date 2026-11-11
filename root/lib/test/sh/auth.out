@@ -4,5 +4,6 @@ getauthinfo: authentication failed
 hello
 mount: certificate expired
 mount: untrusted signer
+emuinit auth/getpk
 mount: certificate revoked
 mount: authentication required
