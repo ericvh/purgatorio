@@ -24,7 +24,12 @@
 //!   an MCP session on the kernel with `rcmd tcp!...!6668 mcpd`. Each run
 //!   also shares a fresh directory under `target/kernel-9p/` over
 //!   virtio-9p, which the kernel mounts on `/n/host` and works on, and
-//!   whose final contents are checked here.
+//!   whose final contents are checked here. The whole sh corpus runs on
+//!   GICv2 and on `-cpu max`, and a smoke subset on the other two
+//!   (`KERNEL_CORPUS=full` runs it on all). The runs boot side by side,
+//!   one per two CPUs (`KERNEL_JOBS=N` sets how many), and each prints
+//!   where its time went; `target/qemu-times/` has each console with the
+//!   time each line arrived.
 //!   `--mem` sets QEMU's `-m` (512M by default). `KERNEL_MEMSTAT=1` in
 //!   the environment adds `memstat` to the bootargs: the kernel then
 //!   prints `kernel: mem ...` lines about its memory use, which the
@@ -56,6 +61,7 @@
 //!   denying warnings.
 
 mod disk;
+mod phases;
 mod size;
 mod tar;
 mod wasm;
@@ -65,6 +71,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -448,6 +455,8 @@ struct QemuRun {
     /// The serial output, with `\r` removed.
     serial: String,
     elapsed: Duration,
+    /// Each complete line of `serial` and when it arrived.
+    lines: Vec<(Duration, String)>,
 }
 
 /// Bytes to type on a QEMU run's serial console once a prompt appears.
@@ -530,8 +539,16 @@ fn run_qemu(
     });
     let text = || String::from_utf8_lossy(&serial.lock().expect("serial")).replace('\r', "");
     let start = Instant::now();
+    let mut lines = Vec::new();
+    let mut stamped = 0;
     let status = loop {
         let now = text();
+        // Complete lines are never rewritten: only a partial UTF-8
+        // sequence at the very end can change.
+        while let Some(n) = now[stamped..].find('\n') {
+            lines.push((start.elapsed(), now[stamped..stamped + n].to_owned()));
+            stamped += n + 1;
+        }
         if let Some(inp) = input.get(typed) {
             if prompted.is_none() && now.contains(inp.prompt) {
                 prompted = Some(Instant::now());
@@ -568,10 +585,16 @@ fn run_qemu(
     let elapsed = start.elapsed();
     drop(stdin);
     let _ = reader.join();
+    let serial = text();
+    while let Some(n) = serial[stamped..].find('\n') {
+        lines.push((elapsed, serial[stamped..stamped + n].to_owned()));
+        stamped += n + 1;
+    }
     Ok(QemuRun {
         status,
-        serial: text(),
+        serial,
         elapsed,
+        lines,
     })
 }
 
@@ -648,9 +671,10 @@ fn probe(kvm: bool) -> Result<()> {
         Ok(())
     })?;
     print!("{}", r.serial);
+    phases::report(&ws, "probe", if kvm { "kvm" } else { "tcg" }, &r.lines);
     let golden = ws.join("crates/purg-probe/expected.out");
     let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
-    let want = expand_golden(&want, "probe", &ws)?;
+    let want = expand_golden(&want, "probe", &ws, None)?;
     if !r.status.success() {
         return Err(format!("probe exited with {}", r.status));
     }
@@ -677,15 +701,16 @@ const SH_CORPUS: &str = "lib/test/sh";
 
 /// Expands a golden file's `@sh-corpus` line into the lines the probe or
 /// kernel prints for each corpus script (`<prefix>: sh /lib/test/sh/x.sh`
-/// then `<prefix>: ok`). Listing the scripts here rather than in each
-/// golden file means a new script changes no golden file, so branches that
-/// add scripts do not conflict.
-fn expand_golden(text: &str, prefix: &str, ws: &Path) -> Result<String> {
+/// then `<prefix>: ok`), or for those named in `only`. Listing the
+/// scripts here rather than in each golden file means a new script
+/// changes no golden file, so branches that add scripts do not conflict.
+fn expand_golden(text: &str, prefix: &str, ws: &Path, only: Option<&[&str]>) -> Result<String> {
     let dir = ws.join("root").join(SH_CORPUS);
     let mut scripts: Vec<String> = fs::read_dir(&dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
         .filter(|n| n.ends_with(".sh"))
+        .filter(|n| only.is_none_or(|o| o.iter().any(|s| n.strip_suffix(".sh") == Some(*s))))
         .collect();
     scripts.sort();
     let mut out = String::new();
@@ -703,9 +728,13 @@ fn expand_golden(text: &str, prefix: &str, ws: &Path) -> Result<String> {
 }
 
 /// Running the conformance guests and the sh corpus under wasmi in TCG
-/// takes about as long as the probe.
-/// As `PROBE_TIMEOUT`: generous, so a slow runner does not fail a good run.
-const KERNEL_TIMEOUT: Duration = Duration::from_secs(300);
+/// takes about as long as the probe: 170 s on a CI runner, and up to
+/// 300 s on a loaded machine with the runs booting side by side.
+/// Generous, so a slow runner does not fail a good run.
+const KERNEL_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// A smoke run takes under a minute.
+const KERNEL_SMOKE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// One QEMU configuration `xtask kernel` boots: a name, the machine
 /// arguments before `-kernel`, and the exception level the kernel must
@@ -718,12 +747,23 @@ struct KernelRun {
     initrd: bool,
     /// Boot a second time on the same disk, to check what the first left.
     disk_reboot: bool,
+    /// Run only the [`KERNEL_SMOKE`] scripts of the sh corpus.
+    smoke: bool,
 }
+
+/// The sh scripts the smoke runs keep: timers and sleeps, kills of
+/// progs and process groups, pipes and streams, file2chan, and a
+/// network mount, the paths where interrupts and the scheduler meet.
+/// Every script runs on the other configurations.
+const KERNEL_SMOKE: &[&str] = &["jobs", "m3", "nsnet", "pgrp", "pipes", "stream"];
 
 /// The TCG runs: GICv2 and GICv3 at EL1, and GICv3 with EL2
 /// (`virtualization=on`), which exercises the EL2-to-EL1 path, on a
 /// Cortex-A72 and on `-cpu max` (every feature QEMU has, to catch
-/// assumptions about ID registers). They exit through semihosting.
+/// assumptions about ID registers). They exit through semihosting. The
+/// whole sh corpus runs on GICv2 and on `-cpu max` with GICv3, which are
+/// listed first so that they start first; the other two are there for
+/// their boot paths and run [`KERNEL_SMOKE`].
 const KERNEL_TCG_RUNS: &[KernelRun] = &[
     KernelRun {
         name: "tcg cortex-a72 gicv2 initrd",
@@ -731,6 +771,15 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         el: 1,
         initrd: true,
         disk_reboot: true,
+        smoke: false,
+    },
+    KernelRun {
+        name: "tcg max gicv3 el2",
+        args: &["-M", "virt,gic-version=3,virtualization=on", "-cpu", "max"],
+        el: 2,
+        initrd: false,
+        disk_reboot: false,
+        smoke: false,
     },
     KernelRun {
         name: "tcg cortex-a72 gicv3",
@@ -738,6 +787,7 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         el: 1,
         initrd: false,
         disk_reboot: false,
+        smoke: true,
     },
     KernelRun {
         name: "tcg cortex-a72 gicv3 el2",
@@ -750,13 +800,7 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         el: 2,
         initrd: false,
         disk_reboot: false,
-    },
-    KernelRun {
-        name: "tcg max gicv3 el2",
-        args: &["-M", "virt,gic-version=3,virtualization=on", "-cpu", "max"],
-        el: 2,
-        initrd: false,
-        disk_reboot: false,
+        smoke: true,
     },
 ];
 
@@ -770,6 +814,7 @@ const KERNEL_KVM_RUN: KernelRun = KernelRun {
     el: 1,
     initrd: true,
     disk_reboot: true,
+    smoke: false,
 };
 
 /// What the second boot on a run's disk (`diskcheck`) must print, besides
@@ -816,7 +861,7 @@ fn disk_reboot(
         k.name,
         args.join(" ")
     );
-    let r = run_qemu(&args, image, KERNEL_TIMEOUT, &[], |_| Ok(()))?;
+    let r = run_qemu(&args, image, KERNEL_SMOKE_TIMEOUT, &[], |_| Ok(()))?;
     let lines: Vec<&str> = r.serial.lines().collect();
     let problem = if !r.status.success() {
         Some(format!("QEMU exited with {}", r.status))
@@ -972,8 +1017,10 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
     let image = image.with_extension("img");
     fs::write(&image, elf_to_image(&elf)?).map_err(|e| format!("{}: {e}", image.display()))?;
     let golden = ws.join("crates/purg-kernel/expected.out");
-    let want = fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
-    let want = kernel_normalize(&expand_golden(&want, "kernel", &ws)?);
+    let golden_text =
+        fs::read_to_string(&golden).map_err(|e| format!("{}: {e}", golden.display()))?;
+    // `KERNEL_CORPUS=full` runs the whole corpus on every configuration.
+    let full = env::var("KERNEL_CORPUS").is_ok_and(|c| c == "full");
     let runs: Vec<&KernelRun> = if kvm {
         if env::consts::ARCH != "aarch64" || !Path::new("/dev/kvm").exists() {
             eprintln!("kernel: skipping the KVM run: needs an aarch64 host with /dev/kvm");
@@ -986,8 +1033,9 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
     // `KERNEL_MEMSTAT=1 cargo xtask kernel` adds the `memstat` boot
     // argument: a `kernel: mem ...` line after each test, not compared.
     let memstat = env::var_os("KERNEL_MEMSTAT").is_some();
-    let mut failed = Vec::new();
-    for k in runs {
+    // Each run has its own network peers, shared directory and disks, so
+    // runs can boot at once.
+    let run = |k: &KernelRun| -> KernelOutcome {
         // The network peers on this host: an emu exporting its root, a
         // UDP echo server, and a free port QEMU forwards to the kernel's
         // export.
@@ -1005,9 +1053,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
                     .or(f.err())
                     .or(r.err())
                     .unwrap_or_default();
-                eprintln!("kernel: {}: {e}", k.name);
-                failed.push(k.name);
-                continue;
+                return (String::new(), Err(e));
             }
         };
         let net = net_args(fwd, Some(rstyx));
@@ -1015,18 +1061,14 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         let shared = match SharedDir::create(&ws, k.name).and_then(|d| d.args().map(|a| (d, a))) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("kernel: {}: {e}", k.name);
-                failed.push(k.name);
-                continue;
+                return (String::new(), Err(e));
             }
         };
         // The host's lethed serves the same directory read-only.
         let lethed = match HostLethed::start(&ws, &shared.0.path) {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("kernel: {}: {e}", k.name);
-                failed.push(k.name);
-                continue;
+                return (String::new(), Err(e));
             }
         };
         // The disks: a purgfs image on /n/disk, and a slow one.
@@ -1034,21 +1076,29 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             match disk::KernelDisks::create(&ws, k.name).and_then(|d| d.args().map(|a| (d, a))) {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("kernel: {}: {e}", k.name);
-                    failed.push(k.name);
-                    continue;
+                    return (String::new(), Err(e));
                 }
             };
         // `test` runs the conformance guests, the sh corpus and the
         // network checks instead of an interactive shell.
+        let smoke = k.smoke && !full;
         let bootargs = format!(
-            "{}test hostexport={} udpecho={} lethed={} netexport rstyx{}",
+            "{}test hostexport={} udpecho={} lethed={} netexport rstyx{}{}",
             if kvm { "exit=psci " } else { "" },
             host.port,
             echo.port,
             lethed.port,
-            if memstat { " memstat" } else { "" }
+            if memstat { " memstat" } else { "" },
+            if smoke {
+                format!(" sh={}", KERNEL_SMOKE.join(","))
+            } else {
+                String::new()
+            }
         );
+        let want = match expand_golden(&golden_text, "kernel", &ws, smoke.then_some(KERNEL_SMOKE)) {
+            Ok(w) => kernel_normalize(&w),
+            Err(e) => return (String::new(), Err(e)),
+        };
         let mut args: Vec<&str> = k.args.to_vec();
         args.extend(["-m", &opts.mem, "-nographic"]);
         if k.initrd {
@@ -1065,7 +1115,12 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
         let mut mounted = false;
         let mut mcp = false;
-        let r = run_qemu(&args, &image, KERNEL_TIMEOUT, KERNEL_INPUT, |text| {
+        let timeout = if smoke {
+            KERNEL_SMOKE_TIMEOUT
+        } else {
+            KERNEL_TIMEOUT
+        };
+        let r = run_qemu(&args, &image, timeout, KERNEL_INPUT, |text| {
             if !mounted && text.contains("kernel: net ready\n") {
                 mounted = true;
                 mount_guest(&ws, fwd, "kernel")?;
@@ -1082,12 +1137,10 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         let r = match r {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("kernel: {}: {e}", k.name);
-                failed.push(k.name);
-                continue;
+                return (String::new(), Err(e));
             }
         };
-        print!("{}", r.serial);
+        phases::report(&ws, "kernel", k.name, &r.lines);
         let el_line = format!("kernel: booted at EL{}", k.el);
         let root_line = if k.initrd {
             "kernel: root from the initrd"
@@ -1139,16 +1192,19 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         } else {
             None
         };
-        match problem {
-            Some(p) => {
+        (r.serial, problem.map_or(Ok(r.elapsed), Err))
+    };
+    let outcomes = in_parallel(&runs, kernel_jobs(runs.len()), |k| run(k));
+    // Each run's console and verdict, in order.
+    let mut failed = Vec::new();
+    for (k, (serial, verdict)) in runs.iter().zip(outcomes) {
+        print!("{serial}");
+        match verdict {
+            Ok(t) => eprintln!("kernel: {}: passed in {:.2}s", k.name, t.as_secs_f64()),
+            Err(p) => {
                 eprintln!("kernel: {}: FAILED: {p}", k.name);
                 failed.push(k.name);
             }
-            None => eprintln!(
-                "kernel: {}: passed in {:.2}s",
-                k.name,
-                r.elapsed.as_secs_f64()
-            ),
         }
     }
     if failed.is_empty() {
@@ -1156,6 +1212,46 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
     } else {
         Err(format!("kernel runs failed: {}", failed.join(", ")))
     }
+}
+
+/// A finished `xtask kernel` run: its console, and the time it took or
+/// what was wrong.
+type KernelOutcome = (String, Result<Duration>);
+
+/// How many `xtask kernel` runs boot at once: `KERNEL_JOBS`, or one per
+/// two CPUs (a TCG run keeps one busy, and the emus beside it want some
+/// too), at least one.
+fn kernel_jobs(runs: usize) -> usize {
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let jobs = env::var("KERNEL_JOBS")
+        .ok()
+        .and_then(|j| j.parse().ok())
+        .unwrap_or(cpus / 2)
+        .clamp(1, runs.max(1));
+    if jobs > 1 {
+        eprintln!("kernel: {runs} runs, {jobs} at a time");
+    }
+    jobs
+}
+
+/// `f` of each of `items` on `jobs` threads; the results in order.
+fn in_parallel<T: Sync, R: Send>(items: &[T], jobs: usize, f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    let done: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|s| {
+        for _ in 0..jobs {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(i) else { break };
+                    *done[i].lock().expect("result") = Some(f(item));
+                }
+            });
+        }
+    });
+    done.into_iter()
+        .map(|r| r.into_inner().expect("result").expect("every item ran"))
+        .collect()
 }
 
 /// Mounts the export of the guest (`who`: the probe or the kernel) from

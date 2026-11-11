@@ -167,6 +167,9 @@ boots a second time to check that the files persist.
 
 ```sh
 cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on cortex-a72 and max
+# The whole sh corpus runs on GICv2 and on max, a smoke subset on the other two
+# (KERNEL_CORPUS=full runs it on all four). Runs boot side by side, one per two
+# CPUs; KERNEL_JOBS=N sets how many.
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
 cargo xtask initrd          # target/initrd/root.tar, the same archive the kernel compiles in
 # an interactive shell on the kernel (^D at the start of a line ends it):
