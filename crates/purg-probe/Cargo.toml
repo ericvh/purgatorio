@@ -18,7 +18,7 @@ purg-aarch64 = { workspace = true, features = ["net"] }
 purg-abi.workspace = true
 purg-core = { workspace = true, features = ["tls", "lethe"] }
 purg-platform.workspace = true
-purg-vm.workspace = true
+purg-system.workspace = true
 purg-vm-wasmi.workspace = true
 
 [lints]

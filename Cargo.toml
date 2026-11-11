@@ -66,6 +66,7 @@ purg-lethe = { path = "crates/purg-lethe" }
 purg-styx = { path = "crates/purg-styx" }
 purg-platform = { path = "crates/purg-platform" }
 purg-fs = { path = "crates/purg-fs", default-features = false }
+purg-system = { path = "crates/purg-system" }
 # Without default features: the kernel can be built without them (its
 # `tls`, `net` and `p9` features; docs/footprint.md). The emu and the
 # probe name the ones they use.
