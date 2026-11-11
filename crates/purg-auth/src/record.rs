@@ -62,14 +62,18 @@ fn nonce(seq: u64) -> [u8; 12] {
     n
 }
 
-/// The AEAD itself: ChaCha20-Poly1305 from the RustCrypto crates, which
-/// are `no_std`.
+/// The AEAD itself. The kernel and the guests use the RustCrypto crate,
+/// which is `no_std`; the hosted emu turns on the `ring` feature, whose
+/// assembly is about three times faster. The records are the same bytes
+/// either way.
 mod cipher {
     use super::TAG;
 
     /// ChaCha20-Poly1305 from the RustCrypto crates.
+    #[cfg_attr(feature = "ring", allow(dead_code))]
     pub struct RustCrypto(chacha20poly1305::ChaCha20Poly1305);
 
+    #[cfg_attr(feature = "ring", allow(dead_code))]
     impl RustCrypto {
         pub fn new(key: &[u8; 32]) -> RustCrypto {
             use chacha20poly1305::KeyInit;
@@ -96,6 +100,45 @@ mod cipher {
         }
     }
 
+    /// ChaCha20-Poly1305 from `ring`.
+    #[cfg(feature = "ring")]
+    pub struct Ring(ring::aead::LessSafeKey);
+
+    #[cfg(feature = "ring")]
+    impl Ring {
+        pub fn new(key: &[u8; 32]) -> Ring {
+            use ring::aead::{CHACHA20_POLY1305, LessSafeKey, UnboundKey};
+            // A 32-byte key is always the right length.
+            let key = UnboundKey::new(&CHACHA20_POLY1305, key).unwrap_or_else(|_| unreachable!());
+            Ring(LessSafeKey::new(key))
+        }
+
+        pub fn seal(&self, nonce: [u8; 12], aad: &[u8], buf: &mut [u8]) -> Option<[u8; TAG]> {
+            use ring::aead::{Aad, Nonce};
+            let tag = self
+                .0
+                .seal_in_place_separate_tag(
+                    Nonce::assume_unique_for_key(nonce),
+                    Aad::from(aad),
+                    buf,
+                )
+                .ok()?;
+            tag.as_ref().try_into().ok()
+        }
+
+        /// Opens `buf`, the ciphertext followed by its tag, in place.
+        pub fn open(&self, nonce: [u8; 12], aad: &[u8], buf: &mut [u8]) -> Option<()> {
+            use ring::aead::{Aad, Nonce};
+            self.0
+                .open_in_place(Nonce::assume_unique_for_key(nonce), Aad::from(aad), buf)
+                .ok()
+                .map(drop)
+        }
+    }
+
+    #[cfg(feature = "ring")]
+    pub type Cipher = Ring;
+    #[cfg(not(feature = "ring"))]
     pub type Cipher = RustCrypto;
 }
 
@@ -344,5 +387,30 @@ mod tests {
         let mut o = Opener::starting_at(&KEY, LIMIT);
         assert_eq!(o.open(rec), Err(EXHAUSTED));
         assert_eq!(error(EXHAUSTED), Some(EXHAUSTED));
+    }
+
+    /// With the `ring` feature both ciphers are built: each opens what the
+    /// other sealed, byte for byte.
+    #[cfg(feature = "ring")]
+    #[test]
+    fn ring_and_rustcrypto_agree() {
+        use super::cipher::{Ring, RustCrypto};
+        let (a, b) = (RustCrypto::new(&KEY), Ring::new(&KEY));
+        for len in [0usize, 1, 63, 64, 65, 1000, 8216] {
+            let plain: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let (mut x, mut y) = (plain.clone(), plain.clone());
+            let n = nonce(len as u64);
+            let tx = a.seal(n, b"hdr", &mut x).unwrap();
+            let ty = b.seal(n, b"hdr", &mut y).unwrap();
+            assert_eq!((&x, tx), (&y, ty), "len {len}");
+            x.extend_from_slice(&tx);
+            y.extend_from_slice(&ty);
+            assert!(b.open(n, b"hdr", &mut x).is_some());
+            assert!(a.open(n, b"hdr", &mut y).is_some());
+            assert_eq!(&x[..len], &plain[..]);
+            assert_eq!(&y[..len], &plain[..]);
+            y[0] ^= 1;
+            assert!(a.open(n, b"hdr", &mut y).is_none());
+        }
     }
 }

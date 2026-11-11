@@ -345,6 +345,16 @@ work running:
 - Reading 16 MiB through a mount over an in-memory pipe takes 205 ms
   encrypted against 68 ms in the clear. That is the worst case: with no
   network in the way, the cipher is all the cost there is.
+- The hosted emu now uses `ring`'s ChaCha20-Poly1305 (the `ring` feature
+  of `purg-auth`; `ring` was already a dependency, for TLS). Sealing and
+  opening one 8 KiB record takes 11 µs against 39 µs (720 against 210
+  MB/s), and a 30-byte record 0.6 µs against 1.6 µs. The same 16 MiB read
+  takes 115 to 140 ms encrypted (median 133) against 190 to 280 ms (median
+  208) with the RustCrypto crate, with 68 to 83 ms in the clear: the
+  cipher's share falls by about 2.2 times. The records are the same bytes
+  (a test seals with each and opens with the other). The kernel, the
+  probe and the guests keep the `no_std` crate, so the kernel's size does
+  not change.
 - The server's proof (below) costs nothing unless a client asks for it:
   the export signs on the first read at offset 64, one Ed25519 signature
   per conversation.
@@ -691,8 +701,9 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
 
 - `crates/purg-auth` (`no_std` + `alloc`): `cert`, `keys`, `attr`,
   `proof` (the handshake and the server's check), `session` (the version 3
-  X25519 exchange and key derivation), `record` (the record layer),
-  `server` (the server's proof) and,
+  X25519 exchange and key derivation), `record` (the record layer, with
+  the `ring` cipher behind the `ring` feature), `server` (the server's
+  proof) and,
   behind the default `login` feature, `login` (`pglogin1`, Argon2id,
   sealed files, `crypt`'s chunks). The kernel (`purg-core`) uses it
   without `login`. It builds for `aarch64-unknown-none` and
@@ -729,9 +740,10 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
 - Server proof tests: `purg-auth`'s `server` tests (the key derivation
   against values computed separately with Python's `hmac`, a fixed proof,
   every changed byte, a proof for another session, a certified server,
-  expiry and revocation) and `record`'s end of the sequence;
-  `styxcrypt`: a mount requiring the server accepts the real one,
-  refuses an export with another key and accepts it once that key is in `/lib/keys/servers`, refuses a server that asks for no proof,
+  expiry and revocation) and `record`'s end of the sequence and the two
+  ciphers agreeing; `styxcrypt`: a mount requiring the server accepts the
+  real one, refuses an export with another key and accepts it once that
+  key is in `/lib/keys/servers`, refuses a server that asks for no proof,
   checks the proof after `fauth`, refuses a fake server that seals but
   replays the real server's proof from another session (and accepts the
   same fake server with a fresh proof), `export` with `ENCRYPT`, a

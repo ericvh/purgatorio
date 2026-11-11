@@ -12,6 +12,11 @@ path = "src/main.rs"
 
 [dependencies]
 purg-abi.workspace = true
+# `ring`'s ChaCha20-Poly1305 for the mount's record layer: about three
+# times the RustCrypto crate's speed on the hosts' CPUs (docs/auth.md,
+# "Cost"). The records are the same bytes; the kernel keeps the no_std
+# cipher.
+purg-auth = { workspace = true, features = ["ring"] }
 purg-core = { workspace = true, features = ["std", "tls"] }
 purg-platform = { workspace = true, features = ["std"] }
 purg-styx.workspace = true
@@ -24,6 +29,5 @@ libc.workspace = true
 workspace = true
 
 [dev-dependencies]
-purg-auth.workspace = true
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
