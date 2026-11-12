@@ -1020,9 +1020,10 @@ fn reset_and_recovery() {
         assert_eq!(after.stdout, "0\n0\n      0\n", "{vm}: {after:?}");
         // The old session's progs are gone. The session sees only its
         // own (#pdomain): one session prog, two memfs, two exports, and
-        // this command; not the front end or its relay.
+        // this command and its launcher (an mcpd); not the front end or
+        // its relay.
         let ps = m.run("ps").stdout;
-        assert_eq!(ps.matches("mcpd\n").count(), 1, "{vm}:\n{ps}");
+        assert_eq!(ps.matches("mcpd\n").count(), 2, "{vm}:\n{ps}");
         assert_eq!(ps.matches("memfs\n").count(), 2, "{vm}:\n{ps}");
         assert_eq!(ps.matches("export\n").count(), 2, "{vm}:\n{ps}");
 
@@ -1031,7 +1032,7 @@ fn reset_and_recovery() {
         m.run("echo x > survivor");
         let e = m.fails(
             "run",
-            r#"{"command":"load std; l=`{ps | grep ' sh$'}; echo kill > /prog/${index 2 $l}/ctl; sleep 30"}"#,
+            r#"{"command":"load std; l=`{ps | grep ' sh$'}; p=${index 2 $l}; l=`{cat /prog/$p/status}; echo kill > /prog/${index 2 $l}/ctl; sleep 30"}"#,
         );
         if e.contains("the session ended") {
             assert_eq!(m.run("ls /tmp; echo fresh").stdout, "fresh\n", "{vm}");
@@ -1483,5 +1484,110 @@ fn the_audit_log() {
         // Long arguments are cut.
         assert!(text.contains("...(5000 bytes)"), "{vm}:\n{text}");
         assert!(lines.iter().all(|l| l.len() < 600), "{vm}");
+    }
+}
+
+/// Stage 5: `-M` and `-P` limit the session's domain. A program that
+/// allocates past the memory limit fails and the result says why; a fork
+/// bomb stops at the prog limit; the session goes on after both, and
+/// `reset` kills every prog in the domain, even one that left its group
+/// after its parent exited. `#¤` is gone unless the policy binds it.
+#[test]
+fn session_limits_and_domain_teardown() {
+    for vm in VMS {
+        // The policy shows the whole prog table, to see from inside a later
+        // session that a prog of an earlier one is gone.
+        let policy = HostTemp::new("limits", vm);
+        std::fs::write(&policy.path, "bind '#p' /n/allprog\n").unwrap();
+        let ns = format!("/tmp/{}", policy.name);
+        let mut m = Mcp::start(vm, &["-M", "16m", "-P", "16", "-n", &ns]);
+
+        let v = m.ok(
+            "run",
+            r#"{"command":"load std; fn grow {grow $1^$1}; grow xxxxxxxxxxxxxxxx"}"#,
+        );
+        assert_eq!(v.get("ok"), Some(&Value::Bool(false)), "{vm}");
+        assert!(str_of(&v, "status").starts_with("trap: "), "{vm}");
+        assert!(
+            str_of(&v, "stderr").contains("memory allocation of"),
+            "{vm}"
+        );
+        assert!(
+            str_of(&v, "note").starts_with("out of memory: the session's programs may hold 16 MiB"),
+            "{vm}: {}",
+            v.encode()
+        );
+        assert_eq!(m.run("echo after").stdout, "after\n", "{vm}");
+
+        // A fork bomb as a job: it never gets past 16 progs, and its
+        // spawns fail with no free procs.
+        let j = m.ok(
+            "job_start",
+            r#"{"command":"load std; fn bomb {bomb & bomb &}; bomb; sleep 2","timeout_ms":3000}"#,
+        );
+        // A file tool needs a worker prog, which may not get a place; it
+        // then fails with the limit named.
+        let (mut most, mut refused) = (0, 0);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(2) {
+            match m.tool("list_dir", r#"{"path":"/prog"}"#) {
+                (false, n) => match n.get("entries") {
+                    Some(Value::Array(a)) => most = most.max(a.len()),
+                    _ => panic!("{vm}: {}", n.encode()),
+                },
+                (true, e) => {
+                    let e = e.as_str().unwrap_or("");
+                    assert!(e.contains("at most 16 programs"), "{vm}: {e}");
+                    refused += 1;
+                }
+            }
+        }
+        assert!(most <= 16, "{vm}: {most} progs");
+        assert!(most + refused > 0, "{vm}");
+        let (v, _, err) = read_to_exit(&mut m, int_of(&j, "id"));
+        assert!(err.contains("no free procs"), "{vm}: {err}");
+        assert!(
+            v.get("note").and_then(Value::as_str).is_some(),
+            "{vm}: {}",
+            v.encode()
+        );
+        // The bomb's progs live on in the domain until reset.
+        m.ok("reset", "{}");
+        assert_eq!(m.run("echo after the bomb").stdout, "after the bomb\n");
+
+        // A job past its timeout is killed and says so.
+        let j = m.ok("job_start", r#"{"argv":["sleep","100"],"timeout_ms":200}"#);
+        let (v, _, _) = read_to_exit(&mut m, int_of(&j, "id"));
+        assert_eq!(
+            str_of(&v, "note"),
+            "timed out: killed at its timeout_ms",
+            "{vm}"
+        );
+
+        // A prog that leaves its group, and whose parent then exits.
+        let r = m.run("load std; @{pctl newpgrp; sleep 1000 & echo $apid}");
+        let stray = r.stdout.trim().to_string();
+        assert!(
+            m.run(&format!("test -d /n/allprog/{stray} && echo there"))
+                .stdout
+                == "there\n",
+            "{vm}: {r:?}"
+        );
+        m.ok("reset", "{}");
+        let gone = m.run(&format!(
+            "load std; test -d /n/allprog/{stray} && echo still there"
+        ));
+        assert_eq!(gone.stdout, "", "{vm}");
+
+        // No factotum without a grant.
+        let r = m.run("ls '#¤'");
+        assert_eq!(r.stderr, "ls: #¤: mount/attach disallowed\n", "{vm}");
+        m.finish();
+
+        std::fs::write(&policy.path, "bind '#¤' /n/factotum\n").unwrap();
+        let mut m = Mcp::start(vm, &["-n", &ns]);
+        let r = m.run("ls '#¤'; ls /n/factotum");
+        assert_eq!(r.stderr, "", "{vm}: {r:?}");
+        m.finish();
     }
 }

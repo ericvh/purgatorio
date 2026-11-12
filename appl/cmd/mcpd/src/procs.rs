@@ -2,7 +2,7 @@
 //! session waits for, and jobs, which it keeps. Each has pipes for its
 //! output, read whenever they are ready, and its exit status from the
 //! session prog's wait file. Also the small helper progs mcpd starts from
-//! its own binary: the stdin feeder and the input relay.
+//! its own binary: the launcher, the stdin feeder and the input relay.
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -23,6 +23,9 @@ pub const KILL_GRACE: Duration = Duration::from_millis(3000);
 /// How long output that is already on its way is still collected after a
 /// program has exited. Programs it started may hold its pipes open.
 pub const DRAIN: Duration = Duration::from_millis(200);
+/// How the launcher's exit status starts when it could not start the
+/// program: the rest is why.
+pub const EXEC_FAILED: &str = "mcpd: cannot start: ";
 
 /// One output pipe of a program and what has come out of it.
 pub struct Stream {
@@ -121,11 +124,11 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// When a call's program is killed, if it is a call.
+    /// When the program is killed, if it has a time limit.
     fn limit(&self) -> Option<Instant> {
         match self {
             Kind::Call { deadline, .. } | Kind::File { deadline, .. } => Some(*deadline),
-            Kind::Job(_) => None,
+            Kind::Job(j) => j.deadline,
         }
     }
 }
@@ -145,6 +148,12 @@ pub struct Job {
     pub cursor: [u64; 2],
     /// Exited, and its output collected.
     pub done: bool,
+    /// When it is killed, if it was given a `timeout_ms`.
+    pub deadline: Option<Instant>,
+    /// It was killed at its deadline.
+    pub timed_out: bool,
+    /// Why it failed, when it was a limit of the session.
+    pub note: Option<String>,
 }
 
 pub struct Proc {
@@ -160,6 +169,29 @@ pub struct Proc {
 }
 
 impl Proc {
+    /// Starts `argv` (`cmd` is the program, found as sh finds it) through
+    /// the launcher, `mcpd --exec`, which changes to `cwd` (empty for
+    /// /tmp) and starts the program there. The session prog itself then
+    /// neither changes directory nor looks the program up, so a file
+    /// server that hangs on either holds up only this call.
+    pub fn launch(
+        cwd: &str,
+        cmd: &str,
+        argv: &[String],
+        stdin: OwnedFd,
+        cap: usize,
+        kind: Kind,
+    ) -> Result<Proc, String> {
+        let mut args = vec![
+            String::from("mcpd"),
+            String::from("--exec"),
+            String::from(cwd),
+            String::from(cmd),
+        ];
+        args.extend(argv.iter().cloned());
+        Proc::start(SELF, &args, stdin, cap, kind)
+    }
+
     /// Starts `argv` (`cmd` is the module) in a new process group, with
     /// `stdin` as its input and pipes for its output, capped at `cap`.
     pub fn start(
@@ -335,6 +367,45 @@ pub fn feed(text: &str) -> Result<OwnedFd, String> {
         start_feeder(text.as_bytes(), in_w.as_raw_fd())?;
     }
     Ok(in_r)
+}
+
+/// `mcpd --exec cwd cmd argv...`: changes to `cwd` (/tmp when it is
+/// empty), starts `cmd` with `argv` on this prog's three standard files,
+/// waits for it and exits with its status. A failure to change directory
+/// or to start the program is written to standard error and given as the
+/// status after [`EXEC_FAILED`]. The program shares this prog's process
+/// group, namespace and environment.
+pub fn exec(args: &[String]) -> ! {
+    let fail = |msg: String| -> ! {
+        let _ = writeln!(std::io::stderr(), "{msg}");
+        purgatorio::exits(&format!("{EXEC_FAILED}{msg}"))
+    };
+    let [cwd, cmd, argv @ ..] = args else {
+        fail(String::from("usage: mcpd --exec cwd cmd argv..."))
+    };
+    if cwd.is_empty() {
+        crate::session::home();
+    } else if let Err(e) = purgatorio::chdir(cwd) {
+        fail(err(cwd, e));
+    }
+    let name = argv.first().map_or(cmd.as_str(), String::as_str);
+    let pid = match purgatorio::spawn(cmd, argv, pctl::NEWFD, &[(0, 0), (1, 1), (2, 2)]) {
+        Ok(pid) => pid,
+        Err(e) => fail(err(name, e)),
+    };
+    // The program has its own copies; the pipes close when it is done.
+    for fd in 0..3 {
+        // SAFETY: fds 0 to 2 are this prog's and nothing else here uses
+        // them again.
+        drop(unsafe { OwnedFd::from_raw_fd(fd) });
+    }
+    loop {
+        match purgatorio::wait() {
+            Ok(m) if m.pid == pid => purgatorio::exits(&m.status),
+            Ok(_) => {}
+            Err(e) => purgatorio::exits(&format!("killed: {e}")),
+        }
+    }
 }
 
 /// `mcpd --feed`: copy fd 0 to fd 1, reading all of it first.

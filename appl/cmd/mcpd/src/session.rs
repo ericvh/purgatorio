@@ -23,14 +23,20 @@
 //! 5. The namespace file, if one was given, is applied by `nsbuild`. This
 //!    is where a policy grants more: `bind -c '#U/work' /n/work`,
 //!    `bind '#I' /net`. Missing mount points are made first.
-//! 6. `pctl(NODEVS)`: from here on neither this prog nor anything it starts
+//! 6. The limits (`-M`, `-P`) are set on the session's domain, which
+//!    holds this prog, its file servers and everything it starts: the wasm
+//!    memory they may hold between them and how many there may be.
+//! 7. `nodev ¤` on this prog's `ctl`, unless the namespace file binds
+//!    `#¤`: the session cannot reach the factotum's keys.
+//! 8. `pctl(NODEVS)`: from here on neither this prog nor anything it starts
 //!    can name a device with `#`, except the ones Inferno always allows
-//!    (`#e`, `#s`, `#|`, `#M`, `#¤`).
+//!    (`#e`, `#s`, `#|`, `#M`) and `#¤` when the policy left it. `#s` is the
+//!    session's own registry: a domain sees only the file2chan files its
+//!    members made.
 //!
 //! The protocol with the front end, on fds 0 and 1, is one JSON object per
 //! line. A request is `{"tag", "name", "arguments"}`; the session answers
-//! `{"tag", "result"}` or `{"tag", "error"}`, with `"group"` when it
-//! started a process group the front end must kill at the end. It sends
+//! `{"tag", "result"}` or `{"tag", "error"}`. It sends
 //! `{"start": tag}` when it begins a request, and `{"ack": n}` for every
 //! `n` bytes it reads, which is how the front end knows the request pipe
 //! has room and never blocks writing to it.
@@ -60,7 +66,7 @@ use purgatorio::{DMDIR, Error};
 
 use crate::files;
 use crate::json::{self, Value, base64_decode, obj};
-use crate::procs::{Job, Kind, Proc, feed, start_feeder};
+use crate::procs::{EXEC_FAILED, Job, Kind, Proc, feed, start_feeder};
 use crate::tooldefs::{DEFAULT_OUTPUT, DEFAULT_TIMEOUT_MS, JOB_BUFFER, MAX_JOBS, MOUNT_TIMEOUT_MS};
 
 const SH: &str = "/bin/sh.wasm";
@@ -86,6 +92,66 @@ const READ_CHUNK: usize = 16 * 1024;
 
 pub fn err(what: &str, e: impl std::fmt::Display) -> String {
     format!("{what}: {e}")
+}
+
+/// What a session may use, set on its domain (`mcpd -M`, `-P`).
+#[derive(Clone, Copy)]
+pub struct Limits {
+    /// Bytes of wasm memory all its progs may hold between them.
+    pub mem: u64,
+    /// How many progs it may have at once.
+    pub progs: u64,
+}
+
+impl Limits {
+    /// Says which limit a program's diagnostics show it ran into, if any:
+    /// Rust's allocator reports a refused `memory.grow`, and a spawn past
+    /// the prog limit fails with `no free procs`. Below 4 GiB the domain's
+    /// limit is the only reason an allocation fails.
+    pub fn note(&self, stderr: &str) -> Option<String> {
+        if stderr.contains("memory allocation of ") && stderr.contains(" bytes failed") {
+            Some(self.mem_note())
+        } else if stderr.contains(purgatorio::abi::error::ENOPROC) {
+            Some(self.procs_note())
+        } else {
+            None
+        }
+    }
+
+    fn mem_note(&self) -> String {
+        format!(
+            "out of memory: the session's programs may hold {} of memory between them \
+             (mcpd -M), and a program asked for more; it was stopped",
+            size_text(self.mem)
+        )
+    }
+
+    fn procs_note(&self) -> String {
+        format!(
+            "no free procs: the session may run at most {} programs at once (mcpd -P), \
+             counting its own servers; end some jobs or background programs",
+            self.progs
+        )
+    }
+
+    /// A spawn error, with the limit named when it was one.
+    pub fn explain(&self, e: String) -> String {
+        if e.ends_with(purgatorio::abi::error::ENOPROC) {
+            format!("{e} ({})", self.procs_note())
+        } else {
+            e
+        }
+    }
+}
+
+/// `n` bytes as `256 MiB`, `64 KiB` or `100 bytes`.
+pub fn size_text(n: u64) -> String {
+    for (shift, unit) in [(30, "GiB"), (20, "MiB"), (10, "KiB")] {
+        if n >= 1 << shift && n.is_multiple_of(1 << shift) {
+            return format!("{} {unit}", n >> shift);
+        }
+    }
+    format!("{n} bytes")
 }
 
 fn null(m: u8) -> Result<OwnedFd, String> {
@@ -155,6 +221,7 @@ pub struct Session {
     parked: Vec<Parked>,
     /// How long a file tool may take before its worker is abandoned.
     file_ms: u64,
+    limits: Limits,
 }
 
 impl Session {
@@ -233,7 +300,7 @@ impl Session {
 
     /// Builds the sandbox described at the top of this file. `policy` is the
     /// text of the namespace file.
-    pub fn build(policy: Option<&str>, file_ms: u64) -> Result<Session, String> {
+    pub fn build(policy: Option<&str>, file_ms: u64, limits: Limits) -> Result<Session, String> {
         let me = purgatorio::pid();
         let wait =
             purgatorio::open(&format!("#p/{me}/wait"), OREAD).map_err(|e| err("wait file", e))?;
@@ -247,6 +314,7 @@ impl Session {
             feeders: Vec::new(),
             parked: Vec::new(),
             file_ms,
+            limits,
         };
         // Any directory will do to hold the new root while it is built; the
         // namespace it is in is about to be thrown away.
@@ -283,7 +351,15 @@ impl Session {
         ] {
             purgatorio::bind(new, old, flags).map_err(|e| err(&format!("bind {old}"), e))?;
         }
-        s.helper("/bin/memfs.wasm", &["memfs", HOME], null(OREAD)?)?;
+        // Binding #pdomain founded the domain; it holds this prog, its file
+        // servers and all it starts.
+        let ctl = format!("/prog/{me}/ctl");
+        for (what, n) in [("memlimit", limits.mem), ("proglimit", limits.progs)] {
+            std::fs::write(&ctl, format!("domain {what} {n}"))
+                .map_err(|e| err(&format!("domain {what}"), Error::from(e)))?;
+        }
+        s.helper("/bin/memfs.wasm", &["memfs", HOME], null(OREAD)?)
+            .map_err(|e| limits.explain(e))?;
         purgatorio::chdir("/").map_err(|e| err("/", e))?;
         // What sh's profile would set. The environment is a copy, so the
         // server's own variables are not changed.
@@ -304,6 +380,9 @@ impl Session {
             )
             .map_err(|e| format!("namespace file: {e}"))?;
         }
+        if !policy.is_some_and(grants_factotum) {
+            std::fs::write(&ctl, "nodev ¤").map_err(|e| err("nodev", Error::from(e)))?;
+        }
         purgatorio::pctl(pctl::NODEVS, &[]).map_err(|e| err("pctl NODEVS", e))?;
         let _ = purgatorio::chdir(HOME);
         Ok(s)
@@ -318,14 +397,11 @@ impl Session {
         }
     }
 
-    fn reply(&mut self, tag: Value, outcome: Result<Value, String>, group: Option<u32>) {
+    fn reply(&mut self, tag: Value, outcome: Result<Value, String>) {
         let mut m = vec![(String::from("tag"), tag)];
         match outcome {
             Ok(v) => m.push((String::from("result"), v)),
             Err(e) => m.push((String::from("error"), Value::Str(e))),
-        }
-        if let Some(g) = group {
-            m.push((String::from("group"), Value::from(g)));
         }
         self.send(Value::Object(m));
     }
@@ -408,7 +484,13 @@ impl Session {
         let Ok(pid) = p.parse::<u32>() else { return };
         if let Some(proc) = self.procs.iter_mut().find(|x| x.pid == pid) {
             if proc.status.is_none() {
-                proc.status = Some(status.clone());
+                // A job that could not start shows as one that failed;
+                // `finish_call` makes it the error of a run.
+                let status = match (&proc.kind, status.strip_prefix(EXEC_FAILED)) {
+                    (Kind::Job(_), Some(why)) => format!("fail:{why}"),
+                    _ => status.clone(),
+                };
+                proc.status = Some(status);
                 proc.exited_at = Some(Instant::now());
             }
         } else if let Some(k) = self.feeders.iter().position(|f| f.0 == pid) {
@@ -427,6 +509,9 @@ impl Session {
         let now = Instant::now();
         for p in &mut self.procs {
             if p.overdue(now) {
+                if let Kind::Job(j) = &mut p.kind {
+                    j.timed_out = true;
+                }
                 p.kill(now);
             }
         }
@@ -445,6 +530,11 @@ impl Session {
                             s.fd = None;
                         }
                         p.status.get_or_insert_with(|| String::from("killed"));
+                        j.note = if j.timed_out {
+                            Some(String::from("timed out: killed at its timeout_ms"))
+                        } else {
+                            self.limits.note(&p.streams[1].text())
+                        };
                     }
                     i += 1;
                 }
@@ -470,7 +560,7 @@ impl Session {
             if ready || now >= w.deadline {
                 let w = self.parked.remove(k);
                 let r = self.read_job(w.job, w.from, w.max);
-                self.reply(w.tag, r, None);
+                self.reply(w.tag, r);
             } else {
                 k += 1;
             }
@@ -500,6 +590,11 @@ impl Session {
         self.busy = false;
         let killed = p.killed_at.is_some();
         let status = p.status.take().unwrap_or_else(|| String::from("killed"));
+        if let Some(why) = status.strip_prefix(EXEC_FAILED) {
+            let why = self.limits.explain(String::from(why));
+            self.reply(tag, Err(why));
+            return;
+        }
         let [out, errs] = &mut p.streams;
         let outcome = if mount {
             if status.is_empty() && !killed {
@@ -513,17 +608,23 @@ impl Session {
                 }
             }
         } else {
-            Ok(obj([
+            let stderr = errs.text();
+            let note = self.limits.note(&stderr);
+            let mut v = obj([
                 ("stdout", out.text().into()),
-                ("stderr", errs.text().into()),
+                ("stderr", stderr.into()),
                 ("ok", (status.is_empty() && !killed).into()),
                 ("status", status.into()),
                 ("timed_out", killed.into()),
                 ("stdout_truncated", out.truncated.into()),
                 ("stderr_truncated", errs.truncated.into()),
-            ]))
+            ]);
+            if let (Some(n), Value::Object(m)) = (note, &mut v) {
+                m.push((String::from("note"), n.into()));
+            }
+            Ok(v)
         };
-        self.reply(tag, outcome, Some(p.pid));
+        self.reply(tag, outcome);
     }
 
     /// Answers a file tool with what its worker wrote. Only `result` or
@@ -557,7 +658,7 @@ impl Session {
                 )),
             }
         };
-        self.reply(tag, outcome, None);
+        self.reply(tag, outcome);
     }
 
     /// Starts a file worker for request `r`: `mcpd --file`, in this
@@ -576,7 +677,8 @@ impl Session {
             deadline: Instant::now() + Duration::from_millis(self.file_ms.max(1)),
         };
         let argv = ["mcpd", "--file"].map(String::from);
-        let p = Proc::start(SELF, &argv, feed(&req)?, FILE_REPLY, kind)?;
+        let p = Proc::start(SELF, &argv, feed(&req)?, FILE_REPLY, kind)
+            .map_err(|e| self.limits.explain(e))?;
         self.procs.push(p);
         Ok(())
     }
@@ -593,13 +695,7 @@ impl Session {
                 }
                 Err(e) => Err(e),
             },
-            "job_start" => match self.job_start(args) {
-                Ok((v, pid)) => {
-                    self.reply(r.tag, Ok(v), Some(pid));
-                    return;
-                }
-                Err(e) => Err(e),
-            },
+            "job_start" => self.job_start(args),
             "job_read" => {
                 let id = int(args, "id") as u32;
                 let from = [opt_int(args, "offset"), opt_int(args, "stderr_offset")];
@@ -634,12 +730,11 @@ impl Session {
                 Err(e) => Err(e),
             },
         };
-        self.reply(r.tag, outcome, None);
+        self.reply(r.tag, outcome);
     }
 
     /// Starts the program of a `run` or a `mount`.
     fn start_call(&mut self, r: &Request) -> Result<(), String> {
-        home();
         let args = &r.args;
         let s = |k: &str| args.get(k).and_then(Value::as_str);
         let (argv, cmd, stdin, timeout, cap) = if r.name == "mount" {
@@ -677,17 +772,16 @@ impl Session {
             };
             let timeout = opt_int(args, "timeout_ms").unwrap_or(DEFAULT_TIMEOUT_MS as u64);
             let cap = opt_int(args, "max_output_bytes").unwrap_or(DEFAULT_OUTPUT as u64);
-            if let Some(cwd) = s("cwd") {
-                purgatorio::chdir(cwd).map_err(|e| err(cwd, e))?;
-            }
             (argv, SH, stdin, timeout, cap as usize)
         };
+        let cwd = s("cwd").filter(|_| r.name == "run").unwrap_or("");
         let kind = Kind::Call {
             tag: r.tag.clone(),
             deadline: Instant::now() + Duration::from_millis(timeout.max(1)),
             mount: r.name == "mount",
         };
-        let p = Proc::start(cmd, &argv, stdin, cap, kind)?;
+        let p =
+            Proc::launch(cwd, cmd, &argv, stdin, cap, kind).map_err(|e| self.limits.explain(e))?;
         self.procs.push(p);
         Ok(())
     }
@@ -705,7 +799,7 @@ impl Session {
         })
     }
 
-    fn job_start(&mut self, args: &Value) -> Result<(Value, u32), String> {
+    fn job_start(&mut self, args: &Value) -> Result<Value, String> {
         let running = self
             .procs
             .iter()
@@ -734,10 +828,7 @@ impl Session {
                 ));
             }
         };
-        home();
-        if let Some(cwd) = args.get("cwd").and_then(Value::as_str) {
-            purgatorio::chdir(cwd).map_err(|e| err(cwd, e))?;
-        }
+        let cwd = args.get("cwd").and_then(Value::as_str).unwrap_or("");
         let command = match args.get("command").and_then(Value::as_str) {
             Some(c) => String::from(c),
             None => argv.join(" "),
@@ -753,8 +844,13 @@ impl Session {
             eof: false,
             cursor: [0, 0],
             done: false,
+            deadline: opt_int(args, "timeout_ms")
+                .map(|ms| Instant::now() + Duration::from_millis(ms)),
+            timed_out: false,
+            note: None,
         };
-        let p = Proc::start(&cmd, &argv, in_r, JOB_BUFFER, Kind::Job(job))?;
+        let p = Proc::launch(cwd, &cmd, &argv, in_r, JOB_BUFFER, Kind::Job(job))
+            .map_err(|e| self.limits.explain(e))?;
         self.next_job += 1;
         let pid = p.pid;
         self.procs.push(p);
@@ -766,7 +862,7 @@ impl Session {
             }
             self.pump(id);
         }
-        Ok((obj([("id", id.into()), ("pid", pid.into())]), pid))
+        Ok(obj([("id", id.into()), ("pid", pid.into())]))
     }
 
     /// Hands a job's queued input to a feeder, one at a time so the order
@@ -813,10 +909,14 @@ impl Session {
         } else {
             String::new()
         };
-        if let Kind::Job(j) = &mut p.kind {
-            j.cursor = [o1, e1];
-        }
-        Ok(obj([
+        let note = match &mut p.kind {
+            Kind::Job(j) => {
+                j.cursor = [o1, e1];
+                j.note.clone()
+            }
+            _ => None,
+        };
+        let mut v = obj([
             ("stdout", out.into()),
             ("stderr", errs.into()),
             ("offset", o0.into()),
@@ -828,7 +928,11 @@ impl Session {
             ("running", (!done).into()),
             ("ok", (done && status.is_empty()).into()),
             ("status", status.into()),
-        ]))
+        ]);
+        if let (Some(n), Value::Object(m)) = (note, &mut v) {
+            m.push((String::from("note"), n.into()));
+        }
+        Ok(v)
     }
 
     fn job_write(&mut self, args: &Value) -> Result<Value, String> {
@@ -909,7 +1013,7 @@ impl Session {
 
 /// Tools name files from /tmp, whatever a command did to the working
 /// directory the progs of a namespace share.
-fn home() {
+pub fn home() {
     let _ = purgatorio::chdir(HOME).or_else(|_| purgatorio::chdir("/"));
 }
 
@@ -1040,10 +1144,10 @@ fn create(args: &Value) -> u32 {
     }
 }
 
-/// Makes the mount points a namespace file names that the new root lacks,
-/// since namespace(6) has no way to make one and the root starts with only
-/// a few. Lines that name variables are left to nsbuild.
-fn make_mount_points(text: &str) {
+/// The lines of a namespace file as a verb and its arguments, flags (and
+/// the values of `mount -k` and `-C`) left out.
+fn policy_lines(text: &str) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
     for line in text.lines() {
         let words = purgatorio::unquote_fields(line);
         let Some(verb) = words.first() else { continue };
@@ -1062,6 +1166,25 @@ fn make_mount_points(text: &str) {
             }
             args.push(w.clone());
         }
+        out.push((verb.clone(), args));
+    }
+    out
+}
+
+/// Whether a namespace file grants the factotum: it binds `#¤` (or a name
+/// in it) somewhere. Without that the session's namespace may not attach
+/// `#¤` at all.
+fn grants_factotum(text: &str) -> bool {
+    policy_lines(text)
+        .iter()
+        .any(|(verb, args)| verb == "bind" && args.first().is_some_and(|a| a.starts_with("#¤")))
+}
+
+/// Makes the mount points a namespace file names that the new root lacks,
+/// since namespace(6) has no way to make one and the root starts with only
+/// a few. Lines that name variables are left to nsbuild.
+fn make_mount_points(text: &str) {
+    for (verb, args) in policy_lines(text) {
         let target = match verb.as_str() {
             "bind" | "mount" => args.get(1),
             "import" if args.len() >= 2 => args.last(),

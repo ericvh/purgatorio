@@ -21,6 +21,12 @@ pub const JOB_BUFFER: usize = 1024 * 1024;
 pub const MAX_JOBS: usize = 32;
 /// Default timeout of `mount`.
 pub const MOUNT_TIMEOUT_MS: i64 = 30_000;
+/// Longest `timeout_ms` a job may be given: a day.
+pub const MAX_JOB_TIMEOUT_MS: i64 = 86_400_000;
+/// What the `note` of a result says.
+const NOTE: &str = "Present only when the program ran into a limit of the session: its memory \
+                    (all its programs together) or the number of programs it may run, or, for \
+                    a job, its timeout_ms. Says which.";
 /// Largest file `resources/read` returns.
 pub const MAX_RESOURCE: usize = 1024 * 1024;
 /// Most files `resources/list` lists.
@@ -241,6 +247,7 @@ pub fn tools() -> Vec<Value> {
                         "stderr_truncated",
                         boolean("True if stderr was longer than the cap."),
                     ),
+                    ("note", string(NOTE)),
                 ],
                 &[
                     "stdout",
@@ -463,6 +470,14 @@ pub fn tools() -> Vec<Value> {
                         ),
                     ),
                     ("cwd", string("Directory to start in. Default /tmp.")),
+                    (
+                        "timeout_ms",
+                        integer(
+                            "Kill the job and everything it started after this many milliseconds. Default: no limit; it runs until job_kill, reset or the end of the session.",
+                            1,
+                            Some(MAX_JOB_TIMEOUT_MS),
+                        ),
+                    ),
                 ],
                 &[],
             ),
@@ -578,6 +593,7 @@ pub fn tools() -> Vec<Value> {
                         "ok",
                         boolean("True if the job has exited with an empty status."),
                     ),
+                    ("note", string(NOTE)),
                 ],
                 &[
                     "stdout",
