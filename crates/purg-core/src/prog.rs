@@ -4,7 +4,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use purg_abi::{error, pctl};
 use purg_platform::Platform;
@@ -70,6 +70,9 @@ pub struct Proc {
     pgrp: Mutex<Arc<Pgrp>>,
     /// Set by `kill` and by `ctl`. Blocking syscalls on this prog watch it.
     pub note: Arc<Note>,
+    /// The prog survives an interrupt (`catchint on` on `ctl`): it gets
+    /// the note instead of being killed. Not inherited.
+    catchint: AtomicBool,
     pub kgrp: Arc<Kgrp>,
     waits: Mutex<VecDeque<String>>,
     waitr: Rendez,
@@ -238,6 +241,15 @@ impl Proc {
     /// Interrupts this prog wherever it is blocked.
     pub fn kill(&self) {
         self.note.kill();
+    }
+
+    /// Whether the prog survives interrupts (`docs/abi.md`, "Interrupts").
+    pub fn catches_interrupt(&self) -> bool {
+        self.catchint.load(Ordering::Acquire)
+    }
+
+    pub fn set_catch_interrupt(&self, on: bool) {
+        self.catchint.store(on, Ordering::Release);
     }
 
     /// `running` until [`Proc::kill`] or a trap under tracing, then
@@ -483,6 +495,7 @@ impl Procs {
             fgrp: Mutex::new(fgrp),
             pgrp: Mutex::new(pgrp),
             note: Arc::new(Note::new()),
+            catchint: AtomicBool::new(false),
             kgrp: Arc::new(Kgrp::new()),
             waits: Mutex::new(VecDeque::new()),
             waitr: Rendez::new(),
@@ -513,6 +526,41 @@ impl Procs {
         });
         // Dropped outside the table's lock.
         drop(broken);
+    }
+
+    /// Sends the `interrupt` note to `pid`: a prog that catches it has
+    /// its pending blocking call, or its next, fail with `interrupted`;
+    /// any other is killed.
+    pub fn interrupt(&self, pid: u32) {
+        match self.get(pid) {
+            Some(p) if p.catches_interrupt() => p.note.interrupt(),
+            Some(_) => self.kill(pid),
+            None => {}
+        }
+    }
+
+    /// Sends the `interrupt` note to every prog in `group`.
+    pub fn interrupt_group(&self, group: u32) {
+        self.interrupt_all(|p| p.group() == group);
+    }
+
+    /// Sends the `interrupt` note to every prog `which` picks, those that
+    /// catch it first, so that one waiting for another sees the note
+    /// before the other's death.
+    pub fn interrupt_all(&self, which: impl Fn(&Proc) -> bool) {
+        let members: Vec<Arc<Proc>> = self
+            .table
+            .lock()
+            .values()
+            .filter(|p| which(p))
+            .cloned()
+            .collect();
+        for p in members.iter().filter(|p| p.catches_interrupt()) {
+            p.note.interrupt();
+        }
+        for p in members.iter().filter(|p| !p.catches_interrupt()) {
+            self.kill(p.pid);
+        }
     }
 
     /// Kills `pid`. A broken prog has already stopped: it is removed from
