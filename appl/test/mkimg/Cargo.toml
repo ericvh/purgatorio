@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 purgatorio.workspace = true
+fat = { package = "appl-lib-fat", path = "../../lib/fat" }
 iso9660 = { package = "appl-lib-iso9660", path = "../../lib/iso9660" }
 
 [lints]

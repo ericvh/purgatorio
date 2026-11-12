@@ -62,6 +62,7 @@ a `; ` prompt.
 | `dbfs`: the records of a text file as files (dbfs(4)) | done; `rawdbfs` remains |
 | `fs`: trees as values, with all of fs(1)'s modules (`walk filter select merge write bundle unbundle exec pipe proto run setroot chstat compose mergewrite void` and the gates), `@{...}` command blocks | done; `mergewrite` takes its selector as `-c` |
 | `9660srv`: ISO 9660 images read-only, with Rock Ridge names and modes and Joliet names (9660srv(4)) | done; no High Sierra, Plan 9 extensions or multi-extent files |
+| `dossrv`: FAT12, FAT16 and FAT32 read and write, with long names (dossrv(4)) | done; times are UTC, `-v -F -c -S` do nothing |
 | Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd` | done |
 | System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext disk/mkdisk disk/chkdisk` | done |
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log; a `/prog` of its own progs only; remote sessions over encrypted `rcmd`, also on the kernel. See [docs/mcp.md](docs/mcp.md) | stage 3 |

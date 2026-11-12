@@ -84,10 +84,62 @@ fn iso(args: &[String]) -> Result<(), Error> {
     std::fs::write(image, img).map_err(Error::from)
 }
 
+fn fat_image(args: &[String]) -> Result<(), Error> {
+    let (kind, sectors, image, dir) = match args {
+        [k, n, i] => (k, n, i, None),
+        [k, n, i, d] => (k, n, i, Some(d)),
+        _ => return Err(Error::from(USAGE)),
+    };
+    let kind = match kind.as_str() {
+        "12" => fat::Kind::Fat12,
+        "16" => fat::Kind::Fat16,
+        "32" => fat::Kind::Fat32,
+        _ => return Err(Error::from(USAGE)),
+    };
+    let sectors: u32 = sectors.parse().map_err(|_| Error::from(USAGE))?;
+    let img = fat::format::format(kind, sectors).map_err(Error)?;
+    let mut v = fat::Vol::open(img, 0).map_err(Error)?;
+    if let Some(dir) = dir {
+        let mut found = Vec::new();
+        walk(dir, "", &mut found)?;
+        // Every file gets the same time, so images are alike.
+        let now = 1_709_288_430;
+        for f in found {
+            let (parent, name) = match f.path.rsplit_once('/') {
+                Some((p, n)) => (Some(p), n),
+                None => (None, f.path.as_str()),
+            };
+            let mut d = v.root();
+            if let Some(p) = parent {
+                for e in p.split('/') {
+                    let ent = v
+                        .lookup(d, e)
+                        .map_err(Error)?
+                        .ok_or_else(|| Error::from(fat::ENONEXIST))?;
+                    d = ent.as_dir();
+                }
+            }
+            let mut attr = if f.data.is_none() { fat::ATTR_DIR } else { 0 };
+            if f.perm & 0o200 == 0 {
+                attr |= fat::ATTR_RO;
+            }
+            let ent = v.create(d, name, attr, now).map_err(Error)?;
+            if let Some(data) = f.data
+                && !data.is_empty()
+            {
+                v.write(ent.loc, 0, &data, now).map_err(Error)?;
+            }
+        }
+    }
+    v.flush().map_err(Error)?;
+    std::fs::write(image, &v.disk).map_err(Error::from)
+}
+
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     match args.get(1).map(String::as_str) {
         Some("iso") => iso(&args[2..]),
+        Some("fat") => fat_image(&args[2..]),
         _ => Err(Error::from(USAGE)),
     }
 }
