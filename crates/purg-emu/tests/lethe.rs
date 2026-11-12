@@ -263,6 +263,30 @@ lethe: file does not exist
     assert!(l.count(" walk /") >= 2, "{}", l.log());
 }
 
+/// A name in a whole-path walk that is a mount point in the client's
+/// namespace ends the walk there, as for `#M`: the rest is walked in what
+/// is bound on it, not in the server's tree beneath.
+#[test]
+fn a_walk_crosses_a_mount_point_in_the_path() {
+    let s = Scratch::new("mtpt");
+    std::fs::create_dir_all(s.host.join("o")).unwrap();
+    std::fs::write(s.host.join("o/inner"), "bound\n").unwrap();
+    let l = Lethed::start(&["-a", "127.0.0.1:0", "-k", &test_key()], &s.srv());
+    let g = &s.guest;
+    let script = format!(
+        "lethe -t 0 {addr} {g}/n || exit
+bind {g}/o {g}/n/sub
+cat {g}/n/sub/inner
+unmount {g}/n/sub
+cat {g}/n/sub/inner",
+        addr = l.addr(),
+    );
+    for vm in VMS {
+        let (out, _) = emu(vm, &script);
+        assert_eq!(out, "bound\ninner file\n", "{vm}");
+    }
+}
+
 #[test]
 fn a_file_changed_underneath_is_not_served_stale() {
     let s = Scratch::new("changed");

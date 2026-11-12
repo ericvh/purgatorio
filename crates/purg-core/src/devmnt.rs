@@ -21,7 +21,7 @@ use purg_auth::session;
 
 use crate::auth::{self, ENCRYPTED, NO_SESSION, OFFER, SERVER_NONE, SERVER_PROOF_OFFSET, SIGNED};
 use crate::chan::Chan;
-use crate::dev::{Dev, Walked, WalkedNames};
+use crate::dev::{Dev, WalkEnd, Walked, WalkedNames};
 use crate::error::{Error, Result};
 use crate::mux::Mux;
 use crate::rw::{read_msg, read_sealed, write_full, write_sealed};
@@ -910,10 +910,10 @@ impl Dev for DevMnt {
 
     fn walk(&self, c: &Chan, name: &str) -> Result<Walked> {
         let w = self.walk_names(c, &[name])?;
-        match (w.qids.first(), w.aux) {
-            (Some(q), Some(aux)) => Ok(Walked {
+        match (w.qids.first(), w.end) {
+            (Some(q), WalkEnd::Reached) => Ok(Walked {
                 qid: *q,
-                aux: Some(aux),
+                aux: w.aux,
             }),
             _ => Err(Error::new(error::ENONEXIST)),
         }
@@ -957,12 +957,20 @@ impl Dev for DevMnt {
             let _ = f.session.clunk(newfid, false);
             return Err(Error::new(error::EIO));
         }
-        let aux: crate::chan::Aux = if qids.len() == names.len() {
-            Some(Arc::new(MntFile::new(&f.session, newfid, "")))
-        } else {
-            None
-        };
-        Ok(WalkedNames { qids, aux })
+        // A walk that stops short does not make `newfid`, and its error
+        // is Inferno's for a partial walk.
+        if qids.len() < names.len() {
+            return Ok(WalkedNames {
+                qids,
+                aux: None,
+                end: WalkEnd::Stopped(None),
+            });
+        }
+        Ok(WalkedNames {
+            qids,
+            aux: Some(Arc::new(MntFile::new(&f.session, newfid, ""))),
+            end: WalkEnd::Reached,
+        })
     }
 
     fn stat(&self, c: &Chan) -> Result<Dir> {

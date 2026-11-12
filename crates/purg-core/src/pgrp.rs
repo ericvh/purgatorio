@@ -11,7 +11,7 @@ use purg_abi::{error, mount};
 use purg_platform::sync::{Mutex, RwLock};
 
 use crate::chan::{Chan, Member};
-use crate::dev::DevTab;
+use crate::dev::{DevTab, WalkEnd};
 use crate::error::{Error, Result};
 use crate::names::{cleanname, elements, split_device};
 
@@ -510,10 +510,11 @@ impl Pgrp {
             }
         };
         // As Inferno's `walk`: a device that can walks several names in
-        // one step (a mount, up to 9P's 16 names a `Twalk`). The names it
-        // walked past are then looked up in the mount table, and at the
-        // first that is a mount point the walk goes on from what is
-        // mounted there, and what was walked beyond it is dropped.
+        // one step (a mount, up to 9P's 16 names a `Twalk`; `#λ`, a whole
+        // path in one request). The names it walked past are then looked
+        // up in the mount table, and at the first that is a mount point
+        // the walk goes on from what is mounted there, and what was
+        // walked beyond it is dropped.
         let mut i = 0;
         while i < elems.len() {
             let members: Vec<Arc<Chan>> = match &cur.union {
@@ -532,7 +533,6 @@ impl Pgrp {
                     err = Error::new(error::ENOTDIR);
                     continue;
                 }
-                cand.dev.walk_ahead(cand, &elems[i..]);
                 let n = cand.dev.max_walk().clamp(1, elems.len() - i);
                 match cand.dev.walk_names(cand, &elems[i..i + n]) {
                     Ok(w) if !w.qids.is_empty() => {
@@ -545,8 +545,10 @@ impl Pgrp {
             }
             let (dev, devno, w, n) = found.ok_or(err)?;
             let walked = w.qids.len().min(n);
-            // The last name of a whole walk is crossed below, as before.
-            let passed = if walked == n { n - 1 } else { walked };
+            let reached = matches!(w.end, WalkEnd::Reached);
+            // The last name reached is crossed below, as a name walked on
+            // its own is.
+            let passed = if reached { walked - 1 } else { walked };
             let crossed = w.qids[..passed].iter().enumerate().find_map(|(j, q)| {
                 self.mounted_key((dev.dc(), devno, q.path))
                     .map(|to| (j, to))
@@ -563,22 +565,24 @@ impl Pgrp {
                 i += j + 1;
                 continue;
             }
-            if walked < n {
+            if let WalkEnd::Stopped(why) = w.end {
                 // Stopped short: the name after the last one walked is
                 // not there, or the last one walked is not a directory.
-                return Err(Error::new(if w.qids[walked - 1].is_dir() {
-                    error::ENONEXIST
-                } else {
-                    error::ENOTDIR
+                return Err(why.unwrap_or_else(|| {
+                    Error::new(if w.qids[walked - 1].is_dir() {
+                        error::ENONEXIST
+                    } else {
+                        error::ENOTDIR
+                    })
                 }));
             }
-            let mut next = Chan::new(dev, devno, w.qids[n - 1], String::new(), w.aux);
-            for e in &elems[i..i + n] {
+            let mut next = Chan::new(dev, devno, w.qids[walked - 1], String::new(), w.aux);
+            for e in &elems[i..i + walked] {
                 name.push('/');
                 name.push_str(e);
             }
             next.name = name.clone();
-            i += n;
+            i += walked;
             cur = self.domount(next, cross_last || i < elems.len());
         }
         cur.name = if full.starts_with('#') || !full.starts_with('/') {

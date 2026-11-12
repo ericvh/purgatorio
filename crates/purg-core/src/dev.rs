@@ -16,11 +16,25 @@ pub struct Walked {
 
 /// The result of walking several names in one step ([`Dev::walk_names`]).
 pub struct WalkedNames {
-    /// The qids of the names walked, in order: as many as were given when
-    /// the walk went through, fewer when it stopped short.
+    /// The qids of the names walked, in order; at least one.
     pub qids: Vec<Qid>,
-    /// The device's state for the last name, when every name was walked.
+    /// The device's state for the last name walked, when the walk can go
+    /// on from it ([`WalkEnd::Reached`]).
     pub aux: Aux,
+    pub end: WalkEnd,
+}
+
+/// How a [`Dev::walk_names`] ended.
+pub enum WalkEnd {
+    /// Every name in `qids` was walked and the walk can go on from the
+    /// last. That may be fewer names than were given: the rest are walked
+    /// in another step.
+    Reached,
+    /// The name after the last in `qids` could not be walked: for this
+    /// reason, or, when `None`, the one Inferno gives a walk that stops
+    /// short (`file does not exist`, or `not a directory` below a file).
+    /// Nothing was established for the names in `qids`.
+    Stopped(Option<Error>),
 }
 
 /// A device driver, mirroring Inferno's `Dev` table entry.
@@ -45,29 +59,24 @@ pub trait Dev: Send + Sync {
     }
     /// Walks from directory `c` to its child `name`.
     fn walk(&self, c: &Chan, name: &str) -> Result<Walked>;
-    /// A hint before a walk goes on from directory `c`: `names` are the
-    /// names it will walk from here, in order, the next one first. A
-    /// device that can look several names up in one exchange (`#λ`)
-    /// fetches them; [`Dev::walk`] is still called for each name, and
-    /// nothing may depend on the hint having been given.
-    fn walk_ahead(&self, _c: &Chan, _names: &[&str]) {}
     /// The most names [`Dev::walk_names`] takes at once. A device that
     /// walks one name at a time keeps the default of 1.
     fn max_walk(&self) -> usize {
         1
     }
     /// Walks from directory `c` through `names` (at most
-    /// [`Dev::max_walk`] of them) in one step, as a 9P `Twalk` with
-    /// several names does. Fails when the first name cannot be walked;
-    /// otherwise returns the qids of the names walked, fewer than given
-    /// when the walk stopped short (then there is no `aux`, and nothing
-    /// was established for the last name walked).
+    /// [`Dev::max_walk`] of them, at least one) in one step, as a 9P
+    /// `Twalk` with several names does (`#M`), or a whole-path walk
+    /// (`#λ`). Fails when the first name cannot be walked. The namespace
+    /// looks the names walked past up in the mount table afterwards, and
+    /// goes on from the first mount point among them.
     fn walk_names(&self, c: &Chan, names: &[&str]) -> Result<WalkedNames> {
         let first = names.first().ok_or(Error::new(error::ENONEXIST))?;
         let w = self.walk(c, first)?;
         Ok(WalkedNames {
             qids: alloc::vec![w.qid],
             aux: w.aux,
+            end: WalkEnd::Reached,
         })
     }
     fn stat(&self, c: &Chan) -> Result<Dir>;
