@@ -14,6 +14,27 @@
 //! host call, at the end of each slice, where it is also the profiler's
 //! sample and the counts are copied, and after a trap. The same points
 //! are where a debugger's `stop` and breakpoints take hold.
+//!
+//! # Engines and the module cache
+//!
+//! A wasmi engine keeps every function it has translated, and the module
+//! bytes behind those not yet translated, until the engine is dropped;
+//! dropping the `Module` frees neither. So engines are not kept for good:
+//! progs share an engine in *generations*. The current generation's
+//! engine holds each module it has loaded, by its SHA-256 digest, so a
+//! command run again while the generation lives is neither parsed nor
+//! translated again. A generation lives while a prog that started in it
+//! runs, and no longer: when the last one exits its engine and all its
+//! code are freed, as an engine per prog was. It stops taking new
+//! modules once [`GENERATION_BYTES`] of them are in it, and new progs
+//! start a new one; when memory is tight ([`tight`]) a prog gets an
+//! engine of its own, as does a traced prog, whose module is rewritten.
+//!
+//! Modules are compiled lazily ([`wasmi::CompilationMode::Lazy`]): a
+//! function is validated and translated on its first call. Parsing the
+//! module checks its structure, its types, imports and exports; a
+//! function body that is not valid WebAssembly is found only when it is
+//! first called, and that call traps.
 #![no_std]
 
 extern crate alloc;
@@ -21,9 +42,11 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
+
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use purg_abi::error::{EBADADDR, EBADEXEC};
 use purg_core::Error;
@@ -37,22 +60,119 @@ use wasmi::{
 /// note checks.
 pub const SLICE: u64 = 1 << 20;
 
+/// The length of a module digest, SHA-256, as `purg_core::modsig::Module`
+/// records it.
+const DIGEST: usize = 32;
+
 /// The status of a killed prog.
 pub use purg_vm::KILLED;
 
-/// The backend. It holds only the configuration: each prog runs in a
-/// wasmi engine of its own.
-///
-/// A wasmi engine keeps every function it has translated, and the module
-/// bytes behind those not yet translated, until the engine is dropped;
-/// dropping the `Module` frees neither. One engine for the whole system
-/// therefore grew with every command run, until the kernel ran out of
-/// memory. With an engine per prog, all of a prog's code, its reactors'
-/// code and its value stack are freed when it exits.
+/// The backend: the configuration and the current generation (see the
+/// crate docs).
 pub struct Wasmi {
     config: Config,
     /// [`Wasmi::config`] with room for [`TRACED_DEPTH`] frames.
     traced: Config,
+    /// The generation new progs join, while a prog of it runs.
+    current: spin::Mutex<Weak<Generation>>,
+}
+
+/// The bytes of WebAssembly a generation takes before new progs start a
+/// new one. Its engine holds about four times as much once the code is
+/// translated (`docs/footprint.md` Section 4), for as long as one of its
+/// progs runs.
+pub const GENERATION_BYTES: usize = 1 << 20;
+
+/// An engine shared by the progs that started while it was current, with
+/// the modules loaded into it and the linker its progs instantiate with.
+struct Generation {
+    engine: Engine,
+    linker: Linker<Ctx>,
+    /// The reactors `linker`'s `load` made, for each prog of the
+    /// generation; a prog's are dropped when it exits.
+    reactors: Modules,
+    cache: Arc<Cache>,
+}
+
+/// Where a prog runs: in a generation, or in an engine of its own.
+enum Home {
+    Shared(Arc<Generation>),
+    Own(Engine, Linker<Ctx>),
+}
+
+impl Home {
+    fn engine(&self) -> &Engine {
+        match self {
+            Home::Shared(g) => &g.engine,
+            Home::Own(e, _) => e,
+        }
+    }
+
+    fn linker(&self) -> &Linker<Ctx> {
+        match self {
+            Home::Shared(g) => &g.linker,
+            Home::Own(_, l) => l,
+        }
+    }
+}
+
+/// The modules loaded into a generation's engine, by digest.
+#[derive(Default)]
+struct Cache {
+    modules: spin::Mutex<BTreeMap<[u8; DIGEST], Module>>,
+    /// Bytes of WebAssembly loaded into the engine. Only a bound: no
+    /// other memory is ordered by it, so it is accessed `Relaxed`.
+    bytes: AtomicUsize,
+}
+
+impl Cache {
+    /// Whether new progs start a new generation rather than join this one.
+    fn full(&self) -> bool {
+        self.bytes.load(Ordering::Relaxed) >= GENERATION_BYTES
+    }
+
+    /// The module `wasm`, whose digest is `digest`, in `engine`, for a prog
+    /// of the generation (`ctx`): the one loaded before, or a new one, kept
+    /// unless the generation is full. Loading a new one when memory is
+    /// tight fills the generation, so that no new prog joins it.
+    fn module(
+        &self,
+        ctx: &Ctx,
+        engine: &Engine,
+        digest: &[u8; DIGEST],
+        wasm: &[u8],
+    ) -> Result<Module, Error> {
+        if let Some(m) = self.modules.lock().get(digest) {
+            return Ok(m.clone());
+        }
+        let added = if tight(ctx) {
+            GENERATION_BYTES
+        } else {
+            wasm.len()
+        };
+        // Parsed outside the lock; a prog that parsed the same module at
+        // the same time uses the first one kept.
+        let m = Module::new(engine, wasm).map_err(bad_exec)?;
+        self.bytes.fetch_add(added, Ordering::Relaxed);
+        if self.full() {
+            return Ok(m);
+        }
+        Ok(self.modules.lock().entry(*digest).or_insert(m).clone())
+    }
+}
+
+/// Whether memory is tight: under a quarter of it free. A prog that would
+/// start a generation then runs in an engine of its own, which goes when
+/// it exits.
+fn tight(ctx: &Ctx) -> bool {
+    let (used, total) = ctx.prog.kernel.platform.memory();
+    total > 0 && total.saturating_sub(used) < total / 4
+}
+
+/// The digest of the module `ctx`'s prog loaded last: the one
+/// `purg_vm::load_module` recorded for the bytes it returned.
+fn last_digest(ctx: &Ctx) -> Option<[u8; DIGEST]> {
+    ctx.prog.proc.modules().last().map(|m| m.digest)
 }
 
 /// wasmi's limit on nested calls (its default).
@@ -69,6 +189,7 @@ impl Wasmi {
     pub fn new() -> Result<Wasmi, Error> {
         let mut config = Config::default();
         config.consume_fuel(true);
+        config.compilation_mode(wasmi::CompilationMode::Lazy);
         // Translating a function on its first call is host work and costs
         // no fuel: wasmi 2 reports running out of fuel there as an error,
         // not as a call that can be resumed.
@@ -78,21 +199,81 @@ impl Wasmi {
             fuel_per_bytes_validated: 0,
         });
         config.set_max_recursion_depth(DEPTH);
+        // A shared engine would otherwise keep the value stacks of the
+        // progs that ran in it.
+        config.set_max_cached_stacks(0);
         let mut traced = config.clone();
         traced.set_max_recursion_depth(TRACED_DEPTH);
-        let wasmi = Wasmi { config, traced };
+        let wasmi = Wasmi {
+            config,
+            traced,
+            current: spin::Mutex::new(Weak::new()),
+        };
         // Linking fails the same way every time, so report it here.
-        linker(&Engine::new(&wasmi.config))?;
+        linker(&Engine::new(&wasmi.config), None)?;
         Ok(wasmi)
+    }
+
+    /// The generation a new prog joins: the current one, or a new one if
+    /// there is none or it is full. `None` when there is none and memory
+    /// is tight.
+    fn generation(&self, ctx: &Ctx) -> Result<Option<Arc<Generation>>, Error> {
+        if let Some(g) = self.current.lock().upgrade()
+            && !g.cache.full()
+        {
+            return Ok(Some(g));
+        }
+        if tight(ctx) {
+            return Ok(None);
+        }
+        let engine = Engine::new(&self.config);
+        let cache = Arc::new(Cache::default());
+        let (linker, reactors) = linker(&engine, Some(cache.clone()))?;
+        let g = Arc::new(Generation {
+            engine,
+            linker,
+            reactors,
+            cache,
+        });
+        let mut current = self.current.lock();
+        // Another prog may have made one meanwhile.
+        if let Some(other) = current.upgrade()
+            && !other.cache.full()
+        {
+            return Ok(Some(other));
+        }
+        *current = Arc::downgrade(&g);
+        Ok(Some(g))
+    }
+
+    /// The home of `ctx`'s prog, and its module `wasm` loaded there. A
+    /// traced prog's module is rewritten (`purg_vm::trace::prepare`), so
+    /// it is not the one its digest names, and it runs in an engine of
+    /// its own.
+    fn home(&self, ctx: &Ctx, wasm: &[u8]) -> Result<(Home, Module), Error> {
+        let traced = ctx.prog.proc.debug.traced();
+        if !traced
+            && let Some(digest) = last_digest(ctx)
+            && let Some(g) = self.generation(ctx)?
+        {
+            let module = g.cache.module(ctx, &g.engine, &digest, wasm)?;
+            return Ok((Home::Shared(g), module));
+        }
+        let engine = Engine::new(if traced { &self.traced } else { &self.config });
+        let module = Module::new(&engine, wasm).map_err(bad_exec)?;
+        let (linker, _) = linker(&engine, None)?;
+        Ok((Home::Own(engine, linker), module))
     }
 }
 
-/// A linker for `engine` with the host calls and `load`/`call`.
-fn linker(engine: &Engine) -> Result<Linker<Ctx>, Error> {
+/// A linker for `engine` with the host calls and `load`/`call`, and the
+/// table of the reactors its `load` makes. `cache` is the engine's module
+/// cache when it is a generation's.
+fn linker(engine: &Engine, cache: Option<Arc<Cache>>) -> Result<(Linker<Ctx>, Modules), Error> {
     let mut linker = Linker::new(engine);
     link(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-    register_modules(&mut linker).map_err(|e| Error::from(format!("{e}")))?;
-    Ok(linker)
+    let reactors = register_modules(&mut linker, cache).map_err(|e| Error::from(format!("{e}")))?;
+    Ok((linker, reactors))
 }
 
 /// Reactor instances loaded by `load`, keyed by the prog that loaded them.
@@ -210,16 +391,19 @@ fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
     Ok(())
 }
 
-fn register_modules(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
+fn register_modules(
+    linker: &mut Linker<Ctx>,
+    cache: Option<Arc<Cache>>,
+) -> Result<Modules, wasmi::Error> {
     let modules: Modules = Arc::new(spin::Mutex::new(BTreeMap::new()));
     let loading = modules.clone();
-    let calling = modules;
+    let calling = modules.clone();
     linker.func_wrap(
         purg_abi::MODULE,
         purg_abi::sys::LOAD,
         move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> Result<i32, wasmi::Error> {
             killed(&caller)?;
-            let r = match load_reactor(&mut caller, &loading, path, plen) {
+            let r = match load_reactor(&mut caller, &loading, cache.as_ref(), path, plen) {
                 Ok(handle) => handle,
                 Err(e) => {
                     caller.data_mut().prog.set_error(&e);
@@ -266,7 +450,7 @@ fn register_modules(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
             Ok(r)
         },
     )?;
-    Ok(())
+    Ok(modules)
 }
 
 /// Ends a killed prog at `load` or `call`, as [`purg_vm::host_call`] does
@@ -295,6 +479,7 @@ fn guest_str(caller: &mut Caller<'_, Ctx>, ptr: i32, len: i32) -> Result<String,
 fn load_reactor(
     caller: &mut Caller<'_, Ctx>,
     modules: &Modules,
+    cache: Option<&Arc<Cache>>,
     path: i32,
     plen: i32,
 ) -> Result<i32, Error> {
@@ -304,8 +489,12 @@ fn load_reactor(
         purg_vm::load_module(&mut ctx.prog, &path)?
     };
     let engine = caller.engine().clone();
-    let module = Module::new(&engine, &wasm).map_err(bad_exec)?;
-    let linker = linker(&engine)?;
+    let module = match (cache, last_digest(caller.data())) {
+        (Some(cache), Some(digest)) => cache.module(caller.data(), &engine, &digest, &wasm)?,
+        _ => Module::new(&engine, &wasm).map_err(bad_exec)?,
+    };
+    drop(wasm);
+    let (linker, _) = linker(&engine, cache.cloned())?;
     // A start function runs unsliced: it cannot be resumed.
     let fuel = caller.get_fuel().unwrap_or(SLICE);
     let _ = caller.set_fuel(u64::MAX);
@@ -416,14 +605,11 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
 }
 
 impl Wasmi {
-    fn call(engine: &Engine, store: &mut Store<Ctx>, wasm: Vec<u8>) -> Result<Stop, Error> {
-        let module = Module::new(engine, &wasm).map_err(bad_exec)?;
-        // The engine has its own copy of what it still needs.
-        drop(wasm);
+    fn call(store: &mut Store<Ctx>, module: &Module, linker: &Linker<Ctx>) -> Result<Stop, Error> {
         // A start function runs unsliced: it cannot be resumed.
         store.set_fuel(u64::MAX).map_err(bad_exec)?;
-        let instance = linker(engine)?
-            .instantiate_and_start(&mut *store, &module)
+        let instance = linker
+            .instantiate_and_start(&mut *store, module)
             .map_err(bad_exec)?;
         let entry = instance
             .get_typed_func::<(), ()>(&*store, purg_abi::ENTRY)
@@ -507,15 +693,20 @@ impl purg_vm::Engine for Wasmi {
     }
 
     fn run(&self, wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>) {
-        let config = if ctx.prog.proc.debug.traced() {
-            &self.traced
-        } else {
-            &self.config
+        let home = self.home(&ctx, &wasm);
+        // The engine has its own copy of what it still needs.
+        drop(wasm);
+        let (home, module) = match home {
+            Ok(h) => h,
+            Err(e) => return (ctx, Err(e)),
         };
-        let engine = Engine::new(config);
-        let mut store = Store::new(&engine, ctx);
+        let pid = ctx.prog.pid;
+        let mut store = Store::new(home.engine(), ctx);
         store.limiter(Limiter::of);
-        let res = Wasmi::call(&engine, &mut store, wasm);
+        let res = Wasmi::call(&mut store, &module, home.linker());
+        if let Home::Shared(g) = &home {
+            g.reactors.lock().remove(&pid);
+        }
         (store.into_data(), res)
     }
 }
