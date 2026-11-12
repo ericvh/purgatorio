@@ -1,0 +1,70 @@
+/app	1000000	0
+/app/lib	1000000	0
+/app/lib/two	1000000	4
+/app/one	1000000	4
+archiving package hello to 5000
+/wrap
+/wrap/hello
+/wrap/hello/5000
+/wrap/hello/5000/package
+/wrap/hello/5000/desc
+/wrap/hello/5000/proto
+/wrap/hello/5000/md5sum
+/app
+/app/lib
+/app/lib/two
+/app/one
+package file hello
+	5000 base, 2 files: Hello world
+same on stdout
+one
+two
+/app/lib/two c193497a1a06b2c72230e6146ff47080
+/app/one 5bbf5a52328e7439ae6e719dfe712200
+installed package hello
+	5000 base, 2 files: Hello world
+inst: /app/one: locally modified; not installed
+local
+one
+archiving package hello to 6000
+/wrap
+/wrap/hello
+/wrap/hello/6000
+/wrap/hello/6000/update
+/wrap/hello/6000/desc
+/wrap/hello/6000/proto
+/wrap/hello/6000/md5sum
+/wrap/hello/6000/remove
+/app
+/app/lib
+/app/lib/two
+/app/three
+dest/app/lib
+dest/app/three
+dest/app/lib/two
+                  5000
+/app/one
+installed package hello
+	5000 base, 2 files: Hello world
+	6000 update of 5000, 2 files, 1 removed: fixes
+/app/lib/two
+/app/three
+      2
+install/inst: nosuch: file does not exist
+install/info: nosuch: no such package in dest
+100 0 a /a - 664
+100 1 a /dir - 20000000775
+100 2 a /dir/b - 664
+a
+b
+      3 clientlog
+      2 entries2
+c /a
+d /dir/b
+A
+200 1
+conflict: c /a: changed locally
+mine
+conflict: c /a: changed locally
+error
+AA

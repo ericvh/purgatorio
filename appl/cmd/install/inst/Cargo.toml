@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-install-inst"
+description = "install/inst: install a package made by install/create"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "inst"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+wrap = { package = "appl-lib-wrap", path = "../../../lib/wrap" }
+
+[lints]
+workspace = true
