@@ -203,6 +203,22 @@ opt-level = 3
 [profile.kernel.package.sha2]
 opt-level = 3
 
+# The record layer of encrypted Styx (docs/perf.md). purg-auth is where
+# the cipher's generic code is instantiated, so it needs the setting as
+# much as the cipher crates do: without it, 3 on the cipher crates alone
+# changes nothing.
+[profile.kernel.package.purg-auth]
+opt-level = 3
+
+[profile.kernel.package.chacha20]
+opt-level = 3
+
+[profile.kernel.package.poly1305]
+opt-level = 3
+
+[profile.kernel.package.chacha20poly1305]
+opt-level = 3
+
 # The same for the experimental `aot` feature's engine (docs/perf.md):
 # Pulley's interpreter, and wasmtime's runtime under native code. They
 # are not in a kernel built without it.
@@ -230,4 +246,16 @@ opt-level = "z"
 opt-level = "z"
 
 [profile.kernel-small.package.sha2]
+opt-level = "z"
+
+[profile.kernel-small.package.purg-auth]
+opt-level = "z"
+
+[profile.kernel-small.package.chacha20]
+opt-level = "z"
+
+[profile.kernel-small.package.poly1305]
+opt-level = "z"
+
+[profile.kernel-small.package.chacha20poly1305]
 opt-level = "z"
