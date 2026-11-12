@@ -234,11 +234,35 @@ is added and the ABI version is unchanged.
   members of that group, not the rest of it.
 - Domains nest. A member that attaches `#pdomain` founds a domain inside
   its own; the outer view still shows its members.
+- `#pdomain=N` is the view of domain `N` (the process group that founded
+  it) without joining it. The prog that started a sandbox uses it to find
+  every prog left in the sandbox, whatever their groups and whether or not
+  their parents live, and kill them. A prog that may attach `#p` at all
+  can see the whole table, so nothing more is checked.
 - `#p` with no spec is the whole table, as before. Any other spec fails
   with `bad arg in system call`.
 - `NODEVS` forbids `#p` with any spec. A sandbox binds `#pdomain` on
   `/prog` and then gives up devices, and from then on nothing it runs can
   get the whole table back.
+- Each domain has its own `#s` registry. A file2chan file belongs to the
+  innermost domain of the prog that made it, and an attach of `#s` shows
+  only the files of the attaching prog's innermost domain (or, for a prog
+  in no domain, those made outside every domain). Names are unique within
+  a registry. `NODEVS` still allows `#s`, as in Inferno, so file2chan
+  works in a sandbox, but the sandbox cannot see or open what the host or
+  another sandbox posted. A file already bound into a namespace stays
+  usable through that binding.
+
+### Dropping single devices: `nodev`
+
+Writing `nodev <chars>` to `/prog/<pid>/ctl` forbids that prog's
+namespace to attach the devices named by `<chars>` (their device
+characters, such as `¤` or `¤s`), whether or not `NODEVS` is set. Copies
+of the namespace made afterwards (`FORKNS`, `NEWNS`) keep the list, and
+there is no way to take a device back. An attach of a dropped device
+fails with `mount/attach disallowed`. Inferno has no such message; it is
+how `mcpd` keeps a session from `#¤`, which `NODEVS` allows. It is a
+`ctl` message, so the ABI version is unchanged.
 
 ### Memory and prog limits (K4)
 
@@ -255,8 +279,9 @@ reached is ordinary wasm behavior, so the ABI version is unchanged.
 - `domain memlimit N` limits the memory all members of the prog's
   innermost domain (`#pdomain`) hold between them, and `domain proglimit
   N` the number of members. A spawn that would pass the prog limit fails
-  with `no free procs`. A prog in no domain gets `bad arg in system call`.
-  A prog is held to its own limit and to the limit of every domain it is
+  with `no free procs`; spawns into a domain with a prog limit are
+  admitted one at a time, so two cannot both take the last place. A prog
+  in no domain gets `bad arg in system call`. A prog is held to its own limit and to the limit of every domain it is
   in, so a domain founded inside a limited one cannot escape it.
 - A limit can only be lowered. Writing a higher one fails with
   `permission denied` and changes nothing.
@@ -274,7 +299,8 @@ kernel behave alike.
 
 Not counted: the prog's kernel thread stack, the engine's compiled code,
 and what the prog's files hold in the kernel (a RAM file system grows
-with what is written to it). A domain's prog limit bounds the first two.
+with what is written to it, and so does `#e`, where sh keeps its
+variables). A domain's prog limit bounds the first two.
 
 `load` and `call` (v0.4) are registered by each engine rather than in the
 shared host functions, because they need the engine's store. `load`

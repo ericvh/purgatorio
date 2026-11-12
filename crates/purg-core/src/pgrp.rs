@@ -86,6 +86,9 @@ pub struct Pgrp {
     mounts: RwLock<Vec<Mount>>,
     dot: Mutex<Dot>,
     nodevs: AtomicBool,
+    /// Devices this namespace may not attach, NODEVS or not (`nodev` on a
+    /// prog's `ctl`). Copies of the namespace keep the list.
+    denied: Mutex<String>,
 }
 
 impl Pgrp {
@@ -99,6 +102,7 @@ impl Pgrp {
             mounts: RwLock::new(Vec::new()),
             dot: Mutex::new(Dot::root()),
             nodevs: AtomicBool::new(false),
+            denied: Mutex::new(String::new()),
         })
     }
 
@@ -119,6 +123,7 @@ impl Pgrp {
             mounts: RwLock::new(self.mounts.read().clone()),
             dot: Mutex::new(self.dot.lock().clone()),
             nodevs: AtomicBool::new(self.nodevs.load(Ordering::Relaxed)),
+            denied: Mutex::new(self.denied.lock().clone()),
         }
     }
 
@@ -134,6 +139,7 @@ impl Pgrp {
             mounts: RwLock::new(Vec::new()),
             dot: Mutex::new(Dot::root()),
             nodevs: AtomicBool::new(self.nodevs.load(Ordering::Relaxed)),
+            denied: Mutex::new(self.denied.lock().clone()),
         }))
     }
 
@@ -154,12 +160,31 @@ impl Pgrp {
             mounts: RwLock::new(Vec::new()),
             dot: Mutex::new(Dot::root()),
             nodevs: AtomicBool::new(true),
+            denied: Mutex::new(String::new()),
         })
     }
 
-    /// Forbids attaching devices other than `#e #s #| #M` (`NODEVS`).
+    /// Forbids attaching devices other than `#e #s #| #M #¤` (`NODEVS`).
     pub fn set_nodevs(&self) {
         self.nodevs.store(true, Ordering::Relaxed);
+    }
+
+    /// Forbids attaching the devices named by `devs`, their device
+    /// characters, from now on, whether or not NODEVS is set. There is no
+    /// way back.
+    pub fn deny_devs(&self, devs: &str) {
+        let mut d = self.denied.lock();
+        for c in devs.chars() {
+            if !d.contains(c) {
+                d.push(c);
+            }
+        }
+    }
+
+    /// Whether this namespace may attach device `dc`.
+    fn may_attach(&self, dc: char) -> bool {
+        (!self.nodevs.load(Ordering::Relaxed) || NODEVS_ALLOWED.contains(&dc))
+            && !self.denied.lock().contains(dc)
     }
 
     /// `chdir`: `path` must be a directory. The Chan it resolves to is
@@ -463,7 +488,7 @@ impl Pgrp {
                     (Some(dev), _) => {
                         let mut chars = dev[1..].chars();
                         let dc = chars.next().ok_or(Error::new(error::EFILENAME))?;
-                        if self.nodevs.load(Ordering::Relaxed) && !NODEVS_ALLOWED.contains(&dc) {
+                        if !self.may_attach(dc) {
                             return Err(Error::new(error::ENOATTACH));
                         }
                         (self.devtab.attach(dc, chars.as_str())?, String::from(dev))
