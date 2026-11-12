@@ -198,7 +198,9 @@ one run queue. A CPU with nothing to run waits in `wfi`, and a wakeup
 sends it an IPI. `--smp N` boots QEMU with N CPUs, and `--stress SECS`
 boots once in a stress mode that runs the sh corpus and the conformance
 guests in many progs at once for that long, with a watchdog and a leak
-check. A prog's wasm memory, and a `#pdomain` domain's memory and number
+check. A prog that will not die after a kill is reported with where it
+sleeps or where the timer last stopped it, and a run that xtask kills is
+reported with each CPU's PC. A prog's wasm memory, and a `#pdomain` domain's memory and number
 of progs, can be limited with `memlimit` messages on `/prog/<pid>/ctl`
 ([docs/abi.md](docs/abi.md)); past a limit `memory.grow` fails, on the
 emu as on the kernel.
@@ -211,6 +213,7 @@ cargo xtask kernel          # four TCG runs: GICv2, GICv3, and booting at EL2 on
 cargo xtask kernel --smp 4  # the same with four CPUs each, so fewer side by side
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
 cargo xtask kernel --kvm --smp 4 --stress 3600   # an hour of the stress mode on four CPUs
+cargo xtask kernel --smp 4 --stress 600 --sh admin,shmods2   # only those corpus scripts, no guests
 cargo xtask initrd          # target/initrd/root.tar, the same archive the kernel compiles in
 # an interactive shell on the kernel (^C interrupts, ^D at the start of a line ends it):
 qemu-system-aarch64 -accel kvm -cpu host -M virt,gic-version=3 -m 512M -nographic \
