@@ -12,33 +12,49 @@
 //!
 //! - Enter ends the line. CR and CR LF both read as LF, and LF is echoed.
 //! - Backspace (^H) and DEL erase the last character, a whole UTF-8
-//!   sequence, and echo `\b \b`. Terminals send DEL for the Backspace
-//!   key, so DEL erases; it is not an interrupt key.
-//! - ^U kills the line, echoing `\b \b` for each character.
+//!   sequence, and echo `\b \b` for each column it took. Terminals send
+//!   DEL for the Backspace key, so DEL erases.
+//! - ^U kills the line, erasing each character.
 //! - ^D ends the input: at the start of a line a read returns 0; after
 //!   some text the read returns that text with no newline. ^D is not
 //!   echoed.
-//! - Every other byte, ^C included, is ordinary: it is echoed and
-//!   delivered. There is no interrupt key.
+//! - ^C is the interrupt key. It throws away what was typed and not yet
+//!   read, typeahead included, echoes `^C` and a newline, and calls the
+//!   reader's interrupt hook ([`ConsReader::set_interrupt`]), which posts
+//!   the `interrupt` note to the console's foreground process group
+//!   (`docs/abi.md`, "Interrupts").
+//! - Every other byte is ordinary: it is echoed and delivered.
 //!
-//! In raw mode (`rawon` written to `consctl`) nothing is echoed or edited
-//! and bytes are delivered as they arrive, CR as CR. Switching to raw mode
-//! delivers a line still being typed as it stands.
+//! Inferno's interrupt key is DEL. Here DEL erases, because the terminals
+//! the kernel's UART sits behind (QEMU's stdio on Linux and macOS) send
+//! DEL for Backspace; ^C is the key those terminals' users expect.
 //!
-//! The discipline runs in the reader: a byte is echoed when a read of
-//! `cons` takes it from the console, so what is typed while nothing reads
-//! is echoed at the next read. The echo of each batch of input is one
-//! [`Console::write`], so it does not mix with another writer's buffer.
+//! In raw mode (`rawon` written to `consctl`) nothing is echoed or edited,
+//! ^C is an ordinary byte, and bytes are delivered as they arrive, CR as
+//! CR. Switching to raw mode delivers a line still being typed as it
+//! stands.
 //!
-//! Erasing assumes each character took one column. A tab or a wide
-//! character leaves the cursor short of where the text began.
+//! Erasing knows how many columns each character took: the discipline
+//! follows the terminal's column through the echo and through what is
+//! written to the console ([`ConsReader::output`]), so a tab erases back
+//! to where it started and a wide character erases both its columns.
+//!
+//! Where the input is processed depends on the console. One whose read
+//! blocks until input arrives ([`Console::interrupt_driven`], the
+//! kernel's UART) is read by a console kproc ([`ConsReader::pump`]), so
+//! input is echoed as it is typed, typeahead included, and the interrupt
+//! key acts when it arrives. Otherwise the discipline runs in the reader:
+//! a byte is echoed when a read of `cons` takes it from the console. The
+//! echo of each batch of input is one [`Console::write`], so it does not
+//! mix with another writer's buffer.
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use purg_platform::Console;
-use purg_platform::sync::Mutex;
+use purg_platform::sync::{Mutex, Rendez};
 
 use crate::error::{Error, Result};
 
@@ -46,13 +62,168 @@ const BS: u8 = 0x08;
 const DEL: u8 = 0x7f;
 const KILL: u8 = 0x15;
 const EOF: u8 = 0x04;
+/// The interrupt key, ^C.
+pub const INTR: u8 = 0x03;
 
 /// The longest line, in bytes. What is typed past it is dropped, and not
 /// echoed.
 pub const MAX_LINE: usize = 4096;
 
-/// What erases one character on the terminal.
+/// What erases one column on the terminal.
 const ERASE: &[u8] = b"\x08 \x08";
+
+/// What the interrupt key echoes.
+const INTR_ECHO: &[u8] = b"^C\n";
+
+/// The columns `c` takes on a terminal: 0 for combining marks and other
+/// zero-width characters, 2 for East Asian wide and full-width ones and
+/// emoji, 1 for the rest. A short table, not all of Unicode's.
+pub fn width(c: char) -> usize {
+    const ZERO: &[(u32, u32)] = &[
+        (0x0300, 0x036f),
+        (0x0483, 0x0489),
+        (0x0591, 0x05bd),
+        (0x0610, 0x061a),
+        (0x064b, 0x065f),
+        (0x200b, 0x200f),
+        (0x2028, 0x202e),
+        (0x2060, 0x2064),
+        (0x20d0, 0x20ff),
+        (0xfe00, 0xfe0f),
+        (0xfe20, 0xfe2f),
+        (0xfeff, 0xfeff),
+        (0xe0100, 0xe01ef),
+    ];
+    const WIDE: &[(u32, u32)] = &[
+        (0x1100, 0x115f),
+        (0x231a, 0x231b),
+        (0x2329, 0x232a),
+        (0x23e9, 0x23ec),
+        (0x25fd, 0x25fe),
+        (0x2614, 0x2615),
+        (0x2648, 0x2653),
+        (0x26a1, 0x26a1),
+        (0x26aa, 0x26ab),
+        (0x26bd, 0x26be),
+        (0x26c4, 0x26c5),
+        (0x26f5, 0x26f5),
+        (0x26fa, 0x26fa),
+        (0x2705, 0x2705),
+        (0x270a, 0x270b),
+        (0x274c, 0x274c),
+        (0x2753, 0x2755),
+        (0x2795, 0x2797),
+        (0x2b1b, 0x2b1c),
+        (0x2b50, 0x2b50),
+        (0x2e80, 0x303e),
+        (0x3041, 0x33ff),
+        (0x3400, 0x4dbf),
+        (0x4e00, 0x9fff),
+        (0xa000, 0xa4cf),
+        (0xa960, 0xa97f),
+        (0xac00, 0xd7a3),
+        (0xf900, 0xfaff),
+        (0xfe10, 0xfe19),
+        (0xfe30, 0xfe6f),
+        (0xff00, 0xff60),
+        (0xffe0, 0xffe6),
+        (0x1f300, 0x1f64f),
+        (0x1f680, 0x1f6ff),
+        (0x1f900, 0x1f9ff),
+        (0x1fa70, 0x1faff),
+        (0x20000, 0x2fffd),
+        (0x30000, 0x3fffd),
+    ];
+    let c = c as u32;
+    let within = |t: &[(u32, u32)]| {
+        t.binary_search_by(|&(lo, hi)| {
+            if hi < c {
+                core::cmp::Ordering::Less
+            } else if lo > c {
+                core::cmp::Ordering::Greater
+            } else {
+                core::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+    };
+    if within(ZERO) {
+        0
+    } else if within(WIDE) {
+        2
+    } else {
+        1
+    }
+}
+
+/// The terminal's cursor column, followed through the bytes sent to it.
+#[derive(Default)]
+struct Column {
+    col: usize,
+    /// A UTF-8 sequence part way through: its bytes so far.
+    seq: [u8; 4],
+    have: usize,
+    want: usize,
+}
+
+impl Column {
+    /// Whether `b` continues the UTF-8 sequence part way through.
+    fn continues(&self, b: u8) -> bool {
+        self.want > 0 && b & 0xc0 == 0x80
+    }
+
+    /// Settles a sequence that `b` cuts short: it took a column. Returns
+    /// whether `b` begins a character, so the column before it is where
+    /// that character starts.
+    fn begins(&mut self, b: u8) -> bool {
+        if self.continues(b) {
+            return false;
+        }
+        if self.want > 0 {
+            self.want = 0;
+            self.col += 1;
+        }
+        true
+    }
+
+    fn advance(&mut self, b: u8) {
+        if self.continues(b) {
+            self.seq[self.have] = b;
+            self.have += 1;
+            if self.have == self.want {
+                self.want = 0;
+                self.col += core::str::from_utf8(&self.seq[..self.have])
+                    .ok()
+                    .and_then(|s| s.chars().next())
+                    .map_or(1, width);
+            }
+            return;
+        }
+        self.begins(b);
+        match b {
+            b'\n' | b'\r' => self.col = 0,
+            b'\t' => self.col = (self.col / 8 + 1) * 8,
+            BS => self.col = self.col.saturating_sub(1),
+            0..0x20 | DEL => {}
+            0x20..0x80 => self.col += 1,
+            _ => {
+                let want = match b {
+                    0xc0..0xe0 => 2,
+                    0xe0..0xf0 => 3,
+                    0xf0..0xf8 => 4,
+                    _ => 0,
+                };
+                if want == 0 {
+                    self.col += 1;
+                } else {
+                    self.seq[0] = b;
+                    self.have = 1;
+                    self.want = want;
+                }
+            }
+        }
+    }
+}
 
 /// The state machine: bytes in, echo and readable chunks out. It does no
 /// I/O, so it is tested on its own.
@@ -60,6 +231,10 @@ const ERASE: &[u8] = b"\x08 \x08";
 pub struct LineDisc {
     /// The line being typed.
     line: Vec<u8>,
+    /// Where each character of `line` begins: its offset in `line`, and
+    /// the column it began at. A byte that continues no UTF-8 sequence is
+    /// a character of its own.
+    starts: Vec<(usize, usize)>,
     /// What reads return, one chunk each at most. An empty chunk is an
     /// end of input.
     ready: VecDeque<Vec<u8>>,
@@ -67,6 +242,10 @@ pub struct LineDisc {
     after_cr: bool,
     /// The last chunk of `ready` is raw bytes, and more may join it.
     raw_tail: bool,
+    /// The terminal's column.
+    col: Column,
+    /// The interrupt key was typed since [`LineDisc::take_interrupt`].
+    interrupted: bool,
 }
 
 impl LineDisc {
@@ -95,17 +274,13 @@ impl LineDisc {
             b'\n' if after_cr => {}
             b'\r' | b'\n' => {
                 self.line.push(b'\n');
-                echo.push(b'\n');
+                self.echo(b"\n", echo);
                 self.flush_line();
             }
-            BS | DEL => {
-                if self.erase() {
-                    echo.extend_from_slice(ERASE);
-                }
-            }
+            BS | DEL => self.erase(echo),
             KILL => {
-                while self.erase() {
-                    echo.extend_from_slice(ERASE);
+                while !self.line.is_empty() {
+                    self.erase(echo);
                 }
             }
             EOF => {
@@ -115,12 +290,35 @@ impl LineDisc {
                     self.flush_line();
                 }
             }
+            INTR => {
+                self.line.clear();
+                self.starts.clear();
+                self.ready.clear();
+                self.after_cr = false;
+                self.echo(INTR_ECHO, echo);
+                self.interrupted = true;
+            }
             // One byte is kept for the newline.
             _ if self.line.len() + 1 < MAX_LINE => {
+                if self.col.begins(b) {
+                    self.starts.push((self.line.len(), self.col.col));
+                }
                 self.line.push(b);
-                echo.push(b);
+                self.echo(&[b], echo);
             }
             _ => {}
+        }
+    }
+
+    /// Whether the interrupt key was typed since the last call.
+    pub fn take_interrupt(&mut self) -> bool {
+        core::mem::take(&mut self.interrupted)
+    }
+
+    /// Something else was written to the terminal: the column moves.
+    pub fn output(&mut self, buf: &[u8]) {
+        for &b in buf {
+            self.col.advance(b);
         }
     }
 
@@ -150,39 +348,57 @@ impl LineDisc {
         Some(n)
     }
 
+    fn echo(&mut self, bytes: &[u8], echo: &mut Vec<u8>) {
+        self.output(bytes);
+        echo.extend_from_slice(bytes);
+    }
+
     /// Makes the line being typed, if any, readable.
     fn flush_line(&mut self) {
+        self.starts.clear();
         if !self.line.is_empty() {
             self.ready.push_back(core::mem::take(&mut self.line));
             self.raw_tail = false;
         }
     }
 
-    /// Removes the last character of the line: a byte and the UTF-8
-    /// continuation bytes after it. Returns false if the line was empty.
-    fn erase(&mut self) -> bool {
-        let mut removed = false;
-        for _ in 0..4 {
-            match self.line.pop() {
-                None => break,
-                Some(b) => {
-                    removed = true;
-                    if b & 0xc0 != 0x80 {
-                        break;
-                    }
-                }
-            }
+    /// Removes the last character of the line, a whole UTF-8 sequence,
+    /// and wipes the columns it took.
+    fn erase(&mut self, echo: &mut Vec<u8>) {
+        let Some((at, col)) = self.starts.pop() else {
+            self.line.clear();
+            return;
+        };
+        self.line.truncate(at);
+        for _ in 0..self.col.col.saturating_sub(col) {
+            echo.extend_from_slice(ERASE);
         }
-        removed
+        self.col.col = self.col.col.min(col);
+        self.col.want = 0;
     }
+}
+
+/// What a console kproc and the readers share: the discipline, and a
+/// count of the batches of input it took, which readers sleep on.
+#[derive(Default)]
+struct Shared {
+    disc: Mutex<LineDisc>,
+    batches: AtomicUsize,
+    arrived: Rendez,
+    /// The console ended; reads past the input return 0.
+    ended: AtomicBool,
 }
 
 /// Console input through a [`LineDisc`]: what `#c/cons` reads when the
 /// console wants the discipline.
 #[derive(Default)]
 pub struct ConsReader {
-    disc: Mutex<LineDisc>,
+    shared: Shared,
     raw: AtomicBool,
+    /// A console kproc runs the discipline ([`ConsReader::pump`]).
+    pumped: AtomicBool,
+    /// Called when the interrupt key is typed.
+    on_interrupt: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl ConsReader {
@@ -200,14 +416,107 @@ impl ConsReader {
         self.raw.load(Ordering::Acquire)
     }
 
+    /// Sets what the interrupt key does.
+    pub fn set_interrupt(&self, f: Box<dyn Fn() + Send + Sync>) {
+        *self.on_interrupt.lock() = Some(f);
+    }
+
+    /// `buf` was written to the console: the terminal's column moves.
+    /// Followed only under a console kproc: a reader that runs the
+    /// discipline holds it while it waits for input.
+    pub fn output(&self, buf: &[u8]) {
+        if self.pumped.load(Ordering::Acquire) {
+            self.shared.disc.lock().output(buf);
+        }
+    }
+
+    fn interrupt(&self) {
+        if let Some(f) = &*self.on_interrupt.lock() {
+            f();
+        }
+    }
+
+    /// Takes one batch of input through the discipline and echoes it.
+    /// Returns whether the interrupt key was in it, and how the echo went.
+    fn feed(&self, cons: &dyn Console, bytes: &[u8], disc: &mut LineDisc) -> (bool, Result<()>) {
+        // The mode when the bytes are taken, not when a read began:
+        // `rawon` may have been written meanwhile.
+        let raw = self.is_raw();
+        let mut echo = Vec::new();
+        for &b in bytes {
+            disc.input(b, raw, &mut echo);
+        }
+        let wrote = if echo.is_empty() {
+            Ok(())
+        } else {
+            cons.write(&echo).map(|_| ()).map_err(Error::from)
+        };
+        (disc.take_interrupt(), wrote)
+    }
+
+    /// Says whether a console kproc runs [`ConsReader::pump`]: while one
+    /// does, [`ConsReader::read`] takes what it leaves and never reads the
+    /// console itself. Set before starting the kproc, so that no reader
+    /// reads the console meanwhile.
+    pub fn set_pumped(&self, on: bool) {
+        self.pumped.store(on, Ordering::Release);
+    }
+
+    /// The console kproc: reads `cons` as input arrives, running the
+    /// discipline over it, until the console ends.
+    pub fn pump(&self, cons: &dyn Console) {
+        self.set_pumped(true);
+        let s = &self.shared;
+        let mut chunk = [0u8; 256];
+        loop {
+            let n = cons.read(&mut chunk).unwrap_or(0);
+            let interrupted = {
+                let mut disc = s.disc.lock();
+                if n == 0 {
+                    disc.end();
+                    s.ended.store(true, Ordering::Release);
+                    false
+                } else {
+                    // An echo that cannot be written is lost; the input
+                    // is not.
+                    self.feed(cons, &chunk[..n], &mut disc).0
+                }
+            };
+            s.batches.fetch_add(1, Ordering::AcqRel);
+            s.arrived.wakeup();
+            if interrupted {
+                self.interrupt();
+            }
+            if n == 0 {
+                return;
+            }
+        }
+    }
+
     /// Reads a line (cooked) or the bytes that have arrived (raw) from
     /// `cons`, echoing to it in cooked mode. Returns 0 at end of input.
     pub fn read(&self, cons: &dyn Console, buf: &mut [u8]) -> Result<usize> {
         if buf.is_empty() {
             return Ok(0);
         }
+        let s = &self.shared;
+        if self.pumped.load(Ordering::Acquire) {
+            loop {
+                let seen = s.batches.load(Ordering::Acquire);
+                {
+                    let mut disc = s.disc.lock();
+                    if let Some(n) = disc.take(buf) {
+                        return Ok(n);
+                    }
+                    if s.ended.load(Ordering::Acquire) {
+                        return Ok(0);
+                    }
+                }
+                crate::block::park(&s.arrived, || s.batches.load(Ordering::Acquire) != seen)?;
+            }
+        }
         // One reader at a time: the lock is held while waiting for input.
-        let mut disc = self.disc.lock();
+        let mut disc = s.disc.lock();
         loop {
             if let Some(n) = disc.take(buf) {
                 return Ok(n);
@@ -218,16 +527,11 @@ impl ConsReader {
                 disc.end();
                 continue;
             }
-            // The mode when the bytes are taken, not when the read began:
-            // `rawon` may have been written while this slept.
-            let raw = self.is_raw();
-            let mut echo = Vec::new();
-            for &b in &chunk[..n] {
-                disc.input(b, raw, &mut echo);
+            let (interrupted, wrote) = self.feed(cons, &chunk[..n], &mut disc);
+            if interrupted {
+                self.interrupt();
             }
-            if !echo.is_empty() {
-                cons.write(&echo).map_err(Error::from)?;
-            }
+            wrote?;
         }
     }
 }
@@ -307,7 +611,8 @@ mod tests {
         // Two, three and four byte characters, each erased by one key.
         let echo = cooked(&mut d, "aé€😀".as_bytes());
         assert_eq!(echo, "aé€😀".as_bytes());
-        assert_eq!(cooked(&mut d, b"\x7f"), ERASE);
+        // The emoji is two columns wide.
+        assert_eq!(cooked(&mut d, b"\x7f"), [ERASE, ERASE].concat());
         assert_eq!(d.line, "aé€".as_bytes());
         assert_eq!(cooked(&mut d, b"\x08"), ERASE);
         assert_eq!(d.line, "aé".as_bytes());
@@ -321,14 +626,72 @@ mod tests {
     }
 
     #[test]
-    fn erase_stops_at_malformed_utf8() {
+    fn erase_takes_stray_bytes_one_at_a_time() {
         let mut d = LineDisc::new();
-        // Five stray continuation bytes: at most four go with one key.
-        cooked(&mut d, b"a\x80\x80\x80\x80\x80");
+        // Stray continuation bytes, and a sequence cut short by another
+        // character, are characters of one byte each.
+        cooked(&mut d, b"a\x80\x80\xc3b");
+        assert_eq!(cooked(&mut d, b"\x7f"), ERASE);
+        assert_eq!(d.line, b"a\x80\x80\xc3");
+        assert_eq!(cooked(&mut d, b"\x7f"), ERASE);
+        assert_eq!(d.line, b"a\x80\x80");
         assert_eq!(cooked(&mut d, b"\x7f"), ERASE);
         assert_eq!(d.line, b"a\x80");
-        assert_eq!(cooked(&mut d, b"\x7f"), ERASE);
+        assert_eq!(cooked(&mut d, b"\x7f\x7f"), [ERASE, ERASE].concat());
         assert_eq!(d.line, b"");
+    }
+
+    #[test]
+    fn erase_wipes_the_columns_a_character_took() {
+        let mut d = LineDisc::new();
+        // A tab from column 2 (after a prompt) reaches column 8.
+        d.output(b"; ");
+        cooked(&mut d, b"a\tb");
+        assert_eq!(cooked(&mut d, b"\x7f"), ERASE, "b");
+        assert_eq!(cooked(&mut d, b"\x7f"), [ERASE; 5].concat(), "the tab");
+        assert_eq!(cooked(&mut d, b"\x7f"), ERASE, "a");
+        // Wide characters take two columns, combining marks none.
+        cooked(&mut d, "日e\u{301}".as_bytes());
+        assert_eq!(cooked(&mut d, b"\x7f"), b"", "the combining accent");
+        assert_eq!(cooked(&mut d, b"\x7f"), ERASE);
+        assert_eq!(cooked(&mut d, b"\x7f"), [ERASE, ERASE].concat());
+        assert!(d.line.is_empty());
+        // ^U wipes a line of tabs back to where it began.
+        cooked(&mut d, b"\t\tx");
+        assert_eq!(cooked(&mut d, b"\x15"), [ERASE; 15].concat());
+        // A line typed after output that ended mid-line starts there.
+        d.output(b"\nlong prompt> ");
+        cooked(&mut d, b"\t");
+        assert_eq!(cooked(&mut d, b"\x7f"), [ERASE; 3].concat());
+    }
+
+    #[test]
+    fn widths() {
+        assert_eq!(width('a'), 1);
+        assert_eq!(width('é'), 1);
+        assert_eq!(width('\u{301}'), 0);
+        assert_eq!(width('日'), 2);
+        assert_eq!(width('한'), 2);
+        assert_eq!(width('Ａ'), 2);
+        assert_eq!(width('😀'), 2);
+        assert_eq!(width('€'), 1);
+    }
+
+    #[test]
+    fn interrupt_drops_unread_input() {
+        let mut d = LineDisc::new();
+        cooked(&mut d, b"typeahead\n");
+        assert_eq!(cooked(&mut d, b"half\x03"), b"half^C\n");
+        assert!(d.take_interrupt());
+        assert!(!d.take_interrupt(), "taken once");
+        assert_eq!(take(&mut d), None, "the line and the typeahead went");
+        assert_eq!(cooked(&mut d, b"\x7fok\n"), b"ok\n", "nothing to erase");
+        assert_eq!(take(&mut d).unwrap(), b"ok\n");
+        // Raw, ^C is a byte like any other.
+        let mut echo = Vec::new();
+        d.input(INTR, true, &mut echo);
+        assert!(!d.take_interrupt());
+        assert_eq!(take(&mut d).unwrap(), b"\x03");
     }
 
     #[test]
@@ -356,10 +719,10 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_is_an_ordinary_byte() {
+    fn other_control_bytes_are_ordinary() {
         let mut d = LineDisc::new();
-        assert_eq!(cooked(&mut d, b"a\x03b\n"), b"a\x03b\n");
-        assert_eq!(take(&mut d).unwrap(), b"a\x03b\n");
+        assert_eq!(cooked(&mut d, b"a\x01b\n"), b"a\x01b\n");
+        assert_eq!(take(&mut d).unwrap(), b"a\x01b\n");
     }
 
     #[test]
@@ -518,5 +881,56 @@ mod tests {
         assert_eq!(read(&r, &cons), b"b\n");
         assert_eq!(read(&r, &cons), b"c");
         assert_eq!(cons.output(), [b"a\nb\nc"]);
+    }
+
+    #[test]
+    fn pump_echoes_as_input_arrives_and_interrupts() {
+        use alloc::sync::Arc;
+        use core::sync::atomic::AtomicUsize;
+
+        let cons = Arc::new(Script::new(&[
+            b"one\n",
+            b"typeahead\n",
+            b"lost\x03",
+            b"two\x7fo\n",
+        ]));
+        let r = Arc::new(ConsReader::new());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let h = hits.clone();
+        r.set_interrupt(Box::new(move || {
+            h.fetch_add(1, Ordering::SeqCst);
+        }));
+        // The kproc runs to the console's end before anything reads.
+        let (pr, pc) = (r.clone(), cons.clone());
+        std::thread::spawn(move || pr.pump(&*pc)).join().unwrap();
+        assert_eq!(
+            cons.output(),
+            [
+                &b"one\n"[..],
+                b"typeahead\n",
+                b"lost^C\n",
+                b"two\x08 \x08o\n"
+            ],
+            "echoed as it arrived"
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        assert_eq!(read(&r, &cons), b"two\n", "^C dropped what came before");
+        assert_eq!(read(&r, &cons), b"", "the console's end");
+        assert_eq!(read(&r, &cons), b"", "and it stays ended");
+    }
+
+    #[test]
+    fn a_reader_waits_for_the_pump() {
+        use alloc::sync::Arc;
+
+        let cons = Arc::new(Script::new(&[b"later\n"]));
+        let r = Arc::new(ConsReader::new());
+        r.pumped.store(true, Ordering::Release);
+        let rr = r.clone();
+        let rc = cons.clone();
+        let reader = std::thread::spawn(move || read(&rr, &rc));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        r.pump(&*cons);
+        assert_eq!(reader.join().unwrap(), b"later\n");
     }
 }

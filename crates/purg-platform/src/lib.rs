@@ -39,6 +39,14 @@ pub trait Console: Send + Sync {
     fn line_discipline(&self) -> bool {
         false
     }
+    /// True if [`Console::read`] sleeps until input arrives (the kernel's
+    /// UART, woken by its interrupt), so that `#c` can read it from a
+    /// console kproc and run the line discipline as input is typed. False
+    /// for a console whose read returns 0 when nothing has arrived (the
+    /// probe's): there the discipline runs in the reader.
+    fn interrupt_driven(&self) -> bool {
+        false
+    }
 }
 
 /// A battery-backed real-time clock, served as `#r/rtc`.
