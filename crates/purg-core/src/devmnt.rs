@@ -24,13 +24,16 @@ use crate::chan::Chan;
 use crate::dev::{Dev, WalkEnd, Walked, WalkedNames};
 use crate::error::{Error, Result};
 use crate::mux::Mux;
-use crate::rw::{read_msg, read_sealed, write_full, write_sealed};
+use crate::rw::{Pool, read_msg, read_msg_in, read_sealed_in, write_full, write_sealed};
 
 struct Session {
     /// The mount id: `Chan::devno` of every file on this session.
     id: u32,
     fd: Arc<Chan>,
     mux: Arc<Mux>,
+    /// Buffers for the replies the reader reads; a read hands its
+    /// reply's back ([`crate::rw::Pool`]).
+    bufs: Arc<Pool>,
     note: Arc<Note>,
     msize: Arc<AtomicU32>,
     iounit: AtomicU32,
@@ -591,11 +594,13 @@ impl DevMnt {
     fn start(&self, fd: Arc<Chan>, msize: u32) -> Result<Arc<Session>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mux = Arc::new(Mux::new());
+        let bufs = Arc::new(Pool::new());
         let note = Arc::new(Note::new());
         let session = Arc::new(Session {
             id,
             fd: fd.clone(),
             mux: mux.clone(),
+            bufs: bufs.clone(),
             note: note.clone(),
             msize: Arc::new(AtomicU32::new(msize)),
             iounit: AtomicU32::new(msize.saturating_sub(IOHDRSZ)),
@@ -622,8 +627,8 @@ impl DevMnt {
                 loop {
                     let max = msize.load(Ordering::Acquire).max(IOHDRSZ);
                     let got = match opener.as_mut() {
-                        Some(o) => read_sealed(&fd, o, max),
-                        None => read_msg(&fd, max),
+                        Some(o) => read_sealed_in(&fd, o, max, Some(&bufs)),
+                        None => read_msg_in(&fd, max, Some(&bufs)),
                     };
                     let tag = match &got {
                         Ok(buf) => Msg::decode(buf, max).map(|m| m.tag).ok(),
@@ -1068,14 +1073,17 @@ impl Dev for DevMnt {
             offset,
             count,
         })?;
-        match f.session.decode(&reply)? {
-            Fcall::Rread { data } => {
+        let got = match f.session.decode(&reply) {
+            Ok(Fcall::Rread { data }) => {
                 let n = data.len().min(buf.len());
                 buf[..n].copy_from_slice(&data[..n]);
                 Ok(n)
             }
-            _ => Err(Error::new(error::EIO)),
-        }
+            Ok(_) => Err(Error::new(error::EIO)),
+            Err(e) => Err(e),
+        };
+        f.session.bufs.put(reply);
+        got
     }
 
     fn dirread(&self, c: &Chan) -> Result<Vec<Dir>> {
