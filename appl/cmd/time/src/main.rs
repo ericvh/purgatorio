@@ -1,7 +1,8 @@
 //! time command [arg ...]: run a command and report on standard error its
 //! load time, its real time and the total, in seconds, as
 //! `0.01l 0.2r 0.21t`. A command that fails has its wait message printed
-//! first.
+//! first. As in Inferno's time, nothing sets a status: not a usage
+//! error, a command that cannot be loaded, nor the command's own failure.
 
 use std::time::Instant;
 
@@ -36,14 +37,20 @@ fn g4(x: f64) -> String {
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() < 2 {
-        return Err(Error::from("usage: time cmd ..."));
+        eprintln!("usage: time cmd ...");
+        return Ok(());
     }
     let argv = args[1..].to_vec();
     let t0 = Instant::now();
-    let path =
-        purgatorio::find_command(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
-    let pid =
-        purgatorio::spawn(&path, &argv, 0, &[]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
+    let started =
+        purgatorio::find_command(&argv[0]).and_then(|path| purgatorio::spawn(&path, &argv, 0, &[]));
+    let pid = match started {
+        Ok(pid) => pid,
+        Err(e) => {
+            eprintln!("time: {}: {e}", argv[0]);
+            return Ok(());
+        }
+    };
     let t1 = Instant::now();
     loop {
         let w = purgatorio::wait()?;
