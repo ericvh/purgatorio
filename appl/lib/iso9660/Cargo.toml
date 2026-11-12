@@ -1,0 +1,16 @@
+[package]
+name = "appl-lib-iso9660"
+description = "iso9660: read ISO 9660 images (Rock Ridge, Joliet) for 9660srv, and build small ones for tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "iso9660"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

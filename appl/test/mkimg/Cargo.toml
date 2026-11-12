@@ -1,0 +1,18 @@
+[package]
+name = "appl-test-mkimg"
+description = "mkimg: ISO 9660 and FAT images for the file server tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mkimg"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+iso9660 = { package = "appl-lib-iso9660", path = "../../lib/iso9660" }
+
+[lints]
+workspace = true
