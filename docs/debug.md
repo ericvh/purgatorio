@@ -135,8 +135,9 @@ prog. What they gain is less than a kill: the prog's later children run
 slower, and one that traps stays in `/prog` until it is killed. Those
 children can also be debugged (below): whoever can write their `ctl`
 can stop them and read and write their memory. That is more than a kill
-gives, since memory can hold keys; as in Inferno, it is open to whoever
-owns the progs, and a sandbox behind `#pdomain` sees only its own.
+gives, since memory can hold keys. As with `ctl`, only the prog's user
+or the host owner may open its `heap`, and a sandbox behind `#pdomain`
+sees only its own progs.
 
 What tracing costs, and only for traced progs: two wasm frames per call;
 one more 64 KiB page (more for a module of over 30,000 functions);
