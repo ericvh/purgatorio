@@ -50,7 +50,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 pub use chan::{Aux, Chan, Member};
-pub use dev::{Dev, DevTab, Walked, WalkedNames};
+pub use dev::{Dev, DevTab, WalkEnd, Walked, WalkedNames};
 pub use devenv::Egrp;
 pub use devmnt::DevMnt;
 pub use devsrv::DevSrv;

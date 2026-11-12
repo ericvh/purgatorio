@@ -42,8 +42,8 @@
 //!   revalidated once per lifetime, not once per block.
 //!
 //! With `cache 0` every stat and every read asks the server, as NFS with
-//! `noac` does. What a walk or a readahead fetched for the operation in
-//! progress is used once even then.
+//! `noac` does. What a readahead fetched for the read in progress is
+//! used once even then, and a walk's answer is the walk's.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -63,7 +63,7 @@ use purg_platform::sync::{Mutex, Rendez};
 use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 
 use crate::chan::Chan;
-use crate::dev::{Dev, Walked};
+use crate::dev::{Dev, WalkEnd, Walked, WalkedNames};
 use crate::error::{Error, Result};
 
 /// The device character.
@@ -98,20 +98,16 @@ const LISTINGS: u32 = 3;
 
 /// What is known about one path.
 #[derive(Clone)]
-enum Known {
-    /// It exists, with this qid, and perhaps its whole entry.
-    Found { qid: Qid, dir: Option<Dir> },
-    /// A walk found it missing, for this reason.
-    Missing(String),
+struct Known {
+    qid: Qid,
+    /// Its whole entry, when that came too.
+    dir: Option<Dir>,
 }
 
 struct Attr {
     known: Known,
     /// `monotonic_ns` when the server said so.
     when: u64,
-    /// Fetched by a walk ahead of the walk in progress: good for one use
-    /// by that walk, however old.
-    ahead: bool,
 }
 
 /// The attribute cache.
@@ -125,8 +121,8 @@ fn young(when: u64, now: u64, life: u64) -> bool {
 }
 
 impl Attrs {
-    /// Makes room for one more, dropping entries older than `life` (but
-    /// not those a walk in progress fetched ahead). When none are,
+    /// Makes room for one more, dropping entries older than `life`. When
+    /// none are,
     /// `evict` drops the older half (what a walk or a stat learnt is
     /// wanted now); without it nothing is added (`false`), as for a
     /// listing's entries, which are only a guess.
@@ -134,7 +130,7 @@ impl Attrs {
         if self.map.len() < ATTRS_MAX {
             return true;
         }
-        self.map.retain(|_, a| a.ahead || young(a.when, now, life));
+        self.map.retain(|_, a| young(a.when, now, life));
         if self.map.len() < ATTRS_MAX {
             return true;
         }
@@ -149,44 +145,25 @@ impl Attrs {
         self.map.len() < ATTRS_MAX
     }
 
-    fn put(&mut self, p: &str, known: Known, now: u64, life: u64, ahead: bool) {
+    fn put(&mut self, p: &str, known: Known, now: u64, life: u64) {
         if let Some(a) = self.map.get_mut(p) {
-            *a = Attr {
-                known,
-                when: now,
-                ahead,
-            };
+            *a = Attr { known, when: now };
         } else if self.room(now, life, true) {
-            self.map.insert(
-                String::from(p),
-                Attr {
-                    known,
-                    when: now,
-                    ahead,
-                },
-            );
+            self.map.insert(String::from(p), Attr { known, when: now });
         }
     }
 
-    /// For a walk: what is known, if young or fetched ahead for it.
-    fn walk(&mut self, p: &str, now: u64, life: u64) -> Option<Known> {
-        let a = self.map.get_mut(p)?;
-        if young(a.when, now, life) && !matches!(a.known, Known::Missing(_)) {
-            a.ahead = false;
-            return Some(a.known.clone());
-        }
-        if a.ahead {
-            a.ahead = false;
-            return Some(a.known.clone());
-        }
-        None
+    /// For a walk: the qid, if young.
+    fn walk(&self, p: &str, now: u64, life: u64) -> Option<Qid> {
+        let a = self.map.get(p)?;
+        young(a.when, now, life).then_some(a.known.qid)
     }
 
     /// For a stat: the entry, if young.
     fn stat(&self, p: &str, now: u64, life: u64) -> Option<Dir> {
         let a = self.map.get(p)?;
         match &a.known {
-            Known::Found { dir: Some(d), .. } if young(a.when, now, life) => Some(d.clone()),
+            Known { dir: Some(d), .. } if young(a.when, now, life) => Some(d.clone()),
             _ => None,
         }
     }
@@ -196,7 +173,7 @@ impl Attrs {
     fn version(&self, p: &str, now: u64, life: u64) -> (Option<u32>, Option<u64>) {
         match self.map.get(p) {
             Some(Attr {
-                known: Known::Found { qid, dir },
+                known: Known { qid, dir },
                 when,
                 ..
             }) => (
@@ -212,12 +189,12 @@ impl Attrs {
     fn confirm(&mut self, p: &str, qid: Qid, now: u64, life: u64) {
         let dir = match self.map.get(p) {
             Some(Attr {
-                known: Known::Found { dir: Some(d), .. },
+                known: Known { dir: Some(d), .. },
                 ..
             }) if d.qid.vers == qid.vers => Some(d.clone()),
             _ => None,
         };
-        self.put(p, Known::Found { qid, dir }, now, life, false);
+        self.put(p, Known { qid, dir }, now, life);
     }
 }
 
@@ -708,98 +685,102 @@ impl Remote {
 
     /// Remembers `d` as `p`'s entry.
     fn found(&self, p: &str, d: &Dir) {
-        let known = Known::Found {
+        let known = Known {
             qid: d.qid,
             dir: Some(d.clone()),
         };
-        self.attrs
-            .lock()
-            .put(p, known, self.mono(), self.life(), false);
+        self.attrs.lock().put(p, known, self.mono(), self.life());
     }
 
-    /// The qid of `dir`'s child `name`, from what a walk fetched ahead or
-    /// the attribute cache when they have it, else from the server.
+    /// The qid of `dir`'s child `name`, from the attribute cache when it
+    /// has it, else from the server.
     fn walk(&self, dir: &str, name: &str) -> Result<Qid> {
         let p = path::join(dir, name);
-        match self.attrs.lock().walk(&p, self.mono(), self.life()) {
-            Some(Known::Found { qid, .. }) => return Ok(qid),
-            Some(Known::Missing(e)) => return Err(Error::from(e)),
-            None => {}
+        if let Some(qid) = self.attrs.lock().walk(&p, self.mono(), self.life()) {
+            return Ok(qid);
         }
         Ok(self.stat(&p)?.qid)
     }
 
-    /// Walks `names` from `dir` in one request and keeps the answers for
-    /// the walk that follows: each name's qid, the last one's entry, and
-    /// why the first that could not be walked could not.
-    fn walk_ahead(&self, dir: &str, names: &[&str]) {
-        if names.len() < 2 || !self.walks.load(Ordering::Relaxed) {
-            return;
+    /// Walks `names` from `dir`: from the attribute cache when it knows
+    /// them all, else in one `Twalk` (or a name with a `stat`, from a
+    /// server without `Twalk`). Returns the qids of the names walked and, when
+    /// the walk stopped short, why. Fails when the first name cannot be
+    /// walked.
+    fn walk_names(&self, dir: &str, names: &[&str]) -> Result<(Vec<Qid>, Option<Error>)> {
+        let mut qids = Vec::new();
+        let mut p = String::from(dir);
+        {
+            let (now, life) = (self.mono(), self.life());
+            let a = self.attrs.lock();
+            for n in names.iter().take_while(|n| path::valid_elem(n)) {
+                let q = path::join(&p, n);
+                let Some(qid) = a.walk(&q, now, life) else {
+                    break;
+                };
+                qids.push(qid);
+                p = q;
+            }
         }
+        if qids.len() == names.len() {
+            return Ok((qids, None));
+        }
+        // The whole walk from `dir`, not the rest from where the cache
+        // ends: the same one request, and it answers the last name's
+        // entry from one look at the server's tree.
+        self.walk_server(dir, names)
+    }
+
+    /// The qids of `names` below `dir`, from the server: all in one
+    /// `Twalk`, which also answers the last one's entry for the stat that
+    /// usually follows. A name that is not valid in a Lethe path is not
+    /// there. Fails when the first name cannot be walked.
+    fn walk_server(&self, dir: &str, names: &[&str]) -> Result<(Vec<Qid>, Option<Error>)> {
         let wanted: Vec<&str> = names
             .iter()
             .copied()
             .take_while(|n| path::valid_elem(n))
             .take(MAX_WALK)
             .collect();
-        let mut p = String::from(dir);
+        let Some(first) = wanted.first() else {
+            return Err(Error::new(ENONEXIST));
+        };
         let total = wanted.iter().map(|n| n.len() + 1).sum::<usize>() + dir.len();
-        if wanted.len() < 2 || total > path::MAX_PATH {
-            return;
-        }
-        let now = self.mono();
-        // Already known: the next name, and the last.
-        {
-            let a = self.attrs.lock();
-            let mut last = String::from(dir);
-            for n in &wanted {
-                last = path::join(&last, n);
-            }
-            let first = path::join(dir, wanted[0]);
-            let have = |q: &str| {
-                a.map.get(q).is_some_and(|x| {
-                    x.ahead
-                        || (young(x.when, now, self.life())
-                            && matches!(x.known, Known::Found { .. }))
-                })
+        if wanted.len() >= 2 && total <= path::MAX_PATH && self.walks.load(Ordering::Relaxed) {
+            let op = Op::Walk {
+                path: dir,
+                names: wanted.clone(),
             };
-            if have(&first) && have(&last) {
-                return;
+            match self.call(&op) {
+                Ok(Owned::Walk { qids, error, stat }) if qids.len() <= wanted.len() => {
+                    let (now, life) = (self.mono(), self.life());
+                    let mut a = self.attrs.lock();
+                    let mut p = String::from(dir);
+                    let n = qids.len();
+                    for (i, q) in qids.iter().enumerate() {
+                        p = path::join(&p, wanted[i]);
+                        let dir = if i + 1 == n && error.is_none() {
+                            stat.clone().map(|d| self.fix(d))
+                        } else {
+                            None
+                        };
+                        a.put(&p, Known { qid: *q, dir }, now, life);
+                    }
+                    drop(a);
+                    let why = error.map(Error::from);
+                    if n == 0 {
+                        return Err(why.unwrap_or(Error::new(ENONEXIST)));
+                    }
+                    let why = (n < names.len()).then(|| why.unwrap_or(Error::new(ENONEXIST)));
+                    return Ok((qids, why));
+                }
+                Ok(_) => return Err(bad()),
+                Err(e) if e.as_str() == ENOTIMPL => self.walks.store(false, Ordering::Relaxed),
+                Err(e) => return Err(e),
             }
         }
-        let op = Op::Walk {
-            path: dir,
-            names: wanted.clone(),
-        };
-        let (qids, error, stat) = match self.call(&op) {
-            Ok(Owned::Walk { qids, error, stat }) => (qids, error, stat),
-            Err(e) if e.as_str() == ENOTIMPL => {
-                self.walks.store(false, Ordering::Relaxed);
-                return;
-            }
-            _ => return,
-        };
-        if qids.len() > wanted.len() {
-            return;
-        }
-        let life = self.life();
-        let mut a = self.attrs.lock();
-        let n = qids.len();
-        for (i, q) in qids.into_iter().enumerate() {
-            p = path::join(&p, wanted[i]);
-            let dir = if i + 1 == n && error.is_none() {
-                stat.clone().map(|d| self.fix(d))
-            } else {
-                None
-            };
-            a.put(&p, Known::Found { qid: q, dir }, now, life, true);
-        }
-        if let Some(e) = error
-            && n < wanted.len()
-        {
-            p = path::join(&p, wanted[n]);
-            a.put(&p, Known::Missing(e), now, life, true);
-        }
+        let qid = self.walk(dir, first)?;
+        Ok((alloc::vec![qid], None))
     }
 
     /// Reads into `buf` at `offset`. Blocks come from the cache while the
@@ -974,11 +955,11 @@ impl Remote {
                     if !a.map.contains_key(&k) && !a.room(now, life, false) {
                         break;
                     }
-                    let known = Known::Found {
+                    let known = Known {
                         qid: d.qid,
                         dir: Some(d.clone()),
                     };
-                    a.put(&k, known, now, life, false);
+                    a.put(&k, known, now, life);
                 }
             }
             return Ok(out);
@@ -1150,10 +1131,38 @@ impl Dev for DevLethe {
         }
     }
 
-    fn walk_ahead(&self, c: &Chan, names: &[&str]) {
-        if let Some(Node::File { remote, path: dir }) = self.node(c) {
-            remote.walk_ahead(dir, names);
+    fn max_walk(&self) -> usize {
+        MAX_WALK
+    }
+
+    /// A whole path in one `Twalk` (`Remote::walk_names`).
+    fn walk_names(&self, c: &Chan, names: &[&str]) -> Result<WalkedNames> {
+        let Some(Node::File { remote, path: dir }) = self.node(c) else {
+            let w = self.walk(c, names.first().ok_or(Error::new(ENONEXIST))?)?;
+            return Ok(WalkedNames {
+                qids: alloc::vec![w.qid],
+                aux: w.aux,
+                end: WalkEnd::Reached,
+            });
+        };
+        let (qids, why) = remote.walk_names(dir, names)?;
+        if let Some(why) = why {
+            return Ok(WalkedNames {
+                qids,
+                aux: None,
+                end: WalkEnd::Stopped(Some(why)),
+            });
         }
+        let mut p = dir.clone();
+        for n in &names[..qids.len()] {
+            p = path::join(&p, n);
+        }
+        let last = *qids.last().ok_or(Error::new(ENONEXIST))?;
+        Ok(WalkedNames {
+            aux: DevLethe::walked(remote, p, last).aux,
+            qids,
+            end: WalkEnd::Reached,
+        })
     }
 
     fn stat(&self, c: &Chan) -> Result<Dir> {
@@ -1258,23 +1267,19 @@ mod tests {
     fn attributes_age_and_make_room() {
         let mut a = Attrs::default();
         let q = Qid::default();
-        let found = || Known::Found { qid: q, dir: None };
-        a.put("/a", found(), 100, 10, false);
+        let found = || Known { qid: q, dir: None };
+        a.put("/a", found(), 100, 10);
         assert!(a.walk("/a", 105, 10).is_some());
         assert!(a.walk("/a", 110, 10).is_none());
-        // Fetched ahead: once, however old; a missing name only that way.
-        a.put("/b", Known::Missing(String::from("x")), 100, 0, true);
-        assert!(matches!(a.walk("/b", 900, 0), Some(Known::Missing(_))));
-        assert!(a.walk("/b", 900, 0).is_none());
         // Full of young entries: a listing adds nothing, a walk evicts the
         // older half.
         a.map.clear();
         for i in 0..ATTRS_MAX {
-            a.put(&alloc::format!("/{i}"), found(), i as u64, u64::MAX, false);
+            a.put(&alloc::format!("/{i}"), found(), i as u64, u64::MAX);
         }
         let now = ATTRS_MAX as u64;
         assert!(!a.room(now, u64::MAX, false));
-        a.put("/new", found(), now, u64::MAX, false);
+        a.put("/new", found(), now, u64::MAX);
         assert!(a.map.contains_key("/new") && !a.map.contains_key("/0"));
         assert!(a.map.len() <= ATTRS_MAX / 2 + 1);
     }

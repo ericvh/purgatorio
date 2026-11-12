@@ -770,9 +770,10 @@ device keeps the key to renew the ticket; a guest factotum cannot be used
 in the first cut, since the device must be able to sign again later.
 
 The device presents the tree as files. A walk is a `walk` of the names
-it has left (the namespace tells a device the rest of the path before
-each step, `Dev::walk_ahead`), or a `stat` of the joined path when one
-name is left or the server is older; a read is a `read` (conditional when
+it has left (the namespace hands a device all of them that it takes,
+`Dev::walk_names`, the interface `#M` uses for a 9P `Twalk` of
+several names), or a `stat` of the joined path when one name is left or
+the server is older; a read is a `read` (conditional when
 cached); a directory read pages through `readdir`. A stat right after a
 walk is answered from the walk's entry while it is young. Connections are pooled: each request takes an idle
 connection or dials a new one, and a connection that fails is dropped and
