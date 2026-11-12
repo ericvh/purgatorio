@@ -3,10 +3,14 @@
 //!
 //! Files are opened with plain `std::fs::File`, which goes through WASI;
 //! failures are reported with the exact Inferno error string from
-//! `purgatorio::errstr`.
+//! `purgatorio::errstr`. Each read is written to fd 1 as it is, as
+//! Inferno's cat does: not through `std::io::stdout`, whose line
+//! buffering searches every buffer for a newline and copies small writes.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::mem::ManuallyDrop;
+use std::os::fd::FromRawFd;
 
 use purgatorio::{Context, Error};
 
@@ -23,22 +27,21 @@ fn copy(from: &mut dyn Read, out: &mut dyn Write) -> io::Result<()> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut stdout = io::stdout().lock();
+    // SAFETY: fd 1 outlives main; ManuallyDrop leaves it open.
+    let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
+    let stdout: &mut File = &mut stdout;
     if args.len() <= 1 {
-        copy(&mut io::stdin().lock(), &mut stdout)?;
-        stdout.flush()?;
+        copy(&mut io::stdin().lock(), stdout)?;
         return Ok(());
     }
     let mut failed = false;
     for path in &args[1..] {
-        let res = File::open(path).and_then(|mut f| copy(&mut f, &mut stdout));
+        let res = File::open(path).and_then(|mut f| copy(&mut f, stdout));
         if res.is_err() {
-            let _ = stdout.flush();
             eprintln!("cat: {path}: {}", purgatorio::errstr());
             failed = true;
         }
     }
-    stdout.flush()?;
     if failed {
         purgatorio::exits("fail:errors");
     }
