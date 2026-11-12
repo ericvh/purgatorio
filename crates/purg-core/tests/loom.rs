@@ -500,3 +500,36 @@ fn note_kill_wakes_a_sleeper() {
     });
 }
 
+/// A file2chan client's request and a server that exits (its request
+/// channel closed, then its channel table, which holds the reply
+/// channel): the client is answered or told the channel hung up, but
+/// never left waiting (#182).
+#[test]
+fn file2chan_exit_hangs_up_a_waiting_client() {
+    use purg_core::kchan::Kgrp;
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(model.preemption_bound.map_or(5, |n| n.min(5)));
+    model.check(|| {
+        let write = std::sync::Arc::new(KChan::new(1));
+        let server = std::sync::Arc::new(Kgrp::new());
+        let client = {
+            let (write, server) = (write.clone(), server.clone());
+            thread::spawn(move || {
+                let reply = std::sync::Arc::new(KChan::new(1));
+                if server.alloc(reply.clone()).is_err() {
+                    return;
+                }
+                let msg = KMsg {
+                    bytes: vec![1],
+                    caps: Vec::new(),
+                };
+                if write.send(msg).is_ok() {
+                    assert!(reply.recv().unwrap().is_none());
+                }
+            })
+        };
+        write.close();
+        server.close_all();
+        client.join().unwrap();
+    });
+}

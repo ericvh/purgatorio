@@ -323,11 +323,20 @@ impl Kgrp {
     }
 }
 
-impl Drop for Kgrp {
-    fn drop(&mut self) {
-        for c in self.tab.lock().drain(..).flatten() {
+impl Kgrp {
+    /// Closes every channel in the table and empties it: its prog has
+    /// gone, and anyone waiting on one of them is told.
+    pub fn close_all(&self) {
+        let all: Vec<Arc<KChan>> = self.tab.lock().drain(..).flatten().collect();
+        for c in all {
             c.close();
         }
+    }
+}
+
+impl Drop for Kgrp {
+    fn drop(&mut self) {
+        self.close_all();
     }
 }
 

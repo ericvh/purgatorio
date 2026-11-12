@@ -119,10 +119,12 @@ impl DevSrv {
     }
 
     /// Removes the files prog `pid` serves, when it exits, and closes
-    /// their channels: a client's read or write then fails with `i/o on
-    /// hungup channel` instead of waiting for an answer that cannot come,
-    /// and the name is free again. (Inferno removes a file2chan file when
-    /// its server's channels are collected.)
+    /// their channels and the rest of its channel table, which holds the
+    /// reply channels of requests it never answered: a client's read or
+    /// write then fails with `i/o on hungup channel` instead of waiting
+    /// for an answer that cannot come, and the name is free again.
+    /// (Inferno removes a file2chan file when its server's channels are
+    /// collected.)
     pub fn remove_server(&self, pid: u32) {
         let gone: Vec<Arc<SrvFile>> = {
             let mut files = self.files.lock();
@@ -136,12 +138,19 @@ impl DevSrv {
         if gone.is_empty() {
             return;
         }
-        let mut names = self.by_name.lock();
-        for f in &gone {
-            names.remove(&(f.domain, f.name.clone()));
-            f.read.close();
-            f.write.close();
+        {
+            let mut names = self.by_name.lock();
+            for f in &gone {
+                names.remove(&(f.domain, f.name.clone()));
+                f.read.close();
+                f.write.close();
+            }
         }
+        // A client waiting in `exchange` keeps the file, and so the
+        // channel table, alive: close the table, or the client waits for
+        // ever. It goes after the request channels, so a request sent
+        // before they closed has its reply channel closed here.
+        gone[0].server.close_all();
     }
 
     fn file(&self, c: &Chan) -> Result<Arc<SrvFile>> {
