@@ -1520,10 +1520,11 @@ fn session_limits_and_domain_teardown() {
         assert_eq!(m.run("echo after").stdout, "after\n", "{vm}");
 
         // A fork bomb as a job: it never gets past 16 progs, and its
-        // spawns fail with no free procs.
+        // spawns fail with no free procs. Twenty background sleeps after
+        // it reach the limit however slowly the bomb spreads.
         let j = m.ok(
             "job_start",
-            r#"{"command":"load std; fn bomb {bomb & bomb &}; bomb; sleep 2","timeout_ms":3000}"#,
+            r#"{"command":"load std; fn bomb {bomb & bomb &}; bomb; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 {sleep 100 &}","timeout_ms":30000}"#,
         );
         // A file tool needs a worker prog, which may not get a place; it
         // then fails with the limit named.
