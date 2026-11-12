@@ -899,3 +899,85 @@ fn mixed_mode() {
         remote("authentication failed")
     );
 }
+
+fn walk(names: &[&'static str], path: &'static str) -> Op<'static> {
+    Op::Walk {
+        path,
+        names: names.to_vec(),
+    }
+}
+
+/// `Twalk`: the qids of every name walked and the last one's stat, or the
+/// qids up to the name that could not be walked and why; sealed and in
+/// the clear.
+#[test]
+fn walks() {
+    let server = Server::new(Config::default(), [9; 32]).with_clear(true);
+    let t = tree();
+    t.add("/lib/d", 0o755, "sys", None);
+    t.add("/lib/d/e", 0o644, "sys", Some(b"deep"));
+    let now = Cell::new(T0);
+    let mut r = rig(&server, &t, &now, direct());
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    let q = |p: &str| t.dir(p).unwrap().qid;
+    let Ok(Owned::Walk { qids, error, stat }) =
+        call(&mut c, &mut r, &walk(&["lib", "d", "e"], "/"))
+    else {
+        panic!()
+    };
+    assert_eq!(qids, [q("/lib"), q("/lib/d"), q("/lib/d/e")]);
+    assert_eq!(error, None);
+    assert_eq!(stat, Some(t.dir("/lib/d/e").unwrap()));
+    // No names: the directory's own stat.
+    let Ok(Owned::Walk { qids, stat, .. }) = call(&mut c, &mut r, &walk(&[], "/lib")) else {
+        panic!()
+    };
+    assert!(qids.is_empty());
+    assert_eq!(stat.unwrap().name, "lib");
+    // Stopped part way: the qids so far and the reason.
+    for (names, n, why) in [
+        (&["lib", "nope", "x"][..], 1, "file does not exist"),
+        (&["hello", "x"][..], 1, "not a directory"),
+        (&["locked", "x"][..], 1, "permission denied"),
+        (&["lib", "..", "x"][..], 1, "file name syntax"),
+        (&["nope"][..], 0, "file does not exist"),
+    ] {
+        let Ok(Owned::Walk { qids, error, stat }) = call(&mut c, &mut r, &walk(names, "/")) else {
+            panic!("{names:?}")
+        };
+        assert_eq!(
+            (qids.len(), error.as_deref(), stat),
+            (n, Some(why), None),
+            "{names:?}"
+        );
+    }
+    // A start that can be stat'ed but not searched stops at its first
+    // name; one that cannot be reached is an error, as a stat of it is.
+    let Ok(Owned::Walk { qids, error, .. }) = call(&mut c, &mut r, &walk(&["x"], "/locked")) else {
+        panic!()
+    };
+    assert_eq!(
+        (qids.len(), error.as_deref()),
+        (0, Some("permission denied"))
+    );
+    assert_eq!(
+        call(&mut c, &mut r, &walk(&["x"], "/locked/x")),
+        remote("permission denied")
+    );
+    assert_eq!(
+        call(&mut c, &mut r, &walk(&["x"], "/nope")),
+        remote("file does not exist")
+    );
+    // In the clear, as none: the closed directory stops the walk.
+    let Ok(Owned::Walk { qids, error, .. }) = clear(&mut r, &walk(&["lib", "d", "e"], "/")) else {
+        panic!()
+    };
+    assert_eq!((qids.len(), error), (3, None));
+    let Ok(Owned::Walk { qids, error, .. }) = clear(&mut r, &walk(&["locked", "x"], "/")) else {
+        panic!()
+    };
+    assert_eq!(
+        (qids.len(), error.as_deref()),
+        (1, Some("permission denied"))
+    );
+}
