@@ -129,7 +129,12 @@ leaves at the start of RAM, brings up the GIC (v2 or v3) and the virtual
 timer at 100 Hz, and runs preemptive kernel threads. Its self-test ends with
 two threads that only make progress when the timer switches between them.
 Locks defer preemption instead of being preempted, the console is driven by
-the UART interrupt, and an idle CPU waits in `wfi`.
+the UART interrupt, and an idle CPU waits in `wfi`. A console kproc runs the
+line discipline as input arrives, so typing is echoed at once (typeahead
+included), erasing knows how many columns a tab or a wide character took,
+and ^C sends the `interrupt` note to the console's foreground process group
+([docs/abi.md](docs/abi.md), "Interrupts"): an interactive `sh` abandons
+the command and prompts again.
 
 On top of that it runs the shared core (K2): `purg-core`, `purg-vm` and
 wasmi, with the emu's boot namespace over a RAM root. The root is a ustar
@@ -137,14 +142,22 @@ archive of `root/bin` and `root/lib` compiled into the image, as Inferno's
 kernels do; an initrd named by the DTB replaces it. The kernel is also an
 arm64 Linux `Image`, so QEMU and boot loaders can pass it an initrd. It boots
 to `sh -l` on the serial console. With `test` in the boot arguments it runs
-the conformance guests and the sh corpus instead.
+the conformance guests and the sh corpus instead, and then `sh -i` on the
+console, which `xtask` types at: a line with a tab erased, a line typed
+ahead during a `sleep`, and ^C during a `sleep` and at the prompt. The
+namespace is the emu's less `/cmd`: there is no host to run commands on, so
+the kernel and the probe bind nothing there (`#C` is still in the device
+table, and its `clone` fails with `not implemented`).
 
 K3 networking: `#I` is on `/net`, over smoltcp on a virtio-net card
 (`purg_aarch64::net`), with TCP and UDP. In test mode under `xtask kernel`
 the kernel also mounts a hosted emu's `styxlisten` export from the host
 (10.0.2.2 in QEMU user networking) and lists it, checks a UDP echo server on
-the host, and exports its own `/` on `tcp!*!6666`, which the host mounts
-through a QEMU `hostfwd`.
+the host, announces `udp!*!6670` and echoes what the host sends there
+through a UDP `hostfwd` (a datagram of 4000 bytes among them: smoltcp
+fragments and reassembles IPv4, so a datagram may be up to 8164 bytes), and
+exports its own `/` on `tcp!*!6666`, which the host mounts through a QEMU
+`hostfwd`.
 
 K3 adds the kernel's own devices, bound after `/dev` as in Inferno's native
 kernels: `#r` serves the PL031 clock as `/dev/rtc` (read the time, write
@@ -160,7 +173,10 @@ speaks only 9P2000.u and .L, so a translator (`purg_styx::dotu`) sits
 between `#M`, which speaks 9P2000, and the device. In test mode the kernel
 lists, reads, writes, renames, chmods and removes files there, kills a
 prog whose read waits on a second, throttled device (the mount flushes the
-read through the translator), and `xtask` checks the host side.
+read through the translator), and `xtask` checks the host side. The
+`Tflush` reaches QEMU at once, but QEMU sends the `Rflush` only when the
+flushed request has finished: its 9P server waits for a cancelled request
+to complete. So a flush there takes as long as the request it flushes.
 
 K3 storage, second pass: virtio-blk disks are `#S` (`/dev/sdV0/ctl` and
 `data`, after `/dev`), and the kernel mounts the first one holding a purgfs
@@ -193,7 +209,7 @@ cargo xtask kernel --smp 4  # the same with four CPUs each, so fewer side by sid
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
 cargo xtask kernel --kvm --smp 4 --stress 3600   # an hour of the stress mode on four CPUs
 cargo xtask initrd          # target/initrd/root.tar, the same archive the kernel compiles in
-# an interactive shell on the kernel (^D at the start of a line ends it):
+# an interactive shell on the kernel (^C interrupts, ^D at the start of a line ends it):
 qemu-system-aarch64 -accel kvm -cpu host -M virt,gic-version=3 -m 512M -nographic \
   -netdev user,id=net0 -global virtio-mmio.force-legacy=off \
   -device virtio-net-device,netdev=net0 \

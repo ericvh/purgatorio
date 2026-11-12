@@ -287,8 +287,12 @@ inner file
 /n/lethe/inner.txt
 hello from the host
 kernel: ok
+kernel: udp ready
+kernel: udp served
 kernel: net ready
 kernel: net served
 kernel: rstyx ready
 kernel: rstyx served
+kernel: console: sh
+kernel: console session ok
 kernel: ok
