@@ -22,8 +22,9 @@
 //!
 //! UDP follows Inferno: a dialed conversation reads and writes datagrams
 //! with one remote, and an announced port starts a conversation for each
-//! new remote, which `listen` returns ([`UdpDemux`]). There is no IP
-//! fragmentation, so a datagram is at most [`UDP_MAX`] bytes.
+//! new remote, which `listen` returns ([`UdpDemux`]). IPv4 fragmentation
+//! and reassembly are smoltcp's, so a datagram may be up to [`UDP_MAX`]
+//! bytes, past the MTU.
 //!
 //! ICMP (`/net/icmp`) is echo only. A conversation with another host is a
 //! raw smoltcp socket for IPv4 ICMP: it sends the echo requests with an
@@ -67,9 +68,15 @@ const SOCKET_BUF: usize = 8192;
 const FIRST_EPHEMERAL: u16 = 49152;
 /// Datagrams each UDP socket buffers each way.
 const UDP_PACKETS: usize = 16;
-/// The largest UDP payload: the 1500-byte IP MTU less the IP and UDP
-/// headers. Larger writes fail.
-pub const UDP_MAX: usize = 1472;
+/// The largest UDP payload: smoltcp's 8 KiB IPv4 fragmentation and
+/// reassembly buffers (the `fragmentation-buffer-size-8192` and
+/// `reassembly-buffer-size-8192` features) less the IP and UDP headers.
+/// A datagram past the 1500-byte MTU goes out in fragments, and one that
+/// came in fragments is reassembled, two at a time. Larger writes fail.
+pub const UDP_MAX: usize = 8192 - 20 - 8;
+/// The bytes of datagrams each UDP socket buffers each way: as many
+/// datagrams of a full MTU as [`UDP_PACKETS`], or fewer larger ones.
+const UDP_BUF: usize = UDP_PACKETS * (IP_MTU - 28);
 
 /// The interface's static IPv4 configuration.
 #[derive(Clone, Copy, Debug)]
@@ -341,7 +348,7 @@ fn new_udp_socket() -> udp::Socket<'static> {
     let buf = || {
         udp::PacketBuffer::new(
             vec![udp::PacketMetadata::EMPTY; UDP_PACKETS],
-            vec![0; UDP_PACKETS * UDP_MAX],
+            vec![0; UDP_BUF],
         )
     };
     udp::Socket::new(buf(), buf())

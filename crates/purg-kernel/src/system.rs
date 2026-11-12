@@ -82,7 +82,6 @@ pub fn boot(
         platform,
         native,
         extra,
-        cmd: false,
     };
     let ns = purg_system::boot(b, |owner, platform| {
         let root = RamTree::new('U', "ramfs", owner, platform.clone());
@@ -251,6 +250,26 @@ impl System {
         }
     }
 
+    /// The console session, with `cargo xtask kernel` typing: `sh -i` on
+    /// `/dev/cons`, read through the console kproc (`purg_core::linedisc`).
+    /// xtask types a line with a tab erased, a line typed ahead while
+    /// `sleep 2` runs, ^C during `sleep 100` and at the prompt, and ^D,
+    /// and checks what the console showed; here the shell must end well.
+    /// The marker line goes through `/dev/cons` too, so the console's
+    /// column is known when the prompt is printed.
+    pub(crate) fn console_session(&self) -> usize {
+        let mut failed = 0;
+        self.step("the console session");
+        let argv = ["sh", "-c", "echo kernel: console: sh; sh -i"];
+        let v = match self.run_test(&argv, None) {
+            Ok((s, _)) if s.is_empty() => Ok(String::from("console session ok")),
+            Ok((s, _)) => Err(format!("console session: status {s:?}")),
+            Err(e) => Err(format!("console session: {e}")),
+        };
+        self.verdict(&mut failed, v);
+        failed
+    }
+
     /// Boots like the emu: `emuinit` runs `sh -l` on the console.
     pub fn interactive(&self) -> Result<String, Error> {
         memstat::sampler();
@@ -331,7 +350,8 @@ pub fn start(
                     let failed = sys.run_tests(memstat, sh)
                         + sys.host9p_tests(host, p9.as_deref())
                         + sys.disk_tests(&disks, bound)
-                        + sys.net_tests(&checks);
+                        + sys.net_tests(&checks)
+                        + sys.console_session();
                     if memstat {
                         sys.memstat();
                     }

@@ -500,8 +500,24 @@ impl System {
         if !until(WAIT_MS, || self.kernel.procs.get(pid).is_none()) {
             return Err(String::from("the killed reader did not go"));
         }
-        // QEMU answers the flush once the read it holds back is done.
-        if !until(4 * WAIT_MS, || in_flight() == 0) {
+        // The mount's Tflush goes down through the shim at once, so for a
+        // while the read and its flush are both in flight. QEMU answers
+        // the flush only once the read it holds back is done: its
+        // `v9fs_flush` marks the old request cancelled and waits for it
+        // to complete before sending Rflush, so the client's flush takes
+        // as long as the rest of the throttled read (about 0.6 s here).
+        let mut most = 0;
+        let ok = until(4 * WAIT_MS, || {
+            let n = in_flight();
+            most = most.max(n);
+            n == 0
+        });
+        if ok && most < 2 {
+            return Err(String::from(
+                "the flush was not sent while the read was in flight",
+            ));
+        }
+        if !ok {
             return Err(format!("{} requests still unanswered", in_flight()));
         }
         match (

@@ -464,6 +464,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(300);
 const GUEST_EXPORT_PORT: u16 = 6666;
 /// The port the kernel serves `auxi/rstyxd` on in test mode.
 const GUEST_RSTYX_PORT: u16 = 6668;
+/// The UDP port the kernel announces in test mode, and echoes one
+/// datagram on (`purg-kernel`'s `system/net.rs`, `udpserve`).
+const GUEST_UDP_PORT: u16 = 6670;
 /// The MAC address of the virtio-net card.
 const GUEST_MAC: &str = "52:54:00:12:34:56";
 
@@ -479,6 +482,54 @@ fn free_port() -> Result<u16> {
 /// dropped, so hold it until just before the port's user starts: a port
 /// let go early can go to the next helper that asks for one (#147: the
 /// host's lethed was given the port QEMU was about to forward).
+/// [`held_port`] for UDP.
+fn held_udp_port() -> Result<(std::net::UdpSocket, u16)> {
+    let s = std::net::UdpSocket::bind(("127.0.0.1", 0)).map_err(|e| format!("bind: {e}"))?;
+    let port = s.local_addr().map_err(|e| format!("bind: {e}"))?.port();
+    Ok((s, port))
+}
+
+/// Sends datagrams from the host to the kernel's announced UDP port,
+/// through QEMU's `hostfwd` on `port`, and checks that the kernel sends
+/// them back: a short one, then one of [`UDP_LARGE`] bytes, which crosses
+/// the link in IP fragments both ways. Each is sent again every half
+/// second until its echo comes, since the kernel may still be on its way
+/// to reading the port; echoes of a repeat are skipped.
+fn udp_guest(port: u16) -> Result<()> {
+    let short = b"from the host over udp".to_vec();
+    let large: Vec<u8> = (0..UDP_LARGE).map(|i| b'a' + (i % 26) as u8).collect();
+    let sock = std::net::UdpSocket::bind(("127.0.0.1", 0)).map_err(|e| format!("bind: {e}"))?;
+    sock.set_read_timeout(Some(Duration::from_millis(500)))
+        .map_err(|e| format!("udp: {e}"))?;
+    let mut buf = vec![0u8; 65536];
+    for payload in [&short, &large] {
+        let mut echoed = false;
+        for _ in 0..40 {
+            sock.send_to(payload, ("127.0.0.1", port))
+                .map_err(|e| format!("send: {e}"))?;
+            while let Ok(n) = sock.recv(&mut buf) {
+                if &buf[..n] == payload.as_slice() {
+                    echoed = true;
+                    break;
+                }
+                if n != short.len() {
+                    return Err(format!("an echo of {n} bytes, not {}", payload.len()));
+                }
+            }
+            if echoed {
+                break;
+            }
+        }
+        if !echoed {
+            return Err(format!("no echo of {} bytes in 20 s", payload.len()));
+        }
+    }
+    Ok(())
+}
+
+/// The large datagram [`udp_guest`] sends: past the 1500-byte MTU.
+const UDP_LARGE: usize = 4000;
+
 fn held_port() -> Result<(std::net::TcpListener, u16)> {
     let l = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("bind: {e}"))?;
     let port = l.local_addr().map_err(|e| format!("bind: {e}"))?.port();
@@ -495,10 +546,13 @@ const HOSTFWD_RETRIES: usize = 3;
 /// QEMU arguments for a virtio-net card on user networking, with host port
 /// `fwd` forwarded to the guest's export port, and `rstyx`, when given, to
 /// its rstyx port.
-fn net_args(fwd: u16, rstyx: Option<u16>) -> Vec<String> {
+fn net_args(fwd: u16, rstyx: Option<u16>, udp: Option<u16>) -> Vec<String> {
     let mut netdev = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{fwd}-:{GUEST_EXPORT_PORT}");
     if let Some(r) = rstyx {
         netdev.push_str(&format!(",hostfwd=tcp:127.0.0.1:{r}-:{GUEST_RSTYX_PORT}"));
+    }
+    if let Some(u) = udp {
+        netdev.push_str(&format!(",hostfwd=udp:127.0.0.1:{u}-:{GUEST_UDP_PORT}"));
     }
     [
         "-netdev",
@@ -578,6 +632,8 @@ fn show_console(serial: &str) {
 }
 
 /// Bytes to type on a QEMU run's serial console once a prompt appears.
+/// Each entry's prompt is looked for after the previous entry's, so a
+/// prompt may repeat.
 struct SerialInput {
     prompt: &'static str,
     bytes: &'static [u8],
@@ -601,7 +657,63 @@ const KERNEL_INPUT: &[SerialInput] = &[
         prompt: "kernel: console: waiting for raw input\n",
         bytes: b"a\x7f\x15\r\x04",
     },
+    // The console session (`purg-kernel`'s `system.rs`): `sh -i` on
+    // `/dev/cons`, read through the console kproc.
+    SerialInput {
+        prompt: "kernel: console: sh\n; ",
+        bytes: b"ech\to\x7f\x7fo one\r",
+    },
+    SerialInput {
+        prompt: "\none\n; ",
+        bytes: b"sleep 2\r",
+    },
+    SerialInput {
+        prompt: "sleep 2\n",
+        bytes: b"echo ahead\r",
+    },
+    SerialInput {
+        prompt: "; ahead\n; ",
+        bytes: b"sleep 100\r",
+    },
+    SerialInput {
+        prompt: "sleep 100\n",
+        bytes: b"\x03",
+    },
+    SerialInput {
+        prompt: "^C\n; ",
+        bytes: b"junk\x03",
+    },
+    SerialInput {
+        prompt: "junk^C\n; ",
+        bytes: b"echo back\r",
+    },
+    SerialInput {
+        prompt: "\nback\n; ",
+        bytes: b"\x04",
+    },
 ];
+
+/// What the console session shows for its part of [`KERNEL_INPUT`], with
+/// `\r` removed: the echo of each line as it is typed, so the typeahead
+/// line `echo ahead` shows before the `sleep 2` it was typed during ends;
+/// a tab erased back to its start, three columns on from `ech` after the
+/// prompt; ^C during `sleep 100` and at the prompt each giving the prompt
+/// back. It is not in the golden file, which would otherwise hold
+/// backspaces and a tab; the line before it is.
+const KERNEL_SESSION: &str = concat!(
+    "kernel: console: sh\n",
+    "; ech\to\x08 \x08\x08 \x08\x08 \x08\x08 \x08o one\n",
+    "one\n",
+    "; sleep 2\n",
+    "echo ahead\n",
+    "; ahead\n",
+    "; sleep 100\n",
+    "^C\n",
+    "; junk^C\n",
+    "; echo back\n",
+    "back\n",
+    "; ",
+);
 
 /// What the kernel's cooked console echoes for [`KERNEL_INPUT`], after the
 /// first prompt and with `\r` removed: each erased character is wiped with
@@ -649,6 +761,8 @@ fn run_qemu(
     let mut stdin = child.stdin.take();
     let mut prompted: Option<Instant> = None;
     let mut typed = 0;
+    // Where the next prompt is looked for.
+    let mut from = 0;
     let mut stdout = child.stdout.take().expect("piped stdout");
     let serial = Arc::new(Mutex::new(Vec::<u8>::new()));
     let serial_for_reader = Arc::clone(&serial);
@@ -678,8 +792,11 @@ fn run_qemu(
             stamped += n + 1;
         }
         if let Some(inp) = input.get(typed) {
-            if prompted.is_none() && now.contains(inp.prompt) {
+            if prompted.is_none()
+                && let Some(at) = now.get(from..).and_then(|t| t.find(inp.prompt))
+            {
                 prompted = Some(Instant::now());
+                from += at + inp.prompt.len();
             }
             if prompted.is_some_and(|t| t.elapsed() >= INPUT_DELAY)
                 && let Some(w) = stdin.as_mut()
@@ -779,7 +896,7 @@ fn probe(kvm: bool) -> Result<()> {
     let image = elf.with_extension("img");
     fs::write(&image, elf_to_image(&bytes)?).map_err(|e| format!("{}: {e}", image.display()))?;
     let fwd = free_port()?;
-    let net = net_args(fwd, None);
+    let net = net_args(fwd, None, None);
     let mut args: Vec<&str> = if kvm {
         vec!["-accel", "kvm", "-cpu", "host", "-M", "virt,gic-version=3"]
     } else {
@@ -1312,7 +1429,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         // network checks instead of an interactive shell.
         let smoke = k.smoke && !full;
         let bootargs = format!(
-            "{}test hostexport={} udpecho={} ping dhcp lethed={} netexport rstyx{}{}",
+            "{}test hostexport={} udpecho={} ping dhcp lethed={} udpserve netexport rstyx{}{}",
             if kvm { "exit=psci " } else { "" },
             host.port,
             echo.port,
@@ -1344,7 +1461,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             KERNEL_TIMEOUT
         });
         let mut refused = 0;
-        let (r, mounted, mcp) = loop {
+        let (r, mounted, mcp, udped) = loop {
             // The ports QEMU forwards to the kernel's export and its
             // rstyxd, asked for after every helper has its own port and
             // held until QEMU starts. Something else can still take one
@@ -1355,20 +1472,28 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
                     Ok(p) => p,
                     Err(e) => return KernelOutcome::setup(e),
                 };
-            let net = net_args(fwd, Some(rstyx));
+            let (udp_held, udp) = match held_udp_port() {
+                Ok(p) => p,
+                Err(e) => return KernelOutcome::setup(e),
+            };
+            let net = net_args(fwd, Some(rstyx), Some(udp));
             let mut args = head.clone();
             args.extend(net.iter().map(String::as_str));
             args.extend(shared.1.iter().map(String::as_str));
             args.extend(disks.1.iter().map(String::as_str));
             args.push("-kernel");
             eprintln!("kernel: {}: qemu-system-aarch64 {}", k.name, args.join(" "));
-            let (mut mounted, mut mcp) = (false, false);
-            drop((fwd_held, rstyx_held));
+            let (mut mounted, mut mcp, mut udped) = (false, false, false);
+            drop((fwd_held, rstyx_held, udp_held));
             let r = run_qemu(&args, &image, timeout, KERNEL_INPUT, |text| {
                 if !mounted && text.contains("kernel: net ready\n") {
                     mounted = true;
                     mount_guest(&ws, fwd, "kernel")
                         .map_err(|e| format!("the host's mount of the kernel's export: {e}"))?;
+                }
+                if !udped && text.contains("kernel: udp ready\n") {
+                    udped = true;
+                    udp_guest(udp).map_err(|e| format!("the host's UDP datagram: {e}"))?;
                 }
                 if !mcp && text.contains("kernel: rstyx ready\n") {
                     mcp = true;
@@ -1386,7 +1511,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
                         r.stderr.trim()
                     );
                 }
-                r => break (r, mounted, mcp),
+                r => break (r, mounted, mcp, udped),
             }
         };
         // A helper that died under the kernel explains its failed checks.
@@ -1411,6 +1536,8 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         let echo = format!("{}{KERNEL_ECHO}", KERNEL_INPUT[0].prompt);
         let echoed_typing = r.serial.contains(&echo);
         let shown = r.serial.replacen(&echo, KERNEL_INPUT[0].prompt, 1);
+        let session = shown.contains(KERNEL_SESSION);
+        let shown = shown.replacen(KERNEL_SESSION, "kernel: console: sh\n", 1);
         let rest: String = kernel_normalize(&shown)
             .lines()
             .filter(|l| !l.starts_with("kernel: booted at EL") && !l.starts_with("kernel: root "))
@@ -1438,6 +1565,10 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             Some(format!(
                 "the console did not echo the typed line as {KERNEL_ECHO:?}"
             ))
+        } else if !session {
+            Some(format!(
+                "the console session did not show {KERNEL_SESSION:?}"
+            ))
         } else if rest != want {
             Some(format!(
                 "output differs from {} ({}); expected (less the EL line):\n{want}",
@@ -1451,6 +1582,10 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         } else if !mcp {
             Some(format!(
                 "no `kernel: rstyx ready`: tcp!*!{GUEST_RSTYX_PORT} was not served"
+            ))
+        } else if !udped {
+            Some(format!(
+                "no `kernel: udp ready`: udp!*!{GUEST_UDP_PORT} was not announced"
             ))
         } else if echoed == 0 {
             Some(String::from("the UDP echo server heard nothing"))
