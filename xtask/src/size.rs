@@ -20,38 +20,39 @@ fn u16_at(b: &[u8], o: usize) -> Option<u16> {
     Some(u16::from_le_bytes(b.get(o..o + 2)?.try_into().ok()?))
 }
 
-fn u32_at(b: &[u8], o: usize) -> Option<u32> {
+pub(crate) fn u32_at(b: &[u8], o: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
 }
 
-fn u64_at(b: &[u8], o: usize) -> Option<u64> {
+pub(crate) fn u64_at(b: &[u8], o: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b.get(o..o + 8)?.try_into().ok()?))
 }
 
 /// A NUL-terminated string at `o`.
-fn cstr(b: &[u8], o: usize) -> Option<&str> {
+pub(crate) fn cstr(b: &[u8], o: usize) -> Option<&str> {
     let s = b.get(o..)?;
     let end = s.iter().position(|&c| c == 0)?;
     std::str::from_utf8(&s[..end]).ok()
 }
 
-struct Section {
+pub(crate) struct Section {
     name: String,
-    kind: u32,
-    flags: u64,
-    offset: usize,
-    size: usize,
-    link: usize,
-    entsize: usize,
+    pub(crate) kind: u32,
+    pub(crate) flags: u64,
+    pub(crate) addr: u64,
+    pub(crate) offset: usize,
+    pub(crate) size: usize,
+    pub(crate) link: usize,
+    pub(crate) entsize: usize,
 }
 
-const SHT_SYMTAB: u32 = 2;
+pub(crate) const SHT_SYMTAB: u32 = 2;
 const SHT_NOBITS: u32 = 8;
 const SHF_ALLOC: u64 = 2;
-const SHF_EXECINSTR: u64 = 4;
-const STT_FUNC: u8 = 2;
+pub(crate) const SHF_EXECINSTR: u64 = 4;
+pub(crate) const STT_FUNC: u8 = 2;
 
-fn sections(elf: &[u8]) -> Option<Vec<Section>> {
+pub(crate) fn sections(elf: &[u8]) -> Option<Vec<Section>> {
     if elf.get(..6)? != b"\x7fELF\x02\x01" {
         return None;
     }
@@ -68,6 +69,7 @@ fn sections(elf: &[u8]) -> Option<Vec<Section>> {
             name: cstr(elf, strtab + u32_at(elf, h)? as usize)?.to_string(),
             kind: u32_at(elf, h + 4)?,
             flags: u64_at(elf, h + 8)?,
+            addr: u64_at(elf, h + 0x10)?,
             offset: u64_at(elf, h + 0x18)? as usize,
             size: u64_at(elf, h + 0x20)? as usize,
             link: u32_at(elf, h + 0x28)? as usize,
@@ -80,7 +82,7 @@ fn sections(elf: &[u8]) -> Option<Vec<Section>> {
 /// The crate a Rust symbol belongs to: the first crate root in a v0
 /// mangled name (`C[s<base-62>_]<len><name>`), or the first path element
 /// of a legacy one (`_ZN<len><name>`). `None` for other symbols.
-fn symbol_crate(sym: &str) -> Option<&str> {
+pub(crate) fn symbol_crate(sym: &str) -> Option<&str> {
     fn ident(s: &str) -> Option<&str> {
         let digits = s.bytes().take_while(u8::is_ascii_digit).count();
         let len: usize = s.get(..digits)?.parse().ok()?;

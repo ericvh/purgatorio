@@ -17,10 +17,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use super::{PROBE_TARGET, Result, cargo, elf_to_image, initrd, run, run_qemu, workspace};
+use super::{PROBE_TARGET, Result, align, cargo, elf_to_image, initrd, run, run_qemu, workspace};
 
 const USAGE: &str = "usage: cargo xtask bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=wasmtime,wasmi] \
-[--rounds N] [--boots N] [--features F,...] [--profile P] [--label L] [--rustflags FLAGS] [--config K=V] [--aot native|pulley] [--out FILE]";
+[--rounds N] [--boots N] [--features F,...] [--profile P] [--label L] [--strict-align] [--rustflags FLAGS] [--config K=V] [--aot native|pulley] [--out FILE]";
 
 /// The size of the kernel's disk image: room for the 100 MiB file, the
 /// file system's own blocks and the 1,000 small files `bench fs` makes.
@@ -44,6 +44,9 @@ struct Opts {
     features: Vec<String>,
     profile: String,
     label: Option<String>,
+    /// Build the kernel with strict alignment throughout, as the target
+    /// defines it, rather than in the boot path only (`xtask/src/align.rs`).
+    strict_align: bool,
     /// Extra rustflags for the kernel build.
     rustflags: Option<String>,
     /// `--config` settings for the kernel build (profile overrides).
@@ -67,6 +70,7 @@ impl Opts {
             features: Vec::new(),
             profile: String::from("kernel"),
             label: None,
+            strict_align: false,
             rustflags: None,
             config: Vec::new(),
             aot: None,
@@ -99,6 +103,7 @@ impl Opts {
                     o.aot = Some(k.clone());
                 }
                 "--config" => o.config.push(it.next().ok_or(USAGE)?.clone()),
+                "--strict-align" => o.strict_align = true,
                 "--rustflags" => o.rustflags = Some(it.next().ok_or(USAGE)?.clone()),
                 "--label" => o.label = Some(it.next().ok_or(USAGE)?.clone()),
                 "--out" => o.out = Some(PathBuf::from(it.next().ok_or(USAGE)?)),
@@ -289,12 +294,12 @@ fn aot_images(ws: &Path, kind: &str) -> Result<PathBuf> {
 
 fn build_kernel(ws: &Path, o: &Opts) -> Result<PathBuf> {
     let mut features = o.features.clone();
-    let mut cmd = cargo();
+    let mut cmd = align::image_cargo_with(ws, o.strict_align, o.rustflags.as_deref())?;
     if let Some(kind) = &o.aot {
         features.push(String::from("aot"));
         cmd.env("PURG_AOT_IMAGES", aot_images(ws, kind)?);
     }
-    cmd.current_dir(ws).args([
+    cmd.args([
         "build",
         "-p",
         "purg-kernel",
@@ -312,20 +317,20 @@ fn build_kernel(ws: &Path, o: &Opts) -> Result<PathBuf> {
     // Other flags build in a directory of their own, so as not to
     // rebuild the usual kernel's dependencies over them.
     let mut target = ws.join("target");
-    if o.rustflags.is_some() || !o.config.is_empty() {
+    if o.rustflags.is_some() || !o.config.is_empty() || o.strict_align {
         target = ws
             .join("target/bench/build")
             .join(o.label.as_deref().unwrap_or("custom"));
         cmd.arg("--target-dir").arg(&target);
-    }
-    if let Some(flags) = &o.rustflags {
-        cmd.env("CARGO_TARGET_AARCH64_UNKNOWN_NONE_RUSTFLAGS", flags);
     }
     run(&mut cmd)?;
     let elf = target
         .join(PROBE_TARGET)
         .join(&o.profile)
         .join("purg-kernel");
+    if !o.strict_align {
+        align::check_image(ws, &elf)?;
+    }
     let bytes = fs::read(&elf).map_err(|e| format!("{}: {e}", elf.display()))?;
     let image = elf.with_extension("img");
     fs::write(&image, elf_to_image(&bytes)?).map_err(|e| format!("{}: {e}", image.display()))?;
