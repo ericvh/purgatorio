@@ -518,6 +518,7 @@ impl Pgrp {
                     err = Error::new(error::ENOTDIR);
                     continue;
                 }
+                cand.dev.walk_ahead(cand, &elems[i..]);
                 match cand.dev.walk(cand, e) {
                     Ok(w) => {
                         found = Some(Chan::new(

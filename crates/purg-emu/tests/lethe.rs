@@ -43,7 +43,7 @@ struct Scratch {
 }
 
 const HELLO: &str = "hello from lethe\n";
-const MANY: usize = 300;
+const MANY: usize = 1500;
 
 impl Scratch {
     fn new(test: &str) -> Scratch {
@@ -59,7 +59,7 @@ impl Scratch {
         for i in 0..MANY {
             std::fs::write(srv.join(format!("many/f{i:03}")), "").unwrap();
         }
-        let big: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let big: Vec<u8> = (0..1_000_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(srv.join("big"), big).unwrap();
         // A link inside the tree is followed; one out of it is not there.
         std::os::unix::fs::symlink("hello.txt", srv.join("in")).unwrap();
@@ -236,7 +236,7 @@ lethe {addr} {g}/n /nope",
 {g}/n/in
 {g}/n/many
 {g}/n/sub
-    300
+   1500
 {g}/n/many/f299
 inner file
 cat: {g}/n/nope: file does not exist
@@ -253,12 +253,14 @@ lethe: file does not exist
         let (out, _) = emu(vm, &script);
         assert_eq!(out, want, "{vm}");
     }
-    // The 300 entries came in pages.
+    // The 1500 entries came in 32 KiB pages.
     assert!(l.count("readdir /many") >= 2 * 3, "{}", l.log());
     // Two runs, each with a ticket for the root, one for /sub and one for
     // /nope, which then is not there.
     assert_eq!(l.count("ticket for"), 6, "{}", l.log());
     assert_eq!(l.count("prefix /sub"), 2);
+    // sub/inner was walked in one request.
+    assert!(l.count(" walk /") >= 2, "{}", l.log());
 }
 
 #[test]
@@ -266,8 +268,9 @@ fn a_file_changed_underneath_is_not_served_stale() {
     let s = Scratch::new("changed");
     let l = Lethed::start(&["-a", "127.0.0.1:0", "-k", &test_key()], &s.srv());
     let g = &s.guest;
+    // With -t 0 nothing is trusted: every stat and read asks.
     let script = format!(
-        "lethe {} {g}/n || exit
+        "lethe -t 0 {} {g}/n || exit
 cat {g}/n/hello.txt
 cat {g}/n/hello.txt
 echo ready
@@ -295,6 +298,48 @@ ls -l {g}/n/hello.txt",
 /// `lethed` killed and started again on the same port while a file is
 /// open and half read: the reader carries on. With the same ticket key
 /// the old ticket still works; with a new one the client gets another.
+/// Within its lifetime (`-t`, 1 s by default) what the device learnt is
+/// trusted: a file changed underneath is served as it was, without a
+/// request, until the lifetime runs out.
+#[test]
+fn the_cache_lifetime_is_kept() {
+    let s = Scratch::new("lifetime");
+    let l = Lethed::start(&["-a", "127.0.0.1:0", "-k", &test_key()], &s.srv());
+    let g = &s.guest;
+    let script = format!(
+        "lethe -t 600000 {addr} {g}/n || exit
+mkdir -p {g}/m && lethe {addr} {g}/m || exit
+cat {g}/n/hello.txt {g}/m/hello.txt
+echo ready
+read < /dev/cons > /dev/null
+cat {g}/n/hello.txt
+ls -l {g}/n/hello.txt
+sleep 2
+cat {g}/m/hello.txt",
+        addr = l.addr()
+    );
+    for (i, vm) in VMS.into_iter().enumerate() {
+        std::fs::write(s.srv().join("hello.txt"), HELLO).unwrap();
+        let changed = format!("changed underneath, {i}\n");
+        let mut reads = 0;
+        let out = emu_paused(vm, &script, || {
+            reads = l.count("read /hello.txt");
+            std::fs::write(s.srv().join("hello.txt"), &changed).unwrap();
+        });
+        let mut lines = out.lines();
+        assert_eq!(lines.next(), Some(HELLO.trim_end()), "{vm}: {out}");
+        assert_eq!(lines.next(), Some(HELLO.trim_end()), "{vm}: {out}");
+        assert_eq!(lines.next(), Some("ready"), "{vm}: {out}");
+        // The 10-minute mount still has the old data and the old size.
+        assert_eq!(lines.next(), Some(HELLO.trim_end()), "{vm}: {out}");
+        let ls = lines.next().unwrap_or_default();
+        assert!(ls.contains(&format!(" {} ", HELLO.len())), "{vm}: {ls}");
+        // The 1-second one asks again after 2.
+        assert_eq!(lines.next(), Some(changed.trim_end()), "{vm}: {out}");
+        assert_eq!(l.count("read /hello.txt"), reads + 1, "{vm}: {}", l.log());
+    }
+}
+
 #[test]
 fn lethed_restarted_mid_read() {
     let s = Scratch::new("restart");
@@ -307,7 +352,7 @@ fn lethed_restarted_mid_read() {
         let first = Lethed::start(&["-a", "127.0.0.1:0", "-t", &tk, "-k", &key], &s.srv());
         let port = first.port;
         let script = format!(
-            "lethe {} {g}/n || exit
+            "lethe -t 0 {} {g}/n || exit
 {{read 8192 > {g}/part1; echo ready; read < /dev/cons > /dev/null; cat > {g}/part2}} < {g}/n/big
 echo ready
 read < /dev/cons > /dev/null
@@ -655,7 +700,7 @@ lethe -A {addr} {g}/n /nope",
 {g}/n/in
 {g}/n/many
 {g}/n/sub
-    300
+   1500
 {g}/n/many/f299
 {len}
 inner file
@@ -776,8 +821,8 @@ echo end",
     );
     let want = "lethe: authentication required
 lethe: authentication not required
-lethe: usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]
-lethe: usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]
+lethe: usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
+lethe: usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
 echo: bad arg in system call
 end
 ";
@@ -907,7 +952,7 @@ fn clear_mode_sees_changes_and_survives_a_restart() {
         let first = Lethed::start(&["-a", "127.0.0.1:0", "-A"], &s.srv());
         let addr = format!("127.0.0.1:{}", first.port);
         let script = format!(
-            "lethe -A {} {g}/n || exit
+            "lethe -A -t 0 {} {g}/n || exit
 cat {g}/n/hello.txt
 cat {g}/n/hello.txt
 {{read 8192 > {g}/part1; echo ready; read < /dev/cons > /dev/null; cat > {g}/part2}} < {g}/n/big

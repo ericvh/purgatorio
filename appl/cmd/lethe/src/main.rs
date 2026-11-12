@@ -1,4 +1,4 @@
-//! lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]: attach the
+//! lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]: attach the
 //! Lethe tree served at `addr` (`docs/lethe.md`) on `mtpt`, in the style
 //! of `mount`. `path` is the subtree to attach (default `/`); the ticket
 //! is limited to it. The key is the authinfo `keyfile` if given, else
@@ -7,6 +7,10 @@
 //! `-A` asks for no authentication and no encryption, as `mount -A`
 //! does: requests go in the clear to a server started with `-A`, which
 //! answers them as the user `none`. It takes no key and no user.
+//!
+//! `-t ms` sets how long the device trusts what it learnt about a file
+//! (its stat, and that cached data is current) before asking the server
+//! again; the default is 1000, and 0 asks every time.
 //!
 //! The connection is made by `#λ`, which keeps the key to renew its
 //! ticket and dials again on its own when a connection fails.
@@ -18,7 +22,7 @@ use purgatorio::arg::Arg;
 use purgatorio::auth::{self, fmt};
 use purgatorio::{Context, Error, dial};
 
-const USAGE: &str = "usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]";
+const USAGE: &str = "usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]";
 
 /// The seed and certificate to authenticate with.
 fn key(keyfile: Option<&str>, user: &str) -> Result<([u8; 32], Option<fmt::cert::Cert>), Error> {
@@ -64,6 +68,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let (mut order, mut create) = (mount::MREPL, 0);
     let (mut keyfile, mut user) = (None, None);
     let mut noauth = false;
+    let mut cache = None;
     while let Some(c) = arg.opt() {
         match c {
             'a' => order = mount::MAFTER,
@@ -72,6 +77,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'A' => noauth = true,
             'k' => keyfile = Some(arg.earg()?),
             'u' => user = Some(arg.earg()?),
+            't' => {
+                let ms = arg.earg()?;
+                cache = Some(ms.parse::<u64>().map_err(|_| arg.usage())?);
+            }
             _ => return Err(arg.usage()),
         }
     }
@@ -97,6 +106,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     };
     if let Some(p) = rest.get(2) {
         settings.push_str(&format!("path {p}\n"));
+    }
+    if let Some(ms) = cache {
+        settings.push_str(&format!("cache {ms}\n"));
     }
     let mut clone = purgatorio::open("#λ/clone", mode::ORDWR)
         .map(std::fs::File::from)
