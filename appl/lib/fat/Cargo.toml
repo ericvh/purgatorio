@@ -1,0 +1,16 @@
+[package]
+name = "appl-lib-fat"
+description = "fat: FAT12, FAT16 and FAT32 file systems with long names, for dossrv, and a formatter for tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "fat"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "appl-cmd-dossrv"
+description = "dossrv: serve a FAT file system, read and write"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dossrv"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+purg-styx.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+fat = { package = "appl-lib-fat", path = "../../lib/fat" }
+
+[lints]
+workspace = true
