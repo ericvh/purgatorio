@@ -3,7 +3,8 @@
 //!
 //! - [`msg`]: frames and the requests and replies inside them.
 //! - [`path`]: the path rules.
-//! - [`crypto`]: the key schedule and the XChaCha20-Poly1305 sealing.
+//! - [`aead`]: XChaCha20-Poly1305, from ring on the emu.
+//! - [`crypto`]: the key schedule and the sealing of frames.
 //! - [`ticket`]: tickets, sealed under a key only the servers hold.
 //! - [`server`]: a server engine over a [`server::Tree`]: one frame in,
 //!   one frame out, nothing kept.
@@ -16,6 +17,7 @@
 
 extern crate alloc;
 
+pub mod aead;
 pub mod client;
 pub mod crypto;
 pub mod msg;
