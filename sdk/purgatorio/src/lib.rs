@@ -484,6 +484,15 @@ pub mod rt {
                     None => String::from("panic"),
                 },
             };
+            // `print!`, `println!` and `eprint!` panic when the write fails,
+            // as when a pipe's reader has gone (`grep -s` stops at the first
+            // match). In Inferno `sys->print` returns -1 there and the
+            // program carries on to its normal end, printing nothing about
+            // it; here the program has no way to carry on from inside the
+            // macro, so it ends quietly, as it would have.
+            if msg.starts_with("failed printing to std") {
+                exits("");
+            }
             eprintln!("panic: {msg}");
             werrstr(&msg);
             exits(&format!("panic: {msg}"));
