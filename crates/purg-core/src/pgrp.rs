@@ -408,6 +408,15 @@ impl Pgrp {
             .map(|m| m.to.clone())
     }
 
+    /// Union members mounted on the file with mount-table key `key`.
+    fn mounted_key(&self, key: (char, u32, u64)) -> Option<Vec<Member>> {
+        self.mounts
+            .read()
+            .iter()
+            .find(|m| m.from.key() == key)
+            .map(|m| m.to.clone())
+    }
+
     /// Resolves a cleaned absolute or `#` path to an unopened Chan, crossing
     /// mount points. `dot` is used for relative paths.
     pub fn namec(&self, path: &str, dot: &str) -> Result<Chan> {
@@ -500,8 +509,13 @@ impl Pgrp {
                 (cur, prefix, elems)
             }
         };
-        for (i, e) in elems.iter().enumerate() {
-            let last = i + 1 == elems.len();
+        // As Inferno's `walk`: a device that can walks several names in
+        // one step (a mount, up to 9P's 16 names a `Twalk`). The names it
+        // walked past are then looked up in the mount table, and at the
+        // first that is a mount point the walk goes on from what is
+        // mounted there, and what was walked beyond it is dropped.
+        let mut i = 0;
+        while i < elems.len() {
             let members: Vec<Arc<Chan>> = match &cur.union {
                 Some(u) => u.iter().map(|m| m.chan.clone()).collect(),
                 None => vec![],
@@ -518,25 +532,53 @@ impl Pgrp {
                     err = Error::new(error::ENOTDIR);
                     continue;
                 }
-                match cand.dev.walk(cand, e) {
-                    Ok(w) => {
-                        found = Some(Chan::new(
-                            cand.dev.clone(),
-                            cand.devno,
-                            w.qid,
-                            String::new(),
-                            w.aux,
-                        ));
+                let n = cand.dev.max_walk().clamp(1, elems.len() - i);
+                match cand.dev.walk_names(cand, &elems[i..i + n]) {
+                    Ok(w) if !w.qids.is_empty() => {
+                        found = Some((cand.dev.clone(), cand.devno, w, n));
                         break;
                     }
+                    Ok(_) => err = Error::new(error::ENONEXIST),
                     Err(e) => err = e,
                 }
             }
-            let mut next = found.ok_or(err)?;
-            name.push('/');
-            name.push_str(e);
+            let (dev, devno, w, n) = found.ok_or(err)?;
+            let walked = w.qids.len().min(n);
+            // The last name of a whole walk is crossed below, as before.
+            let passed = if walked == n { n - 1 } else { walked };
+            let crossed = w.qids[..passed].iter().enumerate().find_map(|(j, q)| {
+                self.mounted_key((dev.dc(), devno, q.path))
+                    .map(|to| (j, to))
+            });
+            if let Some((j, to)) = crossed {
+                for e in &elems[i..=i + j] {
+                    name.push('/');
+                    name.push_str(e);
+                }
+                let mut first = to[0].chan.clone_unopened();
+                first.name = name.clone();
+                first.union = Some(to.into());
+                cur = first;
+                i += j + 1;
+                continue;
+            }
+            if walked < n {
+                // Stopped short: the name after the last one walked is
+                // not there, or the last one walked is not a directory.
+                return Err(Error::new(if w.qids[walked - 1].is_dir() {
+                    error::ENONEXIST
+                } else {
+                    error::ENOTDIR
+                }));
+            }
+            let mut next = Chan::new(dev, devno, w.qids[n - 1], String::new(), w.aux);
+            for e in &elems[i..i + n] {
+                name.push('/');
+                name.push_str(e);
+            }
             next.name = name.clone();
-            cur = self.domount(next, cross_last || !last);
+            i += n;
+            cur = self.domount(next, cross_last || i < elems.len());
         }
         cur.name = if full.starts_with('#') || !full.starts_with('/') {
             String::from(full)

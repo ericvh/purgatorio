@@ -355,8 +355,12 @@ impl Conn {
             if for_worker {
                 self.submit(Req { tag, buf });
             }
+            // A reply could not be written: the client has gone, as when
+            // a read hangs up. Clients send `Tclunk` and need not wait for
+            // `Rclunk`, so a client that unmounts usually hangs up before
+            // the last replies are written.
             if self.dead.load(Ordering::Acquire) {
-                return Err(Error::new(error::EHUNGUP));
+                return Ok(());
             }
         }
     }

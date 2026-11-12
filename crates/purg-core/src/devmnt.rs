@@ -8,18 +8,20 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use purg_abi::error;
-use purg_abi::mode::ORDWR;
+use purg_abi::mode::{self, ORDWR};
 use purg_platform::sync::{Mutex, Note, Rendez};
 use purg_platform::{Platform, sync};
 use purg_styx::server::{IOHDRSZ, MAX_MSIZE};
-use purg_styx::{DMDIR, Dir, Fcall, Msg, NOFID, NOTAG, QTAUTH, QTDIR, VERSION, dirs};
+use purg_styx::{
+    DMDIR, Dir, Fcall, MAXWELEM, Msg, NOFID, NOTAG, QTAUTH, QTDIR, QTEXCL, Qid, VERSION, dirs,
+};
 
 use purg_auth::record::{self, Opener, Sealer};
 use purg_auth::session;
 
 use crate::auth::{self, ENCRYPTED, NO_SESSION, OFFER, SERVER_NONE, SERVER_PROOF_OFFSET, SIGNED};
 use crate::chan::Chan;
-use crate::dev::{Dev, Walked};
+use crate::dev::{Dev, Walked, WalkedNames};
 use crate::error::{Error, Result};
 use crate::mux::Mux;
 use crate::rw::{read_msg, read_sealed, write_full, write_sealed};
@@ -183,12 +185,44 @@ struct MntFile {
     /// Set when `Tcreate` already opened the fid, so the following `open`
     /// must not send `Topen`.
     fresh: AtomicBool,
+    /// The fid was opened in a way whose clunk a later request may depend
+    /// on, so dropping it waits for `Rclunk` ([`MntFile::settles`]).
+    settle: AtomicBool,
+}
+
+impl MntFile {
+    fn new(session: &Arc<Session>, fid: u32, spec: &str) -> MntFile {
+        MntFile {
+            session: session.clone(),
+            fid,
+            live: AtomicBool::new(true),
+            spec: String::from(spec),
+            fresh: AtomicBool::new(false),
+            settle: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether the clunk of a fid opened with `omode` on a file with
+    /// `qid` must be waited for. A server may serve requests concurrently
+    /// (`export` does), so a request sent after a `Tclunk` that is not
+    /// waited for can be served first. That matters only when the clunk
+    /// changes what a later request sees: it removes the file
+    /// (`ORCLOSE`), ends an exclusive use (`QTEXCL`), or ends a write a
+    /// server may finish on close. Everything else (the fids a walk
+    /// leaves, a stat's, a read-only open's) is clunked without waiting.
+    fn settles(omode: u8, qid: &Qid) -> bool {
+        let access = omode & mode::ACCESS;
+        (access != mode::OREAD && access != mode::OEXEC)
+            || omode & (mode::ORCLOSE | mode::OTRUNC) != 0
+            || qid.qtype & QTEXCL != 0
+    }
 }
 
 impl Drop for MntFile {
     fn drop(&mut self) {
         if self.live.swap(false, Ordering::AcqRel) {
-            let _ = self.session.clunk(self.fid);
+            let wait = self.settle.load(Ordering::Acquire);
+            let _ = self.session.clunk(self.fid, wait);
         }
     }
 }
@@ -411,13 +445,17 @@ impl Session {
         self.next_fid.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// `Tclunk`. A server clunks the fid whatever it answers, so a prog
-    /// that is killed while it waits does not flush the request, which
-    /// could leave the fid open on the server: the request stands, the
-    /// prog goes on (usually it is exiting), and the reader drops the
-    /// reply when it comes. A server that never answers keeps the tag
+    /// `Tclunk`. A server clunks the fid whatever it answers, and an error
+    /// in `Rclunk` is ignored, as Inferno's `cclose` ignores it. So unless
+    /// `wait` is set the request is sent and not waited for: the reader
+    /// drops the reply when it comes.
+    ///
+    /// With `wait`, a prog that is killed while it waits does not flush
+    /// the request, which could leave the fid open on the server: the
+    /// request stands, the prog goes on (usually it is exiting), and the
+    /// reader drops the reply. A server that never answers keeps the tag
     /// until the connection hangs up.
-    fn clunk(&self, fid: u32) -> Result<()> {
+    fn clunk(&self, fid: u32, wait: bool) -> Result<()> {
         let tag = self.mux.begin()?;
         let bytes = Msg {
             tag,
@@ -428,6 +466,10 @@ impl Session {
         if let Err(e) = self.send(&bytes) {
             self.mux.forget(tag);
             return Err(e);
+        }
+        if !wait {
+            self.mux.discard(tag);
+            return Ok(());
         }
         match self.mux.wait(tag) {
             Ok(buf) => self.decode(&buf).map(drop),
@@ -501,6 +543,10 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // The replies still due, to clunks nobody waited for, are read
+        // first: a server is not hung up on with replies it has yet to
+        // write. A prog killed meanwhile does not wait.
+        let _ = self.mux.settle();
         // The reader kproc holds its own reference to the connection, so
         // closing this one does not unblock it. Killing its note makes the
         // blocked read return, the kproc drops its reference, and the pipe
@@ -633,13 +679,7 @@ impl DevMnt {
             Fcall::Rattach { qid } => qid,
             _ => return Err(Error::new(error::EIO)),
         };
-        let aux = Arc::new(MntFile {
-            session: session.clone(),
-            fid,
-            live: AtomicBool::new(true),
-            spec: String::from(aname),
-            fresh: AtomicBool::new(false),
-        });
+        let aux = Arc::new(MntFile::new(session, fid, aname));
         let dev: Arc<dyn Dev> = self.clone();
         let id = session.id;
         let mut c = Chan::new(dev, id, qid, alloc::format!("#M{id}"), Some(aux));
@@ -767,13 +807,9 @@ impl DevMnt {
             aname: String::from(aname),
             client: None,
         });
-        let aux = Arc::new(MntFile {
-            session: session.clone(),
-            fid: AUTH_FID,
-            live: AtomicBool::new(true),
-            spec: String::from(aname),
-            fresh: AtomicBool::new(false),
-        });
+        let aux = MntFile::new(&session, AUTH_FID, aname);
+        aux.settle.store(true, Ordering::Release);
+        let aux = Arc::new(aux);
         let dev: Arc<dyn Dev> = self.clone();
         let id = session.id;
         let mut c = Chan::new(dev, id, aqid, alloc::format!("#M{id}"), Some(aux));
@@ -873,17 +909,38 @@ impl Dev for DevMnt {
     }
 
     fn walk(&self, c: &Chan, name: &str) -> Result<Walked> {
+        let w = self.walk_names(c, &[name])?;
+        match (w.qids.first(), w.aux) {
+            (Some(q), Some(aux)) => Ok(Walked {
+                qid: *q,
+                aux: Some(aux),
+            }),
+            _ => Err(Error::new(error::ENONEXIST)),
+        }
+    }
+
+    fn max_walk(&self) -> usize {
+        MAXWELEM
+    }
+
+    /// One `Twalk` for all of `names`. A walk that stops short gives the
+    /// qids the server walked and leaves no fid to clunk.
+    fn walk_names(&self, c: &Chan, names: &[&str]) -> Result<WalkedNames> {
         let f = file(c)?;
+        if names.is_empty() || names.len() > MAXWELEM {
+            return Err(Error::new(error::EIO));
+        }
         let newfid = f.session.alloc_fid();
         let buf = f.session.rpc(Fcall::Twalk {
             fid: f.fid,
             newfid,
-            wnames: alloc::vec![name],
+            wnames: names.to_vec(),
         });
         let buf = match buf {
             Ok(b) => b,
             Err(e) => {
-                let _ = f.session.clunk(newfid);
+                // Interrupted: the walk may have made `newfid` all the same.
+                let _ = f.session.clunk(newfid, false);
                 return Err(e);
             }
         };
@@ -893,19 +950,19 @@ impl Dev for DevMnt {
             Fcall::Rwalk { wqids } => wqids,
             _ => return Err(Error::new(error::EIO)),
         };
-        if qids.len() != 1 {
+        if qids.is_empty() {
             return Err(Error::new(error::ENONEXIST));
         }
-        Ok(Walked {
-            qid: qids[0],
-            aux: Some(Arc::new(MntFile {
-                session: f.session.clone(),
-                fid: newfid,
-                live: AtomicBool::new(true),
-                spec: String::new(),
-                fresh: AtomicBool::new(false),
-            })),
-        })
+        if qids.len() > names.len() {
+            let _ = f.session.clunk(newfid, false);
+            return Err(Error::new(error::EIO));
+        }
+        let aux: crate::chan::Aux = if qids.len() == names.len() {
+            Some(Arc::new(MntFile::new(&f.session, newfid, "")))
+        } else {
+            None
+        };
+        Ok(WalkedNames { qids, aux })
     }
 
     fn stat(&self, c: &Chan) -> Result<Dir> {
@@ -923,6 +980,11 @@ impl Dev for DevMnt {
         let f = file(c)?;
         if f.fresh.swap(false, Ordering::AcqRel) {
             return Ok(());
+        }
+        // Set before `Topen` goes out: a fid the server opened is clunked
+        // as opened, even when this prog is killed waiting for `Ropen`.
+        if MntFile::settles(omode, &c.qid) {
+            f.settle.store(true, Ordering::Release);
         }
         let buf = f.session.rpc(Fcall::Topen {
             fid: f.fid,
@@ -956,7 +1018,8 @@ impl Dev for DevMnt {
         }) {
             Ok(b) => b,
             Err(e) => {
-                let _ = f.session.clunk(newfid);
+                // Interrupted: the create may have opened `newfid`.
+                let _ = f.session.clunk(newfid, true);
                 return Err(e);
             }
         };
@@ -964,19 +1027,16 @@ impl Dev for DevMnt {
             Ok(Fcall::Rcreate { qid, .. }) => qid,
             Ok(_) => return Err(Error::new(error::EIO)),
             Err(e) => {
-                let _ = f.session.clunk(newfid);
+                let _ = f.session.clunk(newfid, false);
                 return Err(e);
             }
         };
+        let aux = MntFile::new(&f.session, newfid, "");
+        aux.fresh.store(true, Ordering::Release);
+        aux.settle.store(true, Ordering::Release);
         Ok(Walked {
             qid,
-            aux: Some(Arc::new(MntFile {
-                session: f.session.clone(),
-                fid: newfid,
-                live: AtomicBool::new(true),
-                spec: String::new(),
-                fresh: AtomicBool::new(true),
-            })),
+            aux: Some(Arc::new(aux)),
         })
     }
 

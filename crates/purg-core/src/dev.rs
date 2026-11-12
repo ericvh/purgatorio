@@ -14,6 +14,15 @@ pub struct Walked {
     pub aux: Aux,
 }
 
+/// The result of walking several names in one step ([`Dev::walk_names`]).
+pub struct WalkedNames {
+    /// The qids of the names walked, in order: as many as were given when
+    /// the walk went through, fewer when it stopped short.
+    pub qids: Vec<Qid>,
+    /// The device's state for the last name, when every name was walked.
+    pub aux: Aux,
+}
+
 /// A device driver, mirroring Inferno's `Dev` table entry.
 ///
 /// Name resolution is lexical, so `walk` never sees `.` or `..`; directory
@@ -36,6 +45,25 @@ pub trait Dev: Send + Sync {
     }
     /// Walks from directory `c` to its child `name`.
     fn walk(&self, c: &Chan, name: &str) -> Result<Walked>;
+    /// The most names [`Dev::walk_names`] takes at once. A device that
+    /// walks one name at a time keeps the default of 1.
+    fn max_walk(&self) -> usize {
+        1
+    }
+    /// Walks from directory `c` through `names` (at most
+    /// [`Dev::max_walk`] of them) in one step, as a 9P `Twalk` with
+    /// several names does. Fails when the first name cannot be walked;
+    /// otherwise returns the qids of the names walked, fewer than given
+    /// when the walk stopped short (then there is no `aux`, and nothing
+    /// was established for the last name walked).
+    fn walk_names(&self, c: &Chan, names: &[&str]) -> Result<WalkedNames> {
+        let first = names.first().ok_or(Error::new(error::ENONEXIST))?;
+        let w = self.walk(c, first)?;
+        Ok(WalkedNames {
+            qids: alloc::vec![w.qid],
+            aux: w.aux,
+        })
+    }
     fn stat(&self, c: &Chan) -> Result<Dir>;
     /// Prepares `c` for I/O in `mode`; may store per-open state in
     /// [`Chan::state`]. The core sets `open` and `mode` afterwards.
