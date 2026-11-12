@@ -302,7 +302,8 @@ pub mod mount {
     /// Require the server to prove itself after a version 3 handshake
     /// (`mount -S`): the mount reads the server's proof from the auth fid
     /// and checks it against `/lib/keys/servers` (every line, whatever its
-    /// host) and `/lib/keys/signers` in the mounter's namespace. A server
+    /// host) and `/lib/keys/serversigners` (or, without it,
+    /// `/lib/keys/signers`) in the mounter's namespace. A server
     /// that gives none fails with [`super::auth::SERVER_NONE`], a proof
     /// that does not check with [`super::auth::SERVER_FAILED`]. The host a
     /// proof is for is checked in the guest (`docs/auth.md`, "Servers per

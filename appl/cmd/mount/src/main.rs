@@ -5,7 +5,8 @@
 //! the authinfo `keyfile` if given (`docs/auth.md`); `-A` skips that. `-S`
 //! (an addition) requires the server to prove itself as well, with a key
 //! or certificate this namespace trusts as a server's
-//! (`/lib/keys/servers`, `/lib/keys/signers`), and for a dial string, one
+//! (`/lib/keys/servers`, `/lib/keys/serversigners` or else
+//! `/lib/keys/signers`), and for a dial string, one
 //! for the host it names: a key listed for that host, or a certificate
 //! with that name (`docs/auth.md`, "Servers per host").
 

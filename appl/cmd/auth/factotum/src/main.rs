@@ -1,12 +1,14 @@
-//! auth/factotum [-m mntpt] [authinfo ...]: the authentication agent, with
-//! Plan 9's `ctl` and `rpc` files at `mntpt` (default `/mnt/factotum`).
-//! Each authinfo named is loaded as an `ed25519` key.
+//! auth/factotum [-m mntpt] [-s authinfo] [authinfo ...]: the
+//! authentication agent, with Plan 9's `ctl` and `rpc` files at `mntpt`
+//! (default `/mnt/factotum`). Each authinfo named is loaded as an
+//! `ed25519` key; `-s` loads one as the key for server proofs
+//! (`role=server`).
 //!
 //! `ctl` takes lines of attributes; a name starting with `!` is secret and
 //! never read back:
 //!
 //! ```text
-//! key proto=ed25519 [user=<name>] !seed=<hex> [cert='<pgcert1 line>']
+//! key proto=ed25519 [user=<name>] [role=<role>] !seed=<hex> [cert='<pgcert1 line>']
 //! key proto=pass server=<addr> user=<name> !password=<password>
 //! delkey proto=<proto> [attr=value ...]
 //! ```
@@ -25,6 +27,12 @@
 //! authentication"), again over a message factotum builds. For `pass`,
 //! `start proto=pass server=<s> [user=<u>]`, then `read` gives `ok <user>
 //! <password>`, quoted.
+//!
+//! An `ed25519` key with a `role` (`client`, `server` or `modsign`)
+//! serves only that role; one without serves every role. A `start`
+//! (whose role is `client` when it names none) takes the first key kept
+//! for its role, and else the first key with no role, that matches its
+//! other attributes.
 
 use std::collections::BTreeMap;
 
@@ -35,11 +43,16 @@ use purgatorio::abi::error;
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "auth/factotum [-m mntpt] [authinfo ...]";
+const USAGE: &str = "auth/factotum [-m mntpt] [-s authinfo] [authinfo ...]";
+
+/// The roles an `ed25519` key can be kept for.
+const ROLES: &[&str] = &["client", "server", "modsign"];
 
 enum Key {
     Ed {
         user: Option<String>,
+        /// The one role it serves; `None` for every role.
+        role: Option<String>,
         seed: [u8; fmt::SEED],
         cert: Option<Cert>,
     },
@@ -62,9 +75,14 @@ impl Key {
     fn public(&self) -> Vec<(String, String)> {
         let mut a = vec![(String::from("proto"), String::from(self.proto()))];
         match self {
-            Key::Ed { user, cert, .. } => {
+            Key::Ed {
+                user, role, cert, ..
+            } => {
                 if let Some(u) = user {
                     a.push((String::from("user"), u.clone()));
+                }
+                if let Some(r) = role {
+                    a.push((String::from("role"), r.clone()));
                 }
                 if let Some(c) = cert {
                     a.push((String::from("cert"), c.encode()));
@@ -91,12 +109,20 @@ impl Key {
         s
     }
 
-    /// Whether every attribute in `want` (other than `proto`'s own
-    /// wildcard, `role` and secrets) matches this key.
+    /// The role this key is kept for, if one.
+    fn role(&self) -> Option<&str> {
+        match self {
+            Key::Ed { role, .. } => role.as_deref(),
+            Key::Pass { .. } => None,
+        }
+    }
+
+    /// Whether every attribute in `want` (other than `aname` and secrets)
+    /// matches this key. A key with no role matches any `role`.
     fn matches(&self, want: &[(String, String)]) -> bool {
         let have = self.public();
         want.iter().all(|(k, v)| {
-            k == "role"
+            (k == "role" && self.role().is_none_or(|r| r == v))
                 || k == "aname"
                 || k.starts_with('!')
                 || attr::get(&have, k).is_some_and(|h| h == v)
@@ -125,7 +151,17 @@ fn parse_key(attrs: &[(String, String)]) -> Result<Key, String> {
             let user = get("user")
                 .map(String::from)
                 .or_else(|| cert.as_ref().map(|c| c.name.clone()));
-            Ok(Key::Ed { user, seed, cert })
+            let role = match get("role") {
+                Some(r) if ROLES.contains(&r) => Some(String::from(r)),
+                Some(r) => return Err(format!("unknown role {r}")),
+                None => None,
+            };
+            Ok(Key::Ed {
+                user,
+                role,
+                seed,
+                cert,
+            })
         }
         Some("pass") => Ok(Key::Pass {
             server: String::from(get("server").ok_or("missing server")?),
@@ -168,8 +204,13 @@ impl Factotum {
                 }
                 "delkey" => {
                     let before = self.keys.len();
-                    self.keys
-                        .retain(|k| !(k.matches(&attrs) && attr::get(&attrs, "proto").is_some()));
+                    // A role names keys kept for it, not those for any.
+                    let role = attr::get(&attrs, "role");
+                    self.keys.retain(|k| {
+                        !(k.matches(&attrs)
+                            && attr::get(&attrs, "proto").is_some()
+                            && role.is_none_or(|r| k.role() == Some(r)))
+                    });
                     if self.keys.len() == before {
                         return Err(String::from("no key matches"));
                     }
@@ -195,9 +236,16 @@ impl Factotum {
                 let Some(proto) = attr::get(&attrs, "proto") else {
                     return b"error missing proto".to_vec();
                 };
+                // A key kept for this role first, then one for any role.
+                let role = attr::get(&attrs, "role").unwrap_or("client");
+                let mut want = attrs.clone();
+                want.retain(|(k, _)| k != "role");
+                want.push((String::from("role"), String::from(role)));
+                let fits = |k: &Key| k.proto() == proto && k.matches(&want);
                 let found = keys
                     .iter()
-                    .position(|k| k.proto() == proto && k.matches(&attrs));
+                    .position(|k| fits(k) && k.role() == Some(role))
+                    .or_else(|| keys.iter().position(fits));
                 *rpc = Rpc::default();
                 match found {
                     Some(i) => {
@@ -227,7 +275,9 @@ impl Factotum {
                     return b"error phase error".to_vec();
                 };
                 match keys.get(*i) {
-                    Some(Key::Ed { seed, cert, user }) => {
+                    Some(Key::Ed {
+                        seed, cert, user, ..
+                    }) => {
                         let Some(ch) = &rpc.challenge else {
                             return b"error phase error".to_vec();
                         };
@@ -372,10 +422,13 @@ impl Files for Factotum {
     }
 }
 
-fn authinfo_line(path: &str) -> Result<String, Error> {
+/// The `ctl` line that loads the authinfo at `path`, kept for `role` if
+/// given.
+fn authinfo_line(path: &str, role: Option<&str>) -> Result<String, Error> {
     let info: AuthInfo = purgatorio::auth::read_authinfo(path)?;
+    let role = role.map(|r| format!(" role={r}")).unwrap_or_default();
     Ok(format!(
-        "key proto=ed25519 user={} !seed={} cert={}\n",
+        "key proto=ed25519 user={}{role} !seed={} cert={}\n",
         quote(&info.cert.name),
         hex::encode(&info.seed),
         quote(&info.cert.encode())
@@ -393,16 +446,19 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let mut arg = Arg::new(args, USAGE);
     let mut mtpt = String::from(purgatorio::auth::FACTOTUM);
+    let mut server = String::new();
     while let Some(c) = arg.opt() {
         match c {
             'm' => mtpt = arg.earg()?,
+            's' => server.push_str(&authinfo_line(&arg.earg()?, Some("server"))?),
             _ => return Err(arg.usage()),
         }
     }
     let mut keys = String::new();
     for path in arg.argv() {
-        keys.push_str(&authinfo_line(&path)?);
+        keys.push_str(&authinfo_line(&path, None)?);
     }
+    keys.push_str(&server);
     if purgatorio::stat(&mtpt).is_err() {
         authlib::mkdirs_for(&format!("{mtpt}/x"))?;
     }

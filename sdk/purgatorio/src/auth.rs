@@ -388,7 +388,8 @@ pub fn server_proof(
 }
 
 /// What this namespace trusts as a server: the keys `/lib/keys/servers`
-/// lists for a host (or `*`), certificates from `/lib/keys/signers`, less
+/// lists for a host (or `*`), certificates from `/lib/keys/serversigners`
+/// (or, when there is no such file, `/lib/keys/signers`), less
 /// `/lib/keys/revoked` (a list that is there but does not parse fails
 /// every certificate). The kernel's `MSRVAUTH` check reads the same files
 /// but takes every key in `/lib/keys/servers`, whatever its host.
@@ -404,9 +405,14 @@ impl ServerTrust {
         let servers = std::fs::read("/lib/keys/servers")
             .map(|t| parse_named(&t))
             .unwrap_or_default();
-        let signers = std::fs::read("/lib/keys/signers")
-            .map(|t| parse_list_lenient(&t))
-            .unwrap_or_default();
+        // Signers for servers only replace the shared list when there.
+        let signers = match std::fs::read("/lib/keys/serversigners") {
+            Ok(t) => parse_list_lenient(&t),
+            Err(_) if crate::stat("/lib/keys/serversigners").is_ok() => Vec::new(),
+            Err(_) => std::fs::read("/lib/keys/signers")
+                .map(|t| parse_list_lenient(&t))
+                .unwrap_or_default(),
+        };
         let revoked = match std::fs::read("/lib/keys/revoked") {
             Ok(t) => parse_list(&t),
             Err(_) if crate::stat("/lib/keys/revoked").is_ok() => None,
