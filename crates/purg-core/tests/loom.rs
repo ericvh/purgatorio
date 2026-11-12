@@ -399,7 +399,12 @@ fn waitq_wakeup_is_never_missed() {
 fn waitq_two_sleepers_two_wakers() {
     use loom::sync::atomic::AtomicUsize;
     use purg_platform::waitq::WaitQueue;
-    loom::model(|| {
+    // Three threads, each waking or sleeping twice: every preemption
+    // multiplies the run by about six (5: 40 s, 6: 4 min); unbounded it
+    // does not finish in two hours. Six is one more than pull requests run.
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(model.preemption_bound.map_or(6, |n| n.min(6)));
+    model.check(|| {
         let q = Arc::new(WaitQueue::new());
         let n = Arc::new(AtomicUsize::new(0));
         let mut ps = Permits::new(3);
