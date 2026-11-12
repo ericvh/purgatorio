@@ -82,6 +82,7 @@ purg-auth = { path = "crates/purg-auth", default-features = false }
 purg-lethe = { path = "crates/purg-lethe" }
 purg-styx = { path = "crates/purg-styx" }
 purg-platform = { path = "crates/purg-platform" }
+purg-memdraw = { path = "crates/purg-memdraw" }
 purg-fs = { path = "crates/purg-fs", default-features = false }
 purg-system = { path = "crates/purg-system" }
 # Without default features: the kernel can be built without them (its
