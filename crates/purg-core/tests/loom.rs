@@ -175,7 +175,7 @@ fn workq_gives_a_blocked_item_company() {
     // Three threads and four sleep/wakeup pairs: with five preemptions the
     // model runs for a quarter of an hour, with three for seconds.
     let mut model = loom::model::Builder::new();
-    model.preemption_bound = Some(model.preemption_bound.map_or(3, |n| n.min(3)));
+    model.preemption_bound = Some(model.preemption_bound.map_or(5, |n| n.min(5)));
     model.check(|| {
         let q = Arc::new(WorkQ::new(2, 1));
         let gate = Arc::new(Rendez::new());
@@ -428,5 +428,32 @@ fn waitq_two_sleepers_two_wakers() {
         for s in sleepers {
             s.join().unwrap();
         }
+    });
+}
+
+/// A debugger and the engine holding a stopped prog (`debug::Debug::hold`):
+/// a read is answered, and `resume` returns only once the prog has left
+/// the stop, whatever the interleaving.
+#[test]
+fn debug_hold_serves_then_resumes() {
+    use purg_core::debug::{Access, Debug, Layout, Resume};
+    use purg_platform::sync::Note;
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(model.preemption_bound.map_or(5, |n| n.min(5)));
+    model.check(|| {
+        let d = Arc::new(Debug::default());
+        d.set_traced(Layout::default());
+        let note = Arc::new(Note::new());
+        let engine = {
+            let (d, note) = (d.clone(), note.clone());
+            thread::spawn(move || d.hold(&note, |_| Ok(vec![7])))
+        };
+        while !d.stopped() {
+            thread::yield_now();
+        }
+        assert_eq!(d.access(Access::Read { at: 0, len: 1 }).unwrap(), [7]);
+        d.resume(Resume::Cont).unwrap();
+        assert!(!d.stopped());
+        assert_eq!(engine.join().unwrap(), Some(Resume::Cont));
     });
 }
