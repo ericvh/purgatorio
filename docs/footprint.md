@@ -314,6 +314,12 @@ reader 3 KiB, so 64 KiB keeps more than three times the worst. Mount
 readers are now reported on their own under `memstat`; before, the
 6 KiB above was the deepest of all kprocs that ran no prog.
 
+Styx messages grew from 8 KiB to 64 KiB of data (#138). Every message
+buffer is on the heap, sized to the message, so the stacks did not
+change (export worker 18 KiB, mount reader 4 KiB); the heap peak of a
+test moved by at most 0.8 MiB. The virtio-9p devices keep 8 KiB
+messages: their buffers are fixed, two for each of 16 slots.
+
 Traced progs (#107: `trace`, `stack`, `prof`) run a rewritten module
 whose thunks add a frame for every call, and keep their call stack in a
 second one-page memory, `purgatorio.stack`. The thunks deepen wasmi's
