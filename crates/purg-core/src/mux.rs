@@ -180,6 +180,15 @@ impl Mux {
         }
     }
 
+    /// Blocks until no tag is in use (every reply has arrived, including
+    /// those nobody waits for) or the connection has closed. A killed
+    /// prog gets [`error::EINTR`].
+    pub fn settle(&self) -> Result<()> {
+        park(&self.wake, || {
+            self.slots.lock().is_empty() || self.closed.load(core::sync::atomic::Ordering::Acquire)
+        })
+    }
+
     /// Tags in use.
     pub fn outstanding(&self) -> usize {
         self.slots.lock().len()

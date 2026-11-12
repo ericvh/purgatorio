@@ -128,12 +128,13 @@ fn a_bind_from_a_mount_in_the_same_namespace_is_released() {
     session(false);
 }
 
-/// A prog lets go of its namespace while it can still be killed (issue
-/// #110). Releasing a bind from a mounted tree clunks a fid, and the file
-/// server may never answer: in cpuslave's case the relay carrying the
-/// conversation stops once the session's status is out. If the prog had
-/// already left the prog table, nothing could interrupt that clunk, and
-/// its thread would outlive every prog.
+/// A prog lets go of its files and namespace while it can still be killed
+/// (issue #110). Closing a file opened for writing on a mounted tree
+/// clunks its fid and waits for the file server, which may never answer:
+/// in cpuslave's case the relay carrying the conversation stops once the
+/// session's status is out. If the prog had already left the prog table,
+/// nothing could interrupt that clunk, and its thread would outlive every
+/// prog. (The fids a bind holds are clunked without waiting.)
 #[test]
 fn an_exiting_prog_can_be_killed_while_it_releases_its_mounts() {
     let (mut p, mock) = setup();
@@ -178,6 +179,7 @@ fn an_exiting_prog_can_be_killed_while_it_releases_its_mounts() {
     s.mount(3, -1, "#R/mnt", MREPL | MNOAUTH, "").unwrap();
     s.close(3).unwrap();
     s.bind("#R/mnt/dev", "#R/box", MBEFORE).unwrap();
+    s.create("#R/mnt/dev/w", mode::OWRITE, 0o644).unwrap();
     let pid = s.pid;
     hold.store(true, Ordering::Release);
     let exit = {
