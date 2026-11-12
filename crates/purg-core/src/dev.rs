@@ -36,6 +36,12 @@ pub trait Dev: Send + Sync {
     }
     /// Walks from directory `c` to its child `name`.
     fn walk(&self, c: &Chan, name: &str) -> Result<Walked>;
+    /// A hint before a walk goes on from directory `c`: `names` are the
+    /// names it will walk from here, in order, the next one first. A
+    /// device that can look several names up in one exchange (`#λ`)
+    /// fetches them; [`Dev::walk`] is still called for each name, and
+    /// nothing may depend on the hint having been given.
+    fn walk_ahead(&self, _c: &Chan, _names: &[&str]) {}
     fn stat(&self, c: &Chan) -> Result<Dir>;
     /// Prepares `c` for I/O in `mode`; may store per-open state in
     /// [`Chan::state`]. The core sets `open` and `mode` afterwards.
