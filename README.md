@@ -59,7 +59,7 @@ a `; ` prompt.
 | Namespace and Styx tools: `styxchat styxmon iostats nsbuild lockfs trfs fcp tarfs archfs` | done |
 | Remote commands: `rcmd cpu auxi/rstyxd auxi/cpuslave`, authenticated with the mount proof both ways (`-S` requires the server's) and encrypted after it; `rcmd host mcpd` is a remote MCP server. See [docs/rcmd.md](docs/rcmd.md) | done |
 | Plan 9 interop: `9export -A` and `import -9 tree` (exportfs's opening, no `p9any`) | tested against each other only |
-| `dbfs`: the records of a text file as files (dbfs(4)) | done; `rawdbfs` remains |
+| `dbfs` and `rawdbfs`: the records of a text file, or of an append-only binary log, as files (dbfs(4)) | done; rawdbfs's file format is its own |
 | `fs`: trees as values, with all of fs(1)'s modules (`walk filter select merge write bundle unbundle exec pipe proto run setroot chstat compose mergewrite void` and the gates), `@{...}` command blocks | done; `mergewrite` takes its selector as `-c` |
 | `9660srv`: ISO 9660 images read-only, with Rock Ridge names and modes and Joliet names (9660srv(4)) | done; no High Sierra, Plan 9 extensions or multi-extent files |
 | `dossrv`: FAT12, FAT16 and FAT32 read and write, with long names (dossrv(4)) | done; times are UTC, `-v -F -c -S` do nothing |
