@@ -27,19 +27,20 @@ differences under about 20% between configurations are not meaningful.
 Seconds (a spawn in milliseconds), median and fastest. The wasmi and
 Pulley columns are built without strict alignment; Pulley also with its
 tail-call dispatch (Section 5.3). The last column is wasmi as the kernel
-is built now (Section 9), measured a day later under similar load.
+is built now (Section 9), measured a day later under similar load; the
+one after it adds the data path changes of Section 10.
 
-| Benchmark (kernel under KVM) | Target | `next` (wasmi) | wasmi, no strict-align | wasmtime AOT | Pulley | wasmi now |
-|---|---|---|---|---|---|---|
-| `cat` 100 MiB from the RAM tree | 0.5 | 1.05 (0.67) | 0.14 (0.12) | 0.045 (0.045) | 0.58 (0.58) | 0.12 (0.12) |
-| `cat` 100 MiB through a Styx mount | 1 | 0.82 (0.74) | 0.33 (0.31) | 0.23 (0.21) | 0.76 (0.74) | 0.28 (0.28) |
-| the same, encrypted | 2 | 3.56 (2.44) | 1.94 (1.89) | 1.92 (1.90) | 2.34 (2.31) | 1.89 (1.88) |
-| `cat` 100 MiB from purgfs on virtio-blk | 2 | 4.20 (2.61) | 2.15 (1.37) | 1.40 (1.15) | 1.91 (1.70) | 1.40 (1.23) |
-| SHA-1 of 16 MiB (CPU-bound) | 1 | 2.83 (2.22) | 0.73 (0.73) | 0.092 (0.092) | 1.66 (1.66) | 0.73 (0.73) |
-| `sh`: 10,000 loops of a builtin | 0.5 | 0.76 (0.54) | 0.35 (0.34) | 0.092 (0.082) | 0.78 (0.77) | 0.35 (0.35) |
-| spawn and wait, per spawn (ms) | 1 | 1.35 (1.34) | 1.27 (1.21) | 0.39 (0.39) | 0.43 (0.42) | 0.26 (0.26) |
-| memfs: 1,000 creates | 0.1 | 0.072 (0.065) | 0.051 (0.047) | 0.028 (0.028) | 0.091 (0.091) | 0.048 (0.048) |
-| purgfs: 1,000 creates | 1 | 1.38 (0.86); 7.18 before the fix | 0.82 (0.50) | 0.65 (0.55) | 0.55 (0.52) | 0.58 (0.53) |
+| Benchmark (kernel under KVM) | Target | `next` (wasmi) | wasmi, no strict-align | wasmtime AOT | Pulley | wasmi now | + data path |
+|---|---|---|---|---|---|---|---|
+| `cat` 100 MiB from the RAM tree | 0.5 | 1.05 (0.67) | 0.14 (0.12) | 0.045 (0.045) | 0.58 (0.58) | 0.12 (0.12) | 0.012 (0.011) |
+| `cat` 100 MiB through a Styx mount | 1 | 0.82 (0.74) | 0.33 (0.31) | 0.23 (0.21) | 0.76 (0.74) | 0.28 (0.28) | 0.101 (0.099) |
+| the same, encrypted | 2 | 3.56 (2.44) | 1.94 (1.89) | 1.92 (1.90) | 2.34 (2.31) | 1.89 (1.88) | 0.549 (0.548) |
+| `cat` 100 MiB from purgfs on virtio-blk | 2 | 4.20 (2.61) | 2.15 (1.37) | 1.40 (1.15) | 1.91 (1.70) | 1.40 (1.23) | 0.142 (0.131) |
+| SHA-1 of 16 MiB (CPU-bound) | 1 | 2.83 (2.22) | 0.73 (0.73) | 0.092 (0.092) | 1.66 (1.66) | 0.73 (0.73) | 0.73 (0.73) |
+| `sh`: 10,000 loops of a builtin | 0.5 | 0.76 (0.54) | 0.35 (0.34) | 0.092 (0.082) | 0.78 (0.77) | 0.35 (0.35) | 0.35 (0.35) |
+| spawn and wait, per spawn (ms) | 1 | 1.35 (1.34) | 1.27 (1.21) | 0.39 (0.39) | 0.43 (0.42) | 0.26 (0.26) | 0.26 (0.26) |
+| memfs: 1,000 creates | 0.1 | 0.072 (0.065) | 0.051 (0.047) | 0.028 (0.028) | 0.091 (0.091) | 0.048 (0.048) | 0.049 (0.048) |
+| purgfs: 1,000 creates | 1 | 1.38 (0.86); 7.18 before the fix | 0.82 (0.50) | 0.65 (0.55) | 0.55 (0.52) | 0.58 (0.53) | 0.48 (0.35) |
 
 - **`next` misses seven of the ten targets** (Section 4).
   The CPU-bound guest takes three times as long in the kernel as on the
@@ -62,6 +63,12 @@ is built now (Section 9), measured a day later under similar load.
   alignment outside the code that runs with the MMU off, and wasmi
   compiles modules lazily and shares engines between progs in
   generations. wasmi now meets every target, and a spawn takes 0.26 ms.
+- **Then the data path (Section 10):** a kernel profiler (`#T`) showed
+  the encrypted mount's cipher built for size, `cat` searching every
+  block for a newline in std's line-buffered stdout, byte-at-a-time pipe
+  reads and one disk request per block. With those fixed, `cat` of 100
+  MiB takes 0.011 s from RAM, 0.10 s through a Styx mount, 0.55 s
+  encrypted and 0.13 s from purgfs.
 - **Two cheap fixes landed:** purgfs directory searches no longer thrash
   the metadata cache (a create in a directory of 1,000 files went from 7
   ms to 0.5 ms), and the kernel builds SHA-256 at `opt-level` 3, which
@@ -258,8 +265,10 @@ cheaper on wasmi (1.34 to 1.16 ms) and 34% cheaper with AOT (0.39 to
 0.26 ms): the loader takes the SHA-256 digest of every module it loads
 for the module policy (`docs/signing.md`). This is adopted. Putting
 `chacha20`, `poly1305` and `chacha20poly1305` at 3 as well made no
-difference to `cat-styx-sealed` (1.89 s against 1.91 s), so they stay at
-`"z"`; that path's cost is elsewhere (Section 6).
+difference to `cat-styx-sealed` (1.89 s against 1.91 s). That was
+because the cipher's generic code is instantiated in `purg-auth`, which
+was still at `"z"`; with `purg-auth` at 3 too, the encrypted read takes
+half the time (Section 10).
 
 **Fuel.** wasmi runs on fuel in slices of 2^20 units, about a million
 instructions, then checks the prog's note and resumes (`purg-vm-wasmi`).
@@ -414,19 +423,8 @@ Found and not fixed:
 
 - **Strict alignment** (Section 5.1): the largest single cost. Fixed
   in Section 9.
-- **Encrypted Styx** reads at 50 MB/s whatever the engine and whatever
-  the cipher's optimisation level; the clear mount does 330 to 500 MB/s. The
-  record layer seals each message into a fresh allocation and the
-  reader opens into another; that and the cipher's portable code are
-  the suspects. Not profiled: the host has no `perf`.
-- **purgfs reads one 4 KiB block per virtio-blk request**: 100 MiB is
-  25,600 requests, 45 µs each under KVM. Reading contiguous blocks in one
-  request would help large files.
-- **Each Styx read copies the data four times**: the export reads into
-  a buffer, encodes `Rread` into another, the pipe queues a copy, the
-  mount reader copies it out, and `devmnt` copies it into the caller's
-  buffer. Under KVM the copies cost less than the thread switches
-  between the reader, the export worker and the prog.
+- **Encrypted Styx**, **purgfs's one request per block** and **the
+  copies in a Styx read**: profiled and mostly fixed; Section 10.
 - **The emu's numbers predate the fix to hosted TCP reads**, which
   polled every 5 ms instead of blocking (the `lethe-perf` work). The
   suite's Styx mounts run over pipes, not TCP, so `cat-styx` should not
@@ -467,7 +465,7 @@ Found and not fixed:
 - AOT: run-time image loading with signatures, TLS in the scheduler,
   merging `purg-vm-aot` with `purg-vm-wasmtime`'s host functions (the
   prototype copies them), and CI running the test mode with it.
-- The hot spots in Section 6.
+- The hot spots in Section 6, and what Section 10.4 leaves.
 - The SHA-256 digest is most of a spawn now (Section 9.2): the CPU's
   SHA-256 instructions, detected at boot.
 
@@ -628,3 +626,128 @@ of a spawn (190 µs of 260 µs for `echo`, by the timing above). The
 kernel's `sha2` is the portable code; the CPU's SHA-256 instructions
 (FEAT_SHA256, which this host has) would need detection at boot, since
 not every aarch64 CPU has them.
+
+## 10. The data path
+
+The follow-ups of Section 6 for the I/O benchmarks, measured with a
+profiler built for them. Numbers are from 2026-11-12, same host, on
+`next` at `d1ca20f` (the base, before Section 9) and with these
+changes, and the last column of the table in 10.4 with both; the load average
+was 4 to 9 (other agents were building). Seconds, median of six samples
+(three rounds in each of two boots) with the fastest in brackets, under
+KVM with wasmi as on `next`.
+
+### 10.1 The profiler: `#T`
+
+The host has no `perf`, so the kernel profiles itself. With `kprof` in
+the bootargs (`kprof=HZ` for a rate other than 1,000 a second) the
+kernel binds `#T` after `/dev`, after Inferno's kprof(3):
+
+- `kpctl` takes `start`, `stop` and `startclr`;
+- `kpdata` is big-endian 32-bit counts: the samples, the samples in the
+  kernel's text, then one count per 8 bytes of text;
+- `kpcaller` is the same for the link register (`x30`), which charges a
+  leaf such as `memcpy` to its caller. It is not in Inferno.
+
+The clock is the EL1 physical timer, which the scheduler does not use,
+so the 100 Hz tick and its preemption are unchanged; each sample costs
+an interrupt. `cargo xtask bench --kprof` boots the kernel at 2,000
+samples a second; `bench.sh` brackets each I/O benchmark with
+`startclr` and `stop` (outside the timed command) and copies the counts
+to the bench disk, and xtask sums them over rounds and boots and charges
+each bucket to a function from the kernel ELF's symbol table. It prints
+the top functions by PC and by caller per benchmark and writes them to
+`target/bench/kprof-kvm+LABEL.txt`. Limits: only the CPU that starts
+profiling is sampled, and code that runs with interrupts masked is
+charged to where it unmasks them. The device costs nothing without the
+bootarg; with it, two histograms half the size of the text (1.8 MiB
+in all for 1.8 MiB of text).
+
+### 10.2 What it found
+
+| Benchmark | Where the time went (base) |
+|---|---|
+| `cat-root` | 97% in wasmi running `cat` itself: `std::io::stdout` is line-buffered, so every 8 KiB block was searched for a newline, in interpreted code |
+| `cat-styx` | `cat`'s own search again (70%), then `Queue::read`, which moved each byte through `VecDeque::drain` (9%), and copies |
+| `cat-styx-sealed` | ChaCha20 (45%), Poly1305 (6%), `memcpy` (14%), `cat` (24%). The cipher's quarter round was an out-of-line function: code at `"z"` |
+| `cat-disk` | 59% idle waiting for the disk and 7% kicking it, one request per 4 KiB block; `cat` 31% |
+| `fs-disk-1k` | 55% idle, 20% kicking the disk: each create or remove is a dozen requests in a row |
+
+The record layer's allocations, the first suspect, were under 2%.
+
+### 10.3 Changes
+
+- **The cipher at `opt-level` 3**, with `purg-auth`, where its generic
+  code is instantiated (`Cargo.toml`). Alone: `cat-styx-sealed` 2.43 s
+  to 1.44 s.
+- **NEON ChaCha20**: the record layer takes its AEAD from
+  `chacha20poly1305` 0.11, whose ChaCha20 (0.10) uses NEON on aarch64.
+  0.9 needs `--cfg chacha20_force_neon`, which CI's `RUSTFLAGS` would
+  drop. The records are the same bytes (the fixed vectors pass); the
+  login protocol and Lethe stay on 0.10 for now.
+- **Records without a copy or an allocation each**: `Sealer::seal_buf`
+  builds each record in a buffer the sealer reuses, and
+  `Opener::open_body` opens a record read without its header in place,
+  so the plaintext does not move. The mount reader and export use them.
+- **Pipe reads copy slices**: `Queue::read` copies the ring's two runs.
+- **`cat` writes each read straight to fd 1**, as Inferno's cat does,
+  not through `std::io::stdout`. This is the largest change for every
+  `cat` benchmark, and it is the guest's cost, not the kernel's.
+- **purgfs reads contiguous blocks in one request** and a sequential read
+  takes up to 64 KiB ahead (`docs/fs.md`, Memory); the virtio-blk
+  driver's bounce buffers are 64 KiB (from 16), so a read-ahead is one
+  request.
+- **A commit writes its home blocks at once**: `Disk::write_many`, which
+  the kernel's disk keeps up to four requests in flight for. The order
+  of the journal and the flushes is unchanged; the crash test passes.
+
+### 10.4 Results
+
+`kernel only` is every change but `cat`'s (with `cat` as on `next`); it
+ran under a load average of 7 to 9, so its medians are three times its
+fastest samples: read the brackets.
+
+| Benchmark | Target | base | kernel only | all | all, with Section 9 |
+|---|---|---|---|---|---|
+| `cat-root` | 0.5 | 0.536 (0.533) | 1.59 (0.533) | 0.016 (0.014) | 0.012 (0.011) |
+| `cat-styx` | 1 | 0.738 (0.721) | 1.95 (0.664) | 0.147 (0.140) | 0.101 (0.099) |
+| `cat-styx-sealed` | 2 | 2.43 (2.40) | 3.08 (1.14) | 0.618 (0.613) | 0.549 (0.548) |
+| `cat-disk` | 2 | 2.40 (1.70) | 1.81 (0.852) | 0.203 (0.178) | 0.142 (0.131) |
+| `fs-disk-1k-create` | 1 | 0.586 (0.478) | 0.782 (0.580) | 0.630 (0.357) | 0.481 (0.350) |
+| `fs-disk-1k-read` | 0.1 | 0.083 (0.060) | 0.101 (0.081) | 0.080 (0.063) | 0.069 (0.053) |
+| `fs-disk-1k-stat` | 0.1 | 0.030 (0.022) | 0.040 (0.022) | 0.023 (0.022) | 0.019 (0.019) |
+| `fs-disk-1k-remove` | 1 | 0.510 (0.421) | 0.626 (0.389) | 0.460 (0.345) | 0.385 (0.286) |
+
+The last column ran with Section 9's build (no strict alignment outside
+the boot path, lazy wasmi modules) under a load average of 5 to 6; the
+suite's other rows there match Section 9.3. The cipher settings in
+`Cargo.toml` still apply under its build flags: the profile shows the
+cipher inlined, as at `opt-level` 3.
+
+So, by the fastest samples: encrypted Styx 2.1 times faster in the
+kernel (3.9 with `cat`), 165 MB/s; purgfs reads 2 times (9.5 with
+`cat`), 560 MB/s; the clear mount 715 MB/s; creates and removes about
+20% faster, within the noise of the medians. The rest of the suite did
+not change.
+
+Memory (`memstat`, the kernel's test mode under KVM): text 1,740 KiB to
+1,784 KiB (the second cipher version and the crypto at 3); the heap in
+use at the end 1.50 MB to 1.89 MB, which is the larger bounce buffers
+(two disks in that mode, 4 x 48 KiB more each) and one read-ahead
+buffer; the peaks are unchanged.
+
+Where the time goes now:
+
+- `cat-styx-sealed`: ChaCha20 32%, Poly1305 28% (portable code; there
+  is no NEON Poly1305 in RustCrypto), `memcpy` 19%.
+- `cat-styx`: `memcpy` 44%, zeroed allocations 7%. The copies left are
+  export's read into a buffer and its `Rread` encoding, the pipe in and
+  out, and `devmnt` copying the reply into the caller's buffer. Reading
+  straight into the caller's buffer needs the mount driver to hand the
+  reader the buffer of the request it answers: that is protocol work in
+  `devmnt.rs`, left for its owner.
+- `cat-disk`: 75% idle, waiting for QEMU to do 1,600 reads of 64 KiB.
+  More read-ahead in flight at once (several requests, or larger ones)
+  would help further.
+- `fs-disk-1k`: still the commit's flushes and journal write in a row,
+  which the crash rules require.
