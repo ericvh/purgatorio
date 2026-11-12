@@ -74,6 +74,11 @@ fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
             }
             let mut chunk = [0u8; 4096];
             match stdin.read(&mut chunk) {
+                // The interrupt key: the line typed so far is gone.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                    pending.clear();
+                    buf.clear();
+                }
                 Ok(0) | Err(_) => {
                     if !pending.is_empty() || !buf.is_empty() {
                         pending.push_str(&String::from_utf8_lossy(&buf));
@@ -93,6 +98,7 @@ fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
             Err(SyntaxError::Incomplete) => continue,
             _ => {
                 let src = std::mem::take(&mut pending);
+                sh.interrupted = false;
                 if let Err(stop) = sh.run_src(&src) {
                     match stop {
                         Stop::Raise(s) => sh.status = s,
@@ -168,6 +174,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         sh.run_src(&src).err()
     } else {
         let prompt = force_prompt || purgatorio::fd2path(0).is_ok_and(|p| p == "/dev/cons");
+        if prompt {
+            sh.catch_interrupts();
+        }
         interactive(&mut sh, prompt)
     };
     finish(&sh, stop)
