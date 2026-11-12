@@ -3,8 +3,9 @@
 This is research for Phase G (issues #29 to #32): the draw device and
 memdraw (G1), fonts and the draw SDK (G2), Tk (G3) and `wm` (G4). It
 looks at display backends for the emu and the kernel, rasterization,
-fonts and toolkits, and ends with a plan and questions for the owner. No
-code or dependency comes with it.
+fonts and toolkits, and ends with a plan and questions for the owner.
+Section 8 describes the first piece built from it: a minimal draw device
+on the emu (G1).
 
 Facts were checked on 2026-11-12 against crates.io, docs.rs, the
 crates' repositories, the virtio specification, QEMU's sources and its
@@ -544,7 +545,197 @@ it.
 - Why `vello_cpu`'s wasm build is so large.
 - The sizes in Section 7.2 are estimates.
 
-## 8. Sources
+## 8. G1 as built: a minimal `/dev/draw` on the emu
+
+The owner's decisions on issue #29 put hosted graphics first, draw-based
+programs before Tk, and a web-style UI as a possible later front end.
+G1 is therefore memdraw, the draw device and input on the emu only,
+behind a screen trait a browser could implement. The kernel does not
+serve `#i` yet.
+
+### 8.1 What is implemented
+
+**`purg-memdraw`** (`no_std` + `alloc`, no dependencies):
+
+- Images with a channel descriptor: any combination of `r g b k a x`
+  channels of 1 to 8 bits that packs into 1, 2, 4, 8, 16, 24 or 32 bits
+  (`k1 k2 k4 k8 r5g6b5 x1r5g5b5 r8g8b8 x8r8g8b8 a8r8g8b8 r8g8b8a8`, ...),
+  with image(6)'s layout: rows start at the byte holding `r.min.x`
+  counted from x = 0, narrow pixels fill a byte from its top bit, wide
+  ones are little-endian. Conversion goes through premultiplied 8-bit
+  `[r, g, b, a]`: narrow channels widen by repeating their bits, grey is
+  `0.299r + 0.587g + 0.114b` in 19-bit fixed point. `m8` (colour maps)
+  is not supported.
+- `draw` with source, mask and the operators of draw(2) as four region
+  bits (`SinD SoutD DinS DoutS`, so `SoverD` is 11 and all sixteen
+  values mean something). The source is taken in the mask first (scaled
+  by the mask's alpha, or its grey level when it has none), then
+  `dst = src·Fs + dst·Fd`, products rounded to nearest. Replicated
+  sources and masks tile from their rectangle across their clip;
+  clipping is draw(2)'s: the destination's rectangle and clip, the
+  source's and mask's clip, and their rectangles unless replicated.
+  Fast paths: a solid colour, and a copy between images of the same
+  channels.
+- `line` (`1 + 2·thick` pixels, `Endsquare`, `Enddisc`, `Endarrow` with
+  `ARROW(a, b, c)`), `poly` (disc joins), `fill_poly` (winding rule as a
+  mask: `~0` nonzero, 1 odd-even), `ellipse`, `fill_ellipse`, `arc` and
+  `fill_arc`. Each builds a coverage mask over the destination's clip
+  (so a huge shape costs only the image) and composites once, so a
+  translucent shape covers each pixel once. All integer: polygon
+  vertices in 1/256 pixel, sampled at pixel centres; thin lines one pixel
+  per step along the longer axis, rounded halves up so both directions
+  give the same pixels; a pixel is in an ellipse with semiaxes `a`, `b`
+  when it is in the ellipse with semiaxes `a + ½`, `b + ½`; arc angles
+  from a table of sines in whole degrees.
+- `load`, `load_compressed` (image(6)'s compressed blocks) and `unload`.
+
+draw(2) does not fix every pixel. Where it is silent these are our
+choices: a thick `Endsquare` line ends half a pixel past its end
+point's centre, `fillpoly` vertices are pixel corners and `poly`'s are
+pixel centres, the default arrow is `ARROW(8, 10, 5)`, and the
+outline of a thick ellipse is the filled ellipse with semiaxes `a + t`,
+`b + t` less the inside of the one with `a - t`, `b - t`. Inferno may
+differ in single pixels; the owner allowed goldens rendered by real
+Inferno (issue #29), which would settle it, but none are in G1.
+
+**Golden images.** `crates/purg-memdraw/tests/golden/*.bit` are
+image(6) files: each operator on translucent images through a grey
+ramp mask, a pattern converted to nine channel formats and back,
+replication and clipping, a `k1` mask, lines with each end, polygons
+with both rules, a polyline, ellipses and arcs, and source alignment.
+They were made by this implementation and checked by eye
+(`PURG_GOLDEN_SHOW=1` prints them as text); `PURG_GOLDEN_UPDATE=1`
+rewrites them.
+
+**`#i`** (`purg-core/src/devdraw.rs`, feature `draw`, served when the
+platform has a screen): `#i/draw/new`, which makes connection `n` and
+becomes its `ctl`; `n/ctl` (144 bytes about the image last written as a
+4-byte id, 0 the screen), `n/data`, `n/colormap` (the `rgbv` map) and
+`n/refresh` (blocks: there are no windows to refresh). Messages: `b f c
+d D e E L p P r y Y o O v`, with devdraw's packed polygon coordinates,
+the arc bit in `e`'s alpha, the operator reset after each drawing
+message, and devdraw's errors (`unknown id for draw image`, `short draw
+message`, `image id in use`, `image memory allocation failed`,
+`readimage outside image`, `writeimage outside image`, `bad draw
+command`, `draw read too short`, `no draw data`, ...). A connection ends
+when its last file closes. The screen image belongs to the device and is
+shared by all connections; `v` sends the screen's damaged rectangle to
+the screen trait. The emu binds `#i` and `#m` after `#c` on `/dev`.
+
+**`#m`** (`devpointer.rs`): `pointer` reads as 49 bytes (`m` and x, y,
+buttons, milliseconds in 12-byte fields) once the pointer moves or a
+button changes; motion with the same buttons replaces an unread motion,
+so presses are never lost. Writing `m x y` moves it. `cursor` accepts
+writes and shows nothing yet. **`#c/keyboard`** reads typed characters
+as UTF-8 (keyboard(6) codes for arrows, function keys and the like); it
+exists only when there is a screen.
+
+**The emu.** Without `-g` the screen is an in-memory 640×480
+`x8r8g8b8` image (`Headless`), so programs and tests draw and read
+back with no window system. `emu -g` (or `-g WxH`, 800×600 by default)
+makes a winit 0.30.13 event loop on the main thread before anything
+else, starts the first prog on its own thread, and runs the loop. A
+flush copies the damaged pixels into a frame and wakes the loop through
+an `EventLoopProxy`; the loop copies only the damage into the softbuffer
+0.4.8 buffer (and the previous frame's damage when the buffer is two
+frames old) and presents it with `present_with_damage`. The first prog's
+exit and closing the window end the emu. winit is built without
+client-side decorations (no font renderer) and loads X11 and Wayland at
+run time, so the emu needs neither to start; without a display, `-g`
+fails with `emu: cannot open display: ...`. The window is in physical
+pixels and is not scaled on a high-density display.
+
+**The SDK.** `purgatorio::draw`: `Display` (open, `alloc`, `color`,
+`free`, `set_clip`, `draw`, `gendraw_op`, `line`, `poly`, `fill_poly`,
+`ellipse`, `fill_ellipse`, `arc`, `fill_arc`, `load`, `unload`, `info`,
+`flush`), `Mouse` and `Keyboard`. Messages are buffered up to 8000
+bytes, as libdraw does, and `load` and `unload` split large rectangles
+into rows that fit. memdraw is re-exported for programs that draw into
+an image of their own.
+
+**Programs.** `draw/demo` draws bars, rectangles (one translucent),
+lines with each end, ellipses, arcs and a star, then follows the
+pointer: button 1 paints, button 3 quits; `draw/demo -n` draws once and
+exits. `/bin/test/draw.wasm` draws through the device on the in-memory
+screen, reads the pixels back with `r`, and compares them with the same
+drawing done by memdraw inside the guest, checks `ctl`, the shared
+screen, devdraw's errors and `/dev/pointer`. The emu's acceptance tests
+run it and `draw/demo -n` on both VMs.
+
+### 8.2 The screen trait
+
+```rust
+pub trait Screen: Send + Sync {
+    fn size(&self) -> (u32, u32);
+    fn chan(&self) -> u32 { XRGB32 }
+    fn flush(&self, r: Rect, pixels: &[u8], stride: usize);
+    fn input(&self) -> &Input;
+    fn set_pointer(&self, _x: i32, _y: i32) {}
+}
+```
+
+It is in `purg-platform` (`screen.rs`), with `Input` (the pointer and
+keyboard queues, woken through a `Rendez`) and `Headless`;
+`Platform::screen` returns one or `None`. The device owns the pixels:
+memdraw draws into the device's screen image, and on `v` the backend
+gets the damaged rectangle's rows in the screen's channel format. A
+backend only shows pixels and feeds input, so it needs no part of
+memdraw. The emu's window is one; ramfb and virtio-gpu in the kernel
+would be others (copy into the framebuffer; transfer and flush the
+rectangle).
+
+**A browser backend** would be a third. It would serve a page with a
+`<canvas>` and keep a WebSocket (or a WebTransport stream) open to it.
+`flush` sends the rectangle and its pixels, converted to RGBA and
+compressed if the link is slow; the page puts them with `putImageData`
+at that offset. The page sends `pointermove`, `pointerdown`,
+`pointerup`, `wheel` and `keydown` back, and the backend turns them into
+`Input::pointer` and `Input::key` calls, with the same keyboard(6)
+mapping as the window. `size` is the canvas's size, fixed when the
+page connects. Nothing in the device, memdraw or the programs changes;
+the server could live in the emu as host code (`emu -w port`) or, on
+the kernel, as a program over `/net`. A higher-level web UI (HTML
+widgets instead of pixels) would be a different design, above draw.
+
+### 8.3 Sizes
+
+Measured on Linux aarch64 with Rust 1.99.1.
+
+| What | Size |
+|---|---|
+| `purg-memdraw`, `aarch64-unknown-none`, opt-level `z`: `.text` + `.rodata` of the crate's object (every public function, unlinked) | 24,330 bytes |
+| The same at opt-level 3 (`--release`) | 35,385 bytes |
+| `purg-core` for `aarch64-unknown-none`, opt-level `z`, same measure: `tls,lethe` / `tls,lethe,draw` | 409,950 / 436,773 bytes (the devices: 26,823) |
+| The emu, release, stripped | 14,164,608 bytes |
+| In it, by symbol: memdraw / the devices and screen trait / `window.rs` (with winit's generic code it instantiates) / winit, softbuffer and their X11 and Wayland crates | 52 KB / 48 KB / 145 KB / 1,867 KB |
+| `draw/demo.wasm` / `test/draw.wasm` (`echo.wasm` is 63,896) | 80,063 / 133,832 bytes |
+
+The emu figures attribute symbols by crate name, so they are close but
+not exact; about 2.1 MB of the emu is G1, almost all of it the window
+crates. In the kernel, memdraw and the devices would add about 50 KB
+at opt-level `z` if the feature were on.
+
+The source is about 4,100 lines with its unit tests: memdraw 1,800,
+the devices 1,060, the screen trait 200, the window 400, the SDK
+module 640.
+
+### 8.4 Not done in G1
+
+- Screens and windows (`A`, `F`, `S`, `t`, `o` on a window, refresh
+  messages, libmemlayer), named images (`n`, `N`), the font cache and
+  strings (`i`, `l`, `s`, `x`: G2), and `m8` with colour-map writes.
+- Cursor images on `/dev/cursor`, the snarf buffer `#^`.
+- The device in the kernel and the probe (ramfb, virtio-input), and a
+  kernel feature for it; graphics is off in `kernel-small` by not being
+  built at all.
+- HiDPI scaling, window resizing (the screen keeps its size), and
+  pointer events outside the window.
+- Goldens rendered by real Inferno; the pixels follow our reading of
+  draw(2), listed above.
+- A screen image drawn onto itself, or any image drawn through itself,
+  is copied first: correct, but a full-screen copy for a scroll.
+
+## 9. Sources
 
 All accessed 2026-11-12.
 

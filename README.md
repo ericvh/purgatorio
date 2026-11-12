@@ -78,6 +78,7 @@ a `; ` prompt.
 | `cprof` (call counts and coverage by function) and `mprof` (memory grown, by function and its callees), exact and the same on both backends, through `/prog/<pid>/{cprof,mprof}` | done; line coverage needs DWARF |
 | `mdb pid`: stop a traced prog (`stop`/`start`/`step` on `ctl`), breakpoints on function entry (`bpt set`, `bpt del`), its stack, and its memory through `/prog/<pid>/heap`, on both backends | done; locals need DWARF |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
+| Graphics (G1, emu only): `purg-memdraw` (images in any `k`/`r`/`g`/`b`/`a`/`x` channel format and conversions, the twelve Porter-Duff operators with masks, replication and clipping, lines with square, disc and arrow ends, polylines, filled polygons with both winding rules, ellipses and arcs, all integer); `#i` (`/dev/draw/new`, `n/ctl`, `n/data`, `n/colormap`, `n/refresh`; messages `b f c d D e E L p P r y Y o O v` with devdraw's errors); `#m` (`/dev/pointer`, `/dev/cursor`) and `/dev/keyboard`; an in-memory screen by default and a window with `emu -g` (winit and softbuffer); the SDK's `draw` module; `draw/demo`. See [docs/graphics.md](docs/graphics.md) | first cut; no screens or windows, fonts, named images or `m8`; not in the kernel |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
 | `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi, on the kernel's `purg-aarch64` boot path, interrupts and preemptive kernel threads: a writable RAM root, the `sh` corpus, `load`/`call`, the WASI test program, and `/net` over virtio-net and smoltcp, exported to and mounted from the host | done |
@@ -90,13 +91,15 @@ crates/
   purg-styx/         no_std  Styx (9P2000) message, Qid and Dir codec; a 9P2000.u translator
   purg-auth/         no_std  certificates, mount proofs, session keys and records, password login (SPAKE2), sealing
   purg-lethe/        no_std  Lethe: frames, tickets, the server engine and the client (docs/lethe.md)
-  purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam)
+  purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam); the Screen trait
+  purg-memdraw/      no_std  memdraw: images, channels, compositing, integer geometry (docs/graphics.md)
   purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree, Styx mount/export;
-                             #/ #c #e #| #p #s #d #% #M #I #C #D #¤ #λ
+                             #/ #c #e #| #p #s #d #% #M #I #C #D #¤ #λ, and #i #m with a screen
   purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, spawn
   purg-vm-wasmi/     no_std  wasmi interpreter backend
   purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
-  purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/;
+  purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/,
+                             the `emu -g` window;
                              the `lethed` binary, the Lethe server
   purg-probe/        no_std  bare-metal aarch64 test image for QEMU virt, on purg-aarch64
   purg-aarch64/      no_std  aarch64 support: boot, DTB, GICv2/v3, timer, vectors, MMU, PL011, scheduler, virtio-net, smoltcp, virtio-9p, virtio-blk
@@ -104,14 +107,14 @@ crates/
   purg-system/       no_std  the bare-metal images' boot namespace and program runner
   purg-kernel/       no_std  the native kernel for QEMU virt (Phase K); #9 (virtio-9p), #S (virtio-blk), #K
 sdk/
-  purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task)
+  purgatorio/                guest SDK (sys calls, arg, bufio, env, daytime, task, draw)
   purgatorio-macros/         #[purgatorio::main]
 appl/cmd/<name>/             commands (sh, ls, ...), built to root/bin/<name>.wasm
 appl/lib/<name>/             loadable reactor modules, built to root/bin/lib/<name>.wasm; plain
                              libraries shared by commands (regexp, filepat, ndb, styxserv, ...)
 appl/archive/                ustar and gzip library shared by the archive commands
 appl/lib/regexp/             Plan 9 regular expressions, a library linked into grep, sed and sh
-appl/test/{abi,procs,m3,net,wasi}/  conformance guests, built to root/bin/test/<name>.wasm
+appl/test/{abi,procs,m3,net,wasi,draw}/  conformance guests, built to root/bin/test/<name>.wasm
 root/                        the file tree emu serves as #U (build-root adds root/tmp)
   lib/sh/profile             run by sh -l at boot
   lib/test/sh/               sh scripts and their expected output
@@ -291,7 +294,15 @@ cargo xtask lethed -- -A /some/dir &
 cargo xtask run-emu -- sh -c 'mkdir -p /tmp/l; lethe -A tcp!127.0.0.1!5640 /tmp/l; ls /tmp/l'
 ```
 
-You can also run the binary directly: `target/debug/emu [-r root] [--vm=wasmtime|wasmi] [cmd [args...]]`.
+Graphics: `-g` opens a window (800x600, or `-g 1024x768`) showing the draw
+device's screen; without it the screen is in memory only. The demo draws
+shapes and follows the pointer; button 1 paints and button 3 quits:
+
+```sh
+cargo xtask run-emu -- -g draw/demo
+```
+
+You can also run the binary directly: `target/debug/emu [-r root] [-g[WxH]] [--vm=wasmtime|wasmi] [cmd [args...]]`.
 A command name `cmd` runs `/bin/cmd.wasm`. The exit code is 0 when the prog's
 Inferno exit status is empty and 1 otherwise.
 
