@@ -8,9 +8,12 @@
 //! regular-expression meta-rules (`R`, with `\n` in prerequisites and
 //! `$stem1`...), the attributes `D E N n P Q R U V`, and the options
 //! `-a -e -i -k -n -s -t -w` and `-d` (accepted, no output). Recipes run
-//! one at a time with `sh -c`, after assignments that give them the mk
-//! variables and `$target`, `$prereq`, `$stem`, `$alltarget`, `$newprereq`,
-//! `$pid` and `$nproc`; a recipe fails when its last command does.
+//! with `sh -e -c`, so a recipe fails at its first failing command, after
+//! assignments that give them the mk variables and `$target`, `$prereq`,
+//! `$stem`, `$alltarget`, `$newprereq`, `$pid` and `$nproc`. Up to
+//! `$NPROC` recipes (default 1) run at once; `$nproc` is the job's slot,
+//! from 0. When a recipe fails mk waits for the others, then stops
+//! (unless `-k`).
 
 mod parse;
 
@@ -41,11 +44,32 @@ struct Opts {
 #[derive(Clone, Copy)]
 enum State {
     Busy,
+    /// A recipe making it runs as this prog.
+    Running(u32),
     Done(u64),
     Failed,
 }
 
+/// What `make` found.
+enum Step {
+    /// Up to date, with this date stamp.
+    Done(u64),
+    /// A recipe it needs is running, or waits for a free job slot.
+    Wait,
+}
+
+/// A running recipe.
+struct Job {
+    name: String,
+    plan: Plan,
+    slot: usize,
+    newest: u64,
+    /// The first line of the recipe as shown, for messages.
+    first: String,
+}
+
 /// How to make one target.
+#[derive(Clone)]
 struct Plan {
     prereqs: Vec<String>,
     /// The rule whose recipe makes the target.
@@ -68,6 +92,11 @@ struct Mk {
     errors: usize,
     /// Something was run, printed or touched for the current target.
     did: bool,
+    /// Recipes that may run at once.
+    nproc: usize,
+    jobs: HashMap<u32, Job>,
+    /// Exit statuses of children reaped while waiting for another.
+    reaped: HashMap<u32, String>,
 }
 
 #[purgatorio::main]
@@ -187,6 +216,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             }
         }
     }
+    let nproc = file
+        .vars
+        .get("NPROC")
+        .and_then(|v| v.words.first())
+        .and_then(|w| w.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
     let mut mk = Mk {
         file,
         regexps,
@@ -195,11 +231,26 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         now: now(),
         errors: 0,
         did: false,
+        nproc,
+        jobs: HashMap::new(),
+        reaped: HashMap::new(),
     };
     for t in &targets {
         mk.did = false;
-        if mk.make(t, None).is_ok() && !mk.did {
-            println!("mk: '{t}' is up to date");
+        loop {
+            match mk.make(t, None) {
+                Ok(Step::Wait) => mk.waitup(),
+                Ok(Step::Done(_)) => {
+                    if !mk.did {
+                        println!("mk: '{t}' is up to date");
+                    }
+                    break;
+                }
+                Err(()) => {
+                    mk.drain();
+                    break;
+                }
+            }
         }
     }
     if mk.errors > 0 {
@@ -231,12 +282,14 @@ fn backquote(cmd: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// Runs `script` with sh in a copy of mk's environment; returns its exit
-/// status, empty for success.
-fn shell(script: &str) -> Result<String, Error> {
-    let argv = [String::from("sh"), String::from("-c"), String::from(script)];
-    purgatorio::spawn(SH, &argv, pctl::FORKENV, &[])?;
-    Ok(purgatorio::wait()?.status)
+/// Starts `script` with sh in a copy of mk's environment.
+fn spawn_shell(script: &str, errexit: bool) -> Result<u32, Error> {
+    let mut argv = vec![String::from("sh")];
+    if errexit {
+        argv.push(String::from("-e"));
+    }
+    argv.extend([String::from("-c"), String::from(script)]);
+    purgatorio::spawn(SH, &argv, pctl::FORKENV, &[])
 }
 
 fn dedup(words: &mut Vec<String>) {
@@ -434,133 +487,88 @@ impl Mk {
         }))
     }
 
-    fn fail(&mut self, name: &str) -> Result<u64, ()> {
+    fn fail<T>(&mut self, name: &str) -> Result<T, ()> {
         self.state.insert(String::from(name), State::Failed);
         self.errors += 1;
         if !self.opts.keep_going {
+            self.drain();
             purgatorio::exits("error");
         }
         Err(())
     }
 
-    /// Brings `name` up to date and returns its date stamp. `parent` is the
-    /// time of the file that needs it, for missing intermediates.
-    fn make(&mut self, name: &str, parent: Option<u64>) -> Result<u64, ()> {
-        match self.state.get(name) {
-            Some(State::Busy) => {
-                eprintln!("mk: cycle in graph detected at target {name}");
-                purgatorio::exits("error");
+    /// Waits for the child `pid` and returns its exit status, keeping the
+    /// statuses of other children for later.
+    fn wait_pid(&mut self, pid: u32) -> String {
+        loop {
+            if let Some(s) = self.reaped.remove(&pid) {
+                return s;
             }
-            Some(&State::Done(t)) => return Ok(t),
-            Some(State::Failed) => return Err(()),
-            None => {}
+            match purgatorio::wait() {
+                Ok(w) => {
+                    self.reaped.insert(w.pid, w.status);
+                }
+                Err(e) => return e.0,
+            }
         }
-        let plan = match self.resolve(name) {
-            Ok(Some(p)) => p,
-            Ok(None) => {
-                let t = if self.opts.what_if.contains(name) {
-                    Some(self.now)
-                } else {
-                    mtime(name)
-                };
-                return match t {
-                    Some(t) => {
-                        self.state.insert(String::from(name), State::Done(t));
-                        Ok(t)
-                    }
-                    None => {
-                        eprintln!("mk: don't know how to make '{name}'");
-                        self.fail(name)
-                    }
-                };
-            }
-            Err(e) => {
-                eprintln!("mk: {e}");
-                return self.fail(name);
-            }
+    }
+
+    /// Runs `script` with sh and returns its exit status.
+    fn shell(&mut self, script: &str) -> Result<String, Error> {
+        let pid = spawn_shell(script, false)?;
+        Ok(self.wait_pid(pid))
+    }
+
+    /// Waits for one running recipe to finish and records the result.
+    fn waitup(&mut self) {
+        let done = self
+            .reaped
+            .keys()
+            .copied()
+            .find(|p| self.jobs.contains_key(p));
+        let (pid, status) = match done {
+            Some(pid) => (pid, self.reaped.remove(&pid).unwrap_or_default()),
+            None => match purgatorio::wait() {
+                Ok(w) => (w.pid, w.status),
+                Err(e) => {
+                    eprintln!("mk: {e}");
+                    purgatorio::exits("error");
+                }
+            },
         };
-        self.state.insert(String::from(name), State::Busy);
-        let ttime = if plan.virt {
-            None
-        } else if self.opts.what_if.contains(name) {
-            Some(self.now)
+        let Some(job) = self.jobs.remove(&pid) else {
+            self.reaped.insert(pid, status);
+            return;
+        };
+        if !status.is_empty() {
+            let mut msg = format!("mk: {}: exit status={status}", job.first);
+            if job.plan.attrs.delete && !job.plan.virt {
+                msg.push_str(&format!(", deleting '{}'", job.name));
+                let _ = purgatorio::remove(&job.name);
+            }
+            eprintln!("{msg}");
+        }
+        for t in &job.plan.alltargets {
+            if matches!(self.state.get(t), Some(State::Running(p)) if *p == pid) {
+                self.state.remove(t);
+            }
+        }
+        if status.is_empty() || job.plan.attrs.errok {
+            self.finish(&job.name, &job.plan, job.newest);
         } else {
-            mtime(name)
-        };
-        let mut times = Vec::new();
-        let mut failed = false;
-        for p in &plan.prereqs {
-            match self.make(p, ttime) {
-                Ok(t) => times.push(t),
-                Err(()) => {
-                    failed = true;
-                    times.push(0);
-                }
-            }
+            let _ = self.fail::<()>(&job.name);
         }
-        if failed {
-            return self.fail(name);
+    }
+
+    /// Waits for every running recipe.
+    fn drain(&mut self) {
+        while !self.jobs.is_empty() {
+            self.waitup();
         }
-        let newest = times.iter().copied().max().unwrap_or(0);
-        // A missing intermediate whose prerequisites are no newer than the
-        // file that needs it is left unmade.
-        if !plan.virt
-            && ttime.is_none()
-            && !plan.prereqs.is_empty()
-            && !self.opts.intermediates
-            && !self.opts.all
-            && parent.is_some_and(|pt| newest <= pt)
-        {
-            self.state.insert(String::from(name), State::Done(newest));
-            return Ok(newest);
-        }
-        let tt = ttime.unwrap_or(0);
-        let newer: Vec<String> = plan
-            .prereqs
-            .iter()
-            .zip(&times)
-            .filter(|&(_, &t)| ttime.is_none() || t > tt)
-            .map(|(p, _)| p.clone())
-            .collect();
-        let outofdate = if self.opts.all || plan.virt || ttime.is_none() {
-            true
-        } else if let Some(prog) = &plan.attrs.prog {
-            let mut any = false;
-            for p in &plan.prereqs {
-                let cmd = format!("{prog} {} {}", parse::quote(name), parse::quote(p));
-                if !shell(&cmd).map_err(|e| eprintln!("mk: {e}"))?.is_empty() {
-                    any = true;
-                }
-            }
-            any
-        } else {
-            !newer.is_empty()
-        };
-        if !outofdate {
-            let t = ttime.unwrap_or(newest);
-            self.state.insert(String::from(name), State::Done(t));
-            return Ok(t);
-        }
-        if self.opts.explain {
-            if plan.prereqs.is_empty() {
-                println!("{name} has no prerequisites");
-            }
-            for (p, &t) in plan.prereqs.iter().zip(&times) {
-                if ttime.is_none() || t > tt {
-                    println!("{name}({tt}) < {p}({t})");
-                }
-            }
-        }
-        if plan.recipe.is_some() {
-            if !self.recipe(name, &plan, &newer) && !plan.attrs.errok {
-                return self.fail(name);
-            }
-        } else if plan.attrs.touch {
-            self.touch(name);
-        } else if !plan.virt && ttime.is_none() {
-            eprintln!("mk: no recipe to make '{name}'");
-            return self.fail(name);
-        }
+    }
+
+    /// Records the date stamps of what a recipe made and returns `name`'s.
+    fn finish(&mut self, name: &str, plan: &Plan, newest: u64) -> u64 {
         let stamp = |mk: &Mk, t: &str| {
             if plan.virt {
                 newest
@@ -582,7 +590,152 @@ impl Mk {
                 self.state.insert(t.clone(), State::Done(s));
             }
         }
-        Ok(stamp(self, name))
+        stamp(self, name)
+    }
+
+    /// Brings `name` up to date and returns its date stamp, or starts the
+    /// recipes it needs and returns `Step::Wait`: the caller waits for one
+    /// to finish and asks again. `parent` is the time of the file that
+    /// needs it, for missing intermediates.
+    fn make(&mut self, name: &str, parent: Option<u64>) -> Result<Step, ()> {
+        match self.state.get(name) {
+            Some(State::Busy) => {
+                eprintln!("mk: cycle in graph detected at target {name}");
+                self.drain();
+                purgatorio::exits("error");
+            }
+            Some(State::Running(_)) => return Ok(Step::Wait),
+            Some(&State::Done(t)) => return Ok(Step::Done(t)),
+            Some(State::Failed) => return Err(()),
+            None => {}
+        }
+        let plan = match self.resolve(name) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                let t = if self.opts.what_if.contains(name) {
+                    Some(self.now)
+                } else {
+                    mtime(name)
+                };
+                return match t {
+                    Some(t) => {
+                        self.state.insert(String::from(name), State::Done(t));
+                        Ok(Step::Done(t))
+                    }
+                    None => {
+                        eprintln!("mk: don't know how to make '{name}'");
+                        self.fail(name)
+                    }
+                };
+            }
+            Err(e) => {
+                eprintln!("mk: {e}");
+                return self.fail(name);
+            }
+        };
+        self.state.insert(String::from(name), State::Busy);
+        let ttime = if plan.virt {
+            None
+        } else if self.opts.what_if.contains(name) {
+            Some(self.now)
+        } else {
+            mtime(name)
+        };
+        let mut times = Vec::new();
+        let (mut failed, mut waiting) = (false, false);
+        for p in &plan.prereqs {
+            match self.make(p, ttime) {
+                Ok(Step::Done(t)) => times.push(t),
+                Ok(Step::Wait) => {
+                    waiting = true;
+                    times.push(0);
+                }
+                Err(()) => {
+                    failed = true;
+                    times.push(0);
+                }
+            }
+        }
+        if waiting {
+            self.state.remove(name);
+            return Ok(Step::Wait);
+        }
+        if failed {
+            return self.fail(name);
+        }
+        let newest = times.iter().copied().max().unwrap_or(0);
+        // A missing intermediate whose prerequisites are no newer than the
+        // file that needs it is left unmade.
+        if !plan.virt
+            && ttime.is_none()
+            && !plan.prereqs.is_empty()
+            && !self.opts.intermediates
+            && !self.opts.all
+            && parent.is_some_and(|pt| newest <= pt)
+        {
+            self.state.insert(String::from(name), State::Done(newest));
+            return Ok(Step::Done(newest));
+        }
+        let tt = ttime.unwrap_or(0);
+        let newer: Vec<String> = plan
+            .prereqs
+            .iter()
+            .zip(&times)
+            .filter(|&(_, &t)| ttime.is_none() || t > tt)
+            .map(|(p, _)| p.clone())
+            .collect();
+        let outofdate = if self.opts.all || plan.virt || ttime.is_none() {
+            true
+        } else if let Some(prog) = &plan.attrs.prog {
+            let mut any = false;
+            for p in &plan.prereqs {
+                let cmd = format!("{prog} {} {}", parse::quote(name), parse::quote(p));
+                if !self
+                    .shell(&cmd)
+                    .map_err(|e| eprintln!("mk: {e}"))?
+                    .is_empty()
+                {
+                    any = true;
+                }
+            }
+            any
+        } else {
+            !newer.is_empty()
+        };
+        if !outofdate {
+            let t = ttime.unwrap_or(newest);
+            self.state.insert(String::from(name), State::Done(t));
+            return Ok(Step::Done(t));
+        }
+        let runs = plan.recipe.is_some() && !self.opts.dry && !self.opts.touch;
+        if runs && self.jobs.len() >= self.nproc {
+            self.state.remove(name);
+            return Ok(Step::Wait);
+        }
+        if self.opts.explain {
+            if plan.prereqs.is_empty() {
+                println!("{name} has no prerequisites");
+            }
+            for (p, &t) in plan.prereqs.iter().zip(&times) {
+                if ttime.is_none() || t > tt {
+                    println!("{name}({tt}) < {p}({t})");
+                }
+            }
+        }
+        if plan.recipe.is_some() {
+            match self.recipe(name, &plan, &newer, newest) {
+                Ok(true) => {}
+                Ok(false) => return Ok(Step::Wait),
+                Err(()) if plan.attrs.errok => {}
+                Err(()) => return self.fail(name),
+            }
+        } else if plan.attrs.touch {
+            self.touch(name);
+        } else if !plan.virt && ttime.is_none() {
+            eprintln!("mk: no recipe to make '{name}'");
+            return self.fail(name);
+        }
+        Ok(Step::Done(self.finish(name, &plan, newest)))
     }
 
     /// Updates a file's modification time, creating it if need be.
@@ -604,11 +757,23 @@ impl Mk {
         }
     }
 
-    /// Runs (or prints or touches) the recipe that makes `name`; false if
-    /// it failed.
-    fn recipe(&mut self, name: &str, plan: &Plan, newer: &[String]) -> bool {
+    /// Starts (or prints or touches) the recipe that makes `name`: true
+    /// if that is all, false if a job was started, an error if it could
+    /// not be.
+    fn recipe(
+        &mut self,
+        name: &str,
+        plan: &Plan,
+        newer: &[String],
+        newest: u64,
+    ) -> Result<bool, ()> {
         self.did = true;
-        let Some(n) = plan.recipe else { return true };
+        let Some(n) = plan.recipe else {
+            return Ok(true);
+        };
+        let slot = (0..self.nproc)
+            .find(|s| self.jobs.values().all(|j| j.slot != *s))
+            .unwrap_or(0);
         let rule = self.rule(n).clone();
         let recipe = rule.recipe.clone().unwrap_or_default();
         let mut env: Vec<(String, Vec<String>)> = Vec::new();
@@ -630,7 +795,7 @@ impl Mk {
             env.push((format!("stem{k}"), one(s)));
         }
         env.push((String::from("pid"), one(&purgatorio::pid().to_string())));
-        env.push((String::from("nproc"), one("0")));
+        env.push((String::from("nproc"), one(&slot.to_string())));
         let shown = show(&recipe, &env);
         if self.opts.touch && !self.opts.dry {
             for t in &plan.alltargets {
@@ -638,13 +803,13 @@ impl Mk {
                     self.touch(t);
                 }
             }
-            return true;
+            return Ok(true);
         }
         if !rule.attrs.quiet || self.opts.dry {
             print!("{shown}");
         }
         if self.opts.dry {
-            return true;
+            return Ok(true);
         }
         let mut script = String::new();
         for (k, v) in &env {
@@ -658,21 +823,30 @@ impl Mk {
         script.push_str(&recipe);
         use std::io::Write;
         let _ = std::io::stdout().flush();
-        let status = match shell(&script) {
-            Ok(s) => s,
-            Err(e) => e.0,
+        let first = String::from(shown.lines().next().unwrap_or("").trim());
+        let pid = match spawn_shell(&script, true) {
+            Ok(pid) => pid,
+            Err(e) => {
+                eprintln!("mk: {first}: exit status={e}");
+                return Err(());
+            }
         };
-        if status.is_empty() {
-            return true;
+        for t in &plan.alltargets {
+            if t == name || !self.state.contains_key(t) {
+                self.state.insert(t.clone(), State::Running(pid));
+            }
         }
-        let first = shown.lines().next().unwrap_or("").trim();
-        let mut msg = format!("mk: {first}: exit status={status}");
-        if rule.attrs.delete && !plan.virt {
-            msg.push_str(&format!(", deleting '{name}'"));
-            let _ = purgatorio::remove(name);
-        }
-        eprintln!("{msg}");
-        false
+        self.jobs.insert(
+            pid,
+            Job {
+                name: String::from(name),
+                plan: plan.clone(),
+                slot,
+                newest,
+                first,
+            },
+        );
+        Ok(false)
     }
 }
 

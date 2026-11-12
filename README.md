@@ -37,7 +37,7 @@ a `; ` prompt.
 | Progs: `spawn_prog`, `pctl` (`NEWFD FORKFD NEWNS FORKNS NEWPGRP NODEVS NEWENV FORKENV`), wait messages; `Rendez` and qio checked with loom | done |
 | WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
 | App ABI v0.7: all of WASI preview 1 plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)). Stock Rust `std` programs with no SDK run and see the namespace | done |
-| `sh` subset: pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, `<>` (read and write), builtins `cd exit run wait load` and `@{}` sub-shells (own variables, environment, fds and namespace); `load std` has `pctl` and `${pid}`; file-name patterns (`*`, `?`, `[class]`) | done |
+| `sh` subset: `-e`, pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, `<>` (read and write), builtins `cd exit run wait load` and `@{}` sub-shells (own variables, environment, fds and namespace); `load std` has `pctl` and `${pid}`; file-name patterns (`*`, `?`, `[class]`) | done |
 | `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`, `${hd}` `${tl}` `${index}` `${quote}` `${unquote}`. `load expr`: postfix `${expr}` | done |
 | `load string`: the sh-string(1) builtins (`prefix`, `in`, `${splitl}`, `${slice}`, `${fields}`, `${padl}`, ...). `load regex`: `match` and `${re g\|v\|s\|sg\|m\|mg\|M}` | done |
 | The rest of the sh modules: `load arg`, `csv`, `echo`, `file2chan`, `mload`, `mpexpr` (arbitrary precision), `sexprs`, `test` | done |
@@ -66,7 +66,7 @@ a `; ` prompt.
 | `dossrv`: FAT12, FAT16 and FAT32 read and write, with long names (dossrv(4)) | done; times are UTC, `-v -F -c -S` do nothing |
 | `ftpfs`: an FTP server's files, passive or active, read and write, with renames (ftpfs(4)) | tested against /bin/test/ftpd only; no symbolic links |
 | `dbm/store dbm/fetch dbm/delete dbm/keys dbm/list` | done; the hash is our own, so Inferno's dbm files are not readable |
-| System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext disk/mkdisk disk/chkdisk` | done |
+| System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext disk/mkdisk disk/chkdisk`; `mk` runs recipes in parallel up to `$NPROC`, each with `sh -e` | done |
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log; a `/prog` of its own progs only; remote sessions over encrypted `rcmd`, also on the kernel. Each session is a prog domain with a memory limit (`-M`) and a prog limit (`-P`), its own `#s` registry and no `#¤` unless the policy grants it; it ends by killing the whole domain. See [docs/mcp.md](docs/mcp.md) | stages 1 to 3 and 5 |
 | `mcpfs`: another MCP server's tools as files (`tools/NAME/schema`, `tools/NAME/call`), with the server started as a guest command: `mcpd`, or `rcmd host mcpd`. See [docs/mcp.md](docs/mcp.md) | tools only; resources, notifications and host servers through `#C` open |
 | Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
