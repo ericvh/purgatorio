@@ -37,7 +37,7 @@ use purg_core::dev::read_str;
 use purg_core::{Chan, Dev, Error, Prog, Result, Walked};
 use purg_platform::sync::Mutex;
 use purg_styx::dotu::Shim;
-use purg_styx::{DMDIR, Dir, Fcall, MAX_MSIZE, Msg, NOTAG, QTDIR, QTFILE, Qid, VERSION};
+use purg_styx::{DMDIR, Dir, Fcall, IOHDRSZ, Msg, NOTAG, QTDIR, QTFILE, Qid, VERSION};
 
 use super::System;
 
@@ -47,6 +47,12 @@ pub const MOUNT_POINT: &str = "/n/host";
 const HOST_TAG: &str = "host";
 
 const QROOT: u64 = 0;
+
+/// The largest message to the host: 8 KiB of data. Each device keeps
+/// two buffers of this size for each of its 16 slots, so it stays below
+/// `purg_styx::MAX_MSIZE` (64 KiB of data), which would cost 2 MiB of
+/// DMA memory a device.
+const MSIZE: u32 = 8192 + IOHDRSZ;
 
 /// The state of a device's one open conversation.
 struct Conv {
@@ -87,7 +93,7 @@ impl Unit {
         let probe = Msg {
             tag: NOTAG,
             fcall: Fcall::Tversion {
-                msize: MAX_MSIZE,
+                msize: MSIZE,
                 version: VERSION,
             },
         }
@@ -313,6 +319,9 @@ impl Dev for Dev9p {
                     break;
                 }
                 let t: Vec<u8> = conv.inbuf.drain(..n).collect();
+                // The device's buffers bound the conversation: a client
+                // that offers more is offered no more than they hold.
+                let t = cap_version(t, max as u32)?;
                 let t = match conv.shim.as_mut() {
                     Some(shim) => shim.request(&t).map_err(|_| Error::new(error::EIO))?,
                     None => t,
@@ -584,15 +593,36 @@ impl System {
 pub type Host = Vec<Host9p>;
 
 /// `#9` for the device table, if there is one.
+/// `t` with its `msize` lowered to `max` when it is a `Tversion` that
+/// offers more; any other message as it is.
+fn cap_version(t: Vec<u8>, max: u32) -> Result<Vec<u8>> {
+    if t.get(4) != Some(&purg_styx::kind::TVERSION) {
+        return Ok(t);
+    }
+    let msg = Msg::decode(&t, max).map_err(|_| Error::new(error::EIO))?;
+    match msg.fcall {
+        Fcall::Tversion { msize, version } if msize > max => Msg {
+            tag: msg.tag,
+            fcall: Fcall::Tversion {
+                msize: max,
+                version,
+            },
+        }
+        .encode()
+        .map_err(|_| Error::new(error::EIO)),
+        _ => Ok(t),
+    }
+}
+
 pub fn devs(dev: Option<&Arc<Dev9p>>) -> Vec<Arc<dyn Dev>> {
     dev.map(|d| d.clone() as Arc<dyn Dev>).into_iter().collect()
 }
 
 /// The virtio-9p devices in the DTB, brought up with buffers for
-/// [`MAX_MSIZE`] messages and their interrupts routed (so after
+/// [`MSIZE`] messages and their interrupts routed (so after
 /// `irq::init`).
 pub fn find(fdt: &purg_aarch64::dtb::Fdt<'_>) -> Option<Host> {
-    let (devs, errors) = Host9p::open_all(fdt, MAX_MSIZE as usize);
+    let (devs, errors) = Host9p::open_all(fdt, MSIZE as usize);
     for why in errors {
         crate::kernel::println!("kernel: virtio-9p: {why}");
     }
