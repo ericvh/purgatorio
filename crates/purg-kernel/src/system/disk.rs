@@ -30,6 +30,7 @@ use purg_abi::{error, mode};
 use purg_core::{Chan, Dev, Error, Platform, Prog, Result, Walked};
 use purg_fs::dev::DevFs;
 use purg_fs::{Fs, Mount};
+use purg_platform::sync::Mutex;
 use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 
 use super::System;
@@ -141,7 +142,14 @@ pub fn devs(disks: &Disks, user: &str) -> Vec<Arc<dyn Dev>> {
     let mut v: Vec<Arc<dyn Dev>> = Vec::new();
     if !disks.blks.is_empty() {
         v.push(Arc::new(DevSd {
-            blks: disks.blks.clone(),
+            units: disks
+                .blks
+                .iter()
+                .map(|b| Unit {
+                    blk: b.clone(),
+                    parts: Mutex::new(Parts::default()),
+                })
+                .collect(),
             user: String::from(user),
         }));
     }
@@ -154,17 +162,54 @@ pub fn devs(disks: &Disks, user: &str) -> Vec<Arc<dyn Dev>> {
 const QROOT: u64 = 0;
 const QCTL: u64 = 1;
 const QDATA: u64 = 2;
+/// The first qid kind of a partition; each partition has its own.
+const QPART: u64 = 3;
+/// The bits of a qid path that say which file of a unit it is.
+const QKIND: u64 = 0xffff;
+
+/// Inferno's error for a bad control message.
+const EBADCTL: &str = "bad process or channel control request";
+
+/// A partition of a disk: sectors `start` to `end`, not including `end`.
+#[derive(Clone)]
+struct Part {
+    name: String,
+    start: u64,
+    end: u64,
+    /// Its qid kind.
+    kind: u64,
+}
+
+#[derive(Default)]
+struct Parts {
+    list: Vec<Part>,
+    /// The kind the next partition gets, less [`QPART`].
+    next: u64,
+}
+
+/// A disk and the partitions written to its `ctl`.
+struct Unit {
+    blk: Arc<Blk>,
+    parts: Mutex<Parts>,
+}
 
 /// `#S`: the disks.
+///
+/// As in Inferno's sd(3), writing `part name start end` to a disk's `ctl`
+/// adds a partition, a file `name` beside `data` holding sectors `start`
+/// to `end` (not including `end`), and `delpart name` removes one. The
+/// partitions are the kernel's only: nothing is written to the disk
+/// (disk/fdisk and disk/prep keep the tables there, and `-p` prints the
+/// messages that load them).
 pub struct DevSd {
-    blks: Vec<Arc<Blk>>,
+    units: Vec<Unit>,
     user: String,
 }
 
 impl DevSd {
-    /// Qid paths: 0 for the root, `(unit + 1) << 8 | kind` below it.
+    /// Qid paths: 0 for the root, `(unit + 1) << 16 | kind` below it.
     fn qid(path: u64) -> Qid {
-        let dir = path == QROOT || path & 0xff == 0;
+        let dir = path == QROOT || path & QKIND == 0;
         Qid {
             path,
             vers: 0,
@@ -172,24 +217,59 @@ impl DevSd {
         }
     }
 
-    fn unit(&self, path: u64) -> Result<&Arc<Blk>> {
-        let u = (path >> 8).checked_sub(1).ok_or(Error::new(error::EIO))?;
-        self.blks
+    fn unit(&self, path: u64) -> Result<&Unit> {
+        let u = (path >> 16).checked_sub(1).ok_or(Error::new(error::EIO))?;
+        self.units
             .get(u as usize)
             .ok_or(Error::new(error::ENONEXIST))
     }
 
+    /// The span of the disk a `data` or partition file covers, in bytes.
+    fn extent(&self, path: u64) -> Result<(&Blk, u64, u64)> {
+        let u = self.unit(path)?;
+        let b = &*u.blk;
+        let bs = b.block_size() as u64;
+        match path & QKIND {
+            QDATA => Ok((b, 0, b.size())),
+            kind => {
+                let parts = u.parts.lock();
+                let p = parts
+                    .list
+                    .iter()
+                    .find(|p| p.kind == kind)
+                    .ok_or(Error::new(error::ENONEXIST))?;
+                Ok((b, p.start * bs, (p.end - p.start) * bs))
+            }
+        }
+    }
+
     fn dir(&self, path: u64) -> Dir {
-        let u = (path >> 8).saturating_sub(1);
-        let (name, mode, length) = match (path, path & 0xff) {
+        let u = (path >> 16).saturating_sub(1);
+        let (name, mode, length) = match (path, path & QKIND) {
             (QROOT, _) => (String::from("#S"), DMDIR | 0o555, 0),
             (_, 0) => (format!("sdV{u}"), DMDIR | 0o555, 0),
-            (_, QCTL) => (String::from("ctl"), 0o444, 0),
-            _ => {
-                let b = self.unit(path).ok();
-                let ro = b.is_some_and(|b| b.read_only());
-                let size = b.map_or(0, |b| b.size());
-                (String::from("data"), if ro { 0o440 } else { 0o660 }, size)
+            (_, QCTL) => {
+                let ro = self.unit(path).is_ok_and(|u| u.blk.read_only());
+                (String::from("ctl"), if ro { 0o444 } else { 0o664 }, 0)
+            }
+            (_, kind) => {
+                let unit = self.unit(path).ok();
+                let ro = unit.is_some_and(|u| u.blk.read_only());
+                let name = if kind == QDATA {
+                    String::from("data")
+                } else {
+                    unit.and_then(|u| {
+                        let parts = u.parts.lock();
+                        parts
+                            .list
+                            .iter()
+                            .find(|p| p.kind == kind)
+                            .map(|p| p.name.clone())
+                    })
+                    .unwrap_or_default()
+                };
+                let size = self.extent(path).map_or(0, |(_, _, n)| n);
+                (name, if ro { 0o440 } else { 0o660 }, size)
             }
         };
         Dir {
@@ -204,17 +284,76 @@ impl DevSd {
         }
     }
 
-    fn ctl(b: &Blk) -> String {
+    fn ctl(u: &Unit) -> String {
+        let b = &u.blk;
         let bs = b.block_size() as u64;
         let n = b.size() / bs;
-        format!(
+        let mut s = format!(
             "inquiry virtio-blk {}\ngeometry {n} {bs}\npart data 0 {n}\n",
             if b.serial().is_empty() {
                 "-"
             } else {
                 b.serial()
             }
-        )
+        );
+        for p in &u.parts.lock().list {
+            s.push_str(&format!("part {} {} {}\n", p.name, p.start, p.end));
+        }
+        s
+    }
+
+    /// Carries out the control messages in `msg`, one a line.
+    fn ctl_write(u: &Unit, msg: &str) -> Result<()> {
+        let sectors = u.blk.size() / u.blk.block_size() as u64;
+        for line in msg.lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            match f.as_slice() {
+                [] => {}
+                ["part", name, start, end] => {
+                    let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>()) else {
+                        return Err(Error::new(EBADCTL));
+                    };
+                    if start > end || end > sectors {
+                        return Err(Error::new(error::EIO));
+                    }
+                    let bad = name.len() > 64
+                        || matches!(*name, "ctl" | "data" | "." | "..")
+                        || name.contains('/');
+                    if bad {
+                        return Err(Error::new(EBADCTL));
+                    }
+                    let mut parts = u.parts.lock();
+                    if let Some(p) = parts.list.iter().find(|p| p.name == *name) {
+                        // Adding the same partition again is not an error.
+                        if p.start == start && p.end == end {
+                            continue;
+                        }
+                        return Err(Error::new(EBADCTL));
+                    }
+                    if parts.next >= QKIND - QPART {
+                        return Err(Error::new(error::ENOSPACE));
+                    }
+                    let kind = QPART + parts.next;
+                    parts.next += 1;
+                    parts.list.push(Part {
+                        name: String::from(*name),
+                        start,
+                        end,
+                        kind,
+                    });
+                }
+                ["delpart", name] => {
+                    let mut parts = u.parts.lock();
+                    let n = parts.list.len();
+                    parts.list.retain(|p| p.name != *name);
+                    if parts.list.len() == n {
+                        return Err(Error::new(EBADCTL));
+                    }
+                }
+                _ => return Err(Error::new(EBADCTL)),
+            }
+        }
+        Ok(())
     }
 }
 
@@ -246,14 +385,18 @@ impl Dev for DevSd {
             let u = name
                 .strip_prefix("sdV")
                 .and_then(|n| n.parse::<usize>().ok())
-                .filter(|&u| u < self.blks.len() && name == format!("sdV{u}"))
+                .filter(|&u| u < self.units.len() && name == format!("sdV{u}"))
                 .ok_or(Error::new(error::ENONEXIST))?;
-            ((u as u64) + 1) << 8
-        } else if path & 0xff == 0 {
+            ((u as u64) + 1) << 16
+        } else if path & QKIND == 0 {
             match name {
                 "ctl" => path | QCTL,
                 "data" => path | QDATA,
-                _ => return Err(Error::new(error::ENONEXIST)),
+                _ => {
+                    let parts = self.unit(path)?.parts.lock();
+                    let p = parts.list.iter().find(|p| p.name == name);
+                    path | p.ok_or(Error::new(error::ENONEXIST))?.kind
+                }
             }
         } else {
             return Err(Error::new(error::ENOTDIR));
@@ -271,18 +414,17 @@ impl Dev for DevSd {
     fn open(&self, c: &mut Chan, omode: u8) -> Result<()> {
         let path = c.qid.path;
         let write = matches!(omode & mode::ACCESS, mode::OWRITE | mode::ORDWR);
-        if DevSd::qid(path).qtype & QTDIR != 0 || path & 0xff == QCTL {
+        if DevSd::qid(path).qtype & QTDIR != 0 {
             return if write {
-                Err(Error::new(if path & 0xff == QCTL {
-                    error::EPERM
-                } else {
-                    error::EISDIR
-                }))
+                Err(Error::new(error::EISDIR))
             } else {
                 Ok(())
             };
         }
-        if write && self.unit(path)?.read_only() {
+        if path & QKIND >= QPART {
+            self.extent(path)?;
+        }
+        if write && self.unit(path)?.blk.read_only() {
             return Err(Error::new(error::EPERM));
         }
         Ok(())
@@ -290,22 +432,21 @@ impl Dev for DevSd {
 
     fn read(&self, c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
         let path = c.qid.path;
-        let b = self.unit(path)?;
-        if path & 0xff == QCTL {
+        if path & QKIND == QCTL {
             return Ok(purg_core::dev::read_str(
-                DevSd::ctl(b).as_bytes(),
+                DevSd::ctl(self.unit(path)?).as_bytes(),
                 buf,
                 offset,
             ));
         }
-        let size = b.size();
+        let (b, base, size) = self.extent(path)?;
         if offset >= size || buf.is_empty() {
             return Ok(0);
         }
         let bs = b.block_size() as u64;
         let (lo, hi) = span(offset, buf.len(), bs, size);
         let mut tmp = vec![0u8; (hi - lo) as usize];
-        b.read(lo / SECTOR, &mut tmp, Wait::Interruptible)?;
+        b.read((base + lo) / SECTOR, &mut tmp, Wait::Interruptible)?;
         let skip = (offset - lo) as usize;
         let n = buf.len().min((size - offset) as usize);
         buf[..n].copy_from_slice(&tmp[skip..skip + n]);
@@ -315,23 +456,34 @@ impl Dev for DevSd {
     fn dirread(&self, c: &Chan) -> Result<Vec<Dir>> {
         let path = c.qid.path;
         if path == QROOT {
-            return Ok((0..self.blks.len() as u64)
-                .map(|u| self.dir((u + 1) << 8))
+            return Ok((0..self.units.len() as u64)
+                .map(|u| self.dir((u + 1) << 16))
                 .collect());
         }
-        if path & 0xff != 0 {
+        if path & QKIND != 0 {
             return Err(Error::new(error::ENOTDIR));
         }
-        Ok(vec![self.dir(path | QCTL), self.dir(path | QDATA)])
+        let kinds: Vec<u64> = self
+            .unit(path)?
+            .parts
+            .lock()
+            .list
+            .iter()
+            .map(|p| p.kind)
+            .collect();
+        let mut v = vec![self.dir(path | QCTL), self.dir(path | QDATA)];
+        v.extend(kinds.into_iter().map(|k| self.dir(path | k)));
+        Ok(v)
     }
 
     fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize> {
         let path = c.qid.path;
-        if path & 0xff != QDATA {
-            return Err(Error::new(error::EPERM));
+        if path & QKIND == QCTL {
+            let msg = core::str::from_utf8(buf).map_err(|_| Error::new(EBADCTL))?;
+            DevSd::ctl_write(self.unit(path)?, msg)?;
+            return Ok(buf.len());
         }
-        let b = self.unit(path)?;
-        let size = b.size();
+        let (b, base, size) = self.extent(path)?;
         if offset >= size {
             return Err(Error::new(error::EIO));
         }
@@ -342,10 +494,10 @@ impl Dev for DevSd {
         let skip = (offset - lo) as usize;
         // The partial blocks at either end keep what they held.
         if skip != 0 || !n.is_multiple_of(bs as usize) {
-            b.read(lo / SECTOR, &mut tmp, Wait::Uninterruptible)?;
+            b.read((base + lo) / SECTOR, &mut tmp, Wait::Uninterruptible)?;
         }
         tmp[skip..skip + n].copy_from_slice(&buf[..n]);
-        b.write(lo / SECTOR, &tmp, Wait::Uninterruptible)?;
+        b.write((base + lo) / SECTOR, &tmp, Wait::Uninterruptible)?;
         Ok(n)
     }
 }
@@ -393,6 +545,67 @@ const STEPS: &[(&[&str], bool)] = &[
     (&["rm", "/n/disk/sub"], false),
     (&["ls", "-l", "/dev/sdV0", "/dev/sdV1"], true),
     (&["cat", "/dev/sdV0/ctl", "/dev/sdV1/ctl"], true),
+    // Partitions, as sd(3)'s ctl messages make them.
+    (&["sh", "-c", "echo part p1 8 16 > /dev/sdV1/ctl"], true),
+    (&["sh", "-c", "echo part p1 8 16 > /dev/sdV1/ctl"], true),
+    (&["sh", "-c", "echo part p1 8 24 > /dev/sdV1/ctl"], false),
+    (&["sh", "-c", "echo part p2 0 4097 > /dev/sdV1/ctl"], false),
+    (
+        &["sh", "-c", "echo part tail 4095 4096 > /dev/sdV1/ctl"],
+        true,
+    ),
+    (&["ls", "-l", "/dev/sdV1"], true),
+    (
+        &[
+            "sh",
+            "-c",
+            "dd -if /dev/sdV1/data -bs 512 -iseek 8 -count 8 > /tmp/p1 >[2] /dev/null && cmp /tmp/p1 /dev/sdV1/p1",
+        ],
+        true,
+    ),
+    (
+        &[
+            "sh",
+            "-c",
+            "echo end of the disk > /dev/sdV1/tail && dd -if /dev/sdV1/data -bs 16 -iseek 131040 -count 1 >[2] /dev/null",
+        ],
+        true,
+    ),
+    (&["sh", "-c", "echo delpart p1 > /dev/sdV1/ctl"], true),
+    (&["sh", "-c", "echo delpart p1 > /dev/sdV1/ctl"], false),
+    (&["cat", "/dev/sdV1/ctl"], true),
+    (
+        &["sh", "-c", "echo delpart tail > /dev/sdV1/ctl; rm /tmp/p1"],
+        true,
+    ),
+    // disk/prep writes a table in a partition and gives the device its
+    // subpartitions. The end of the disk is free until the fill test.
+    (
+        &["sh", "-c", "echo part plan9 4000 4096 > /dev/sdV1/ctl"],
+        true,
+    ),
+    (
+        &[
+            "disk/prep",
+            "-bw",
+            "-a",
+            "nvram",
+            "-a",
+            "fs",
+            "/dev/sdV1/plan9",
+        ],
+        true,
+    ),
+    (&["disk/prep", "-p", "/dev/sdV1/plan9"], true),
+    (&["cat", "/dev/sdV1/ctl"], true),
+    (
+        &[
+            "sh",
+            "-c",
+            "echo delpart fs > /dev/sdV1/ctl; echo delpart nvram > /dev/sdV1/ctl; echo delpart plan9 > /dev/sdV1/ctl",
+        ],
+        true,
+    ),
 ];
 
 /// The serial number of the throttled disk the kill test reads.
