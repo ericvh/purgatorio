@@ -13,8 +13,11 @@
 //! Input is raw: the bytes the UART received, CR for Enter and no end of
 //! file. The console asks for the line discipline
 //! ([`Console::line_discipline`]), so `#c/cons` echoes, edits lines, turns
-//! CR into LF and reads ^D as end of input (`purg_core::linedisc`), and
-//! `eia0` on the same UART stays a plain byte stream.
+//! CR into LF, reads ^D as end of input and ^C as the interrupt key
+//! (`purg_core::linedisc`), and `eia0` on the same UART stays a plain
+//! byte stream. A blocking console is [`Console::interrupt_driven`]: `#c`
+//! reads it from a console kproc, which the interrupt wakes on whichever
+//! CPU it sleeps, so typing is echoed as it arrives.
 //!
 //! Writes are serialised with a lock, so concurrent writers' buffers do not
 //! interleave.
@@ -187,6 +190,10 @@ impl Console for Pl011Console {
 
     fn line_discipline(&self) -> bool {
         true
+    }
+
+    fn interrupt_driven(&self) -> bool {
+        self.input == Input::Blocking
     }
 }
 
