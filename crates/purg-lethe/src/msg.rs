@@ -10,7 +10,7 @@ use purg_styx::{Dir, Qid};
 
 use crate::error::{MESSAGE, VERSION as EVERSION};
 use crate::wire::{Reader, Writer};
-use crate::{EPH, HEADER, MAX_COUNT, MAX_FRAME, NONCE, TAG, VERSION, kind, op};
+use crate::{EPH, HEADER, MAX_COUNT, MAX_FRAME, MAX_WALK, NONCE, TAG, VERSION, kind, op};
 
 /// The context string of a `Tauth` signature.
 pub const AUTH_CONTEXT: &[u8] = b"lethe1 auth\0";
@@ -331,12 +331,21 @@ pub enum Op<'a> {
         cookie: &'a [u8],
         count: u32,
     },
+    /// From the directory `path`, walk `names` in turn (at most
+    /// [`MAX_WALK`]): each element's qid and the last one's stat.
+    Walk {
+        path: &'a str,
+        names: Vec<&'a str>,
+    },
 }
 
 impl Op<'_> {
     pub fn path(&self) -> &str {
         match self {
-            Op::Stat { path } | Op::Read { path, .. } | Op::Readdir { path, .. } => path,
+            Op::Stat { path }
+            | Op::Read { path, .. }
+            | Op::Readdir { path, .. }
+            | Op::Walk { path, .. } => path,
         }
     }
 
@@ -346,6 +355,7 @@ impl Op<'_> {
             Op::Stat { .. } => "stat",
             Op::Read { .. } => "read",
             Op::Readdir { .. } => "readdir",
+            Op::Walk { .. } => "walk",
         }
     }
 }
@@ -399,6 +409,14 @@ impl<'a> Op<'a> {
                 w.data16(cookie);
                 w.u32(*count);
             }
+            Op::Walk { path, names } => {
+                w.u8(op::TWALK);
+                w.data16(path.as_bytes());
+                w.u16(names.len() as u16);
+                for n in names {
+                    w.data16(n.as_bytes());
+                }
+            }
         }
     }
 
@@ -432,6 +450,18 @@ impl<'a> Op<'a> {
                 cookie: r.data16().map_err(bad)?,
                 count: r.u32().map_err(bad)?,
             },
+            op::TWALK => {
+                let path = r.str16().map_err(bad)?;
+                let n = r.u16().map_err(bad)? as usize;
+                if n > MAX_WALK {
+                    return Err(Undecoded::Bad);
+                }
+                let mut names = Vec::with_capacity(n);
+                for _ in 0..n {
+                    names.push(r.str16().map_err(bad)?);
+                }
+                Op::Walk { path, names }
+            }
             c if op::WRITES.contains(&c) => return Err(Undecoded::Write(c)),
             c => return Err(Undecoded::Unsupported(c)),
         };
@@ -487,6 +517,15 @@ pub enum Reply<'a> {
         cookie: &'a [u8],
         entries: &'a [u8],
     },
+    /// The qid of each name walked, in order. When every name was walked,
+    /// `error` is empty and `stat` is the last one's entry (the
+    /// directory's own for a walk of no names); otherwise `error` says why
+    /// the next name could not be walked, and there is no stat.
+    Walk {
+        qids: Vec<Qid>,
+        error: &'a str,
+        stat: Option<Dir>,
+    },
     Error(&'a str),
 }
 
@@ -537,6 +576,22 @@ impl<'a> Reply<'a> {
                 w.data16(cookie);
                 w.data32(entries);
             }
+            Reply::Walk { qids, error, stat } => {
+                w.u8(op::RWALK);
+                w.u16(qids.len() as u16);
+                for q in qids {
+                    put_qid(&mut w, q);
+                }
+                w.data16(error.as_bytes());
+                match (stat, error.is_empty()) {
+                    (Some(d), true) => match d.pack() {
+                        Ok(p) => w.bytes(&p),
+                        Err(_) => return Reply::Error(MESSAGE).encode(),
+                    },
+                    (None, false) => {}
+                    _ => return Reply::Error(MESSAGE).encode(),
+                }
+            }
             Reply::Error(e) => {
                 w.u8(op::RERROR);
                 w.data16(e.as_bytes());
@@ -586,6 +641,30 @@ impl<'a> Reply<'a> {
                     entries,
                 }
             }
+            op::RWALK => {
+                let n = r.u16()? as usize;
+                if n > MAX_WALK {
+                    return Err(MESSAGE);
+                }
+                let mut qids = Vec::with_capacity(n);
+                for _ in 0..n {
+                    qids.push(get_qid(&mut r)?);
+                }
+                let error = r.str16()?;
+                let rest = r.rest();
+                let stat = if error.is_empty() {
+                    let (d, k) = Dir::unpack(rest).map_err(|_| MESSAGE)?;
+                    if k != rest.len() {
+                        return Err(MESSAGE);
+                    }
+                    Some(d)
+                } else if rest.is_empty() {
+                    None
+                } else {
+                    return Err(MESSAGE);
+                };
+                Reply::Walk { qids, error, stat }
+            }
             op::RERROR => Reply::Error(r.str16()?),
             _ => return Err(MESSAGE),
         };
@@ -607,6 +686,13 @@ pub enum Owned {
         qid: Qid,
         cookie: Vec<u8>,
         entries: Vec<Dir>,
+    },
+    /// `error` is `None` when every name was walked; `stat` is then the
+    /// last one's entry.
+    Walk {
+        qids: Vec<Qid>,
+        error: Option<String>,
+        stat: Option<Dir>,
     },
 }
 
@@ -634,6 +720,11 @@ impl Reply<'_> {
                 entries: purg_styx::dirs(entries)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|_| String::from(MESSAGE))?,
+            },
+            Reply::Walk { qids, error, stat } => Owned::Walk {
+                qids: qids.clone(),
+                error: (!error.is_empty()).then(|| String::from(*error)),
+                stat: stat.clone(),
             },
             Reply::Error(e) => return Err(String::from(*e)),
         })
@@ -793,6 +884,70 @@ mod tests {
         assert_eq!(Op::decode(&[]), Err(Undecoded::Bad));
         assert_eq!(Op::decode(&[0x21]), Err(Undecoded::Write(0x21)));
         assert_eq!(Op::decode(&[0x16]), Err(Undecoded::Unsupported(0x16)));
+    }
+
+    /// `Twalk` and `Rwalk`, byte for byte, and their strictness.
+    #[test]
+    fn walk_vectors() {
+        let op = Op::Walk {
+            path: "/a",
+            names: alloc::vec!["b", "cd"],
+        };
+        let t = op.encode();
+        assert_eq!(
+            t,
+            [
+                0x18, 2, 0, b'/', b'a', // op, path
+                2, 0, 1, 0, b'b', 2, 0, b'c', b'd', // two names
+            ]
+        );
+        assert_eq!(Op::decode(&t), Ok(op));
+        let q = Qid {
+            path: 5,
+            vers: 6,
+            qtype: 0x80,
+        };
+        let stopped = Reply::Walk {
+            qids: alloc::vec![q],
+            error: "file does not exist",
+            stat: None,
+        };
+        let b = stopped.encode();
+        let mut want = alloc::vec![0x19, 1, 0, 0x80, 6, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 19, 0];
+        want.extend_from_slice(b"file does not exist");
+        assert_eq!(b, want);
+        assert_eq!(Reply::decode(&b), Ok(stopped));
+        let d = Dir {
+            name: String::from("cd"),
+            ..Dir::default()
+        };
+        let done = Reply::Walk {
+            qids: alloc::vec![q, q],
+            error: "",
+            stat: Some(d.clone()),
+        };
+        let b = done.encode();
+        assert_eq!(b[..3], [0x19, 2, 0]);
+        assert_eq!(b[29..31], [0, 0]);
+        assert_eq!(b[31..], d.pack().unwrap());
+        assert_eq!(Reply::decode(&b), Ok(done));
+        // A stat after an error, no stat after success, a trailing byte,
+        // and too many names are refused.
+        let mut bad = want.clone();
+        bad.extend_from_slice(&d.pack().unwrap());
+        assert_eq!(Reply::decode(&bad), Err(MESSAGE));
+        assert_eq!(Reply::decode(&[0x19, 0, 0, 0, 0]), Err(MESSAGE));
+        let mut long = t.clone();
+        long.push(0);
+        assert_eq!(Op::decode(&long), Err(Undecoded::Bad));
+        let mut many = alloc::vec![0x18, 1, 0, b'/', 65, 0];
+        for _ in 0..65 {
+            many.extend_from_slice(&[1, 0, b'x']);
+        }
+        assert_eq!(Op::decode(&many), Err(Undecoded::Bad));
+        many[4] = 64;
+        many.truncate(many.len() - 3);
+        assert!(Op::decode(&many).is_ok());
     }
 
     #[test]

@@ -51,6 +51,14 @@ fn corpus() -> Vec<Vec<u8>> {
             count: 500,
         },
         Op::Stat { path: "/nope" },
+        Op::Walk {
+            path: "/",
+            names: vec!["f", "x"],
+        },
+        Op::Walk {
+            path: "/",
+            names: vec![],
+        },
     ] {
         let (f, _) = s.request(5, lethe::NOW, &op, [6; 24]);
         v.push(lethe::handle(&f));
@@ -94,6 +102,16 @@ fn corpus() -> Vec<Vec<u8>> {
             entries: &packed,
         },
         Reply::Error("permission denied"),
+        Reply::Walk {
+            qids: vec![Qid::default()],
+            error: "",
+            stat: Some(d.clone()),
+        },
+        Reply::Walk {
+            qids: vec![],
+            error: "file does not exist",
+            stat: None,
+        },
     ] {
         v.push(r.encode());
     }

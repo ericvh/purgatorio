@@ -129,6 +129,53 @@ impl Who<'_> {
     }
 }
 
+/// The encoded `Rwalk` for walking `names` from the directory `path`,
+/// whose entry is `d` and which the requester can reach. Each name is
+/// checked as a walk of the joined path would be: the directory above it
+/// must be one, and searchable. The first name that cannot be walked
+/// ends the walk, and its error goes in the reply with the qids so far.
+fn walk(tree: &dyn Tree, tk: &Who<'_>, path: &str, d: Dir, names: &[&str]) -> Vec<u8> {
+    let mut qids = Vec::with_capacity(names.len());
+    let mut cur = d;
+    let mut p = String::from(path);
+    for name in names {
+        let step = || -> Result<Dir, String> {
+            if cur.mode & DMDIR == 0 {
+                return Err(String::from(ENOTDIR));
+            }
+            if !tk.allowed(&cur, 1) {
+                return Err(String::from(EPERM));
+            }
+            let next = path::join(&p, name);
+            if !path::valid_elem(name) || !path::valid(&next) {
+                return Err(String::from(purg_abi::error::EFILENAME));
+            }
+            tree.stat(&next)
+        };
+        match step() {
+            Ok(next) => {
+                p = path::join(&p, name);
+                qids.push(next.qid);
+                cur = next;
+            }
+            Err(e) => {
+                return Reply::Walk {
+                    qids,
+                    error: &e,
+                    stat: None,
+                }
+                .encode();
+            }
+        }
+    }
+    Reply::Walk {
+        qids,
+        error: "",
+        stat: Some(cur),
+    }
+    .encode()
+}
+
 /// Whether `user` may access `d` for `bit` (4 read, 1 search): the
 /// owner's bits for its owner, else the other bits.
 pub fn allowed(user: &str, d: &Dir, bit: u32) -> bool {
@@ -391,6 +438,7 @@ impl Server {
         let mut data = Vec::new();
         match *op {
             Op::Stat { .. } => Ok(Reply::Stat(d).encode()),
+            Op::Walk { path, ref names } => Ok(walk(tree, tk, path, d, names)),
             Op::Read {
                 path,
                 offset,
