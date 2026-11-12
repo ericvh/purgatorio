@@ -189,6 +189,10 @@ const SIGNERS_LIST: &str = "/lib/keys/signers";
 const REVOKED_LIST: &str = "/lib/keys/revoked";
 const USERS: &str = "/lib/keys/users";
 const SERVERS: &str = "/lib/keys/servers";
+/// Signers trusted for servers only. When it is there, it replaces
+/// `/lib/keys/signers` for server proofs (`docs/auth.md`, "Signers for
+/// servers").
+const SERVER_SIGNERS: &str = "/lib/keys/serversigners";
 
 /// What one side trusts: keys it holds directly, signers, and revoked keys
 /// (`None` when that list does not parse).
@@ -239,13 +243,21 @@ impl Trust {
 
     /// What a client in `pgrp` trusts as a server, whatever its host: every
     /// key in `/lib/keys/servers`, and certificates from
-    /// `/lib/keys/signers`, less `/lib/keys/revoked`. The host a proof is
+    /// `/lib/keys/serversigners`, or from `/lib/keys/signers` when there
+    /// is no such file, less `/lib/keys/revoked`. A `serversigners` that
+    /// is there but cannot be read trusts no signer. The host a proof is
     /// for is the guest's to check (`docs/auth.md`, "Servers per host").
     pub(crate) fn server(pgrp: &Pgrp) -> Trust {
         let servers = read_file(pgrp, SERVERS, MAX_LIST)
             .map(|t| purg_auth::keys::parse_named(&t))
             .unwrap_or_default();
-        Trust::read(pgrp, purg_auth::keys::keys_for(&servers, None))
+        let mut t = Trust::read(pgrp, purg_auth::keys::keys_for(&servers, None));
+        if let Some(text) = read_file(pgrp, SERVER_SIGNERS, MAX_LIST) {
+            t.signers = purg_auth::keys::parse_list_lenient(&text);
+        } else if pgrp.namec(SERVER_SIGNERS, "/").is_ok() {
+            t.signers = Vec::new();
+        }
+        t
     }
 
     pub(crate) fn policy(&self, now: u64) -> purg_auth::proof::Policy<'_> {

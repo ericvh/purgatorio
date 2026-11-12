@@ -1,0 +1,13 @@
+one list
+user certificate taken
+mount: server authentication failed
+server signers
+mount: server authentication failed
+host certificate taken
+none
+mount: server authentication failed
+mount: server authentication failed
+factotum
+key proto=ed25519 user=bob
+key proto=ed25519 user=127.0.0.1 role=server
+server key chosen
