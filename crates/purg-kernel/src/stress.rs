@@ -156,11 +156,14 @@ impl Shared {
                 }
             }
             // Progs that went, but only after the reap's first wait: not
-            // a failure, but worth seeing (#182).
+            // a failure, but worth seeing (#182). Most likely this run's;
+            // another worker's reap may have ended just before.
             for slow in self.sys.take_slow() {
                 self.slow.fetch_add(1, Ordering::AcqRel);
-                self.sys
-                    .say(&format!("kernel: stress: slow to die: {slow}"));
+                self.sys.say(&format!(
+                    "kernel: stress: slow to die after {}: {slow}",
+                    argv.join(" ")
+                ));
             }
             self.runs.fetch_add(1, Ordering::AcqRel);
             self.wake.wakeup();
