@@ -10,6 +10,8 @@ echo 'in home' > srv/home/a.txt
 echo 'deeper' > srv/home/sub/b
 echo 'at the top' > srv/top
 chmod 640 srv/home/a.txt
+chmod 644 srv/home/sub/b
+chmod 755 srv/home/sub
 /bin/test/ftpd -h /home -u bob:secret srv >[2] el &
 fpid=$apid
 while {! test -s el} {sleep 0}
