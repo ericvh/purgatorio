@@ -3,7 +3,7 @@
 //! `killgrp` to `ctl` interrupts it, and `modules warn` or `modules
 //! require` tightens its module policy (`docs/signing.md`). A prog's
 //! files are its user's; only that user or the host owner may open its
-//! `ctl` (`docs/abi.md`, "Users").
+//! `ctl` and `heap` (`docs/abi.md`, "Users").
 //!
 //! Memory limits (`docs/abi.md`): `memlimit N` on `ctl` limits the wasm
 //! memory the prog holds (linear memory, and tables at
@@ -232,8 +232,12 @@ impl Dev for DevProg {
             return Err(Error::new(error::EPERM));
         }
         let p = self.get(c, pid)?;
-        // Only its own user, or the host owner, controls a prog.
-        if kind == QCTL && !self.procs.is_owner() && p.user() != self.procs.current_user() {
+        // Only its own user, or the host owner, controls a prog, or
+        // touches its memory.
+        if (kind == QCTL || kind == QHEAP)
+            && !self.procs.is_owner()
+            && p.user() != self.procs.current_user()
+        {
             return Err(Error::new(error::EPERM));
         }
         Ok(())
