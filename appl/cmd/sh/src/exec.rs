@@ -559,6 +559,7 @@ impl Shell {
             };
             let fd = match r.kind {
                 RedirKind::In => purgatorio::open(name, mode::OREAD),
+                RedirKind::RdWr => purgatorio::open(name, mode::ORDWR),
                 RedirKind::Out => purgatorio::create(name, mode::OWRITE, 0o666),
                 RedirKind::Append => match purgatorio::open(name, mode::OWRITE) {
                     Ok(fd) => {

@@ -56,6 +56,8 @@ pub enum RedirKind {
     Out,
     /// `>>`
     Append,
+    /// `<>`: open for reading and writing.
+    RdWr,
     /// `>[a=b]`: fd `a` becomes a copy of fd `b`.
     Dup(i32),
     /// `>[a=]`: fd `a` is closed.
@@ -230,7 +232,10 @@ impl<'a> Lexer<'a> {
 
     fn redir(&mut self) -> Result<Tok> {
         let c = self.bump().expect("caller saw < or >");
-        let (kind, default) = if c == '<' {
+        let (kind, default) = if c == '<' && self.peek() == Some('>') {
+            self.bump();
+            (RedirKind::RdWr, 0)
+        } else if c == '<' {
             (RedirKind::In, 0)
         } else if self.peek() == Some('>') {
             self.bump();
@@ -501,6 +506,9 @@ mod tests {
         assert_eq!(t[1], Tok::Redir(RedirKind::Dup(1), 2));
         assert_eq!(t[2], Tok::Redir(RedirKind::In, 0));
         assert_eq!(t[4], Tok::Redir(RedirKind::Close, 3));
+        let t = toks("cat <>f <>[3]g");
+        assert_eq!(t[1], Tok::Redir(RedirKind::RdWr, 0));
+        assert_eq!(t[3], Tok::Redir(RedirKind::RdWr, 3));
     }
 
     #[test]
