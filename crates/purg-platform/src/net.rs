@@ -51,6 +51,78 @@ pub trait Net: Send + Sync {
         let _ = host;
         Err(alloc::borrow::Cow::Borrowed("protocol not supported"))
     }
+    /// An announced UDP port in Inferno's `headers` mode (ip(3)): every
+    /// datagram to the port is read on this one conversation, after a
+    /// [`UDP_HEADER`]-byte header ([`udp_header`]) saying who sent it,
+    /// and each write starts with such a header saying where it goes.
+    /// Broadcasts may be sent.
+    fn announce_udp_headers(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
+        let _ = (host, port);
+        Err(alloc::borrow::Cow::Borrowed("headers not supported"))
+    }
+    /// The IP interfaces this stack configures, for `/net/ipifc`. A
+    /// hosted emu uses the host's and has none of its own.
+    fn interfaces(&self) -> Vec<Ifc> {
+        Vec::new()
+    }
+    /// Sets interface `n`'s one address and prefix length (ipifc `add`).
+    fn set_address(&self, n: usize, addr: [u8; 4], prefix: u8) -> Result<()> {
+        let _ = (n, addr, prefix);
+        Err(alloc::borrow::Cow::Borrowed("permission denied"))
+    }
+    /// Sets or removes the default route (`/net/iproute`).
+    fn set_gateway(&self, gateway: Option<[u8; 4]>) -> Result<()> {
+        let _ = gateway;
+        Err(alloc::borrow::Cow::Borrowed("permission denied"))
+    }
+}
+
+/// One IP interface, as [`Net::interfaces`] reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ifc {
+    /// The device it is bound to (`ether0`).
+    pub device: String,
+    pub mtu: usize,
+    pub mac: [u8; 6],
+    pub addr: [u8; 4],
+    pub prefix: u8,
+    /// The default route through it, if any.
+    pub gateway: Option<[u8; 4]>,
+}
+
+/// The size of the header `headers` mode puts before each datagram:
+/// remote, local and interface addresses (16 bytes each, IPv6 form),
+/// then the remote and local ports, all in network order.
+pub const UDP_HEADER: usize = 52;
+
+/// A `headers` mode header for a datagram between IPv4 endpoints. The
+/// interface address is the local one.
+pub fn udp_header(remote: [u8; 4], rport: u16, local: [u8; 4], lport: u16) -> [u8; UDP_HEADER] {
+    let mut h = [0u8; UDP_HEADER];
+    for (at, addr) in [(0, remote), (16, local), (32, local)] {
+        h[at + 10] = 0xff;
+        h[at + 11] = 0xff;
+        h[at + 12..at + 16].copy_from_slice(&addr);
+    }
+    h[48..50].copy_from_slice(&rport.to_be_bytes());
+    h[50..52].copy_from_slice(&lport.to_be_bytes());
+    h
+}
+
+/// The remote IPv4 address and port of a `headers` mode header: the
+/// address must be IPv4 in IPv6 form (`::ffff:a.b.c.d`, or the older
+/// `::a.b.c.d`).
+pub fn udp_header_remote(h: &[u8]) -> Option<([u8; 4], u16)> {
+    if h.len() < UDP_HEADER {
+        return None;
+    }
+    let mapped = h[..10].iter().all(|&b| b == 0)
+        && ((h[10] == 0xff && h[11] == 0xff) || (h[10] == 0 && h[11] == 0));
+    if !mapped {
+        return None;
+    }
+    let addr = [h[12], h[13], h[14], h[15]];
+    Some((addr, u16::from_be_bytes([h[48], h[49]])))
 }
 
 /// The size of the IPv4 header ICMP reads begin with.
@@ -222,6 +294,27 @@ impl<E: PartialEq + Clone> UdpDemux<E> {
         Some(n)
     }
 
+    /// Whether any conversation has a datagram to read.
+    pub fn any_ready(&self) -> bool {
+        self.peers.iter().any(|p| !p.queue.is_empty())
+    }
+
+    /// Reads the next datagram from any remote, as `headers` mode does,
+    /// into `buf`, truncated to fit; returns its length and sender. The
+    /// remotes are taken in turn, oldest first.
+    pub fn recv_any(&mut self, buf: &mut [u8]) -> Option<(usize, E)> {
+        let i = self.peers.iter().position(|p| !p.queue.is_empty())?;
+        let mut peer = self.peers.remove(i);
+        let data = peer.queue.pop_front()?;
+        let remote = peer.remote.clone();
+        if !peer.queue.is_empty() {
+            self.peers.push(peer);
+        }
+        let n = data.len().min(buf.len());
+        buf[..n].copy_from_slice(&data[..n]);
+        Some((n, remote))
+    }
+
     /// Ends conversation `id`. On an announced port, a later datagram from
     /// its remote starts a new one.
     pub fn forget(&mut self, id: u64) {
@@ -233,6 +326,19 @@ impl<E: PartialEq + Clone> UdpDemux<E> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn udp_headers_round_trip() {
+        let h = udp_header([10, 0, 2, 2], 67, [10, 0, 2, 15], 68);
+        assert_eq!(&h[..12], &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff]);
+        assert_eq!(&h[28..32], &[10, 0, 2, 15]);
+        assert_eq!(&h[44..48], &[10, 0, 2, 15]);
+        assert_eq!(udp_header_remote(&h), Some(([10, 0, 2, 2], 67)));
+        let mut v6 = h;
+        v6[0] = 0xfe;
+        assert_eq!(udp_header_remote(&v6), None);
+        assert_eq!(udp_header_remote(&h[..51]), None);
+    }
 
     #[test]
     fn icmp_checksums_verify_to_zero() {

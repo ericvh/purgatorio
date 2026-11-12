@@ -1,4 +1,5 @@
-//! `#I` hangs a conversation up and forgets it at the last close.
+//! `#I` hangs a conversation up and forgets it at the last close, and
+//! `/net/ipifc` and `/net/iproute` configure the platform's interface.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,7 +8,7 @@ use purg_abi::mode;
 use purg_core::devroot::StaticTree;
 use purg_core::{Dev, DevTab, Kernel, Pgrp, Platform, Procs, Prog};
 use purg_platform::Console;
-use purg_platform::net::{Conn, Listener, Net};
+use purg_platform::net::{Conn, Ifc, Listener, Net};
 
 struct MockConsole;
 
@@ -25,6 +26,7 @@ impl Console for MockConsole {
 struct MockNet {
     dialed: AtomicUsize,
     hungup: Arc<AtomicUsize>,
+    ifc: std::sync::Mutex<Option<Ifc>>,
 }
 
 struct MockConn(Arc<AtomicUsize>);
@@ -64,6 +66,73 @@ impl Net for MockNet {
     fn resolve(&self, host: &str, _port: u16) -> purg_platform::Result<String> {
         Ok(host.into())
     }
+    fn interfaces(&self) -> Vec<Ifc> {
+        self.ifc.lock().unwrap().iter().cloned().collect()
+    }
+    fn set_address(&self, n: usize, addr: [u8; 4], prefix: u8) -> purg_platform::Result<()> {
+        assert_eq!(n, 0);
+        let mut ifc = self.ifc.lock().unwrap();
+        let i = ifc.as_mut().ok_or("no interface")?;
+        (i.addr, i.prefix) = (addr, prefix);
+        Ok(())
+    }
+    fn set_gateway(&self, gateway: Option<[u8; 4]>) -> purg_platform::Result<()> {
+        let mut ifc = self.ifc.lock().unwrap();
+        ifc.as_mut().ok_or("no interface")?.gateway = gateway;
+        Ok(())
+    }
+}
+
+fn read_file(p: &mut Prog, path: &str) -> String {
+    let fd = p.open(path, mode::OREAD).unwrap();
+    let mut buf = vec![0u8; 1024];
+    let n = p.read(fd, &mut buf).unwrap();
+    p.close(fd).unwrap();
+    String::from_utf8_lossy(&buf[..n]).into_owned()
+}
+
+fn write_file(p: &mut Prog, path: &str, text: &str) -> Result<(), String> {
+    let fd = p.open(path, mode::OWRITE).unwrap();
+    let r = p
+        .write(fd, text.as_bytes())
+        .map(|_| ())
+        .map_err(|e| e.to_string());
+    p.close(fd).unwrap();
+    r
+}
+
+#[test]
+fn ipifc_and_iproute_set_the_address_and_gateway() {
+    let (mut p, mock) = setup();
+    assert_eq!(read_file(&mut p, "#I/iproute"), "");
+    *mock.net.ifc.lock().unwrap() = Some(Ifc {
+        device: "ether0".into(),
+        mtu: 1500,
+        mac: [0x52, 0x54, 0, 0x12, 0x34, 0x56],
+        addr: [10, 0, 2, 15],
+        prefix: 24,
+        gateway: None,
+    });
+    assert_eq!(
+        read_file(&mut p, "#I/ipifc/0/status"),
+        "ether0 1500 525400123456\n10.0.2.15 255.255.255.0 10.0.2.0 0 0 0 0\n"
+    );
+    write_file(&mut p, "#I/ipifc/0/ctl", "add 192.168.7.9 255.255.0.0").unwrap();
+    write_file(&mut p, "#I/iproute", "add 0.0.0.0 0.0.0.0 192.168.0.1").unwrap();
+    assert_eq!(
+        read_file(&mut p, "#I/ipifc/0/local"),
+        "192.168.7.9 -> 192.168.255.255 192.168.0.0\n"
+    );
+    assert_eq!(
+        read_file(&mut p, "#I/iproute"),
+        "192.168.0.0 255.255.0.0 192.168.7.9 4i none 0\n0.0.0.0 0.0.0.0 192.168.0.1 4u none 0\n"
+    );
+    // A mask that is not a prefix, and routes other than the default one.
+    assert!(write_file(&mut p, "#I/ipifc/0/ctl", "add 10.0.0.1 255.0.255.0").is_err());
+    assert!(write_file(&mut p, "#I/iproute", "add 10.1.0.0 255.255.0.0 10.0.0.1").is_err());
+    write_file(&mut p, "#I/iproute", "remove 0.0.0.0 0.0.0.0").unwrap();
+    assert_eq!(mock.net.ifc.lock().unwrap().as_ref().unwrap().gateway, None);
+    assert!(p.open("#I/ipifc/1", mode::OREAD).is_err());
 }
 
 struct Mock {

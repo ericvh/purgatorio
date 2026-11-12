@@ -12,6 +12,9 @@
 //!
 //! `netsrv tftp get|put addr file [text]` is a TFTP client: `get` prints
 //! the file, `put` stores `text` there.
+//!
+//! `netsrv virgil addr query` sends a virgil query (`user?machine`) to
+//! `ip/virgild` at `addr` and prints the answer, or `no answer`.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -23,8 +26,7 @@ use purgatorio::dial::{self, Connection};
 use purgatorio::{Context, Error};
 
 const SELF: &str = "/bin/test/netsrv.wasm";
-const USAGE: &str =
-    "usage: netsrv dns|ntp|http|whois|telnet | netsrv tftp get|put addr file [text]";
+const USAGE: &str = "usage: netsrv dns|ntp|http|whois|telnet | netsrv tftp get|put addr file [text] | netsrv virgil addr query";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -33,6 +35,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let kind = argv.get(1).cloned().ok_or_else(|| Error::from(USAGE))?;
     if kind == "tftp" {
         return tftp(&argv[2..]);
+    }
+    if kind == "virgil" {
+        return virgil(&argv[2..]);
     }
     let proto = match kind.as_str() {
         "dns" | "ntp" => "udp",
@@ -254,6 +259,25 @@ fn telnet(f: &mut File) -> std::io::Result<()> {
 }
 
 /// The TFTP client.
+/// A virgil client: one query to `addr`, a few tries, and the answer.
+fn virgil(args: &[String]) -> Result<(), Error> {
+    let [addr, query] = args else {
+        return Err(Error::from(USAGE));
+    };
+    let mut conn = dial::dial(addr)?;
+    let mut f = data(&mut conn)?;
+    let fd = f.as_raw_fd();
+    for _ in 0..3 {
+        f.write_all(query.as_bytes())?;
+        if let Some(r) = dial::read_timeout(fd, 512, 1000)? {
+            println!("{}", String::from_utf8_lossy(&r));
+            return Ok(());
+        }
+    }
+    println!("no answer");
+    Ok(())
+}
+
 fn tftp(args: &[String]) -> Result<(), Error> {
     let (op, addr, file) = match args {
         [op, addr, file, ..] => (op.as_str(), addr, file),

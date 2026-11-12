@@ -78,6 +78,21 @@ impl net::Net for HostNet {
     fn dial_icmp(&self, host: &str) -> Result<Arc<dyn Conn>> {
         dial_icmp(host)
     }
+
+    fn announce_udp_headers(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
+        let sock = if host.is_empty() || host == "*" {
+            UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).map_err(io_err)?
+        } else {
+            UdpSocket::bind((host, port)).map_err(io_err)?
+        };
+        sock.set_broadcast(true).map_err(io_err)?;
+        sock.set_read_timeout(Some(TCP_POLL)).map_err(io_err)?;
+        let local = match sock.local_addr().map_err(io_err)? {
+            SocketAddr::V4(v4) => v4,
+            SocketAddr::V6(_) => return Err(std::borrow::Cow::Borrowed("headers need IPv4")),
+        };
+        Ok(Arc::new(UdpHeaders { sock, local }))
+    }
 }
 
 fn announce_any(port: u16) -> Result<Arc<dyn Listener>> {
@@ -383,6 +398,62 @@ impl Conn for UdpChild {
             d.forget(self.id);
         }
     }
+}
+
+/// An announced UDP port in `headers` mode: one conversation has every
+/// datagram, each after a header naming its sender, and each write names
+/// its destination the same way. The socket blocks with [`TCP_POLL`] as
+/// its timeout, so a killed prog gets out.
+struct UdpHeaders {
+    sock: UdpSocket,
+    local: std::net::SocketAddrV4,
+}
+
+impl Conn for UdpHeaders {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut pkt = vec![0u8; 65536];
+        loop {
+            interrupted()?;
+            let (n, from) = match self.sock.recv_from(&mut pkt) {
+                Ok((n, SocketAddr::V4(from))) => (n, from),
+                Ok(_) => continue,
+                Err(e) if timed_out(&e) => continue,
+                // A port-unreachable from an earlier send; nothing to read.
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => continue,
+                Err(e) => return Err(io_err(e)),
+            };
+            let mut whole = net::udp_header(
+                from.ip().octets(),
+                from.port(),
+                self.local.ip().octets(),
+                self.local.port(),
+            )
+            .to_vec();
+            whole.extend_from_slice(&pkt[..n]);
+            let k = whole.len().min(buf.len());
+            buf[..k].copy_from_slice(&whole[..k]);
+            return Ok(k);
+        }
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        let (addr, port) =
+            net::udp_header_remote(buf).ok_or(std::borrow::Cow::Borrowed("bad udp header"))?;
+        self.sock
+            .send_to(&buf[net::UDP_HEADER..], (Ipv4Addr::from(addr), port))
+            .map_err(io_err)?;
+        Ok(buf.len())
+    }
+
+    fn local(&self) -> String {
+        endpoint(SocketAddr::V4(self.local))
+    }
+
+    fn remote(&self) -> String {
+        String::new()
+    }
+
+    fn hangup(&self) {}
 }
 
 /// Identifiers for the emu's ICMP conversations, where the host does not
