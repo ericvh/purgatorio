@@ -1,0 +1,32 @@
+untraced
+mdb: PID: prog is not traced
+prog is not traced
+running
+prog not stopped
+prog not stopped
+bad arg in system call
+bad arg in system call
+breakpoints
+stopped
+mdb: no function nosuch
+breakpoint debug::tick
+stopped in debug::tick
+debug::tick
+debug::inner
+debug::middle
+debug::outer
+debug::main
+std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+__main_void
+_start
+ADDR 2a 00 00 00
+stopped in debug::tick
+ADDR 2b 00 00 00
+stopped in std::thread::functions::sleep
+mdb: bad command: zap; h for help
+PID PPID PGRP USER running debug
+kill
+stopped
+debug 0
+mdb: usage: mdb pid
+done
