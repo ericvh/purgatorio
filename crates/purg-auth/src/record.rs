@@ -74,33 +74,34 @@ fn nonce(seq: u64) -> [u8; 12] {
 mod cipher {
     use super::TAG;
 
-    /// ChaCha20-Poly1305 from the RustCrypto crates.
+    /// ChaCha20-Poly1305 from the RustCrypto crates, at 0.11, whose
+    /// ChaCha20 uses NEON on aarch64 (the kernel; `docs/perf.md`).
     #[cfg_attr(feature = "ring", allow(dead_code))]
-    pub struct RustCrypto(chacha20poly1305::ChaCha20Poly1305);
+    pub struct RustCrypto(chacha20poly1305_rec::ChaCha20Poly1305);
 
     #[cfg_attr(feature = "ring", allow(dead_code))]
     impl RustCrypto {
         pub fn new(key: &[u8; 32]) -> RustCrypto {
-            use chacha20poly1305::KeyInit;
-            RustCrypto(chacha20poly1305::ChaCha20Poly1305::new(key.into()))
+            use chacha20poly1305_rec::KeyInit;
+            RustCrypto(chacha20poly1305_rec::ChaCha20Poly1305::new(key.into()))
         }
 
         pub fn seal(&self, nonce: [u8; 12], aad: &[u8], buf: &mut [u8]) -> Option<[u8; TAG]> {
-            use chacha20poly1305::aead::AeadInPlace;
+            use chacha20poly1305_rec::AeadInOut;
             self.0
-                .encrypt_in_place_detached(&nonce.into(), aad, buf)
+                .encrypt_inout_detached(&nonce.into(), aad, buf.into())
                 .ok()
                 .map(Into::into)
         }
 
         /// Opens `buf`, the ciphertext followed by its tag, in place.
         pub fn open(&self, nonce: [u8; 12], aad: &[u8], buf: &mut [u8]) -> Option<()> {
-            use chacha20poly1305::aead::AeadInPlace;
+            use chacha20poly1305_rec::AeadInOut;
             let at = buf.len().checked_sub(TAG)?;
             let (body, tag) = buf.split_at_mut(at);
-            let tag = chacha20poly1305::Tag::clone_from_slice(tag);
+            let tag: [u8; TAG] = (&*tag).try_into().ok()?;
             self.0
-                .decrypt_in_place_detached(&nonce.into(), aad, body, &tag)
+                .decrypt_inout_detached(&nonce.into(), aad, body.into(), &tag.into())
                 .ok()
         }
     }
