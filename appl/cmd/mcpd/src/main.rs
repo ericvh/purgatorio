@@ -1,4 +1,4 @@
-//! mcpd [-l logfile] [-n nsfile] [-t filetimeout]: a Model Context Protocol server on
+//! mcpd [-l logfile] [-n nsfile] [-t filetimeout] [-M memory] [-P progs]: a Model Context Protocol server on
 //! standard input and output, for driving a sandboxed Purgatorio session
 //! from an LLM client.
 //!
@@ -17,6 +17,12 @@
 //! --file`, limited by `-t`). Calls finish out of order, so the front end matches
 //! answers to requests by tag. `reset`, and a session that dies, are
 //! handled by killing the session's progs and starting another.
+//!
+//! A session is a prog domain (`#pdomain`): the session prog and every prog
+//! started from it, whatever their process groups. `-M` and `-P` limit the
+//! wasm memory the domain's progs may hold between them and how many there
+//! may be. The front end ends a session by killing every member of its
+//! domain, which it sees through `#pdomain=<session pid>`.
 //!
 //! `-n nsfile` names a namespace(6) file that `nsbuild` applies in the new
 //! namespace before devices are locked out; it is how a policy grants a
@@ -45,7 +51,7 @@ use json::Value;
 use session::{ms_until, wait_readable};
 
 const SELF: &str = "/bin/mcpd.wasm";
-const USAGE: &str = "mcpd [-l logfile] [-n nsfile] [-t filetimeout]";
+const USAGE: &str = "mcpd [-l logfile] [-n nsfile] [-t filetimeout] [-M memory] [-P progs]";
 /// A longer request line is refused; it bounds the memory a client can make
 /// the server hold.
 const MAX_LINE: usize = 16 << 20;
@@ -63,6 +69,12 @@ const REAP_MS: i32 = 3000;
 /// Bytes written to the session and not yet read by it. The session reads
 /// as much at a time, and a pipe holds more, so a write never blocks.
 const WINDOW: usize = 16 * 1024;
+/// The wasm memory a session's progs may hold between them by default
+/// (`-M`). An idle session holds about 2 MiB.
+const SESSION_MEM: u64 = 256 << 20;
+/// How many progs a session may have by default (`-P`). An idle session
+/// has six; each command and job adds a launcher and what it runs.
+const SESSION_PROGS: u64 = 128;
 
 /// A running session prog and the pipes to it.
 struct Worker {
@@ -92,15 +104,19 @@ struct Pending {
     deadline: Option<Instant>,
 }
 
-struct Front {
+/// What the front end gives every session.
+struct Config {
     nsfile: Option<String>,
     /// The session's limit on a file tool, in milliseconds (`-t`).
     file_ms: i64,
+    limits: session::Limits,
+}
+
+struct Front {
+    config: Config,
     /// The session, or why it could not be built. A failure is reported by
     /// every tool call rather than by exiting, so the client is told.
     worker: Result<Worker, String>,
-    /// Process groups of the commands and jobs the session has started.
-    groups: BTreeSet<u32>,
     /// Open on this prog's `/prog/n/wait`.
     wait: Option<File>,
     pending: BTreeMap<u64, Pending>,
@@ -181,7 +197,7 @@ fn waits(call: &rpc::Call) -> bool {
 }
 
 impl Front {
-    fn start(nsfile: Option<&str>, file_ms: i64) -> Result<Worker, String> {
+    fn start(config: &Config) -> Result<Worker, String> {
         let pipe = || purgatorio::pipe().map_err(|e| format!("pipe: {e}"));
         let [req_r, req_w] = pipe()?;
         let [resp_r, resp_w] = pipe()?;
@@ -189,9 +205,11 @@ impl Front {
         let mut argv = vec![
             String::from("mcpd"),
             String::from("--session"),
-            file_ms.to_string(),
+            config.file_ms.to_string(),
+            config.limits.mem.to_string(),
+            config.limits.progs.to_string(),
         ];
-        argv.extend(nsfile.map(String::from));
+        argv.extend(config.nsfile.clone());
         // The session gets copies of the namespace and the environment and
         // a process group of its own. Its fd 2 is not the log, which it
         // could otherwise write through /fd/2.
@@ -235,36 +253,19 @@ impl Front {
         }
     }
 
-    /// Ends the session: kills its prog, the commands it ran and everything
-    /// they started, and collects the session prog's exit.
+    /// Ends the session: kills every prog in its domain (the session prog,
+    /// its file servers, the commands it ran and everything they started,
+    /// whatever their groups and whether or not their parents live), and
+    /// collects the session prog's exit.
     fn end(&mut self) {
         self.outq.clear();
         let Ok(w) = std::mem::replace(&mut self.worker, Err(String::from("no session"))) else {
-            self.groups.clear();
             return;
         };
         let pid = w.pid;
         // Closing the pipes lets a healthy session prog exit by itself.
         drop(w);
-        // Its group holds its file servers and feeders; `groups` are its
-        // commands and jobs. A prog that left its group is still found
-        // through its parent.
-        let mut doomed = BTreeSet::from([pid]);
-        loop {
-            let before = doomed.len();
-            for p in procs::progs("/prog") {
-                if p.group == pid || self.groups.contains(&p.group) || doomed.contains(&p.ppid) {
-                    doomed.insert(p.pid);
-                }
-            }
-            if doomed.len() == before {
-                break;
-            }
-        }
-        for p in &doomed {
-            let _ = std::fs::write(format!("/prog/{p}/ctl"), "kill");
-        }
-        self.groups.clear();
+        kill_domain(pid);
         let Some(wait) = &self.wait else { return };
         let ops = [0, wait.as_raw_fd()];
         let mut buf = [0u8; 4096];
@@ -284,7 +285,7 @@ impl Front {
     fn restart(&mut self, why: &str) {
         self.end();
         self.fail_pending(why);
-        self.worker = Front::start(self.nsfile.as_deref(), self.file_ms);
+        self.worker = Front::start(&self.config);
         match &self.worker {
             Ok(w) => log(&format!("session start {}", w.pid)),
             Err(e) => log(&format!("session failed {e}")),
@@ -476,7 +477,7 @@ impl Front {
             }
             if let Some(tag) = v.get("start").and_then(Value::as_i64) {
                 if let Some(p) = self.pending.get_mut(&(tag as u64)) {
-                    let ms = limit(&p.call, self.file_ms).max(0) as u64;
+                    let ms = limit(&p.call, self.config.file_ms).max(0) as u64;
                     p.deadline = Some(Instant::now() + std::time::Duration::from_millis(ms));
                 }
                 continue;
@@ -487,9 +488,6 @@ impl Front {
             let Some(p) = self.pending.remove(&(tag as u64)) else {
                 continue;
             };
-            if let Some(g) = v.get("group").and_then(Value::as_i64) {
-                self.groups.insert(g as u32);
-            }
             let outcome = match (v.get("result"), v.get("error")) {
                 (Some(r), _) => Ok(r.clone()),
                 (None, Some(e)) => Err(String::from(e.as_str().unwrap_or("tool failed"))),
@@ -512,6 +510,51 @@ impl Front {
                  a new session has been started, with an empty /tmp and a fresh namespace",
             );
         }
+    }
+}
+
+/// Kills every prog in the domain founded by the session prog `pid`, until
+/// none is left or [`REAP_MS`] has passed: a prog may start another while
+/// it is being killed. The domain is named after the process group that
+/// founded it, the session prog's own.
+fn kill_domain(pid: u32) {
+    let view = format!("#pdomain={pid}");
+    if purgatorio::stat(&view).is_err() {
+        // No view of the domain (this prog has given up devices): kill the
+        // session's group and what descends from it.
+        kill_descendants(pid);
+        return;
+    }
+    let start = Instant::now();
+    loop {
+        let members = procs::progs(&view);
+        if members.is_empty() || start.elapsed().as_millis() > REAP_MS as u128 {
+            return;
+        }
+        for p in members {
+            let _ = std::fs::write(format!("{view}/{}/ctl", p.pid), "kill");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Kills the progs of group `pid` and their descendants, as far as
+/// `/prog` shows them.
+fn kill_descendants(pid: u32) {
+    let mut doomed = BTreeSet::from([pid]);
+    loop {
+        let before = doomed.len();
+        for p in procs::progs("/prog") {
+            if p.group == pid || doomed.contains(&p.ppid) {
+                doomed.insert(p.pid);
+            }
+        }
+        if doomed.len() == before {
+            break;
+        }
+    }
+    for p in &doomed {
+        let _ = std::fs::write(format!("/prog/{p}/ctl"), "kill");
     }
 }
 
@@ -546,16 +589,14 @@ fn relay() -> Result<File, Error> {
     Ok(File::from(r))
 }
 
-fn serve(nsfile: Option<String>, file_ms: i64) -> Result<(), Error> {
+fn serve(config: Config) -> Result<(), Error> {
     let wait = purgatorio::open(&format!("#p/{}/wait", purgatorio::pid()), OREAD)
         .ok()
         .map(File::from);
     let mut input = relay()?;
     let mut front = Front {
-        worker: Front::start(nsfile.as_deref(), file_ms),
-        nsfile,
-        file_ms,
-        groups: BTreeSet::new(),
+        worker: Front::start(&config),
+        config,
         wait,
         pending: BTreeMap::new(),
         next_tag: 1,
@@ -651,17 +692,22 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             session::file_worker();
             return Ok(());
         }
+        Some("--exec") => procs::exec(&args[2..]),
         Some("--session") => {
-            let file_ms = args
-                .get(2)
-                .and_then(|t| t.parse().ok())
-                .unwrap_or(FILE_TOOL_MS as u64);
-            let policy = args.get(3).map(|path| {
+            let num = |i: usize, default: u64| {
+                args.get(i).and_then(|t| t.parse().ok()).unwrap_or(default)
+            };
+            let file_ms = num(2, FILE_TOOL_MS as u64);
+            let limits = session::Limits {
+                mem: num(3, SESSION_MEM),
+                progs: num(4, SESSION_PROGS),
+            };
+            let policy = args.get(5).map(|path| {
                 std::fs::read_to_string(path).map_err(|e| format!("{path}: {}", Error::from(e)))
             });
             let built = policy
                 .transpose()
-                .and_then(|p| session::Session::build(p.as_deref(), file_ms));
+                .and_then(|p| session::Session::build(p.as_deref(), file_ms, limits));
             return match built {
                 Ok(mut s) => s.serve(),
                 Err(e) => {
@@ -677,25 +723,78 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         _ => {}
     }
     let mut arg = Arg::new(args, USAGE);
-    let (mut log, mut nsfile, mut file_ms) = (None, None, FILE_TOOL_MS);
+    let usage = || Error(format!("usage: {USAGE}"));
+    let mut log = None;
+    let mut config = Config {
+        nsfile: None,
+        file_ms: FILE_TOOL_MS,
+        limits: session::Limits {
+            mem: SESSION_MEM,
+            progs: SESSION_PROGS,
+        },
+    };
     while let Some(c) = arg.opt() {
         match c {
             'l' => log = Some(arg.earg()?),
-            'n' => nsfile = Some(arg.earg()?),
+            'n' => config.nsfile = Some(arg.earg()?),
             't' => {
-                file_ms = arg
+                config.file_ms = arg
                     .earg()?
                     .parse()
                     .ok()
                     .filter(|&t| t > 0)
-                    .ok_or_else(|| Error(format!("usage: {USAGE}")))?;
+                    .ok_or_else(usage)?;
+            }
+            'M' => {
+                config.limits.mem = parse_size(&arg.earg()?)
+                    .filter(|&n| n > 0)
+                    .ok_or_else(usage)?;
+            }
+            'P' => {
+                config.limits.progs = arg
+                    .earg()?
+                    .parse()
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .ok_or_else(usage)?;
             }
             _ => return Err(arg.usage()),
         }
     }
     if !arg.argv().is_empty() {
-        return Err(Error(format!("usage: {USAGE}")));
+        return Err(usage());
     }
     redirect_stderr(log.as_deref())?;
-    serve(nsfile, file_ms)
+    serve(config)
+}
+
+/// A byte count: digits, then optionally `k`, `m` or `g` for 2^10, 2^20 or
+/// 2^30 times as many, as `/prog/n/ctl` takes them.
+fn parse_size(s: &str) -> Option<u64> {
+    let (digits, shift) = match s.as_bytes().last()? {
+        b'k' | b'K' => (&s[..s.len() - 1], 10),
+        b'm' | b'M' => (&s[..s.len() - 1], 20),
+        b'g' | b'G' => (&s[..s.len() - 1], 30),
+        _ => (s, 0),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok()?.checked_mul(1 << shift)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_size;
+
+    #[test]
+    fn sizes() {
+        assert_eq!(parse_size("256m"), Some(256 << 20));
+        assert_eq!(parse_size("4K"), Some(4096));
+        assert_eq!(parse_size("1g"), Some(1 << 30));
+        assert_eq!(parse_size("100"), Some(100));
+        for bad in ["", "m", "1x", "-1", "1.5m"] {
+            assert_eq!(parse_size(bad), None, "{bad}");
+        }
+    }
 }
