@@ -8,11 +8,15 @@ mkdir -p $d/n
 # A name mounted on is in use until it is unmounted.
 mount {mntgen} $d/n
 ls $d/n
-sleep 2 < $d/n/held &
+sleep 60 < $d/n/held &
+s=$apid
 # Wait until the background sleep has the name open, rather than for a
 # fixed time: on a loaded machine it can take longer than half a second.
+# It holds the name until it is killed, not for a fixed time, which the
+# next ls could outlast on a loaded machine.
 while {! ls $d/n | grep -s held} {sleep 0.1}
 ls $d/n
+kill $s
 wait
 ls $d/n
 ls -ld $d/n/anything | sed 's/ M [0-9][0-9]* / M n /'
