@@ -28,6 +28,9 @@ members = [
     "appl/cmd/disk/mkfs",
     "appl/cmd/ip/dhcp",
     "appl/cmd/ip/ping",
+    "appl/cmd/disk/prep",
+    "appl/cmd/disk/fdisk",
+    "appl/cmd/disk/mbr",
     "appl/cmd/ip/sntp",
     "appl/cmd/ip/tftpd",
     "appl/cmd/ip/virgild",
@@ -90,6 +93,7 @@ appl-archive = { path = "appl/archive" }
 authlib = { package = "appl-authlib", path = "appl/authlib" }
 filepat = { package = "appl-lib-filepat", path = "appl/lib/filepat" }
 regexp = { package = "appl-lib-regexp", path = "appl/lib/regexp" }
+disk = { package = "appl-lib-disk", path = "appl/lib/disk" }
 wasmobj = { package = "appl-lib-wasmobj", path = "appl/lib/wasmobj" }
 progdebug = { package = "appl-lib-progdebug", path = "appl/lib/progdebug" }
 ndb = { package = "appl-lib-ndb", path = "appl/lib/ndb" }

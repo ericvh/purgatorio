@@ -189,7 +189,7 @@ kernel: failed as expected: fail:errors
 kernel: run ls -l /dev/sdV0 /dev/sdV1
 --r--r--r-- S 0 inferno inferno       0 Jan  1  1970 /dev/sdV0/ctl
 --r--r----- S 0 inferno inferno   65536 Jan  1  1970 /dev/sdV0/data
---r--r--r-- S 0 inferno inferno       0 Jan  1  1970 /dev/sdV1/ctl
+--rw-rw-r-- S 0 inferno inferno       0 Jan  1  1970 /dev/sdV1/ctl
 --rw-rw---- S 0 inferno inferno 2097152 Jan  1  1970 /dev/sdV1/data
 kernel: ok
 kernel: run cat /dev/sdV0/ctl /dev/sdV1/ctl
@@ -199,6 +199,60 @@ part data 0 128
 inquiry virtio-blk disk
 geometry 4096 512
 part data 0 4096
+kernel: ok
+kernel: run sh -c echo part p1 8 16 > /dev/sdV1/ctl
+kernel: ok
+kernel: run sh -c echo part p1 8 16 > /dev/sdV1/ctl
+kernel: ok
+kernel: run sh -c echo part p1 8 24 > /dev/sdV1/ctl
+echo: bad process or channel control request
+kernel: failed as expected: fail:bad process or channel control request
+kernel: run sh -c echo part p2 0 4097 > /dev/sdV1/ctl
+echo: i/o error
+kernel: failed as expected: fail:i/o error
+kernel: run sh -c echo part tail 4095 4096 > /dev/sdV1/ctl
+kernel: ok
+kernel: run ls -l /dev/sdV1
+--rw-rw-r-- S 0 inferno inferno       0 Jan  1  1970 /dev/sdV1/ctl
+--rw-rw---- S 0 inferno inferno 2097152 Jan  1  1970 /dev/sdV1/data
+--rw-rw---- S 0 inferno inferno    4096 Jan  1  1970 /dev/sdV1/p1
+--rw-rw---- S 0 inferno inferno     512 Jan  1  1970 /dev/sdV1/tail
+kernel: ok
+kernel: run sh -c dd -if /dev/sdV1/data -bs 512 -iseek 8 -count 8 > /tmp/p1 >[2] /dev/null && cmp /tmp/p1 /dev/sdV1/p1
+kernel: ok
+kernel: run sh -c echo end of the disk > /dev/sdV1/tail && dd -if /dev/sdV1/data -bs 16 -iseek 131040 -count 1 >[2] /dev/null
+end of the disk
+kernel: ok
+kernel: run sh -c echo delpart p1 > /dev/sdV1/ctl
+kernel: ok
+kernel: run sh -c echo delpart p1 > /dev/sdV1/ctl
+echo: bad process or channel control request
+kernel: failed as expected: fail:bad process or channel control request
+kernel: run cat /dev/sdV1/ctl
+inquiry virtio-blk disk
+geometry 4096 512
+part data 0 4096
+part tail 4095 4096
+kernel: ok
+kernel: run sh -c echo delpart tail > /dev/sdV1/ctl; rm /tmp/p1
+kernel: ok
+kernel: run sh -c echo part plan9 4000 4096 > /dev/sdV1/ctl
+kernel: ok
+kernel: run disk/prep -bw -a nvram -a fs /dev/sdV1/plan9
+kernel: ok
+kernel: run disk/prep -p /dev/sdV1/plan9
+part nvram 4002 4003
+part fs 4003 4096
+kernel: ok
+kernel: run cat /dev/sdV1/ctl
+inquiry virtio-blk disk
+geometry 4096 512
+part data 0 4096
+part plan9 4000 4096
+part nvram 4002 4003
+part fs 4003 4096
+kernel: ok
+kernel: run sh -c echo delpart fs > /dev/sdV1/ctl; echo delpart nvram > /dev/sdV1/ctl; echo delpart plan9 > /dev/sdV1/ctl
 kernel: ok
 kernel: disk: stat, wstat and errors
 kernel: ok
