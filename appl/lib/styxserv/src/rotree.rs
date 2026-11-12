@@ -9,6 +9,9 @@ use purgatorio::abi::{error, mode};
 struct Node {
     dir: Dir,
     data: Vec<u8>,
+    /// Where the data starts in the [`Source`], for a file added with
+    /// [`RoTree::add_at`].
+    at: Option<u64>,
     parent: usize,
     children: BTreeMap<String, usize>,
 }
@@ -20,9 +23,16 @@ struct Fid {
     snap: Vec<u8>,
 }
 
+/// Where the data of files added with [`RoTree::add_at`] is read from.
+pub trait Source {
+    /// Fills `buf` from byte `off`.
+    fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<(), String>;
+}
+
 /// A read-only tree. Node 0 is the root.
 pub struct RoTree {
     nodes: Vec<Node>,
+    source: Option<Box<dyn Source>>,
     fids: BTreeMap<u32, Fid>,
     iounit: u32,
 }
@@ -47,9 +57,11 @@ impl RoTree {
             nodes: vec![Node {
                 dir: root,
                 data: Vec::new(),
+                at: None,
                 parent: 0,
                 children: BTreeMap::new(),
             }],
+            source: None,
             fids: BTreeMap::new(),
             iounit: 8192,
         }
@@ -73,7 +85,22 @@ impl RoTree {
     /// directories on the way are made with the root's owner and `d`'s
     /// times. Adding a directory that exists replaces its metadata; adding
     /// a file that exists replaces it, as a later archive member does.
-    pub fn add(&mut self, path: &str, mut d: Dir, data: Vec<u8>) {
+    pub fn add(&mut self, path: &str, d: Dir, data: Vec<u8>) {
+        self.add_body(path, d, data, None);
+    }
+
+    /// Reads the data of files added with [`RoTree::add_at`] from `src`.
+    pub fn set_source(&mut self, src: Box<dyn Source>) {
+        self.source = Some(src);
+    }
+
+    /// Adds the file `path` as [`RoTree::add`] does, its `d.length` bytes
+    /// of data read when wanted from byte `offset` of the source.
+    pub fn add_at(&mut self, path: &str, d: Dir, offset: u64) {
+        self.add_body(path, d, Vec::new(), Some(offset));
+    }
+
+    fn add_body(&mut self, path: &str, mut d: Dir, data: Vec<u8>, offset: Option<u64>) {
         let elems: Vec<&str> = path
             .split('/')
             .filter(|e| !e.is_empty() && *e != "." && *e != "..")
@@ -97,7 +124,7 @@ impl RoTree {
                         muid: root.muid.clone(),
                         ..Dir::default()
                     };
-                    self.insert(at, made, Vec::new())
+                    self.insert(at, made, Vec::new(), None)
                 }
             };
         }
@@ -111,19 +138,20 @@ impl RoTree {
                 self.nodes[n].dir = d;
                 return;
             }
-        } else {
+        } else if offset.is_none() {
             d.length = data.len() as u64;
         }
-        self.insert(at, d, data);
+        self.insert(at, d, data, offset);
     }
 
-    fn insert(&mut self, parent: usize, mut d: Dir, data: Vec<u8>) -> usize {
+    fn insert(&mut self, parent: usize, mut d: Dir, data: Vec<u8>, at: Option<u64>) -> usize {
         let n = self.nodes.len();
         d.qid = qid(n, &d);
         let name = d.name.clone();
         self.nodes.push(Node {
             dir: d,
             data,
+            at,
             parent,
             children: BTreeMap::new(),
         });
@@ -246,6 +274,19 @@ impl StyxFs for RoTree {
                 }
             }
             return Ok(dir_slice(&self.fid(fid)?.snap, offset, count));
+        }
+        if let Some(base) = self.nodes[node].at {
+            let len = self.nodes[node].dir.length;
+            let n = len.saturating_sub(offset).min(u64::from(count));
+            let mut buf = vec![0u8; n as usize];
+            if n > 0 {
+                let src = self
+                    .source
+                    .as_mut()
+                    .ok_or_else(|| String::from(error::EIO))?;
+                src.read_at(base + offset, &mut buf)?;
+            }
+            return Ok(buf);
         }
         let data = &self.nodes[node].data;
         let start = (offset as usize).min(data.len());

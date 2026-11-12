@@ -1,0 +1,49 @@
+plain
+d-r-xr-xr-x cdrom iso 0 Mar  1  2024 m
+--r--r--r-- cdrom iso 6 Mar  1  2024 m/a_long_mixed_case_name
+d-r-xr-xr-x cdrom iso 0 Mar  1  2024 m/deep
+d-r-xr-xr-x cdrom iso 0 Mar  1  2024 m/deep/er
+--r--r--r-- cdrom iso 6 Mar  1  2024 m/deep/er/x
+d-r-xr-xr-x cdrom iso 0 Mar  1  2024 m/docs
+--r--r--r-- cdrom iso 8 Mar  1  2024 m/docs/readme.txt
+m/docs/readme.txt
+m/deep/er/x
+read me
+inner
+rock ridge
+d-r-xr-xr-x cdrom ridge 0 Mar  1  2024 m
+--rw-r--r-- cdrom ridge 6 Mar  1  2024 m/A Long Mixed-Case Name
+d-rwxr-xr-x cdrom ridge 0 Mar  1  2024 m/deep
+d-rwxr-xr-x cdrom ridge 0 Mar  1  2024 m/deep/er
+--rw-r--r-- cdrom ridge 6 Mar  1  2024 m/deep/er/x
+d-rwxr-x--- cdrom ridge 0 Mar  1  2024 m/docs
+--rw-r----- cdrom ridge 8 Mar  1  2024 m/docs/README.txt
+hello
+read me
+same
+m/a_long_mixed_case_name
+m/deep
+m/docs
+joliet
+m/A Long Mixed-Case Name
+m/deep
+m/docs
+m/docs/README.txt
+d-r-xr-xr-x cdrom joliet 0 Mar  1  2024 m/docs
+--r--r--r-- cdrom joliet 8 Mar  1  2024 m/docs/README.txt
+m/a_long_mixed_case_name
+m/deep
+m/docs
+union
+mine/A Long Mixed-Case Name
+mine/deep
+mine/docs
+mine/own
+errors
+sh: m/new: mounted directory forbids creation
+rm: m/docs/readme.txt: permission denied
+sh: m/deep/er/x: permission denied
+chmod: cannot wstat m/deep/er/x: permission denied
+9660srv: /tmp/sh-9660srv/junk: CD format not recognised
+9660srv: cannot open /tmp/sh-9660srv/nosuch: file does not exist
+9660srv: usage: 9660srv [-rab] [-RJ] cdfile dir
