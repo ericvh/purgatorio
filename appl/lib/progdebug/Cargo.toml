@@ -1,0 +1,20 @@
+[package]
+name = "appl-lib-progdebug"
+description = "progdebug: what prof, cprof, mprof, stack and mdb share: names, /prog files, profiles"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "progdebug"
+path = "src/lib.rs"
+
+[dependencies]
+purgatorio.workspace = true
+wasmobj.workspace = true
+
+[lints]
+workspace = true

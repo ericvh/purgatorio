@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-cprof"
+description = "cprof: count the calls of a command's functions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cprof"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+progdebug.workspace = true
+
+[lints]
+workspace = true

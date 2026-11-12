@@ -1,0 +1,20 @@
+calls
+module /bin/test/debug.wasm calls N functions N of N
+4 debug::burn
+1 debug::main
+1 debug::inner
+8 debug::burn
+debug::down
+debug::tick
+cprof: PID "test/debug": broken: trap: unreachable
+cprof: usage: cprof [-u] [-n lines] command [arg ...]
+pages
+module /bin/test/debug.wasm bytes 4194304
+4194304 debug::heap
+4194304 debug::main
+4194304 debug::inner
+0
+mprof: usage: mprof [-n lines] command [arg ...]
+files
+broken 0
+done
