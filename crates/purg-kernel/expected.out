@@ -215,6 +215,9 @@ kernel: ok
 kernel: run /bin/test/net.wasm --udp (the host's UDP echo)
 ok udp_echo
 kernel: ok
+kernel: ip/ping the QEMU gateway
+sending 3 64 byte messages 100 ms apart
+kernel: ok
 kernel: attach the host's lethed on /n/lethe
 hello from the host
 inner file

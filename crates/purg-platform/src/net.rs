@@ -40,6 +40,82 @@ pub trait Net: Send + Sync {
     /// Resolves `host` for `port` to a numeric address (`127.0.0.1`).
     /// `*` and a literal address are returned unchanged.
     fn resolve(&self, host: &str, port: u16) -> Result<String>;
+    /// An ICMP echo conversation with `host`, an IPv4 address, for
+    /// `/net/icmp` (Inferno's ip(3)). Each write is one ICMP message
+    /// (type, code, checksum, identifier, sequence, data); the platform
+    /// sets the identifier and the checksum. Each read returns one echo
+    /// reply from `host` to this conversation as Inferno delivers it: an
+    /// IPv4 header ([`ipv4_header`]: TTL, source, destination) followed
+    /// by the ICMP message.
+    fn dial_icmp(&self, host: &str) -> Result<Arc<dyn Conn>> {
+        let _ = host;
+        Err(alloc::borrow::Cow::Borrowed("protocol not supported"))
+    }
+}
+
+/// The size of the IPv4 header ICMP reads begin with.
+pub const IPV4_HEADER: usize = 20;
+/// ICMP's protocol number in the IPv4 header.
+pub const PROTO_ICMP: u8 = 1;
+/// The ICMP echo reply type.
+pub const ICMP_ECHO_REPLY: u8 = 0;
+/// The ICMP echo request type.
+pub const ICMP_ECHO_REQUEST: u8 = 8;
+
+/// The Internet checksum (RFC 1071) of `data`.
+pub fn ip_checksum(data: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    let (pairs, rest) = data.as_chunks::<2>();
+    for c in pairs {
+        sum += u32::from(u16::from_be_bytes(*c));
+    }
+    if let [b] = rest {
+        sum += u32::from(*b) << 8;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+/// Sets the checksum of the ICMP message `msg` (bytes 2 and 3).
+pub fn icmp_fill_checksum(msg: &mut [u8]) {
+    if msg.len() < 4 {
+        return;
+    }
+    msg[2] = 0;
+    msg[3] = 0;
+    let c = ip_checksum(msg);
+    msg[2..4].copy_from_slice(&c.to_be_bytes());
+}
+
+/// An IPv4 header for a `payload`-byte ICMP message from `src` to `dst`
+/// with time to live `ttl`, its checksum filled in.
+pub fn ipv4_header(src: [u8; 4], dst: [u8; 4], ttl: u8, payload: usize) -> [u8; IPV4_HEADER] {
+    let mut h = [0u8; IPV4_HEADER];
+    h[0] = 0x45;
+    let total = (IPV4_HEADER + payload).min(0xffff) as u16;
+    h[2..4].copy_from_slice(&total.to_be_bytes());
+    h[8] = ttl;
+    h[9] = PROTO_ICMP;
+    h[12..16].copy_from_slice(&src);
+    h[16..20].copy_from_slice(&dst);
+    let c = ip_checksum(&h);
+    h[10..12].copy_from_slice(&c.to_be_bytes());
+    h
+}
+
+/// The echo reply a host sends for the echo request `msg`: the same
+/// identifier, sequence and data, type 0, a fresh checksum. `None` if
+/// `msg` is not an echo request.
+pub fn icmp_echo_reply(msg: &[u8]) -> Option<Vec<u8>> {
+    if msg.len() < 8 || msg[0] != ICMP_ECHO_REQUEST || msg[1] != 0 {
+        return None;
+    }
+    let mut r = msg.to_vec();
+    r[0] = ICMP_ECHO_REPLY;
+    icmp_fill_checksum(&mut r);
+    Some(r)
 }
 
 /// A host command started by `#C`.
@@ -157,6 +233,25 @@ impl<E: PartialEq + Clone> UdpDemux<E> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn icmp_checksums_verify_to_zero() {
+        let mut msg = vec![ICMP_ECHO_REQUEST, 0, 0, 0, 0x12, 0x34, 0, 1, 1, 2, 3];
+        icmp_fill_checksum(&mut msg);
+        assert_eq!(ip_checksum(&msg), 0);
+        let reply = icmp_echo_reply(&msg).unwrap();
+        assert_eq!(reply[0], ICMP_ECHO_REPLY);
+        assert_eq!(reply[4..], msg[4..]);
+        assert_eq!(ip_checksum(&reply), 0);
+        assert!(icmp_echo_reply(&reply).is_none());
+        let h = ipv4_header([127, 0, 0, 1], [10, 0, 2, 15], 64, reply.len());
+        assert_eq!(ip_checksum(&h), 0);
+        assert_eq!((h[8], h[9]), (64, PROTO_ICMP));
+        assert_eq!(
+            usize::from(u16::from_be_bytes([h[2], h[3]])),
+            20 + reply.len()
+        );
+    }
 
     #[test]
     fn announced_port_starts_a_conversation_per_remote() {

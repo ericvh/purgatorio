@@ -5,7 +5,7 @@ use std::net::{
     Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket,
 };
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,6 +13,8 @@ use purg_abi::error::EINTR;
 use purg_platform::Result;
 use purg_platform::net::{self, Conn, Listener, UdpDemux};
 use purg_platform::sync::current_note;
+
+use super::os;
 
 pub struct HostNet;
 
@@ -71,6 +73,10 @@ impl net::Net for HostNet {
             .map_err(|_| no_translation())?;
         let addr = addrs.next().ok_or_else(no_translation)?;
         Ok(addr.ip().to_string())
+    }
+
+    fn dial_icmp(&self, host: &str) -> Result<Arc<dyn Conn>> {
+        dial_icmp(host)
     }
 }
 
@@ -377,6 +383,117 @@ impl Conn for UdpChild {
             d.forget(self.id);
         }
     }
+}
+
+/// Identifiers for the emu's ICMP conversations, where the host does not
+/// assign its own.
+static ICMP_IDENT: AtomicU16 = AtomicU16::new(0);
+
+/// An ICMP echo conversation on an unprivileged ICMP datagram socket
+/// (`os::icmp_socket`). Reads block with [`TCP_POLL`] as the socket's
+/// timeout, so a killed prog still gets out.
+struct IcmpConn {
+    sock: UdpSocket,
+    remote: Ipv4Addr,
+    local: Ipv4Addr,
+    ident: u16,
+}
+
+fn dial_icmp(host: &str) -> Result<Arc<dyn Conn>> {
+    let remote = match host.parse::<Ipv4Addr>() {
+        Ok(a) => a,
+        Err(_) => (host, 0)
+            .to_socket_addrs()
+            .map_err(|_| no_translation())?
+            .find_map(|a| match a {
+                SocketAddr::V4(v4) => Some(*v4.ip()),
+                SocketAddr::V6(_) => None,
+            })
+            .ok_or_else(no_translation)?,
+    };
+    let fd = os::icmp_socket().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::PermissionDenied
+            || e.raw_os_error() == Some(libc::EPROTONOSUPPORT)
+        {
+            std::borrow::Cow::Borrowed(os::ICMP_DENIED)
+        } else {
+            io_err(e)
+        }
+    })?;
+    let sock = UdpSocket::from(fd);
+    sock.set_read_timeout(Some(TCP_POLL)).map_err(io_err)?;
+    // The address the host sends from, found with a UDP socket that is
+    // connected but never used.
+    let local = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        .and_then(|u| {
+            u.connect((remote, 9))?;
+            u.local_addr()
+        })
+        .map(|a| match a.ip() {
+            std::net::IpAddr::V4(v4) => v4,
+            std::net::IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
+        })
+        .unwrap_or(Ipv4Addr::UNSPECIFIED);
+    let ident = (std::process::id() as u16)
+        .wrapping_add(ICMP_IDENT.fetch_add(1, Ordering::AcqRel).wrapping_mul(7919));
+    Ok(Arc::new(IcmpConn {
+        sock,
+        remote,
+        local,
+        ident,
+    }))
+}
+
+impl Conn for IcmpConn {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut pkt = vec![0u8; 65536];
+        loop {
+            interrupted()?;
+            let got = match os::icmp_recv(&self.sock, &mut pkt) {
+                Ok(got) => got,
+                Err(e) if timed_out(&e) || e.kind() == std::io::ErrorKind::InvalidData => {
+                    continue;
+                }
+                Err(e) => return Err(io_err(e)),
+            };
+            let msg = &pkt[got.start..got.start + got.len];
+            if got.src != self.remote || msg.len() < 8 || msg[0] != net::ICMP_ECHO_REPLY {
+                continue;
+            }
+            if !os::ICMP_IDENT_BY_HOST && u16::from_be_bytes([msg[4], msg[5]]) != self.ident {
+                continue;
+            }
+            let mut whole =
+                net::ipv4_header(got.src.octets(), self.local.octets(), got.ttl, msg.len())
+                    .to_vec();
+            whole.extend_from_slice(msg);
+            let n = whole.len().min(buf.len());
+            buf[..n].copy_from_slice(&whole[..n]);
+            return Ok(n);
+        }
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        let mut msg = buf.to_vec();
+        if msg.len() >= 8 {
+            msg[4..6].copy_from_slice(&self.ident.to_be_bytes());
+        }
+        net::icmp_fill_checksum(&mut msg);
+        self.sock
+            .send_to(&msg, (self.remote, 0))
+            .map_err(io_err)
+            .map(|_| buf.len())
+    }
+
+    fn local(&self) -> String {
+        format!("{}!{}", self.local, self.ident)
+    }
+
+    fn remote(&self) -> String {
+        format!("{}!1", self.remote)
+    }
+
+    fn hangup(&self) {}
 }
 
 /// A host process behind `#C`.

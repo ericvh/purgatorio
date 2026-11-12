@@ -45,7 +45,7 @@ a `; ` prompt.
 | Plan 9 regular expressions (regexp(6)) in one shared crate, `appl/lib/regexp`, used by `grep`, `sed` and `load regex` | done |
 | `load` and `call` of reactor modules from `/bin/lib` (the shell's `load add` gives `${add 20 22}`) | done |
 | `#M` mount, `export`, `#s` file2chan, `#d`, `#%`, kernel channels | done |
-| `#I` (`/net/tcp`, `/net/udp`, `/net/cs`) on host sockets, `#C` host commands; `dial`, `announce` and `listen` are file operations in the SDK | done |
+| `#I` (`/net/tcp`, `/net/udp`, `/net/icmp`, `/net/cs`) on host sockets, `#C` host commands; `dial`, `announce` and `listen` are file operations in the SDK. `/net/icmp` is echo only: an unprivileged ICMP socket on the host (Linux allows it to the groups in `net.ipv4.ping_group_range`), a raw smoltcp socket on the kernel | done |
 | Authenticated mount: the server checks an Ed25519 proof over a challenge before `Tattach`, from a key it holds or a certificate from a signer it trusts; `-A` skips it. The handshake also agrees a session key (ephemeral X25519), and the conversation after it is encrypted and authenticated with ChaCha20-Poly1305 records (`ring`'s in the emu). The server proves itself in turn, over the session's keys, and `mount -S` requires that, for the host dialled; `export -e` refuses conversations in the clear. The stock root trusts no key, and a server without `-A` that trusts none lets nobody in. `#¤` or a guest factotum signs for the client. See [docs/auth.md](docs/auth.md) | done |
 | Auth tools: `auth/createsignerkey signer keyfs keysrv passwd changelogin factotum secstore countersigner mkauthinfo verify getpk`, `getauthinfo`, `crypt`, `netkey`; password login is SPAKE2 | done |
 | Per-prog users: each prog acts as a user, inherited at spawn; the host owner may become another user through `/dev/user`, and `runas user cmd` runs a command so. `/lib/keys/serversigners` keeps the signers trusted for servers apart from users'; factotum keys take a `role` (`auth/factotum -s` for the server key). See [docs/auth.md](docs/auth.md) | done |
@@ -61,7 +61,7 @@ a `; ` prompt.
 | Plan 9 interop: `9export -A` and `import -9 tree` (exportfs's opening, no `p9any`) | tested against each other only |
 | `dbfs`: the records of a text file as files (dbfs(4)) | done; `rawdbfs` remains |
 | `fs`: trees as values (`walk filter select merge write bundle unbundle exec query` and the gates) | done; fs(1)'s other modules remain |
-| Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd` | done |
+| Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd ip/ping` | done |
 | System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext disk/mkdisk disk/chkdisk` | done |
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log; a `/prog` of its own progs only; remote sessions over encrypted `rcmd`, also on the kernel. See [docs/mcp.md](docs/mcp.md) | stage 3 |
 | Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
