@@ -88,9 +88,13 @@ impl Queue {
             let (n, hungup) = {
                 let mut s = self.state.lock();
                 let n = out.len().min(s.buf.len());
-                for (o, b) in out.iter_mut().zip(s.buf.drain(..n)) {
-                    *o = b;
-                }
+                // The queue's two runs, a slice copy each, rather than a
+                // byte at a time through `drain`.
+                let (a, b) = s.buf.as_slices();
+                let k = a.len().min(n);
+                out[..k].copy_from_slice(&a[..k]);
+                out[k..n].copy_from_slice(&b[..n - k]);
+                s.buf.drain(..n);
                 (n, s.hungup)
             };
             if n > 0 {
@@ -141,5 +145,39 @@ impl Queue {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads that span the ring's wrap point get the bytes in order.
+    #[test]
+    fn reads_across_the_wrap() {
+        let q = Queue::new(16);
+        let (mut next, mut want) = (0u8, 0u8);
+        for round in 0..50usize {
+            let w: Vec<u8> = (0..(round % 7 + 5))
+                .map(|_| {
+                    next = next.wrapping_add(1);
+                    next
+                })
+                .collect();
+            assert_eq!(q.write(&w).unwrap(), w.len());
+            let mut out = [0u8; 16];
+            let mut got = 0;
+            while got < w.len() {
+                let take = (round % 3 + 2).min(w.len() - got);
+                let n = q.read(&mut out[..take]).unwrap();
+                for &b in &out[..n] {
+                    want = want.wrapping_add(1);
+                    assert_eq!(b, want, "round {round}");
+                }
+                got += n;
+            }
+        }
+        q.hangup();
+        assert_eq!(q.read(&mut [0u8; 4]).unwrap(), 0);
     }
 }
