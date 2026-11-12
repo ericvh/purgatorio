@@ -487,7 +487,7 @@ impl Pgrp {
         } else {
             None
         };
-        let (mut cur, mut name, elems): (Chan, String, Vec<&str>) = match held {
+        let (cur, name, elems): (Chan, String, Vec<&str>) = match held {
             Some((cur, name, rest)) => {
                 let elems = rest.split('/').filter(|e| !e.is_empty()).collect();
                 (cur, name, elems)
@@ -509,6 +509,40 @@ impl Pgrp {
                 (cur, prefix, elems)
             }
         };
+        let (cur, name) = self.walk_elems(cur, name, &elems, cross_last)?;
+        Ok(match full.starts_with('#') || !full.starts_with('/') {
+            true => cur.renamed(String::from(full)),
+            false if name.is_empty() => cur.renamed(String::from("/")),
+            false => cur.renamed(name),
+        })
+    }
+
+    /// Walks `from` one name further, as a name in a path [`Pgrp::namec`]
+    /// resolves is walked: in each member of a union in turn, and across
+    /// a mount point at the name. The result is named `from`'s name and
+    /// `elem`. This is the walk of one name that `export` does (Inferno's
+    /// exportfs walks the fid's Chan), so a client's walk costs one device
+    /// walk a name. `from` must be unopened, and `elem` neither `.` nor
+    /// `..` nor holding a `/`.
+    pub fn walk1(&self, from: &Chan, elem: &str) -> Result<Chan> {
+        let base = match from.name.as_str() {
+            "/" => String::new(),
+            n => String::from(n),
+        };
+        let (cur, name) = self.walk_elems(from.clone_unopened(), base, &[elem], true)?;
+        Ok(cur.renamed(name))
+    }
+
+    /// Walks `elems` from `cur`, whose name is `name`; returns where the
+    /// walk ends and its name. `cross_last` crosses a mount point at the
+    /// last name.
+    fn walk_elems(
+        &self,
+        mut cur: Chan,
+        mut name: String,
+        elems: &[&str],
+        cross_last: bool,
+    ) -> Result<(Chan, String)> {
         // As Inferno's `walk`: a device that can walks several names in
         // one step (a mount, up to 9P's 16 names a `Twalk`; `#λ`, a whole
         // path in one request). The names it walked past are then looked
@@ -585,14 +619,7 @@ impl Pgrp {
             i += walked;
             cur = self.domount(next, cross_last || i < elems.len());
         }
-        cur.name = if full.starts_with('#') || !full.starts_with('/') {
-            String::from(full)
-        } else if name.is_empty() {
-            String::from("/")
-        } else {
-            name
-        };
-        Ok(cur)
+        Ok((cur, name))
     }
 
     /// The namespace as `bind` and `mount` lines, then `cd`, in the raw

@@ -88,6 +88,12 @@ impl Chan {
         c
     }
 
+    /// This Chan, named `name`.
+    pub fn renamed(mut self, name: String) -> Chan {
+        self.name = name;
+        self
+    }
+
     /// Mount-table identity: Inferno's `eqchan` without the qid version.
     pub fn key(&self) -> (char, u32, u64) {
         (self.dev.dc(), self.devno, self.qid.path)
