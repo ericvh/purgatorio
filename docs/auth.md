@@ -532,8 +532,9 @@ proof against files in its own namespace, read at each mount:
 
 - `/lib/keys/servers`: server keys held directly, each for the host its
   line names (a named key list: `<host> <key>`, or `*` for any host);
-- `/lib/keys/signers`: certificates from these signers are taken, for the
-  host the certificate names;
+- `/lib/keys/serversigners`, or when there is no such file
+  `/lib/keys/signers`: certificates from these signers are taken, for
+  the host the certificate names (see "Signers for servers");
 - `/lib/keys/revoked`: refused, key or signer, as for clients.
 
 ### Servers per host
@@ -583,10 +584,34 @@ A server cannot show the guest one proof and the kernel another. `rcmd`
 and `cpu` hold the session's keys themselves and check everything at
 once (`purg_auth::server::check_host`).
 
-A site that also wants servers apart from users can give servers
-certificates from a signer only the clients' `/lib/keys/signers` lists:
-a user's certificate names a user, which a client will not dial unless a
-host has the same name.
+### Signers for servers
+
+With one `/lib/keys/signers` list for both, a certificate made for a
+user proves a host whose name is the user's: a user called `fs` (or
+`10.0.0.5`) holds what `mount -S tcp!fs!styx` takes as the server's
+proof. Issue #124 asked for a way to close that.
+
+`/lib/keys/serversigners` is a key list of signers trusted for servers
+only. When a client's namespace has it, it replaces
+`/lib/keys/signers` for every server proof (the kernel's `MSRVAUTH`
+check, `mount -S`, `import -S`, `rcmd -S`, `cpu -S`), and
+`/lib/keys/signers` then counts for nothing but users. A site that wants
+the two apart runs two signers: the users' in every server's
+`signers`, the hosts' in every client's `serversigners`. A user
+certificate then never proves a host, whatever its name, and a host
+certificate never lets anyone log in to a server that does not list the
+hosts' signer in its `signers`.
+
+- Without the file nothing changes: `signers` serves both, as before.
+  The stock root does not have it.
+- A file that is there but empty, or holds only comments, trusts no
+  signer for servers; one that cannot be read does the same. A line that
+  does not parse is skipped, as in `signers`.
+- `/lib/keys/servers` (keys held directly, per host) and
+  `/lib/keys/revoked` apply either way.
+
+The server side does not read it: what a server trusts for its clients
+is still `/lib/keys/users`, `/usr/<user>/key.pub` and `/lib/keys/signers`.
 
 **Requiring it.** Checking is the client's choice:
 
@@ -712,6 +737,78 @@ and the name, and a random verifier, so the exchange looks the same and
 fails at the sealed request. Probing for user names costs one connection
 per guess and reveals nothing.
 
+## Users
+
+Each prog acts as a user, as each Inferno process carries
+`up->env->user` (`docs/abi.md`, "Users"). The user is what
+`/dev/user` reads, the uname a mount authenticates and attaches as, the
+user whose `/usr/<user>/keyring/default` and `/usr/<user>/key` a mount
+proves with, the user an `export` signs its server proof as, the user
+in `/prog/<pid>/status`, and the owner of files a prog creates in a RAM
+tree (the probe's and the kernel's root).
+
+The rules, which follow Inferno's:
+
+- **The first prog is the host owner** (Inferno's `eve`): the
+  platform's user, the login name of whoever started the emu, and
+  `inferno` on the probe and the kernel. The host owner owns the
+  devices.
+- **A spawned prog inherits its parent's user**, at spawn. A later
+  change in the parent does not reach children it already started.
+- **Only the host owner can change user.** A prog acting as the host
+  owner writes a name to `/dev/user` and acts as that user from then
+  on. Any other prog gets `permission denied`, even writing its own
+  name. Inferno's devcons has the same check (`iseve()`). So `runas`
+  is one-way: a prog that became `bob` cannot become the host owner or
+  anyone else again, nor can anything it starts.
+- **Valid names** are single path elements of at most 64 bytes with no
+  white space or control characters, so a name can always be
+  `/usr/<user>`. Anything else is `bad arg in system call`.
+
+What a user other than the host owner cannot do:
+
+- **Use `#¤`.** `#¤` holds one key, the host owner's (the kernel's own
+  mounts and exports sign with it). Its `ctl` and `rpc` are mode 0600,
+  and only the host owner may open them. Before, `#¤` was mode 0666 and
+  anyone could sign with its key; with one user per system that was the
+  same thing. A guest factotum is an ordinary file server: who can use it
+  is whoever can reach its mount, so a user's factotum belongs in that
+  user's namespace.
+- **Control another user's progs.** `/prog/<pid>/ctl` (kill, `killgrp`,
+  limits, tracing) opens only for the prog's own user or the host owner.
+  The other `/prog` files stay readable, as in Inferno.
+
+What it does not change:
+
+- **The namespace.** A prog's user does not decide what it can reach in
+  its namespace; the namespace does, as in Inferno. `runas` forks the
+  namespace and environment so the command's changes stay its own, but
+  the command starts with everything the caller could reach. Running a
+  command as a user with a smaller view is `runas` plus `bind`, or a
+  namespace built with `nsbuild` or `pctl(NEWNS)`.
+- **Host files.** The emu's root is the host file system, read and
+  written with the host's permissions for the host user who runs the
+  emu; their owners are the host's. Inferno's emu does the same.
+- **The kernel's disk.** The kernel's purgfs device (`#K`) still acts as
+  the host owner for every prog. `purg_fs::dev::DevFs::with_users` makes
+  it check each prog's own user, but the kernel builds the device
+  before the process table it would need (see "Decisions and open
+  questions").
+- **Servers.** What a server trusts is read in the exporter's namespace,
+  whatever user the exporter acts as. An export run as `bob` proves
+  itself with `bob`'s key, not the host owner's.
+
+In Inferno too the host owner may become anyone. The host owner can
+already read every user's key files on the system, so becoming a user
+grants nothing new; it lets the host owner hand a command a user's
+identity and authentication without handing it the host owner's.
+
+`runas user cmd [arg ...]` is the command: it forks its namespace and
+environment, takes a process group of its own (so a `killgrp` from the
+command cannot reach the caller's progs), sets the user and runs `cmd`,
+and exits with its status. A caller that is not the host owner gets
+`runas: can't set user name: permission denied`.
+
 ## Tools
 
 Commands under `appl/cmd/auth/<name>` install as `/bin/auth/<name>.wasm`.
@@ -731,7 +828,8 @@ The Inferno page each one takes its role from is in brackets.
 | `getauthinfo [-s signer] [-u user] keyname` | [getauthinfo(8)] Reads the password, makes a key, gets it certified by the signer (a dial string, default `$signer`) and writes the authinfo `keyname` (a path, or a name under `/usr/<user>/keyring`). It checks that the certificate is for its key and name and is signed by the key the signer sent. |
 | `auth/keysrv [-f signerkey] [-m mntpt]` | [keysrv(4)] The password-change server, for one conversation on fd 0. The signer key only salts the answers for unknown users. |
 | `auth/passwd [-s server] [-u user]` | [passwd(1)] Reads the old password and the new one twice, and changes it through `keysrv` (default `$signer`). The new verifier is made on the client. |
-| `auth/factotum [-m mntpt] [authinfo ...]` | [factotum(4)] A guest agent with Plan 9's `ctl` and `rpc` files (below). |
+| `auth/factotum [-m mntpt] [-s authinfo] [authinfo ...]` | [factotum(4)] A guest agent with Plan 9's `ctl` and `rpc` files (below). `-s` loads the key for server proofs. |
+| `runas user cmd [arg ...]` | [runas(1)] Runs `cmd` as `user`, in a namespace, environment and process group of its own. Only the host owner may (see "Users"). |
 | `auth/secstore [-s dir] [-C m,t] [-g file \| -G file \| -p file \| -r file]` | [secstore(1)] Files encrypted under a password, kept in a store directory (default `/usr/<user>/secstore`, which can be an authenticated import). `-g` gets a file into the current directory, `-G` prints it, `-p` puts one, `-r` removes one, and no option lists the store. |
 | `crypt [-d] [-C m,t] (-k secret \| -f secretfile)` | [crypt(1)] Encrypts or decrypts standard input to standard output with ChaCha20-Poly1305 in 64 KiB chunks, under an Argon2id key. |
 | `netkey` | [netkey(1)] Reads a password, then challenges, and prints each response: the first 8 hex digits of HMAC-SHA256 keyed with SHA-256 of the password. It replaces the DES SecureNet calculator; it is only useful with a server that computes the same. |
@@ -743,14 +841,31 @@ The Inferno page each one takes its role from is in brackets.
   operator confirmed out of band, comparing a displayed "box" with
   `verify`. Here the password path is the only network path, and the
   operator path is `mkauthinfo`, run on the signer's machine. One network
-  protocol is easier to review.
+  protocol is easier to review. Issue #38 asked again whether a separate
+  `auth/logind` fits; it does not add anything. Its job (check a
+  password held in keyfs, then sign the caller's key) is exactly what
+  `auth/signer` does over `pglogin1`'s `cert` operation, and `keysrv`
+  already takes the `passwd` operation on the same protocol. A second
+  command would be a copy of `signer` under another name, or a second
+  login protocol with its own review. Inferno's `logind` also spoke the
+  station-to-station protocol over Inferno's keyring formats, which
+  nothing here uses. A site that wants the Inferno name can start
+  `auth/signer` under `listen` as its `logind` service.
 - **`verify`** keeps the name and checks a certificate, since there is no
   pending "box" to confirm.
 - **`spki/verify`** is dropped. It checked SPKI S-expression certificates,
-  which nothing here uses.
-- **`runas`** is deferred. It needs a per-prog user, and the kernel has one
-  user for the whole system (`Procs::user`). It becomes possible when
-  progs carry their own user.
+  which nothing here uses. Issue #38 asked whether a reader of
+  Inferno-style SPKI certificates mapped onto Ed25519 is worth having.
+  It is not, for now: Inferno's SPKI code verifies RSA and DSA
+  signatures with MD5 and SHA-1 hashes, so no certificate an Inferno
+  system made would verify with an Ed25519 key; a mapped format would be
+  a third certificate syntax that only this system writes, with the
+  same content as `pgcert1` (a name, a key, an expiry, signatures) and a
+  far larger parser to review. SPKI's extra power, tags that grant
+  named rights and chains of delegation, has no user here: trust is a
+  signer list, and rights are file permissions in a namespace. If a
+  real SPKI peer appears, the reader belongs in `purg-auth` beside
+  `cert`, verifying SPKI's own algorithms.
 - **`auth(2)`'s `server` side** is the kernel's export. Only the client side
   is in the SDK (`purgatorio::auth`).
 
@@ -761,14 +876,25 @@ files. Keys are written to `ctl` as attribute lists. An attribute starting
 with `!` is secret and is never read back. Values may be quoted with `'`.
 
 ```
-key proto=ed25519 [user=<name>] !seed=<hex> [cert='<pgcert1 line>']
+key proto=ed25519 [user=<name>] [role=<role>] !seed=<hex> [cert='<pgcert1 line>']
 key proto=pass server=<addr> user=<name> !password=<password>
 delkey proto=<proto> [attr=value ...]
 ```
 
 Reading `ctl` lists the keys, one per line, with secrets shown as
 `!seed?`. Each authinfo named on the command line is loaded as an
-`ed25519` key.
+`ed25519` key, and the one given with `-s` as an `ed25519` key with
+`role=server`.
+
+An `ed25519` key's `role` (`client`, `server` or `modsign`) says which
+rpc role it is kept for; a key without one serves every role. A `start`
+takes the first key kept for its role, and if there is none, the first
+key with no role; either must match its other attributes. A `start`
+that names no role is `role=client`. So a host's key loaded with `-s`
+(or `role=server`) signs the export's server proofs even when a user's
+key comes first, and is never used to prove a user. Before, `role=server`
+took the first `ed25519` key, whatever it was for (issue #124).
+`delkey ... role=<role>` removes only keys kept for that role.
 
 `rpc` speaks Plan 9's rpc: each write is a request, and the next read is
 the reply (`ok [data]`, `done`, `needkey <attrs>`, `error <message>`).
@@ -790,7 +916,8 @@ the reply (`ok [data]`, `done`, `needkey <attrs>`, `error <message>`).
   its proof, and `rstyxd` through the SDK's `server_proof`: a server's
   key loaded into factotum (`auth/factotum keyfile`) never has to be
   readable by the exporting prog. Whoever can open factotum's `rpc` can
-  make server proofs with it, as for client proofs.
+  make server proofs with it, as for client proofs. The key is the first
+  one kept for `role=server`, else the first with no role (above).
 - `pass`: `start proto=pass server=<s> [user=<u>]`, then `read` returns
   `ok <user> <password>`, both quoted.
 
@@ -968,12 +1095,27 @@ Decided by the owner:
 - **Servers per host** (issue #124): under `-S` a server must prove the
   host dialled (see "Servers per host").
 
+Proposed in issue #38 and #124, for the owner's review:
+
+- **Per-prog users** (see "Users"): a user per prog, inherited at spawn,
+  changed only by the host owner through `/dev/user`; `#¤` and other
+  users' `/prog/<pid>/ctl` closed to everyone but the host owner and
+  the prog's user.
+- **Signers for servers** (see "Signers for servers"):
+  `/lib/keys/serversigners`, when present, replaces `/lib/keys/signers`
+  for server proofs.
+- **Factotum's server key** (see "Factotum"): a `role` attribute on keys,
+  and `auth/factotum -s`.
+
 Still open:
 
 1. **OPAQUE.** Move to an augmented PAKE once the RustCrypto crates for it
    are stable, so a stolen keyfs entry is not password-equivalent?
-2. **Per-prog users.** `runas`, and servers that act for several users,
-   need a user per prog rather than one per system.
-3. **Separate signers for servers.** One `/lib/keys/signers` list serves
-   for users and servers, so a user's certificate could prove a host that
-   has the user's name. A list of server-only signers would close that.
+2. **Servers that act for several users.** Progs now carry their own
+   user, but an export serves every client as the exporting prog's user;
+   it does not take on the user a client proved. Inferno's exportfs does
+   not either.
+3. **Users on the kernel's disk.** `#K` is built before the process table
+   exists, so it acts as the host owner for everyone (see "Users").
+4. **`/chan` files** (`#s`) are owned by the host owner, whoever posts
+   them; Inferno makes them the poster's.
