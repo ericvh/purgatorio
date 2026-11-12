@@ -25,8 +25,18 @@ use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
 use purg_platform::sync::{Mutex, Rendez};
 use purg_vm::{Ctx, Engine};
 
-/// How long [`System::reap`] waits for killed progs to go, in ms.
+/// How long [`System::reap`] waits for killed progs to go, in ms, before
+/// they count as slow to die ([`System::take_slow`]).
 pub const REAP_MS: u64 = 5000;
+
+/// How much longer it waits before they count as not dying, in ms. A
+/// killed prog still has to unwind and free its memory, and on four
+/// emulated CPUs that contend for the kernel heap that can take more than
+/// [`REAP_MS`] (#182).
+pub const REAP_GRACE_MS: u64 = 120_000;
+
+/// How often a prog slow to die is described meanwhile, in ms.
+pub const REAP_SAMPLE_MS: u64 = 20_000;
 
 /// What [`boot`] builds the namespace from.
 pub struct Boot {
@@ -96,11 +106,17 @@ pub struct System {
     pub pgrp: Arc<Pgrp>,
     /// The number of live kernel threads.
     threads: fn() -> usize,
+    /// A line for each kernel thread running prog `pid`: where it is and
+    /// how it last left its CPU, for a prog that will not die. Set by
+    /// [`System::with_thread_report`].
+    thread_report: Option<fn(u32) -> Vec<String>>,
     /// The step under way: the last line [`System::say`] wrote, less its
     /// `<who>: ` prefix, and how many steps there have been.
     step: Arc<Mutex<(u64, String)>>,
     /// The failures counted so far, for the image's last line.
     failures: Arc<Mutex<Vec<String>>>,
+    /// Progs that took longer than [`REAP_MS`] to die, not yet taken.
+    slow: Arc<Mutex<Vec<String>>>,
 }
 
 /// The most of a failure's first line that [`System::failures`] keeps.
@@ -117,9 +133,113 @@ impl System {
             kernel,
             pgrp,
             threads,
+            thread_report: None,
             step: Arc::new(Mutex::new((0, String::new()))),
             failures: Arc::new(Mutex::new(Vec::new())),
+            slow: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// The progs that took longer than [`REAP_MS`] to die but went within
+    /// [`REAP_GRACE_MS`] more, since the last call: how long each took,
+    /// and what [`System::describe_prog`] said of it at [`REAP_MS`].
+    pub fn take_slow(&self) -> Vec<String> {
+        core::mem::take(&mut *self.slow.lock())
+    }
+
+    /// Kills the progs `left` lists, again every 10 ms, until `gone` holds.
+    /// After [`REAP_MS`] the ones still there are described, and again
+    /// every [`REAP_SAMPLE_MS`], while the wait goes on for
+    /// [`REAP_GRACE_MS`]: if they go meanwhile they were only slow
+    /// ([`System::take_slow`]); if not, the error names them, with the
+    /// descriptions.
+    fn kill_until(
+        &self,
+        left: &dyn Fn() -> Vec<u32>,
+        gone: &dyn Fn() -> bool,
+    ) -> Result<(), String> {
+        const MS: u64 = 1_000_000;
+        let r = Rendez::new();
+        let procs = &self.kernel.procs;
+        let start = self.kernel.platform.monotonic_ns();
+        // A round takes 10 ms or more; a platform whose clock stands
+        // still counts rounds.
+        let mut round = 0;
+        let elapsed = |round: u64| {
+            let ns = self.kernel.platform.monotonic_ns().saturating_sub(start);
+            (ns / MS).max(round * 10)
+        };
+        let mut seen: Vec<String> = Vec::new();
+        let mut next = REAP_MS;
+        loop {
+            if gone() {
+                if !seen.is_empty() {
+                    let ms = elapsed(round);
+                    self.slow
+                        .lock()
+                        .push(format!("went after {ms} ms; {}", seen.join("; ")));
+                }
+                return Ok(());
+            }
+            // Again each time round: a prog may have been spawned since.
+            // A broken prog has no thread to end: the kill removes it.
+            for p in left() {
+                procs.kill(p);
+            }
+            r.tsleep(|| false, 10 * MS);
+            round += 1;
+            let ms = elapsed(round);
+            if ms >= REAP_MS + REAP_GRACE_MS {
+                let (n, names) = self.undying(left().into_iter());
+                return Err(format!(
+                    "{n} progs ({names}) after {ms} ms; {}",
+                    seen.join("; ")
+                ));
+            }
+            if ms >= next {
+                next = ms + REAP_SAMPLE_MS;
+                seen.push(format!(
+                    "at {ms} ms: {}",
+                    self.undying(left().into_iter()).1
+                ));
+            }
+        }
+    }
+
+    /// Adds the scheduler's report of a prog's kernel threads to the
+    /// errors of [`System::reap`] and [`System::reap_domain`].
+    pub fn with_thread_report(mut self, report: fn(u32) -> Vec<String>) -> System {
+        self.thread_report = Some(report);
+        self
+    }
+
+    /// A prog that will not die: its pid and name, its state, the call it
+    /// is asleep in (where in the kernel it asked to sleep, through its
+    /// note), and its kernel threads, so a failure explains itself.
+    pub fn describe_prog(&self, p: &purg_core::Proc) -> String {
+        let mut s = format!("{} {} ({}", p.pid, p.name(), p.state());
+        match p.note.waiting_at() {
+            Some(at) => s.push_str(&format!(", asleep at {}:{}", at.file(), at.line())),
+            None => s.push_str(", not asleep through its note"),
+        }
+        s.push(')');
+        if let Some(report) = self.thread_report {
+            for t in report(p.pid) {
+                s.push_str("; ");
+                s.push_str(&t);
+            }
+        }
+        s
+    }
+
+    /// What [`System::describe_prog`] says of each of `pids`, and how many.
+    fn undying(&self, pids: impl Iterator<Item = u32>) -> (usize, String) {
+        let procs = &self.kernel.procs;
+        let names: Vec<String> = pids
+            .filter_map(|p| procs.get(p))
+            .map(|p| self.describe_prog(&p))
+            .collect();
+        (names.len(), names.join(", "))
     }
 
     /// Live kernel threads.
@@ -287,31 +407,15 @@ impl System {
     /// background job. Each holds a stack and its wasm memory, so over a
     /// test run they would add up.
     pub fn reap(&self, first: u32, threads: usize) -> Result<(), Error> {
-        const MS: u64 = 1_000_000;
-        let r = Rendez::new();
         let procs = &self.kernel.procs;
-        let left = || procs.pids().into_iter().filter(|&p| p >= first);
-        for _ in 0..REAP_MS / 10 {
-            if left().next().is_none() && self.threads() <= threads {
-                return Ok(());
-            }
-            // Again each time round: a prog may have been spawned since.
-            // A broken prog has no thread to end: the kill removes it.
-            for p in left() {
-                procs.kill(p);
-            }
-            r.tsleep(|| false, 10 * MS);
-        }
-        let names: Vec<String> = left()
-            .filter_map(|p| procs.get(p))
-            .map(|p| format!("{} {}", p.pid, p.name()))
-            .collect();
-        Err(Error::from(format!(
-            "{} progs ({}) and {} kernel threads would not die",
-            names.len(),
-            names.join(", "),
-            self.threads().saturating_sub(threads)
-        )))
+        let left = || -> Vec<u32> { procs.pids().into_iter().filter(|&p| p >= first).collect() };
+        let gone = || left().is_empty() && self.threads() <= threads;
+        self.kill_until(&left, &gone).map_err(|progs| {
+            Error::from(format!(
+                "{progs} and {} kernel threads would not die",
+                self.threads().saturating_sub(threads)
+            ))
+        })
     }
 
     /// [`System::run_test`] for runs that may overlap: `argv` runs in a
@@ -342,33 +446,17 @@ impl System {
 
     /// Kills the progs in domain `id` and waits for them to go.
     pub fn reap_domain(&self, id: u32) -> Result<(), Error> {
-        const MS: u64 = 1_000_000;
-        let r = Rendez::new();
         let procs = &self.kernel.procs;
-        let left = || {
+        let left = || -> Vec<u32> {
             procs
                 .pids()
                 .into_iter()
                 .filter(|&p| procs.get(p).is_some_and(|p| p.in_domain(id)))
+                .collect()
         };
-        for _ in 0..REAP_MS / 10 {
-            if left().next().is_none() {
-                return Ok(());
-            }
-            for p in left() {
-                procs.kill(p);
-            }
-            r.tsleep(|| false, 10 * MS);
-        }
-        let names: Vec<String> = left()
-            .filter_map(|p| procs.get(p))
-            .map(|p| format!("{} {}", p.pid, p.name()))
-            .collect();
-        Err(Error::from(format!(
-            "{} progs ({}) would not die",
-            names.len(),
-            names.join(", ")
-        )))
+        let gone = || left().is_empty();
+        self.kill_until(&left, &gone)
+            .map_err(|progs| Error::from(format!("{progs} would not die")))
     }
 
     fn run_prog(&self, mut prog: Prog, argv: &[&str], out: Option<&str>) -> Result<String, Error> {

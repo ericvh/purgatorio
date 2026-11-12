@@ -93,7 +93,10 @@ pub fn boot(
     #[cfg(feature = "aot")]
     let engine = crate::aot::engine(engine)?;
     memstat::report("booted");
-    Ok(System(purg_system::System::new(engine, ns, threads)))
+    Ok(System(
+        purg_system::System::new(engine, ns, threads)
+            .with_thread_report(crate::watchdog::threads_of),
+    ))
 }
 
 /// Commands run with the console as fds 0, 1 and 2, and whether each must
@@ -297,10 +300,12 @@ pub enum Mode {
     DiskCheck,
     /// The stress mode (`bootargs` has `stress=SECS`; see
     /// [`crate::stress`]).
+    /// `sh=a,b` runs only those corpus scripts, and no guests.
     Stress {
         secs: u64,
         workers: usize,
         watch: u64,
+        sh: Option<&'static str>,
     },
 }
 
@@ -366,11 +371,12 @@ pub fn start(
                         secs,
                         workers,
                         watch,
+                        sh,
                     },
                     _,
                     _,
                 ) => {
-                    let failed = sys.stress(secs, workers, watch);
+                    let failed = sys.stress(secs, workers, watch, sh);
                     if memstat::on() {
                         sys.memstat();
                     }

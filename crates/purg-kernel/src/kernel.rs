@@ -423,6 +423,7 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         secs,
         workers: arg("stressprogs").map_or(crate::stress::WORKERS, |n: u64| n as usize),
         watch: arg("stresswatch").unwrap_or(crate::stress::WATCH_SECS),
+        sh: bootarg(&info, "sh"),
     });
     let mode = match (test, has_bootarg(&info, "diskcheck")) {
         _ if stress.is_some() => stress.unwrap_or(Mode::Interactive),

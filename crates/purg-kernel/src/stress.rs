@@ -11,7 +11,11 @@
 //!
 //! Three checks:
 //! - wrong output: every failed run is counted, and the first few are
-//!   printed as they happen;
+//!   printed as they happen; so is a run whose progs would not die when
+//!   killed (`purg_system::REAP_MS` and `REAP_GRACE_MS`), with where
+//!   each was (where it sleeps, or where the timer last stopped it). One
+//!   that went within the grace is printed as slow to die, and counted,
+//!   but is not a failure;
 //! - deadlock: a watchdog (the thread that started the workers) fails the
 //!   run if no job finishes for `stresswatch=SECS` seconds (default
 //!   [`WATCH_SECS`]), after printing every kernel thread (where it is, how
@@ -23,6 +27,9 @@
 //! Left out, because they use names that are global to the kernel, so
 //! two copies would collide: the network guest (fixed ports), and the
 //! corpus scripts that change state every prog shares ([`SHARED`]).
+//!
+//! `sh=a,b` in the bootargs runs only those corpus scripts, and no guests,
+//! `SHARED` ones included if named.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -39,6 +46,7 @@ use purg_styx::DMDIR;
 use crate::irq::SCHED;
 use crate::kernel::HEAP;
 use crate::system::{SH_CORPUS, System};
+use crate::watchdog::{prog_line, thread_line};
 
 /// Workers when the bootargs do not say.
 pub const WORKERS: usize = 8;
@@ -94,6 +102,8 @@ struct Shared {
     stop: AtomicBool,
     runs: AtomicU64,
     failed: AtomicU64,
+    /// Progs that were slow to die after a run.
+    slow: AtomicU64,
     /// Failures printed so far.
     shown: AtomicUsize,
     done: AtomicUsize,
@@ -145,6 +155,13 @@ impl Shared {
                     ));
                 }
             }
+            // Progs that went, but only after the reap's first wait: not
+            // a failure, but worth seeing (#182).
+            for slow in self.sys.take_slow() {
+                self.slow.fetch_add(1, Ordering::AcqRel);
+                self.sys
+                    .say(&format!("kernel: stress: slow to die: {slow}"));
+            }
             self.runs.fetch_add(1, Ordering::AcqRel);
             self.wake.wakeup();
         }
@@ -154,14 +171,19 @@ impl Shared {
 }
 
 impl System {
-    /// The jobs: the sh corpus, then the guests.
-    fn stress_jobs(&self) -> Result<Vec<Job>, String> {
+    /// The jobs: the sh corpus, then the guests; with `sh` (a
+    /// comma-separated list), only those corpus scripts.
+    fn stress_jobs(&self, sh: Option<&str>) -> Result<Vec<Job>, String> {
         let names = self
             .list(SH_CORPUS)
             .map_err(|e| format!("{SH_CORPUS}: {e}"))?;
         let mut jobs = Vec::new();
         let scripts = names.iter().filter_map(|n| n.strip_suffix(".sh"));
-        for base in scripts.filter(|b| !SHARED.contains(b)) {
+        let wanted = |b: &str| match sh {
+            Some(l) => l.split(',').any(|n| n == b),
+            None => !SHARED.contains(&b),
+        };
+        for base in scripts.filter(|b| wanted(b)) {
             let want = self
                 .read_file(&format!("{SH_CORPUS}/{base}.out"))
                 .unwrap_or_default();
@@ -170,11 +192,14 @@ impl System {
                 want: Some(want),
             });
         }
-        for g in GUESTS {
+        for g in GUESTS.iter().filter(|_| sh.is_none()) {
             jobs.push(Job {
                 argv: g.iter().map(|a| String::from(*a)).collect(),
                 want: None,
             });
+        }
+        if jobs.is_empty() {
+            return Err(String::from("no jobs"));
         }
         Ok(jobs)
     }
@@ -182,33 +207,21 @@ impl System {
     /// Every kernel thread and every prog, for the watchdog.
     fn dump_state(&self) {
         for t in SCHED.dump() {
-            let at = match t.cpu {
-                Some(c) => format!("running on cpu{c}"),
-                None => String::from("ready"),
-            };
-            self.say(&format!(
-                "kernel: stress: thread {:?} pid {} {at}, last left by {:?}, {} locks held, {} runs",
-                t.name, t.pid, t.left, t.preempt, t.runs
-            ));
+            self.say(&format!("kernel: stress: {}", thread_line(&t)));
         }
         let procs = &self.kernel.procs;
         for pid in procs.pids() {
             if let Some(p) = procs.get(pid) {
-                self.say(&format!(
-                    "kernel: stress: prog {} {} {} group {}",
-                    p.pid,
-                    p.name(),
-                    p.state(),
-                    p.group()
-                ));
+                self.say(&format!("kernel: stress: prog {}", prog_line(&p)));
             }
         }
     }
 
     /// Runs the stress mode for `secs` seconds with `workers` workers and
-    /// a `watch`-second watchdog; returns the number of failures.
-    pub fn stress(&self, secs: u64, workers: usize, watch: u64) -> usize {
-        let jobs = match self.stress_jobs() {
+    /// a `watch`-second watchdog, over the corpus scripts `sh` names (all
+    /// of them and the guests if `None`); returns the number of failures.
+    pub fn stress(&self, secs: u64, workers: usize, watch: u64, sh: Option<&str>) -> usize {
+        let jobs = match self.stress_jobs(sh) {
             Ok(j) => j,
             Err(e) => {
                 self.say(&format!("kernel: FAIL stress: {e}"));
@@ -244,6 +257,7 @@ impl System {
             stop: AtomicBool::new(false),
             runs: AtomicU64::new(0),
             failed: AtomicU64::new(0),
+            slow: AtomicU64::new(0),
             shown: AtomicUsize::new(0),
             done: AtomicUsize::new(0),
             wake: Rendez::new(),
@@ -293,6 +307,7 @@ impl System {
         let mut failed = 0;
         let runs = shared.runs.load(Ordering::Acquire);
         let bad = shared.failed.load(Ordering::Acquire);
+        let slow = shared.slow.load(Ordering::Acquire);
         if bad != 0 {
             self.say(&format!("kernel: FAIL stress: {bad} of {runs} runs failed"));
             failed += 1;
@@ -335,7 +350,7 @@ impl System {
             Err(format!("stress: the runs left {grew} bytes of heap in use"))
         } else {
             Ok(format!(
-                "stress: {runs} runs in {secs} s, {bad} failed, nothing left behind; switches by cpu {}; {} sleeps ended by the safety timeout",
+                "stress: {runs} runs in {secs} s, {bad} failed, {slow} progs slow to die, nothing left behind; switches by cpu {}; {} sleeps ended by the safety timeout",
                 runs_by_cpu.join(" "),
                 purg_platform::sync::rescued()
             ))
