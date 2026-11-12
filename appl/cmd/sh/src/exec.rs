@@ -123,8 +123,11 @@ pub(crate) type Flow<T> = Result<T, Stop>;
 impl Shell {
     pub fn new(argv0: &str, args: Vec<String>) -> Shell {
         let mut vars = HashMap::new();
+        // A variable's `/env` file holds its words as `quote` writes
+        // them, as Inferno's sh keeps lists there, so a list comes back
+        // as a list in every sub-shell.
         for (k, v) in std::env::vars() {
-            vars.insert(k, vec![v]);
+            vars.insert(k, unquote(&v));
         }
         vars.insert(String::from("0"), vec![String::from(argv0)]);
         vars.insert(String::from("*"), args);
@@ -152,11 +155,8 @@ impl Shell {
         if !local && !self.locals.contains(name) && exported(name) {
             let res = if value.is_empty() {
                 purgatorio::env::unset(name)
-            } else if value.len() == 1 {
-                purgatorio::env::set(name, &value[0])
             } else {
-                let joined: Vec<String> = value.iter().map(|v| quote(v)).collect();
-                purgatorio::env::set(name, &joined.join(" "))
+                purgatorio::env::set(name, &env_value(&value))
             };
             if let Err(e) = res {
                 eprintln!("sh: {name}: {e}");
@@ -317,8 +317,11 @@ impl Shell {
         Ok(pids)
     }
 
+    /// Starts a sub-shell for a pipeline stage, a background job or a
+    /// `` `{} `` block. It gets copies of the local variables as well as
+    /// the exported ones, as Inferno's sh copies its whole context.
     fn sub_shell(&mut self, src: &str, io: &Io) -> Result<u32, Error> {
-        let mut argv = self.sh_argv();
+        let mut argv = self.sh_argv_with(true);
         argv.extend([String::from("-c"), String::from(src)]);
         purgatorio::spawn(SH, &argv, pctl::NEWFD, &io.fdmap())
     }
@@ -1054,6 +1057,23 @@ fn fields(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// A list as its `/env` file holds it: its words separated by spaces,
+/// each quoted as `unquote` needs to read it back (an empty word, or one
+/// with a blank or a quote in it; a single word too), so a list keeps its
+/// shape. Words without those are written as they are, so a program that
+/// reads a plain value such as `/env/home` sees no quotes.
+fn env_value(value: &[String]) -> String {
+    let needs = |v: &str| v.is_empty() || v.contains(|c| is_blank(c) || c == '\'');
+    let words: Vec<String> = value
+        .iter()
+        .map(|v| match needs(v) {
+            true => format!("'{}'", v.replace('\'', "''")),
+            false => v.clone(),
+        })
+        .collect();
+    words.join(" ")
+}
+
 /// Splits `s` into words at blanks, honouring `'quotes'` as `quote`
 /// writes them.
 fn unquote(s: &str) -> Vec<String> {
@@ -1121,6 +1141,25 @@ mod tests {
     fn cat(a: &[&str], b: &[&str]) -> Result<Vec<String>, Error> {
         let words = concat(Glob::plain(v(a)), Glob::plain(v(b)))?;
         Ok(words.into_iter().map(|g| g.text).collect())
+    }
+
+    #[test]
+    fn env_lists_round_trip() {
+        for l in [
+            v(&["a"]),
+            v(&["a", "b c"]),
+            v(&["a b"]),
+            v(&[""]),
+            v(&["", ""]),
+            v(&["a", ""]),
+            v(&["it's", "x\ny", "$x", "{echo}"]),
+        ] {
+            assert_eq!(unquote(&env_value(&l)), l, "{l:?}");
+        }
+        assert_eq!(env_value(&v(&["/usr/inferno"])), "/usr/inferno");
+        assert_eq!(env_value(&v(&["a", "b c"])), "a 'b c'");
+        assert_eq!(unquote("hello"), ["hello"]);
+        assert!(unquote("").is_empty());
     }
 
     #[test]

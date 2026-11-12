@@ -7,7 +7,8 @@
 //! `[class]`), list variables (`x=(a b)`, `$x`, `$#x`, `$"x`, `$*`, `$1`,
 //! `$status`, `$apid`), `` `{command} ``
 //! substitution, `${expr ...}` and comments. Variables are exported through
-//! `/env` unless declared with `:=`. Builtins: `cd`, `exit`, `run`, `wait`,
+//! `/env` (a list as its quoted words, as Inferno writes it) unless declared
+//! with `:=`. Builtins: `cd`, `exit`, `run`, `wait`,
 //! `load` and `@`, which runs a command in a sub-shell with its own copies
 //! of the variables, environment, fds and namespace. `load std` adds `if`,
 //! `while`, `for`, `and`, `or`, `not`, `~`, `fn`, `raise`, `pctl` and

@@ -1,0 +1,34 @@
+# backquote
+a
+b c
+3
+# pipeline
+3
+b c
+# background
+3 b c
+# @
+3 d
+# run
+3 b c d
+# sh -c
+3 b c
+3 b c d
+# one word with a blank
+'one word'
+1
+# empty words
+1
+3
+'it''s' $x a=b
+3 it's
+# empty list
+n unset
+0
+# plain text from another program
+1 plain
+# locals reach sub-shells but not /env
+3
+3
+loc not exported
+0
