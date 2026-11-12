@@ -31,6 +31,9 @@ use crate::prog::{Proc, Procs};
 
 const QROOT: u64 = 0;
 
+/// How many close events may wait past a full write channel.
+pub const CLOSE_BACKLOG: usize = 256;
+
 struct SrvFile {
     id: u64,
     name: String,
@@ -333,7 +336,10 @@ impl Dev for DevSrv {
     /// Tells the server the fid is closed, as Inferno does: a write with
     /// no data and no reply channel (Limbo's `nil` `wc`), here reply
     /// handle -1, on the write channel. The closer does not wait: if the
-    /// server's channel is full the event is dropped.
+    /// server's channel is full the event is queued past its capacity,
+    /// up to [`CLOSE_BACKLOG`] more, so a server that is slow to read sees
+    /// every close, and one that never reads costs a bounded queue. Past
+    /// that the event is dropped.
     fn close(&self, c: &Chan) {
         if c.qid.path == QROOT {
             return;
@@ -342,9 +348,10 @@ impl Dev for DevSrv {
             return;
         };
         let bytes = pack_write_hdr(0, c.qid.vers, -1).to_vec();
-        let _ = f.write.try_send(KMsg {
+        let msg = KMsg {
             bytes,
             caps: Vec::new(),
-        });
+        };
+        f.write.send_over(msg, CLOSE_BACKLOG);
     }
 }

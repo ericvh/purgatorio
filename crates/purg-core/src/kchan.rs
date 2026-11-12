@@ -185,6 +185,21 @@ impl KChan {
         self.notify();
         Ok(None)
     }
+
+    /// Queues `msg` without blocking, past the channel's capacity if need
+    /// be, but with no more than `cap + extra` messages queued in all.
+    /// Returns whether it was queued. For notices a sender must not wait
+    /// to give, such as a file2chan close event.
+    pub fn send_over(&self, msg: KMsg, extra: usize) -> bool {
+        let mut s = self.state.lock();
+        if s.closed || s.q.len() >= self.cap.saturating_add(extra) {
+            return false;
+        }
+        s.q.push_back(msg);
+        drop(s);
+        self.notify();
+        true
+    }
 }
 
 impl Drop for KChan {
