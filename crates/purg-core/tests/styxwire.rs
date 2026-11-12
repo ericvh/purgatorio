@@ -60,8 +60,12 @@ impl StyxFs for One {
         Err(error::EPERM.into())
     }
 
-    fn read(&mut self, _: u32, _: u64, _: u32) -> Result<Vec<u8>, String> {
-        Ok(Vec::new())
+    fn read(&mut self, fid: u32, offset: u64, _: u32) -> Result<Vec<u8>, String> {
+        let file = *self.fids.get(&fid).ok_or("unknown fid")?;
+        if file || offset != 0 {
+            return Ok(Vec::new());
+        }
+        dir(true).pack().map_err(|e| e.to_string())
     }
 
     fn write(&mut self, _: u32, _: u64, _: &[u8]) -> Result<u32, String> {
@@ -79,18 +83,24 @@ impl StyxFs for One {
 
     fn stat(&mut self, fid: u32) -> Result<Vec<u8>, String> {
         let file = *self.fids.get(&fid).ok_or("unknown fid")?;
-        Dir {
-            qid: if file { FILE } else { ROOT },
-            mode: if file { 0o444 } else { DMDIR | 0o555 },
-            name: String::from(if file { "f" } else { "/" }),
-            ..Dir::default()
-        }
-        .pack()
-        .map_err(|e| e.to_string())
+        dir(file).pack().map_err(|e| e.to_string())
     }
 
     fn wstat(&mut self, _: u32, _: &[u8]) -> Result<(), String> {
         Err(error::EPERM.into())
+    }
+}
+
+/// The server's Dir for the root or `f`, with a device type and number
+/// the mount driver must replace.
+fn dir(file: bool) -> Dir {
+    Dir {
+        dtype: 7,
+        dev: 99,
+        qid: if file { FILE } else { ROOT },
+        mode: if file { 0o444 } else { DMDIR | 0o555 },
+        name: String::from(if file { "f" } else { "/" }),
+        ..Dir::default()
     }
 }
 
@@ -194,4 +204,25 @@ fn a_server_that_hangs_up_fails_requests() {
     assert_eq!(err.as_str(), error::EHUNGUP);
     let err = p.stat("#R/mnt/f").unwrap_err();
     assert_eq!(err.as_str(), error::EHUNGUP);
+}
+
+/// Every Dir from a mounted server, by stat or directory read, carries
+/// `#M`'s type and the mount's number, whatever the server sent (#165).
+#[test]
+fn mounted_dirs_carry_the_mount_device() {
+    let (mut p, _) = setup();
+    let _log = mount_logged(&mut p);
+    let root = p.stat("#R/mnt").unwrap();
+    let f = p.stat("#R/mnt/f").unwrap();
+    let fd = p.open("#R/mnt", mode::OREAD).unwrap();
+    let mut buf = vec![0u8; 8192];
+    let n = p.dirread(fd, &mut buf).unwrap();
+    p.close(fd).unwrap();
+    let (entry, _) = Dir::unpack(&buf[..n]).unwrap();
+    assert_eq!(entry.name, "f");
+    for d in [&root, &f, &entry] {
+        assert_eq!(d.dtype, u16::from(b'M'), "{d:?}");
+        assert_ne!(d.dev, 99, "{d:?}");
+        assert_eq!(d.dev, root.dev);
+    }
 }
