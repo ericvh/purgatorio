@@ -46,6 +46,20 @@ pub const STEP: u64 = 16;
 pub const ATIME_SLACK: u32 = 60;
 /// The default number of metadata blocks cached.
 pub const CACHE_BLOCKS: usize = 32;
+/// The most a sequential read takes from the disk ahead of what it was
+/// asked for, in bytes (at least one block).
+pub const READAHEAD: usize = 64 << 10;
+
+/// File data read ahead: blocks `start` to `start + n` of the disk, which
+/// are contiguous there, and where a sequential read is expected next.
+#[derive(Default)]
+struct Ahead {
+    start: u64,
+    n: usize,
+    buf: Vec<u8>,
+    /// The file and offset that continue the last read.
+    next: Option<(Ref, u64)>,
+}
 
 /// Inferno's open modes, as `purg_abi::mode` has them.
 const OREAD: u8 = 0;
@@ -208,6 +222,8 @@ pub struct Fs<D: Disk> {
     /// Whether the mount replayed a journal.
     pub(crate) replayed: Option<u64>,
     scratch: Vec<u8>,
+    /// File data read ahead (`READAHEAD`).
+    ahead: Ahead,
 }
 
 /// Whether `user` may `want` (bits of [`R`], [`W`], [`X`]) on `d`: the
@@ -315,6 +331,7 @@ impl<D: Disk> Fs<D> {
             seq: 0,
             replayed: None,
             scratch: vec![0u8; bs],
+            ahead: Ahead::default(),
         };
         fs.replay()?;
         // Block 0 again: the journal may have held it.
@@ -361,7 +378,7 @@ impl<D: Disk> Fs<D> {
             if self.ro {
                 self.overlay.insert(*home, img.to_vec());
             } else {
-                self.disk.write(home * bs as u64, img)?;
+                self.put(home * bs as u64, img)?;
             }
         }
         if !self.ro {
@@ -569,12 +586,19 @@ impl<D: Disk> Fs<D> {
             let images: Vec<&[u8]> = body.chunks(bs).collect();
             JHeader::encode(self.seq + 1, &homes, &images, hdr);
         }
-        self.disk.write(self.sb.jstart * bs as u64, &j)?;
+        self.put(self.sb.jstart * bs as u64, &j)?;
         self.disk.flush()?;
-        for (b, img) in &self.txn {
-            self.disk.write(b * bs as u64, img)?;
+        // Home, all at once: their order does not matter, only that they
+        // are done before the next transaction's first flush.
+        for &b in &homes {
+            self.forget(b * bs as u64, bs);
         }
-        Ok(())
+        let writes: Vec<(u64, &[u8])> = self
+            .txn
+            .iter()
+            .map(|(b, img)| (b * bs as u64, &img[..]))
+            .collect();
+        self.disk.write_many(&writes)
     }
 
     /// Makes everything committed so far stable at home, then empties the
@@ -585,7 +609,7 @@ impl<D: Disk> Fs<D> {
         }
         self.disk.flush()?;
         let empty = vec![0u8; self.bs];
-        self.disk.write(self.sb.jstart * self.bs as u64, &empty)?;
+        self.put(self.sb.jstart * self.bs as u64, &empty)?;
         self.disk.flush()
     }
 
@@ -1022,7 +1046,10 @@ impl<D: Disk> Fs<D> {
         })
     }
 
-    /// Reads from file `r` at `off`.
+    /// Reads from file `r` at `off`. Blocks that are contiguous on the
+    /// disk are read in one request, and a read that continues the last
+    /// one (or starts a file) also takes up to [`READAHEAD`] bytes of the
+    /// file's following blocks, which the next reads are served from.
     pub fn read(&mut self, r: Ref, off: u64, buf: &mut [u8]) -> Result<usize> {
         let mut d = self.dentry(r)?;
         if d.is_dir() {
@@ -1033,26 +1060,93 @@ impl<D: Disk> Fs<D> {
         }
         let n = (d.length - off).min(buf.len() as u64) as usize;
         let bs = self.bs;
+        let bs64 = bs as u64;
+        let sequential = off == 0 || self.ahead.next == Some((r, off));
+        let ahead_blocks = (READAHEAD / bs).max(1);
+        // The file's last block.
+        let last = (d.length - 1) / bs64;
         let mut done = 0;
         while done < n {
             let pos = off + done as u64;
-            let idx = pos / bs as u64;
-            let boff = (pos % bs as u64) as usize;
+            let idx = pos / bs64;
+            let boff = (pos % bs64) as usize;
             let take = (bs - boff).min(n - done);
             let (b, _) = self.bmap(&mut d, idx, None)?;
-            let dst = &mut buf[done..done + take];
             if b == 0 {
-                dst.fill(0);
-            } else if take == bs {
-                self.disk.read(u64::from(b) * bs as u64, dst)?;
-            } else {
-                self.disk
-                    .read(u64::from(b) * bs as u64, &mut self.scratch)?;
-                dst.copy_from_slice(&self.scratch[boff..boff + take]);
+                buf[done..done + take].fill(0);
+                done += take;
+                continue;
             }
+            if let Some(src) = self.ahead_get(u64::from(b)) {
+                buf[done..done + take].copy_from_slice(&src[boff..boff + take]);
+                done += take;
+                continue;
+            }
+            // Whole blocks the request still wants from here, and how many
+            // to look at: as many again ahead, for a sequential read.
+            let whole = if boff == 0 { (n - done) / bs } else { 0 };
+            let wanted = (boff + n - done).div_ceil(bs);
+            let limit = if sequential {
+                wanted.max(ahead_blocks)
+            } else {
+                wanted
+            };
+            let limit = (limit as u64).min(last - idx + 1) as usize;
+            let mut run = 1;
+            while run < limit {
+                let (next, _) = self.bmap(&mut d, idx + run as u64, None)?;
+                if u64::from(next) != u64::from(b) + run as u64 {
+                    break;
+                }
+                run += 1;
+            }
+            let at = u64::from(b) * bs64;
+            if whole > 0 && (whole >= ahead_blocks || run <= whole) {
+                // Straight into the caller's buffer.
+                let k = run.min(whole);
+                self.disk.read(at, &mut buf[done..done + k * bs])?;
+                done += k * bs;
+                continue;
+            }
+            let mut ahead = core::mem::take(&mut self.ahead.buf);
+            ahead.resize(run.min(ahead_blocks) * bs, 0);
+            let got = self.disk.read(at, &mut ahead);
+            self.ahead.buf = ahead;
+            self.ahead.n = 0;
+            got?;
+            self.ahead.start = u64::from(b);
+            self.ahead.n = run.min(ahead_blocks);
+            buf[done..done + take].copy_from_slice(&self.ahead.buf[boff..boff + take]);
             done += take;
         }
+        self.ahead.next = Some((r, off + n as u64));
         Ok(n)
+    }
+
+    /// Block `b` of the disk, if it was read ahead.
+    fn ahead_get(&self, b: u64) -> Option<&[u8]> {
+        let a = &self.ahead;
+        let i = usize::try_from(b.checked_sub(a.start)?).ok()?;
+        (i < a.n).then(|| &a.buf[i * self.bs..(i + 1) * self.bs])
+    }
+
+    /// Writes `data` at byte `off` of the disk, forgetting any read-ahead
+    /// data it overlaps. Every write of the file system goes through here
+    /// or [`Fs::forget`].
+    fn put(&mut self, off: u64, data: &[u8]) -> Result<()> {
+        self.forget(off, data.len());
+        self.disk.write(off, data)
+    }
+
+    /// Forgets read-ahead data that a write of `len` bytes at byte `off`
+    /// of the disk overlaps.
+    fn forget(&mut self, off: u64, len: usize) {
+        let bs = self.bs as u64;
+        let (first, end) = (off / bs, (off + len as u64).div_ceil(bs));
+        let a = &self.ahead;
+        if a.n > 0 && first < a.start + a.n as u64 && a.start < end {
+            self.ahead.n = 0;
+        }
     }
 
     /// Writes `data` to file `r` at `off` (at the end, for an append-only
@@ -1109,7 +1203,7 @@ impl<D: Disk> Fs<D> {
             let at = u64::from(b) * bs as u64;
             let src = &data[done..done + take];
             if take == bs {
-                self.disk.write(at, src)?;
+                self.put(at, src)?;
             } else {
                 if new {
                     self.scratch.fill(0);
@@ -1117,6 +1211,7 @@ impl<D: Disk> Fs<D> {
                     self.disk.read(at, &mut self.scratch)?;
                 }
                 self.scratch[boff..boff + take].copy_from_slice(src);
+                self.forget(at, self.scratch.len());
                 self.disk.write(at, &self.scratch)?;
             }
             done += take;
@@ -1191,6 +1286,7 @@ impl<D: Disk> Fs<D> {
                     let at = u64::from(b) * bs;
                     self.disk.read(at, &mut self.scratch)?;
                     self.scratch[tail..].fill(0);
+                    self.forget(at, self.scratch.len());
                     self.disk.write(at, &self.scratch)?;
                 }
             }

@@ -51,6 +51,20 @@ pub trait Disk {
     fn size(&self) -> u64;
     fn read(&mut self, off: u64, buf: &mut [u8]) -> Result<()>;
     fn write(&mut self, off: u64, buf: &[u8]) -> Result<()>;
+    /// Writes each `(off, buf)` of `writes`, in no particular order (a
+    /// device may have them in flight at once). Returns once all are done,
+    /// with the first error if any failed; none is on stable storage
+    /// before a [`Disk::flush`].
+    fn write_many(&mut self, writes: &[(u64, &[u8])]) -> Result<()> {
+        let mut first = Ok(());
+        for &(off, buf) in writes {
+            let r = self.write(off, buf);
+            if first.is_ok() {
+                first = r;
+            }
+        }
+        first
+    }
     /// Returns once everything written before is on stable storage.
     fn flush(&mut self) -> Result<()>;
     fn read_only(&self) -> bool {
@@ -70,6 +84,9 @@ impl<D: Disk + ?Sized> Disk for &mut D {
     }
     fn write(&mut self, off: u64, buf: &[u8]) -> Result<()> {
         (**self).write(off, buf)
+    }
+    fn write_many(&mut self, writes: &[(u64, &[u8])]) -> Result<()> {
+        (**self).write_many(writes)
     }
     fn flush(&mut self) -> Result<()> {
         (**self).flush()
