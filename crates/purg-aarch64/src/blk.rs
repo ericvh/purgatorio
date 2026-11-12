@@ -65,7 +65,7 @@ pub const SLOTS: usize = 4;
 const DESCS: usize = 16;
 /// The most one request moves, before `VIRTIO_BLK_F_SIZE_MAX` and the
 /// block size are taken into account.
-pub const XFER: usize = 16 << 10;
+pub const XFER: usize = 64 << 10;
 /// The most disks the shared interrupt handler serves.
 pub const MAX_DISKS: usize = 4;
 /// How long a wait sleeps before looking at the ring again without an
@@ -176,7 +176,7 @@ impl VirtioBlk {
             SECTOR as usize
         };
         if block_size < SECTOR as usize || !block_size.is_power_of_two() || block_size > XFER {
-            return Err("virtio-blk block size is not a power of two from 512 to 16 KiB");
+            return Err("virtio-blk block size is not a power of two from 512 to 64 KiB");
         }
         let mut xfer = XFER;
         if want & F_SIZE_MAX != 0 {
@@ -599,6 +599,64 @@ impl Blk {
             done += n;
         }
         Ok(())
+    }
+
+    /// Writes each `(sector, buf)` of `writes` (whole logical blocks, as
+    /// for [`Blk::write`]) with up to [`SLOTS`] requests in flight at once,
+    /// in no particular order. Uninterruptible: returns once every request
+    /// is done, with the first error if any failed.
+    pub fn write_many(&self, writes: &[(u64, &[u8])]) -> Result<()> {
+        for &(sector, buf) in writes {
+            self.check(sector, buf.len(), true)?;
+        }
+        // Every request: at most `xfer` bytes each.
+        let mut todo = writes.iter().flat_map(|&(sector, buf)| {
+            buf.chunks(self.xfer)
+                .enumerate()
+                .map(move |(i, c)| (sector + (i * self.xfer) as u64 / SECTOR, c))
+        });
+        let mut next = todo.next();
+        let mut busy: Vec<usize> = Vec::with_capacity(SLOTS);
+        let mut first: Result<()> = Ok(());
+        while next.is_some() || !busy.is_empty() {
+            let seen = EVENTS.load(Ordering::Acquire);
+            let mut moved = false;
+            {
+                let mut d = self.dev.lock();
+                while let Some((sector, data)) = next {
+                    let Some(slot) = d.submit(Op::Write, sector, data, data.len()) else {
+                        break;
+                    };
+                    self.requests.fetch_add(1, Ordering::Relaxed);
+                    busy.push(slot);
+                    next = todo.next();
+                    moved = true;
+                }
+                d.reap();
+                busy.retain(|&slot| match d.take(slot, &mut []) {
+                    None => true,
+                    Some(status) => {
+                        moved = true;
+                        if status != S_OK && first.is_ok() {
+                            self.errors.fetch_add(1, Ordering::Relaxed);
+                            first = Err(Cow::Borrowed(if status == S_UNSUPP {
+                                error::ENOTIMPL
+                            } else {
+                                error::EIO
+                            }));
+                        }
+                        false
+                    }
+                });
+            }
+            if moved {
+                // Slots were freed or taken: let other waiters look.
+                Self::poke();
+            } else {
+                Self::wait(seen, Wait::Uninterruptible)?;
+            }
+        }
+        first
     }
 
     /// Waits until everything written so far is on stable storage. A
