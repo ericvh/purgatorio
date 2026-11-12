@@ -575,12 +575,15 @@ impl Conn {
             if borrowed {
                 sync::set_current_note(Some(self.wnote.clone()));
             }
-            // Sealed with the lock held, written without it.
-            let sealed = match self.sealer.lock().as_mut() {
-                Some(s) => s.seal(&bytes).ok(),
-                None => Some(bytes),
+            // Sealed into the sealer's own buffer, and written from it with
+            // the lock held: the drainer is the only one that takes it.
+            let ok = match self.sealer.lock().as_mut() {
+                Some(s) => s
+                    .seal_buf(&bytes)
+                    .is_ok_and(|b| write_full(&self.fd, b).is_ok()),
+                None => write_full(&self.fd, &bytes).is_ok(),
             };
-            if sealed.is_none_or(|b| write_full(&self.fd, &b).is_err()) {
+            if !ok {
                 self.dead.store(true, Ordering::Release);
             }
             if borrowed {
