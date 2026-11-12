@@ -78,7 +78,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 fn query(request: &str) -> Option<String> {
     let fields: Vec<&str> = request.split('?').filter(|f| !f.is_empty()).collect();
     if fields.len() < 2 {
-        eprintln!("virgild: bad request {request} {}", request.len());
+        eprintln!("ip/virgild: bad request {request} {}", request.len());
         return None;
     }
     let machine = fields[1];

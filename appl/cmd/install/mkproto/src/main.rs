@@ -20,7 +20,7 @@ impl Mkproto {
         let d = match Namespace.stat(full) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("mkproto: cannot stat {full}: {e}");
+                eprintln!("install/mkproto: cannot stat {full}: {e}");
                 return;
             }
         };
@@ -38,7 +38,7 @@ impl Mkproto {
                         self.visit(&format!("{full}/{}", e.name), &e.name, depth + 1);
                     }
                 }
-                Err(e) => eprintln!("mkproto: cannot read {full}: {e}"),
+                Err(e) => eprintln!("install/mkproto: cannot read {full}: {e}"),
             }
         }
     }

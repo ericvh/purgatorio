@@ -28,7 +28,7 @@ use purgatorio::dial::{self, cs_line};
 use purgatorio::file2chan::Request;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "dns [-hrv] [-f dnsfile] [-x net]";
+const USAGE: &str = "ndb/dns [-hrv] [-f dnsfile] [-x net]";
 const SELF: &str = "/bin/ndb/dns.wasm";
 /// How long to wait for one name server's reply, and how often to ask.
 const WAIT_MS: u64 = 1500;
@@ -119,7 +119,7 @@ impl Dns {
     fn load(&mut self) {
         let read = |f: &str| ndb::read_std(f, &purgatorio::errstr);
         self.db = ndb::open(&self.opts.file, &read).unwrap_or_else(|e| {
-            eprintln!("dns: warning: {e}");
+            eprintln!("ndb/dns: warning: {e}");
             Vec::new()
         });
     }
@@ -146,8 +146,8 @@ impl Dns {
         };
         if self.opts.verbose {
             match &got {
-                Ok(l) => eprintln!("dns: {text} -> {} answers", l.len()),
-                Err(e) => eprintln!("dns: {text}: {e}"),
+                Ok(l) => eprintln!("ndb/dns: {text} -> {} answers", l.len()),
+                Err(e) => eprintln!("ndb/dns: {text}: {e}"),
             }
         }
         match got {

@@ -87,7 +87,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         &source,
         &Namespace,
         &mut |level, line, msg| {
-            eprintln!("create: {proto_path}:{line}: {msg}");
+            eprintln!("install/create: {proto_path}:{line}: {msg}");
             failed |= level == Level::Error;
         },
         &mut |f| files.push(f.clone()),
@@ -112,7 +112,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             match std::fs::read(&f.old) {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("create: can't read {}: {}", quote(&f.old), Error::from(e));
+                    eprintln!(
+                        "install/create: can't read {}: {}",
+                        quote(&f.old),
+                        Error::from(e)
+                    );
                     failed = true;
                     continue;
                 }

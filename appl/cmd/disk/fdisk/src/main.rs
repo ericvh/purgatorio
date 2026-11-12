@@ -275,7 +275,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         .try_into()
         .map_err(|_| Error::from(format!("usage: {USAGE}")))?;
     let editing = !print && !write;
-    let mut disk = Disk::open("fdisk", &path, secsize, write || (editing && !read_only))?;
+    let mut disk = Disk::open(
+        "disk/fdisk",
+        &path,
+        secsize,
+        write || (editing && !read_only),
+    )?;
     if disk.secs < 2 {
         return Err(Error::from(format!(
             "{path}: too small for a partition table"

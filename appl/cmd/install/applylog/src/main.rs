@@ -219,7 +219,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             continue;
         }
         if applied && let Err(err) = ap.apply(&e) {
-            eprintln!("applylog: {err}");
+            eprintln!("install/applylog: {err}");
             errors += 1;
             continue;
         }

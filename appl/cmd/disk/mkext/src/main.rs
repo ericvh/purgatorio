@@ -20,7 +20,7 @@ struct Mkext {
 }
 
 fn warn(msg: &str) {
-    eprintln!("mkext: {msg}");
+    eprintln!("disk/mkext: {msg}");
 }
 
 fn parent(name: &str) -> &str {
@@ -137,7 +137,10 @@ impl Mkext {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut arg = Arg::new(args, "mkext [-h] [-d destdir] [-T] [-u] [-v] [file ...]");
+    let mut arg = Arg::new(
+        args,
+        "disk/mkext [-h] [-d destdir] [-T] [-u] [-v] [file ...]",
+    );
     let mut m = Mkext {
         dest: String::new(),
         force: false,

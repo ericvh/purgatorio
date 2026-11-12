@@ -1,0 +1,44 @@
+usage: kill [-g] pid|module ...
+kill usage fail: usage
+kill bad flag fail: usage
+kill: cannot open /prog/999999/ctl: file does not exist
+kill: cannot open /prog/999998/ctl: file does not exist
+kill none fail:nothing killed
+kill: cannot open /prog/999999/ctl: file does not exist
+kill some 
+kill module 
+kill: cannot find nosuchmodule
+kill no module fail:nothing killed
+diff: cannot open /tmp/sh-exitstatus/missing: file does not exist
+diff missing 
+diff usage fail:error
+usage: time cmd ...
+time usage 
+time: /tmp/sh-exitstatus/nosuchcmd: file does not exist
+time missing 
+time usage of command 
+tsort: cycle in input
+tsort: b
+tsort: a
+b
+a
+tsort cycle 
+dd: open /tmp/sh-exitstatus/missing: file does not exist
+dd open fail:open
+dd: create /tmp/sh-exitstatus/missing/x: file does not exist
+dd create fail:create
+dd: bad arg: foo
+dd bad arg fail:arg
+dd: counts: cannot be zero
+dd counts fail:counts
+read: stat buffer too small
+0+0 records in
+0+0 records out
+dd read error 
+calc: syntax error: unexpected end of input
+calc error 
+disk/chkdisk: usage: disk/chkdisk [-v] image
+ndb/query: can't open /tmp/sh-exitstatus/missing: file does not exist
+--rw-rw-rw- M n inferno inferno 3 Jan  1  1970 /tmp/sh-exitstatus/m/f
+d-rwxrwxrwx M n inferno inferno 0 Jan  1  1970 /tmp/sh-exitstatus/m/sub
+d-rwxrwxr-x M n inferno inferno 0 Jan  1  1970 /tmp/sh-exitstatus/m

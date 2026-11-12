@@ -17,7 +17,7 @@ use purgatorio::abi::mode;
 use purgatorio::arg::Arg;
 use purgatorio::{Context, DMDIR, Dir, Error};
 
-const USAGE: &str = "mkfs [-aprvxS] [-d root] [-n kfscmdname] [-s src-fs] [-u userfile] [-z n] [-G group] [-U user] proto ...";
+const USAGE: &str = "disk/mkfs [-aprvxS] [-d root] [-n kfscmdname] [-s src-fs] [-u userfile] [-z n] [-G group] [-U user] proto ...";
 
 #[derive(Default)]
 struct Mkfs {
@@ -39,7 +39,7 @@ struct Mkfs {
 
 impl Mkfs {
     fn warn(&self, msg: &str) {
-        eprintln!("mkfs: {}:{}: {msg}", self.proto, self.line);
+        eprintln!("disk/mkfs: {}:{}: {msg}", self.proto, self.line);
     }
 
     fn flush(&mut self) -> Result<(), Error> {
@@ -180,7 +180,7 @@ impl Mkfs {
                 .map_err(Error::from)
         });
         if let Err(e) = res {
-            eprintln!("mkfs: can't open {}: {e}", quote(&path));
+            eprintln!("disk/mkfs: can't open {}: {e}", quote(&path));
         }
     }
 }
@@ -242,7 +242,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             Ok(t) => t,
             Err(e) => {
                 eprintln!(
-                    "mkfs: can't open {}: {}: skipping",
+                    "disk/mkfs: can't open {}: {}: skipping",
                     quote(p),
                     Error::from(e)
                 );
@@ -258,7 +258,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             &source,
             &Namespace,
             &mut |level, line, msg| {
-                eprintln!("mkfs: {p}:{line}: {msg}");
+                eprintln!("disk/mkfs: {p}:{line}: {msg}");
                 failed |= level == Level::Error;
             },
             &mut |f| files.push(f.clone()),

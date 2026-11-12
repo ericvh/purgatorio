@@ -10,7 +10,7 @@ use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "csquery [-x net] [-s server] [address ...]";
+const USAGE: &str = "ndb/csquery [-x net] [-s server] [address ...]";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -63,7 +63,7 @@ fn query(server: &str, addr: &str) -> bool {
             true
         }
         Err(e) => {
-            eprintln!("csquery: {addr}: {e}");
+            eprintln!("ndb/csquery: {addr}: {e}");
             false
         }
     }

@@ -11,7 +11,7 @@ use purgatorio::{Context, DMDIR, Error};
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() < 2 {
-        return Err(Error::from("usage: proto2list protofile ..."));
+        return Err(Error::from("usage: install/proto2list protofile ..."));
     }
     let mut files: Vec<(String, String)> = Vec::new();
     for p in &args[1..] {

@@ -449,7 +449,7 @@ fn mux(
                 // means it died first.
                 status = Some(match bytes.split_first() {
                     Some((b's', s)) => String::from_utf8_lossy(s).into_owned(),
-                    _ => String::from("rstyxd: session lost"),
+                    _ => String::from("auxi/rstyxd: session lost"),
                 });
             }
             Src::Stream(i) => {

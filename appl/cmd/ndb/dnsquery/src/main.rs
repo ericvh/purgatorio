@@ -11,7 +11,7 @@ use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "dnsquery [-x net] [name ...]";
+const USAGE: &str = "ndb/dnsquery [-x net] [name ...]";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -61,7 +61,7 @@ fn query(server: &str, q: &str) -> bool {
             true
         }
         Err(e) => {
-            eprintln!("dnsquery: {q}: {e}");
+            eprintln!("ndb/dnsquery: {q}: {e}");
             false
         }
     }

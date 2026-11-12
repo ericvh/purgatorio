@@ -62,7 +62,7 @@ impl Check {
         let ents = match Namespace.list(d) {
             Ok(e) => e,
             Err(e) => {
-                eprintln!("ckproto: can't read {d}: {e}");
+                eprintln!("install/ckproto: can't read {d}: {e}");
                 return;
             }
         };

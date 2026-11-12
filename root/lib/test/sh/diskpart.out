@@ -1,4 +1,4 @@
-fdisk: can't read ./ctl; assuming 512-byte sectors
+disk/fdisk: can't read ./ctl; assuming 512-byte sectors
 part plan9 63 2048
 >>>   p1             63 2048 (1985 sectors, 992 KB) PLAN9 *
 >>> >>> >>> >>> ?p3 100 200 overlaps with p1 100 1124

@@ -28,7 +28,7 @@ use purgatorio::dial::cs_line;
 use purgatorio::file2chan::{self, Request};
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "cs [-v] [-f database] [-x net]";
+const USAGE: &str = "ndb/cs [-v] [-f database] [-x net]";
 const SELF: &str = "/bin/ndb/cs.wasm";
 
 struct Opts {
@@ -108,7 +108,7 @@ impl Cs {
         let mut db = match ndb::open(file, &read) {
             Ok(db) => db,
             Err(e) => {
-                eprintln!("cs: warning: {e}");
+                eprintln!("ndb/cs: warning: {e}");
                 Vec::new()
             }
         };
@@ -150,7 +150,7 @@ impl Cs {
             Err(e) => {
                 self.replies.remove(&req.fid);
                 if self.opts.verbose {
-                    eprintln!("cs: {text}: {e}");
+                    eprintln!("ndb/cs: {text}: {e}");
                 }
                 req.respond_err(&e)
             }
@@ -216,7 +216,7 @@ impl Cs {
             (false, None) => ips.iter().map(|ip| format!("{clone} {ip}\n")).collect(),
         };
         if self.opts.verbose {
-            eprintln!("cs: {net}!{host}!{svc} -> {}", lines[0].trim_end());
+            eprintln!("ndb/cs: {net}!{host}!{svc} -> {}", lines[0].trim_end());
         }
         Ok(lines)
     }
@@ -313,7 +313,7 @@ impl Cs {
                 match f.as_slice() {
                     [_, "ip", v] => Some(v.to_string()),
                     _ => {
-                        eprintln!("cs: odd result from dns: {l}");
+                        eprintln!("ndb/cs: odd result from dns: {l}");
                         None
                     }
                 }

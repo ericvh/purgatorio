@@ -15,7 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, daytime, dial};
 
-const USAGE: &str = "sntp [-di] [server]";
+const USAGE: &str = "ip/sntp [-di] [server]";
 /// Seconds from 1900, NTP's epoch, to 1970.
 const EPOCH: u64 = 2_208_988_800;
 /// Answers before 2020 are not believed.
@@ -65,7 +65,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         };
         if r.len() < 48 || !matches!(r[0] & 7, 4 | 5) || r[1] == 0 || r[24..32] != q[40..48] {
             if debug {
-                eprintln!("sntp: ignoring a bad reply");
+                eprintln!("ip/sntp: ignoring a bad reply");
             }
             continue;
         }

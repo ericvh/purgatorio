@@ -23,7 +23,7 @@ two
 /app/one 5bbf5a52328e7439ae6e719dfe712200
 installed package hello
 	5000 base, 2 files: Hello world
-inst: /app/one: locally modified; not installed
+install/inst: /app/one: locally modified; not installed
 local
 one
 archiving package hello to 6000
