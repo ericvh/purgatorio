@@ -37,6 +37,21 @@ and `cargo xtask build-root` rejects modules that import anything outside it.
   under the `/` preopen. The SDK therefore sets it from `fd2path(3)` at
   start-up and after `chdir` and `pctl(NEWNS|FORKNS)`. Third-party WASI
   programs see relative names resolved from `/`.
+- **Device names.** A name that starts with `#` is a device name, as in
+  `namec`. Since wasi-libc makes every relative name absolute before the
+  host sees it, the host takes a `#` element right after dot back out:
+  `#c/sysname` with dot `/usr/me` arrives as `usr/me/#c/sysname` and is
+  read as `#c/sysname`. This has two limits. First, the joined name cannot
+  be told apart from a real file whose name starts with `#` in dot, or in
+  `/` (where `/#x` arrives as `#x`), so such a file cannot be opened through
+  WASI or std. The `purgatorio` module's `open`, `create`, `stat` and the
+  rest take the name as given, so `purgatorio::open("/#x", ...)` still
+  reaches the file. Second, a
+  stock WASI program (no SDK) that calls `chdir`
+  (`std::env::set_current_dir`) changes only libc's copy of the current
+  directory, not the prog's dot, so its `#` names relative to the new
+  directory are not recognised. Programs built with the SDK use
+  `purgatorio::chdir`, which keeps both in step.
 - **Errors.** WASI calls return an errno, and the host also records the
   exact Inferno string as the prog's errstr. `purgatorio.errstr` returns that
   string. String-to-errno mapping: `file does not exist`→NOENT,
