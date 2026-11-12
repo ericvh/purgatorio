@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-mcpfs"
+description = "mcpfs: mount another MCP server's tools as files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mcpfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
