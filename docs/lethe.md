@@ -93,8 +93,9 @@ message has one encoding.
 
 Over TCP, frames follow each other on the stream. A client may send a new
 request before the last reply arrives (replies may come back in any order,
-matched by `id`), but the first cut sends one at a time per connection and
-opens more connections for concurrency.
+matched by `id`). `#λ` sends one request at a time per connection and
+opens more connections for concurrency, except for readahead, which sends
+a few reads on one connection before reading their replies (Section 14).
 
 ## 4. Messages
 
@@ -156,6 +157,8 @@ window to check it against), and the body of an `Rclear` is `op u8 fields`.
 | 0x15 | `Rreaddir` | `qid[13] cookie s[2] entries[count u32]` | yes |
 | 0x16 | `Tdigest` | `path s[2]` | reserved |
 | 0x17 | `Rdigest` | `qid[13] digest[32]` (SHA-256 of the content) | reserved |
+| 0x18 | `Twalk` | `path s[2] nname u16 name s[2]*nname` | yes (added) |
+| 0x19 | `Rwalk` | `nqid u16 qid[13]*nqid ename s[2] stat[n]` | yes (added) |
 | 0x20-0x2f | writes | Section 10 | reserved |
 | 0x40-0x4f | streams | Section 11 | reserved |
 | 0x7f | `Rerror` | `ename s[2]` | yes |
@@ -173,6 +176,25 @@ window to check it against), and the body of an `Rclear` is `op u8 fields`.
   lists names in byte order, so a page resumes at the right place even if
   entries were added or removed in between. The reply's qid lets a client
   notice that the directory changed while it was paging.
+- **`Twalk`** walks `names` (at most 64) one after another from the
+  directory `path`, as a 9P `Twalk` does from a fid, and answers what a
+  `Tstat` of each joined path would have, in one round trip: the qid of
+  every name walked, then either an empty `ename` and the stat entry of
+  the last name (of `path` itself when there are no names), or the
+  reason the next name could not be walked (`file does not exist`, `not
+  a directory`, `permission denied`, `file name syntax`) and no entry.
+  So `nqid` is the number of names walked, and less than `nname` exactly
+  when `ename` is not empty. `path` itself is checked as a `Tstat` of it
+  is (rights, prefix, search on every directory above it), and a failure
+  there is the plain `Rerror`. Each name then needs the one before it to
+  be a directory the requester can search. A walk of a 17-element name
+  costs one round trip where a `Tstat` per element cost 17.
+
+  `Twalk` came after the first cut, at a code version 1 left unassigned,
+  so a server from before it answers `not implemented` (the rule for
+  unknown ops below). A client that gets that goes back to a `Tstat` per
+  element and does not ask that server again. The version byte does not
+  change.
 - **Paths** start with `/`, have no empty, `.` or `..` element, no NUL,
   and no trailing `/` except the root. Elements are at most 255 bytes and
   paths at most 1024. Anything else is `file name syntax`. The client
@@ -195,14 +217,27 @@ for trees that change while served.
 The client caches file data by `(path, vers)` and directory listings by
 `(path, vers)`:
 
-- Every read asks the server. When the client holds the block, it sends
-  `cond` 1 with its version and gets either `unchanged` (no data on the
-  wire) or the new data and qid, which replace the cache. Cached data is
-  therefore never served for a version the server no longer has: the cost
-  is one round trip per read, the saving is the data.
-- Walks and stats are not cached in the first cut. A later attribute cache
-  can trust entries for a short time, as NFS does with `acregmin`, for
-  workloads that can live with that.
+- A read of data the client holds sends `cond` 1 with its version and
+  gets either `unchanged` (no data on the wire) or the new data and qid,
+  which replace the cache.
+- **The attribute cache.** What the client learnt about a path (a stat
+  entry, a walk's qid, a listing's entries, a read's qid) is trusted for
+  a short lifetime, as NFS trusts attributes for `acregmin`: 1 s by
+  default, set per attach (`lethe -t ms`, the `cache` line of `#λ`'s
+  `clone`). Within it a walk or a stat costs no round trip, and cached
+  blocks of the version it confirmed are served without asking, so a
+  file is revalidated once per lifetime, not once per block. A file
+  changed on the server is therefore seen up to one lifetime late.
+  NFS's default is 3 s; 1 s keeps the window short for trees that are
+  edited while served, and is long enough for the work it is for (a
+  build or an `ls -l` sees each name many times within a second).
+- With a lifetime of 0 nothing is trusted: every stat asks, and every
+  read asks once (a read that spans several cached blocks asks for the
+  first and serves the rest of that version). Cached data is then never
+  served for a version the server no longer has. Two things fetched for
+  the operation in progress are used once however old: the qids a
+  `Twalk` returned for the names of the walk that sent it, and blocks
+  read ahead for a sequential reader.
 
 **Content addressing** (later): `Tdigest` returns the SHA-256 of a file's
 content, so a client can fetch a module and check it against a digest it
@@ -619,8 +654,17 @@ writes would take Venti's content addressing.
   holds everything both ends need, so the kernel device and `lethed` run
   the same codec and the same checks. It depends on `purg-auth` (keys,
   certificates, the trust check), `purg-styx` (qids and stat entries) and
-  the RustCrypto crates `purg-auth` already uses (XChaCha20-Poly1305 is in
-  the `chacha20poly1305` crate the record layer uses).
+  the RustCrypto crates. XChaCha20-Poly1305 (`crates/purg-lethe/src/aead.rs`)
+  is the RFC 8439 construction over `chacha20` 0.10's XChaCha20 and
+  `poly1305`; `chacha20` 0.10 uses NEON on aarch64 targets that have it,
+  the kernel's included, chosen at compile time (0.9 needed `--cfg
+  chacha20_force_neon`). With the `ring` feature, which the emu and
+  `lethed` turn on, the bulk is ring's ChaCha20-Poly1305 under the
+  XChaCha20 subkey: HChaCha20 of the key and the nonce's first 16 bytes,
+  then the nonce `0[4] || nonce[16..24]`. The bytes are the same either
+  way; the tests check both backends against the RustCrypto
+  `XChaCha20Poly1305`, sealing and opening, and against the draft's
+  vectors.
 - `lethed` is a second binary of `purg-emu`, not a crate of its own. It
   serves host files and needs exactly what `#U` already has in
   `crates/purg-emu/src/host/`: Inferno error strings for host errors,
@@ -683,7 +727,7 @@ changed by someone untrusted should not be served.
 ### The device and the command
 
 ```
-lethe [-A] [-k keyfile] [-u user] [-abc] addr mtpt [path]
+lethe [-A] [-k keyfile] [-t ms] [-u user] [-abc] addr mtpt [path]
 ```
 
 `lethe` resolves `addr` with `/net/cs`, finds a key as `mount` does (`-k`
@@ -696,6 +740,7 @@ user glenda
 key <seed hex>
 cert <pgcert1 line>       (with an authinfo)
 path /lib                 (optional: the subtree, which is also the ticket's prefix)
+cache 1000                (optional: the attribute lifetime in ms, from -t)
 ```
 
 `lethe -A` asks for the clear mode. It reads no key and writes
@@ -724,9 +769,12 @@ and `lethe` binds `#λn` on `mtpt` with the `-a`, `-b` or `-c` flags. The
 device keeps the key to renew the ticket; a guest factotum cannot be used
 in the first cut, since the device must be able to sign again later.
 
-The device presents the tree as files. A walk is a `stat` of the joined
-path; a read is a `read` (conditional when cached); a directory read pages
-through `readdir`. Connections are pooled: each request takes an idle
+The device presents the tree as files. A walk is a `walk` of the names
+it has left (the namespace tells a device the rest of the path before
+each step, `Dev::walk_ahead`), or a `stat` of the joined path when one
+name is left or the server is older; a read is a `read` (conditional when
+cached); a directory read pages through `readdir`. A stat right after a
+walk is answered from the walk's entry while it is young. Connections are pooled: each request takes an idle
 connection or dials a new one, and a connection that fails is dropped and
 the request retried on a new one, a few times with a short pause, so a
 server that restarts mid-read costs the reader a delay and no error. A
@@ -737,9 +785,30 @@ where it connects; the command translates names with `/net/cs` first.
 Requests block the calling prog; there is no timeout yet, so a server that
 accepts and never answers hangs its readers.
 
-The cache holds 8 KiB blocks by path and version, at most 1 MiB in all;
-when it fills it is emptied. Reads are sent one block at a time, so a
-large read costs one round trip per 8 KiB.
+The data cache holds 32 KiB blocks (Lethe's largest read) by path and
+version, at most 4 MiB a connection; the least recently used blocks go
+first. The attribute cache (Section 5) holds at most 8,192 entries, and
+drops those older than the lifetime when it is full. A directory listing
+fills it, so `ls -l` of a listed directory stats each name without a
+round trip. Directory pages are 32 KiB too.
+
+A reader is sequential when it reads block 0 of a file whose length is
+known, or a block whose predecessor is cached. Then the read of the block
+goes out with reads of the next four, on one connection, and their
+replies are matched by id: 160 KiB a round trip instead of 32. Readahead
+stops at the file's known length, so a small file costs one read. It is
+dropped, and the block read alone, if that connection fails.
+
+`lethed` keeps three soft caches, each trusted for a second and lost
+harmlessly in a restart: resolved paths (so a stat of a path costs one
+`lstat` of its last element once its parent is known, and a link is
+resolved in full and checked against the root), open files (each read
+checks that the path still names the same file, by its qid, before using
+the cached one), and the sorted names of directories by their qid, so a
+large directory is read and sorted once, not once per page. A file
+renamed over or a link changed is seen up to a second late by `lethed`;
+the qid check means an open file is never read for another file's
+version.
 
 ## 15. Boot root from Lethe (later)
 
@@ -767,6 +836,10 @@ Measured on an Apple Silicon host under Linux:
   No crate is new: XChaCha20-Poly1305, HKDF, X25519 and Ed25519 were
   already linked for the mount's version 3 handshake. A kernel built
   without the `lethe` feature leaves all of it out.
+- The changes of issue #138 (`Twalk`, the caches, readahead, the AEAD
+  over `chacha20` 0.10) add 24 KiB of `.text` (1,737 to 1,761 KiB, 1.4%)
+  and 3 KiB of `.rodata`; `chacha20` 0.10 brings `cipher` 0.5 and its
+  helpers next to the 0.9 the record layer keeps.
 - Test time: the hosted tests in `crates/purg-emu/tests/lethe.rs` took
   about 6 s for both VMs before the clear mode, most of it the
   server-restart and expiry checks, and its tests add a few seconds; the kernel's check adds a few seconds to each QEMU run (each

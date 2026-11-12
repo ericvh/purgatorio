@@ -28,17 +28,14 @@ The same tree is served read-only three ways:
 | `styx-v3` | `export -e -r` in a second emu, behind `styxlisten` | `mount`: version 3 proof with the test key, then ChaCha20-Poly1305 records (ring on the emu) |
 | `styx-A` | `export -A -r` | `mount -A`: no proof, in the clear |
 | `lethe` | `lethed -k lib/test/auth.key.pub` | `lethe`: a ticket, every request sealed with XChaCha20-Poly1305 (RustCrypto) |
+| `lethe-A` | `lethed -A` | `lethe -A`: no ticket, in the clear |
+| `lethe-t0` | as `lethe` | `lethe -t 0`: sealed, nothing trusted from the attribute cache (Section 10) |
 
 The servers trust the public test key (`root/lib/test/keys` bound on
-`/lib/keys` for the export; `-k` for `lethed`), as the tests do. A
-fourth configuration, Lethe in the clear (`lethed -A`, `lethe -A`), is
-being added on branch `lethe-clear` and was not on `next` when these
-numbers were taken. The harness runs it on its own when the `lethed` it
-builds accepts `-A`; after that branch lands, add the column with:
-
-```sh
-cargo xtask lethe-perf --parts direct,counts,sweep
-```
+`/lib/keys` for the export; `-k` for `lethed`), as the tests do.
+Sections 2 to 7 were measured before `lethe-A` and `lethe-t0` existed
+and show the first three; Section 10 has all five, before and after the
+changes of issue #138.
 
 The client is `/bin/test/fsperf.wasm` (`appl/test/fsperf`), run in a
 client emu (wasmtime, and wasmi for one run) or on the kernel. Each
@@ -301,6 +298,7 @@ server's work per page.
 cargo xtask lethe-perf                        # direct, wasmi, counts, sweep, restart
 cargo xtask lethe-perf --parts kernel --reps 3   # the kernel under KVM
 cargo xtask lethe-perf --reps 3 --parts direct,counts
+cargo xtask lethe-perf --parts direct --protos lethe,lethe-t0   # some columns only
 ```
 
 `--parts` takes any of `direct` (wasmtime, `--reps` runs), `wasmi` (one
@@ -317,6 +315,9 @@ Section 2 and hold at any distance; the gains are largest where the RTT
 is large, as Section 5 shows.
 
 ### Lethe
+
+Items 1 to 6 have been done, and 5 for the emu and the kernel both;
+Section 10 measures them. Item 7 has not.
 
 1. **Walk a whole path in one request.** Let `#λ` stat the full path (or
    send a `Twalk`-like op that returns each element's qid) instead of one
@@ -372,3 +373,160 @@ Batch walks and asynchronous clunks would bring Styx's name costs below
 Lethe's present ones; Lethe's recommendations 1 to 3 would take it back
 below Styx, and Lethe keeps the property Section 6 shows: a server
 restart costs a delay, not a dead mount.
+
+## 10. After the changes (issue #138)
+
+Lethe's part of issue #138 changed the client device, the server and the
+cipher, not the wire format (one op was added, Section 4 of
+`docs/lethe.md`):
+
+- **`Twalk`**: a walk of the rest of a path in one request, answering
+  each name's qid and the last one's stat. The namespace tells the
+  device the names left (`Dev::walk_ahead`).
+- **An attribute cache** with a 1 s lifetime (`lethe -t ms`; 0 turns it
+  off), filled by stats, walks, listings and reads. Within it a cached
+  block of the confirmed version is served without asking: a file is
+  revalidated once a lifetime, not once a block.
+- **32 KiB reads and directory pages**, a 4 MiB LRU block cache per
+  connection instead of 1 MiB emptied when full, and readahead: a
+  sequential reader's read goes out with the next four on one pooled
+  connection, replies matched by id.
+- **Faster crypto**: on the emu ring's ChaCha20-Poly1305 under the
+  HChaCha20 subkey; elsewhere RFC 8439 over `chacha20` 0.10, whose NEON
+  backend is chosen at compile time on aarch64 (the kernel too). Seal and
+  open of 8 KiB, in one process on this host: 39 us before, 26 us
+  portable with NEON, 11 us with ring.
+- **`lethed`**: soft caches (1 s) of resolved paths, open files and a
+  directory's sorted names; listing entries cost one `lstat` each.
+
+`lethe-t0` is the device with the attribute cache off: what is left
+there is `Twalk`, the larger reads, readahead and the crypto. The
+benchmark repeats each operation on the same names within a second, so
+the `lethe` column shows the attribute cache at its best; a workload
+that touches each name once, or a tree that must be seen changing at
+once, gets something near `lethe-t0`.
+
+Runs were taken one after another from a worktree of `next` (before)
+and this branch (after), with other agents building on the host: load
+average 5 to 7. 5 runs each, cold, median and range. The Styx columns
+are the before run's (their code did not change).
+
+### Round trips
+
+Requests from client to server per operation, through the counting
+relay. With readahead several requests share one round trip, so for the
+reads the round trips come from the sweep instead (time at 50 ms divided
+by 50).
+
+| case | styx-v3 | lethe before | lethe after | lethe-t0 after |
+|---|---:|---:|---:|---:|
+| `lat` (open, read, close) | 5 | 3 | 0.01 | 3 |
+| `latread` (one read) | 1 | 1 | 0 | 1 |
+| `walk` (17 elements) | 37 | 19 | 0.005 | 2 |
+| `stat` (2 elements) | 5 | 3 | 1 | 2 |
+| `readdir`, 10,000 entries, in all | 102 | 99 | 25 | 26 |
+| `lsl`, per entry | 5 | 3 | 0.96 | 2 |
+| `du`, 2,110 entries, in all | 975 | 432 | 122 | 222 |
+| `small` (open, read, close 1 KiB) | 7 | 4 | 2 | 3 |
+| `read1m`, requests | 132 | 130 | 34 | 34 |
+| `read1m`, round trips | 132 | 130 | 9 | 9 |
+
+`lethe-t0`'s walk is the `Twalk` and the stat after it; its stat of a
+2-element name the same. The attribute cache then takes the stat (and
+the walk of a name seen within the second) away. The lifetime is short
+against a 50 ms link: `lsl` of 10,000 entries takes longer than a
+second there, so the listing's entries expire before the stats reach
+them (46 round trips for 20 entries at 50 ms against 26 at 10 ms).
+
+### At distance
+
+The latency sweep (Section 5's cases: 20 files, 20 repetitions), time in
+ms at 50 ms RTT:
+
+| case | styx-v3 | lethe before | lethe after | lethe-t0 after |
+|---|---:|---:|---:|---:|
+| `lat` (20) | 5084 | 3043 | 101 | 3035 |
+| `walk` (20) | 37463 | 19534 | 51 | 2028 |
+| `stat` (20) | 5057 | 3043 | 1009 | 2025 |
+| `readdir` (10,000) | 5300 | 7177 | 1368 | 1394 |
+| `lsl` (list, stat 20) | 10534 | 9816 | 2534 | 3529 |
+| `small` (20) | 7143 | 4043 | 2029 | 3038 |
+| `read1m` | 6741 | 6626 | 460 | 463 |
+
+Without the attribute cache, a 17-element walk is 10 times faster than
+before and 18 times faster than Styx today; a 1 MiB read 14 times (160
+KiB a round trip instead of 8). `readdir` went from Lethe's worst case
+to 4 times faster than Styx, from the 32 KiB pages.
+
+### On loopback
+
+wasmtime, direct, cold; ms for the whole case unless a rate is given:
+
+| case | styx-v3 | styx-A | lethe before | lethe-A before | lethe after | lethe-A after | lethe-t0 after |
+|---|---|---|---|---|---|---|---|
+| `lat`, per op | 272 us | 254 us | 280 us | 242 us | 12 us | 12 us | 157 us |
+| `latread`, per op | 48 us | 45 us | 87 us | 77 us | 1 us | 1 us | 49 us |
+| `walk` (200) | 588 | 496 | 843 (647-858) | 826 | 9.9 (5.6-10.2) | 9.5 | 26 (22-87) |
+| `stat` (10,000) | 3211 | 2769 | 2294 (1660-2352) | 2187 | 808 (761-841) | 748 | 529 (478-2118) |
+| `readdir` (10,000) | 62 | 57 | 318 (308-356) | 349 | 73 (59-83) | 75 | 76 (30-82) |
+| `lsl` (10,000) | 3299 | 2502 | 2188 (1602-2744) | 2431 | 843 (771-876) | 740 | 1001 (507-1763) |
+| `du` (2,110) | 80 | 51 | 62 | 66 | 32 | 30 | 32 |
+| `small` (10,000) | 4711 | 3604 | 3056 (2504-3596) | 2861 | 1638 (1449-1769) | 1398 | 2336 (754-2882) |
+| `read1m` | 82 MiB/s | 146 MiB/s | 67 MiB/s | 103 MiB/s | 191 MiB/s | 357 MiB/s | 498 MiB/s |
+| `read100m` | 84 MiB/s | 147 MiB/s | 70 MiB/s (51-78) | 113 MiB/s | 233 MiB/s (211-255) | 553 MiB/s | 429 MiB/s (236-636) |
+
+Sealed Lethe now reads 100 MiB at 233 MiB/s against 70 before and 84
+for Styx v3: the cipher (ring), 32 KiB requests and readahead together.
+In the clear it reads at 553 MiB/s. `lethe-t0` beat `lethe` on `stat`
+and `read100m` here although it sends more requests; its spread is
+wide, and the single counting run had them the other way round (778
+against 1075 ms for `stat`, 241 against 358 ms for `read100m`), so that
+difference is the host's fast and slow cores, not the cache.
+
+### The kernel
+
+Under KVM as in Section 7 (wasmi, the relay, QEMU user networking), 3
+runs, cold, median and range in ms. The kernel uses the portable cipher,
+now with NEON. The load average rose from 5 to 11 during the after run.
+
+| case | styx-v3 | lethe before | lethe-A before | lethe after | lethe-A after | lethe-t0 after |
+|---|---|---|---|---|---|---|
+| `lat`, per op | 549 us | 463 us | 333 us | 12 us | 12 us | 439 us |
+| `latread`, per op | 152 us | 147 us | 144 us | 1 us | 3 us | 138 us |
+| `walk` (200) | 908 | 1306 (934-2504) | 877 | 23 (23-24) | 24 | 143 (102-149) |
+| `stat` (10,000) | 5544 | 5512 (5028-8328) | 4026 | 1896 (1763-2421) | 3282 | 3802 (3617-4536) |
+| `readdir` (10,000) | 178 | 582 (491-674) | 519 | 228 (161-312) | 235 | 305 (217-310) |
+| `lsl` (10,000) | 6118 | 6600 (6201-16466) | 5143 | 1132 (691-1409) | 985 | 4617 (4281-4627) |
+| `du` (2,110) | 172 | 362 | 153 | 54 | 70 | 103 |
+| `small` (10,000) | 7727 | 8602 (7993-15184) | 5463 | 6909 (6219-7233) | 6315 | 9581 (9535-11117) |
+| `read1m` | 44 MiB/s | 25 MiB/s | 50 MiB/s | 24 MiB/s | 18 MiB/s | 12 MiB/s |
+| `read100m` | 32 MiB/s | 23 MiB/s | 41 MiB/s | 25 MiB/s | 37 MiB/s | 19 MiB/s |
+
+(Styx v3 from the after run; its code did not change.)
+
+The round trips are the emu's to the request: the device is the same
+code. Name-heavy work gains as on the emu: a 17-element walk without the
+attribute cache is 9 times faster than before. Bulk reads did not gain
+on the kernel: 25 MiB/s sealed against 23, and `lethe-t0` was slower,
+though it sends the same 34 requests for 1 MiB as `lethe`. Here the round
+trip through QEMU's user networking is about 150 us and the kernel's own
+work per byte (smoltcp, opening each reply, and copies of 32 KiB
+blocks in and out of the cache) bounds the rate, not the number
+of round trips; `small` without the cache is also slower per file than
+before despite one round trip fewer. That needs a profile of the kernel's
+read path, which is being worked on separately, and is not solved here.
+
+### What is left
+
+- Bulk reads on the kernel (above): profile before changing the block
+  size or the readahead depth there; cache blocks are copied on every
+  hit and could be shared instead.
+- Requests are still about 150 bytes larger than Styx's (the ticket).
+  Shrinking it changes the ticket format servers share, and at these
+  sizes the round trip, not the bytes, is the cost.
+- Readahead is synchronous: the reader waits for all five replies. A
+  read that ran ahead in the background would overlap the network with
+  the reader's own work.
+- The attribute lifetime is per attach. NFS ages it by how recently the
+  file changed (`acregmin` to `acregmax`); a fixed second is simpler and
+  enough for read-mostly trees.
