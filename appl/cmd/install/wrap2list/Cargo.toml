@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-install-wrap2list"
+description = "install/wrap2list: list the files the installed packages hold"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wrap2list"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+wrap = { package = "appl-lib-wrap", path = "../../../lib/wrap" }
+
+[lints]
+workspace = true

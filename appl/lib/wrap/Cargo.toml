@@ -1,0 +1,20 @@
+[package]
+name = "appl-lib-wrap"
+description = "wrap: Inferno's archive, package (wrap) and replica log formats for the install/ commands"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "wrap"
+path = "src/lib.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../proto" }
+
+[lints]
+workspace = true

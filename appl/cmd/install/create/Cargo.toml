@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-install-create"
+description = "install/create: make a package (a wrap archive) from a prototype"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "create"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+wrap = { package = "appl-lib-wrap", path = "../../../lib/wrap" }
+
+[lints]
+workspace = true
