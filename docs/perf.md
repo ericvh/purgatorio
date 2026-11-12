@@ -253,8 +253,10 @@ cheaper on wasmi (1.34 to 1.16 ms) and 34% cheaper with AOT (0.39 to
 0.26 ms): the loader takes the SHA-256 digest of every module it loads
 for the module policy (`docs/signing.md`). This is adopted. Putting
 `chacha20`, `poly1305` and `chacha20poly1305` at 3 as well made no
-difference to `cat-styx-sealed` (1.89 s against 1.91 s), so they stay at
-`"z"`; that path's cost is elsewhere (Section 6).
+difference to `cat-styx-sealed` (1.89 s against 1.91 s). That was
+because the cipher's generic code is instantiated in `purg-auth`, which
+was still at `"z"`; with `purg-auth` at 3 too, the encrypted read takes
+half the time (Section 9).
 
 **Fuel.** wasmi runs on fuel in slices of 2^20 units, about a million
 instructions, then checks the prog's note and resumes (`purg-vm-wasmi`).
@@ -407,19 +409,8 @@ Fixed here:
 Found and not fixed:
 
 - **Strict alignment** (Section 5.1): the largest single cost.
-- **Encrypted Styx** reads at 50 MB/s whatever the engine and whatever
-  the cipher's optimisation level; the clear mount does 330 to 500 MB/s. The
-  record layer seals each message into a fresh allocation and the
-  reader opens into another; that and the cipher's portable code are
-  the suspects. Not profiled: the host has no `perf`.
-- **purgfs reads one 4 KiB block per virtio-blk request**: 100 MiB is
-  25,600 requests, 45 µs each under KVM. Reading contiguous blocks in one
-  request would help large files.
-- **Each Styx read copies the data four times**: the export reads into
-  a buffer, encodes `Rread` into another, the pipe queues a copy, the
-  mount reader copies it out, and `devmnt` copies it into the caller's
-  buffer. Under KVM the copies cost less than the thread switches
-  between the reader, the export worker and the prog.
+- **Encrypted Styx**, **purgfs's one request per block** and **the
+  copies in a Styx read**: profiled and mostly fixed; Section 9.
 - **The emu's numbers predate the fix to hosted TCP reads**, which
   polled every 5 ms instead of blocking (the `lethe-perf` work). The
   suite's Styx mounts run over pipes, not TCP, so `cat-styx` should not
@@ -459,4 +450,122 @@ Found and not fixed:
 - AOT: run-time image loading with signatures, TLS in the scheduler,
   merging `purg-vm-aot` with `purg-vm-wasmtime`'s host functions (the
   prototype copies them), and CI running the test mode with it.
-- The hot spots in Section 6.
+- The hot spots in Section 6, and what Section 9.4 leaves.
+
+## 9. The data path
+
+The follow-ups of Section 6 for the I/O benchmarks, measured with a
+profiler built for them. Numbers are from 2026-11-12, same host, on
+`next` at `d1ca20f` (the base) and with these changes; the load average
+was 4 to 9 (other agents were building). Seconds, median of six samples
+(three rounds in each of two boots) with the fastest in brackets, under
+KVM with wasmi as on `next`.
+
+### 9.1 The profiler: `#T`
+
+The host has no `perf`, so the kernel profiles itself. With `kprof` in
+the bootargs (`kprof=HZ` for a rate other than 1,000 a second) the
+kernel binds `#T` after `/dev`, after Inferno's kprof(3):
+
+- `kpctl` takes `start`, `stop` and `startclr`;
+- `kpdata` is big-endian 32-bit counts: the samples, the samples in the
+  kernel's text, then one count per 8 bytes of text;
+- `kpcaller` is the same for the link register (`x30`), which charges a
+  leaf such as `memcpy` to its caller. It is not in Inferno.
+
+The clock is the EL1 physical timer, which the scheduler does not use,
+so the 100 Hz tick and its preemption are unchanged; each sample costs
+an interrupt. `cargo xtask bench --kprof` boots the kernel at 2,000
+samples a second; `bench.sh` brackets each I/O benchmark with
+`startclr` and `stop` (outside the timed command) and copies the counts
+to the bench disk, and xtask sums them over rounds and boots and charges
+each bucket to a function from the kernel ELF's symbol table. It prints
+the top functions by PC and by caller per benchmark and writes them to
+`target/bench/kprof-kvm+LABEL.txt`. Limits: only the CPU that starts
+profiling is sampled, and code that runs with interrupts masked is
+charged to where it unmasks them. The device costs nothing without the
+bootarg; with it, two histograms half the size of the text (1.8 MiB
+in all for 1.8 MiB of text).
+
+### 9.2 What it found
+
+| Benchmark | Where the time went (base) |
+|---|---|
+| `cat-root` | 97% in wasmi running `cat` itself: `std::io::stdout` is line-buffered, so every 8 KiB block was searched for a newline, in interpreted code |
+| `cat-styx` | `cat`'s own search again (70%), then `Queue::read`, which moved each byte through `VecDeque::drain` (9%), and copies |
+| `cat-styx-sealed` | ChaCha20 (45%), Poly1305 (6%), `memcpy` (14%), `cat` (24%). The cipher's quarter round was an out-of-line function: code at `"z"` |
+| `cat-disk` | 59% idle waiting for the disk and 7% kicking it, one request per 4 KiB block; `cat` 31% |
+| `fs-disk-1k` | 55% idle, 20% kicking the disk: each create or remove is a dozen requests in a row |
+
+The record layer's allocations, the first suspect, were under 2%.
+
+### 9.3 Changes
+
+- **The cipher at `opt-level` 3**, with `purg-auth`, where its generic
+  code is instantiated (`Cargo.toml`). Alone: `cat-styx-sealed` 2.43 s
+  to 1.44 s.
+- **NEON ChaCha20**: the record layer takes its AEAD from
+  `chacha20poly1305` 0.11, whose ChaCha20 (0.10) uses NEON on aarch64.
+  0.9 needs `--cfg chacha20_force_neon`, which CI's `RUSTFLAGS` would
+  drop. The records are the same bytes (the fixed vectors pass); the
+  login protocol and Lethe stay on 0.10 for now.
+- **Records without a copy or an allocation each**: `Sealer::seal_buf`
+  builds each record in a buffer the sealer reuses, and
+  `Opener::open_body` opens a record read without its header in place,
+  so the plaintext does not move. The mount reader and export use them.
+- **Pipe reads copy slices**: `Queue::read` copies the ring's two runs.
+- **`cat` writes each read straight to fd 1**, as Inferno's cat does,
+  not through `std::io::stdout`. This is the largest change for every
+  `cat` benchmark, and it is the guest's cost, not the kernel's.
+- **purgfs reads contiguous blocks in one request** and a sequential read
+  takes up to 64 KiB ahead (`docs/fs.md`, Memory); the virtio-blk
+  driver's bounce buffers are 64 KiB (from 16), so a read-ahead is one
+  request.
+- **A commit writes its home blocks at once**: `Disk::write_many`, which
+  the kernel's disk keeps up to four requests in flight for. The order
+  of the journal and the flushes is unchanged; the crash test passes.
+
+### 9.4 Results
+
+`kernel only` is every change but `cat`'s (with `cat` as on `next`); it
+ran under a load average of 7 to 9, so its medians are three times its
+fastest samples: read the brackets.
+
+| Benchmark | Target | base | kernel only | all |
+|---|---|---|---|---|
+| `cat-root` | 0.5 | 0.536 (0.533) | 1.59 (0.533) | 0.016 (0.014) |
+| `cat-styx` | 1 | 0.738 (0.721) | 1.95 (0.664) | 0.147 (0.140) |
+| `cat-styx-sealed` | 2 | 2.43 (2.40) | 3.08 (1.14) | 0.618 (0.613) |
+| `cat-disk` | 2 | 2.40 (1.70) | 1.81 (0.852) | 0.203 (0.178) |
+| `fs-disk-1k-create` | 1 | 0.586 (0.478) | 0.782 (0.580) | 0.630 (0.357) |
+| `fs-disk-1k-read` | 0.1 | 0.083 (0.060) | 0.101 (0.081) | 0.080 (0.063) |
+| `fs-disk-1k-stat` | 0.1 | 0.030 (0.022) | 0.040 (0.022) | 0.023 (0.022) |
+| `fs-disk-1k-remove` | 1 | 0.510 (0.421) | 0.626 (0.389) | 0.460 (0.345) |
+
+So, by the fastest samples: encrypted Styx 2.1 times faster in the
+kernel (3.9 with `cat`), 165 MB/s; purgfs reads 2 times (9.5 with
+`cat`), 560 MB/s; the clear mount 715 MB/s; creates and removes about
+20% faster, within the noise of the medians. The rest of the suite did
+not change.
+
+Memory (`memstat`, the kernel's test mode under KVM): text 1,740 KiB to
+1,784 KiB (the second cipher version and the crypto at 3); the heap in
+use at the end 1.50 MB to 1.89 MB, which is the larger bounce buffers
+(two disks in that mode, 4 x 48 KiB more each) and one read-ahead
+buffer; the peaks are unchanged.
+
+Where the time goes now:
+
+- `cat-styx-sealed`: ChaCha20 32%, Poly1305 28% (portable code; there
+  is no NEON Poly1305 in RustCrypto), `memcpy` 19%.
+- `cat-styx`: `memcpy` 44%, zeroed allocations 7%. The copies left are
+  export's read into a buffer and its `Rread` encoding, the pipe in and
+  out, and `devmnt` copying the reply into the caller's buffer. Reading
+  straight into the caller's buffer needs the mount driver to hand the
+  reader the buffer of the request it answers: that is protocol work in
+  `devmnt.rs`, left for its owner.
+- `cat-disk`: 75% idle, waiting for QEMU to do 1,600 reads of 64 KiB.
+  More read-ahead in flight at once (several requests, or larger ones)
+  would help further.
+- `fs-disk-1k`: still the commit's flushes and journal write in a row,
+  which the crash rules require.
