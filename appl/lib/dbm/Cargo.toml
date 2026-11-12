@@ -1,0 +1,16 @@
+[package]
+name = "appl-lib-dbm"
+description = "dbm: hashed key and value databases (a .dir bit map and .pag blocks) for dbm(1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "dbm"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
