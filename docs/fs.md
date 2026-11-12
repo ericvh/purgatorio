@@ -29,7 +29,15 @@ interpreter.
 
 The raw disks are `#S` (Inferno's storage device letter), one directory
 per disk, `sdV0`, `sdV1`, ..., each with `ctl` (geometry and serial) and
-`data` (the bytes, at any offset).
+`data` (the bytes, at any offset). As in Inferno's sd(3), writing
+`part name start end` to `ctl` adds a partition, a file `name` beside
+`data` holding sectors `start` to `end` (not including `end`), and
+`delpart name` removes one; `ctl` lists them as `part` lines after
+`part data 0 n`. The partitions live in the kernel only: the tables on
+the disk are disk/fdisk's and disk/prep's, and their `-p` prints the
+messages that load them (`disk/fdisk -p /dev/sdV0/data >
+/dev/sdV0/ctl`). The kernel mounts purgfs from a whole disk only; a file
+system in a partition would need a way to name it at boot.
 
 ## Layout
 
@@ -260,6 +268,13 @@ is one read per `exec`, not resident memory.
   `data` file, optionally holding a copy of `dir`.
 - `disk/chkdisk [-v] image` checks one without changing it: each problem
   on a line, exit status `errors` if there are any; `-v` adds a summary.
+- `disk/fdisk [-abprw] [-s sectorsize] disk` and `disk/prep [-bprw] [-a
+  name]... [-s sectorsize] partition` edit a PC (MBR) partition table and
+  a Plan 9 one (text in the partition's second sector), as prep(8); they
+  work on a `#S` disk or on an image file. fdisk handles the four primary
+  partitions only and counts in sectors, not cylinders. `disk/mbr [-9]
+  [-m file] disk` writes the boot code of the master boot record (by
+  default a stub that says the disk is not bootable).
 - `cargo xtask diskimg [--size SIZE] [--bsize N] OUT [DIR]` makes an image
   on the build host from a host directory, with the same crate, and
   `cargo xtask diskimg --check IMAGE` checks one. `xtask kernel` uses

@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-disk-prep"
+description = "disk/prep: edit the Plan 9 partition table of a partition"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "prep"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+disk.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,47 @@
+fdisk: can't read ./ctl; assuming 512-byte sectors
+part plan9 63 2048
+>>>   p1             63 2048 (1985 sectors, 992 KB) PLAN9 *
+>>> >>> >>> >>> ?p3 100 200 overlaps with p1 100 1124
+>>> >>> >>> >>> ?unknown command "x"; h for help
+>>> ' p2             63 100  (37 sectors, 18 KB) FAT12 *
+' p1            100 1124 (1024 sectors, 512 KB) PLAN9
+' p3           1124 2048 (924 sectors, 462 KB) PLAN9
+>>> part dos 63 100
+part plan9 100 1124
+part plan91 1124 2048
+>>> p4
+>>> ?changes unwritten; type q again to quit
+>>> >>> part dos 63 100
+part plan9 100 1124
+part plan91 1124 2048
+>>> ?partition 1 2 not in usable range 63 2048
+>>> FAT12 FAT16 EXTENDED FATHUGE NTFS FAT32 FAT32X FATHUGEX EXTENDEDX PLAN9 LINUXSWAP LINUX GPT EFI
+?cannot find partition "p4"
+>>> 00000000  55 aa                                            U.
+not a bootable disk
+part dos 63 100
+part plan9 100 1124
+part plan91 1124 2048
+part plan9 63 2048
+hello
+part 9fat 2 206
+part nvram 206 207
+part fs 207 2048
+part 9fat 2 206
+part nvram 206 207
+part fs 207 2048
+>>>   9fat            2 206  (204 sectors, 102 KB)
+  nvram         206 207  (1 sectors, 512 B)
+  fs            207 2048 (1841 sectors, 920 KB)
+>>> >>> >>> start: end: >>> >>> ?bad expression "name"
+>>> ?already have partition with name "fs"
+>>> part 9fat 2 206
+part nvram 206 207
+part fs 207 307
+part other 307 2048
+>>> >>> part 9fat 2 206
+part nvram 206 207
+part fs 207 307
+part other 307 2048
+disk/prep: unknown partition name "nosuch"
+fail:unknown partition name "nosuch"

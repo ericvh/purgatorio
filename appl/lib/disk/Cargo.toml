@@ -1,0 +1,19 @@
+[package]
+name = "appl-lib-disk"
+description = "disk: the disk and partition editor shared by disk/prep, disk/fdisk, disk/mbr and disk/format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "disk"
+path = "src/lib.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
