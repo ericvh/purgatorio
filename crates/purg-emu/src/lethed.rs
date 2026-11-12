@@ -14,13 +14,15 @@
 //! the clock, randomness, the trust files and a [`Tree`] over host files
 //! with `#U`'s host semantics (`crate::host`).
 
+use std::collections::HashMap;
 use std::fs::{self, File};
+use std::hash::Hash;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use purg_abi::error::{ENONEXIST, ENOTDIR};
 use purg_lethe::client::read_frame;
@@ -99,10 +101,62 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
     Ok(o)
 }
 
+/// How long `lethed`'s soft caches trust what they hold. A file renamed
+/// over, or a link changed, is seen at most this late; nothing is lost
+/// when they are dropped.
+const SOFT_LIFE: Duration = Duration::from_secs(1);
+
+/// A small map whose entries are trusted for [`SOFT_LIFE`]. When it is
+/// full the old entries go, and if none are old, all of them.
+struct Soft<K, V> {
+    map: Mutex<HashMap<K, (V, Instant)>>,
+    max: usize,
+}
+
+impl<K: Eq + Hash, V: Clone> Soft<K, V> {
+    fn new(max: usize) -> Soft<K, V> {
+        Soft {
+            map: Mutex::new(HashMap::new()),
+            max,
+        }
+    }
+
+    fn get(&self, k: &K) -> Option<V> {
+        let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(k)
+            .filter(|(_, at)| at.elapsed() < SOFT_LIFE)
+            .map(|(v, _)| v.clone())
+    }
+
+    fn put(&self, k: K, v: V) {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if m.len() >= self.max {
+            m.retain(|_, (_, at)| at.elapsed() < SOFT_LIFE);
+            if m.len() >= self.max {
+                m.clear();
+            }
+        }
+        m.insert(k, (v, Instant::now()));
+    }
+}
+
+/// A directory's names in byte order, for the qid they were read at.
+type Names = (Qid, Arc<Vec<String>>);
+
 /// Host files under a root, read only.
+///
+/// A stateless server answers each request from the start: the path is
+/// resolved and checked against the root, the file opened, a directory
+/// listed again for every page. The soft caches keep the last of each for
+/// a second: resolved paths, open files (checked against the path's
+/// current inode on each read) and directory listings (by the
+/// directory's qid).
 pub struct HostTree {
     root: PathBuf,
     owner: Option<String>,
+    resolved: Soft<String, PathBuf>,
+    files: Soft<PathBuf, (Arc<File>, u64)>,
+    lists: Soft<PathBuf, Names>,
 }
 
 fn err(e: std::io::Error) -> String {
@@ -115,24 +169,90 @@ impl HostTree {
         if !root.is_dir() {
             return Err(format!("{}: {ENOTDIR}", root.display()));
         }
-        Ok(HostTree { root, owner })
+        Ok(HostTree {
+            root,
+            owner,
+            resolved: Soft::new(8192),
+            files: Soft::new(64),
+            lists: Soft::new(16),
+        })
     }
 
     /// The host path of a Lethe path: each name exactly as given (case
     /// matters, even on a case-insensitive volume), and the whole path,
     /// symbolic links resolved, inside the root. A name that leads out is
     /// answered as one that does not exist.
+    ///
+    /// The parent is resolved first (usually from the cache), so a name
+    /// that is not a link costs one `lstat`; a link is resolved in full
+    /// and checked against the root.
     fn resolve(&self, p: &str) -> Result<PathBuf, String> {
-        let mut dir = self.root.clone();
-        if p != "/" {
-            for name in p[1..].split('/') {
-                if !host::exact_name_exists(&dir, name).map_err(err)? {
-                    return Err(String::from(ENONEXIST));
-                }
-                dir.push(name);
+        if p == "/" {
+            return Ok(self.root.clone());
+        }
+        if let Some(real) = self.resolved.get(&String::from(p)) {
+            return Ok(real);
+        }
+        let (parent, name) = match p.rfind('/') {
+            Some(0) => ("/", &p[1..]),
+            Some(i) => (&p[..i], &p[i + 1..]),
+            None => return Err(String::from(ENONEXIST)),
+        };
+        let dir = self.resolve(parent)?;
+        if !host::exact_name_exists(&dir, name).map_err(err)? {
+            return Err(String::from(ENONEXIST));
+        }
+        let cand = dir.join(name);
+        let md = fs::symlink_metadata(&cand).map_err(err)?;
+        let real = if md.file_type().is_symlink() {
+            self.inside(&cand)?
+        } else {
+            cand
+        };
+        self.resolved.put(String::from(p), real.clone());
+        Ok(real)
+    }
+
+    /// The open file at `real`, whose current metadata is `md`: the cached
+    /// one if it is still that file.
+    fn open(&self, real: &Path, md: &fs::Metadata) -> Result<Arc<File>, String> {
+        let id = devfs::host_qid(md).path;
+        let key = real.to_path_buf();
+        if let Some((f, was)) = self.files.get(&key)
+            && was == id
+        {
+            return Ok(f);
+        }
+        let f = Arc::new(File::open(real).map_err(err)?);
+        // Opened after the stat: keep it only if it is the same file.
+        if f.metadata().is_ok_and(|m| devfs::host_qid(&m).path == id) {
+            self.files.put(key, (f.clone(), id));
+        }
+        Ok(f)
+    }
+
+    /// The names in directory `path`, sorted as bytes, for its qid `q`.
+    fn names(&self, path: &Path, q: Qid) -> Result<Arc<Vec<String>>, String> {
+        let key = path.to_path_buf();
+        if let Some((was, names)) = self.lists.get(&key)
+            && was == q
+        {
+            return Ok(names);
+        }
+        let mut names = Vec::new();
+        for e in fs::read_dir(path).map_err(err)? {
+            let e = e.map_err(err)?;
+            let Ok(name) = e.file_name().into_string() else {
+                continue;
+            };
+            if !host::hidden_entry(&name) {
+                names.push(name);
             }
         }
-        self.inside(&dir)
+        names.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        let names = Arc::new(names);
+        self.lists.put(key, (q, names.clone()));
+        Ok(names)
     }
 
     fn inside(&self, path: &Path) -> Result<PathBuf, String> {
@@ -171,8 +291,9 @@ impl Tree for HostTree {
     }
 
     fn read(&self, p: &str, offset: u64, buf: &mut [u8]) -> Result<(Qid, usize), String> {
-        let f = File::open(self.resolve(p)?).map_err(err)?;
-        let md = f.metadata().map_err(err)?;
+        let real = self.resolve(p)?;
+        let md = fs::metadata(&real).map_err(err)?;
+        let f = self.open(&real, &md)?;
         let mut n = 0;
         while n < buf.len() {
             match host::read_at(&f, &mut buf[n..], offset + n as u64) {
@@ -188,33 +309,31 @@ impl Tree for HostTree {
     fn list(&self, p: &str, after: &[u8], limit: usize) -> Result<(Qid, Vec<Dir>), String> {
         let path = self.resolve(p)?;
         let md = fs::metadata(&path).map_err(err)?;
-        // Names first, which costs no stat; then only the entries this
-        // page can hold are resolved and stat'ed.
-        let mut names = Vec::new();
-        for e in fs::read_dir(&path).map_err(err)? {
-            let e = e.map_err(err)?;
-            let Ok(name) = e.file_name().into_string() else {
-                continue;
-            };
-            if name.as_bytes() > after && !host::hidden_entry(&name) {
-                names.push(name);
-            }
-        }
-        names.sort_unstable_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        let q = devfs::host_qid(&md);
+        // Names first, which costs no stat (and is kept while the
+        // directory's qid stays); then only the entries this page can
+        // hold are resolved and stat'ed.
+        let names = self.names(&path, q)?;
+        let from = names.partition_point(|n| n.as_bytes() <= after);
         let mut out = Vec::new();
-        for name in names {
+        for name in &names[from..] {
             if out.len() == limit {
                 break;
             }
-            // Links out of the tree and dangling links are left out.
-            let Ok(real) = self.inside(&path.join(&name)) else {
-                continue;
+            // An entry that is not a link costs one `lstat`. Links out of
+            // the tree and dangling links are left out.
+            let cand = path.join(name);
+            let md = match fs::symlink_metadata(&cand) {
+                Ok(md) if !md.file_type().is_symlink() => md,
+                Ok(_) => match self.inside(&cand).map(fs::metadata) {
+                    Ok(Ok(md)) => md,
+                    _ => continue,
+                },
+                Err(_) => continue,
             };
-            if let Ok(md) = fs::metadata(real) {
-                out.push(self.entry(&name, &md));
-            }
+            out.push(self.entry(name, &md));
         }
-        Ok((devfs::host_qid(&md), out))
+        Ok((q, out))
     }
 }
 
