@@ -572,3 +572,118 @@ fn read_ahead() {
     let reads = fs.disk().1 - before;
     assert!(reads < 1024 / 16, "{reads} reads for 1024 blocks");
 }
+
+/// A disk whose `write_many` does the writes last to first, and that
+/// fails its `fail_at`th write, inside a batch or not.
+struct Flaky {
+    disk: MemDisk,
+    writes: usize,
+    fail_at: usize,
+}
+
+impl Flaky {
+    fn count(&mut self) -> purg_fs::Result<()> {
+        self.writes += 1;
+        if self.writes == self.fail_at {
+            return Err(std::borrow::Cow::Borrowed(error::EIO));
+        }
+        Ok(())
+    }
+}
+
+impl Disk for Flaky {
+    fn sector(&self) -> usize {
+        self.disk.sector()
+    }
+    fn size(&self) -> u64 {
+        self.disk.size()
+    }
+    fn read(&mut self, off: u64, buf: &mut [u8]) -> purg_fs::Result<()> {
+        self.disk.read(off, buf)
+    }
+    fn write(&mut self, off: u64, buf: &[u8]) -> purg_fs::Result<()> {
+        self.count()?;
+        self.disk.write(off, buf)
+    }
+    fn write_many(&mut self, writes: &[(u64, &[u8])]) -> purg_fs::Result<()> {
+        let mut first = Ok(());
+        for &(off, buf) in writes.iter().rev() {
+            let r = self.count().and_then(|()| self.disk.write(off, buf));
+            if first.is_ok() {
+                first = r;
+            }
+        }
+        first
+    }
+    fn flush(&mut self) -> purg_fs::Result<()> {
+        self.disk.flush()
+    }
+}
+
+/// Filling the disk, as the kernel's test does, ends with `file system
+/// full`, or with `i/o error` when a write fails, wherever it fails,
+/// with the home writes of each commit done in reverse order; it always
+/// ends, and the image left mounts, replays and checks clean (#187).
+#[test]
+fn fill_with_failing_writes() {
+    let f = Format {
+        bsize: 4096,
+        now: 1000,
+        ..Format::default()
+    };
+    let chunk = vec![0x5au8; 64 << 10];
+    for fail_at in (1..400).step_by(7).chain([usize::MAX]) {
+        let disk = Flaky {
+            disk: MemDisk::new(2 << 20, 512),
+            writes: 0,
+            fail_at: usize::MAX,
+        };
+        let fs = Fs::format(disk, &f).expect("format");
+        let mut disk = fs.into_disk();
+        disk.fail_at = fail_at.saturating_add(disk.writes);
+        let mut fs = Fs::mount(disk, &Mount::default()).expect("mount");
+        let root = fs.root();
+        let end = match fs.create(root, "fill", 0o664, USER) {
+            Err(e) => e,
+            Ok(file) => {
+                let mut off = 0u64;
+                let mut rounds = 0;
+                loop {
+                    rounds += 1;
+                    assert!(rounds < 1000, "fail_at {fail_at}: no end");
+                    match fs.write(file.me, off, &chunk, USER) {
+                        Ok(0) => panic!("fail_at {fail_at}: a write of 0"),
+                        Ok(n) => off += n as u64,
+                        Err(e) => break e,
+                    }
+                    // Read back the last chunk, 8 KiB at a time.
+                    let mut buf = vec![0u8; 8192];
+                    let mut at = off.saturating_sub(65536);
+                    while at < off {
+                        let n = fs.read(file.me, at, &mut buf).unwrap();
+                        assert!(n > 0 && buf[..n].iter().all(|&b| b == 0x5a));
+                        at += n as u64;
+                    }
+                }
+            }
+        };
+        if fail_at == usize::MAX {
+            assert_eq!(end, error::ENOSPACE);
+        } else {
+            assert!(
+                end == error::EIO || end == error::ENOSPACE,
+                "fail_at {fail_at}: {end}"
+            );
+            // A failed data write fails only its own write; a failed
+            // commit stops all writing. Either way nothing hangs.
+            if end == error::EIO
+                && let Err(e) = fs.create(root, "more", 0o664, USER)
+            {
+                assert!(e == error::EIO || e == error::ENOSPACE, "{e}");
+            }
+        }
+        let image = fs.into_disk().disk.image();
+        let mut fs = Fs::mount(MemDisk::from_image(image, 512), &Mount::default()).unwrap();
+        assert_clean(&mut fs);
+    }
+}
