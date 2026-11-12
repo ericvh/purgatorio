@@ -1,0 +1,147 @@
+compose and merge
+t
+t/a
+t/a/x
+t
+t/b
+t
+t/a
+t/a/y
+t/b
+t/c
+t
+t/a
+t/a/x
+t/b
+t/c
+t
+t/a
+t/a/x
+t/a/y
+t/b
+t/c
+three
+four
+two
+five
+t
+t/a
+t/a/x
+t/b
+exec
+got t/a/x
+got t/b
+t/a/x --rw-r--r-- 4
+t/b --rw-r--r-- 4
+x 2 1
+b 2 1
+last t/b 0
+4
+pipe
+t/a/x:
+one
+t/b:
+two
+4
+      4
+4
+      4
+      8
+three
+four
+five
+run
+t/a
+t/a/x
+new
+new/a
+new/a/x
+new/b
+setroot
+new
+new/a
+new/a/x
+new/b
+/
+/p
+/p/q
+/p/q/a
+/p/q/a/x
+/p/q/b
+p
+p/x
+out/deep
+out/deep/er
+out/deep/er/a
+out/deep/er/a/x
+out/deep/er/b
+one
+proto
+t
+t/a
+t/a/x
+t/b
+t/c
+one
+u
+u/a
+u/a/x
+u/a/y
+u/c
+chstat
+d-rwx--x--x
+d-rwx--x--x
+--rw-------
+--rw-------
+d-r-xrwxrwx
+d-r-xrwxrwx
+--r--rw-rw-
+--r--rw-rw-
+d-rwxr-xr-x
+d-rwxr-xr-x
+--rwxr-xr-x
+--rwxr-xr-x
+bob 1000
+bob 1000
+bob 1000
+bob 1000
+mergewrite
+m
+m/a
+m/a/x
+m/a/y
+m/b
+m/c
+three
+two
+m
+m
+m/a
+m/a/x
+m/a/y
+m/c
+m
+m/a
+m/a/x
+m/a/y
+m/c
+three
+void
+t
+t/a
+t/a/x
+t/b
+errors
+fs: compose: bad op AunderB
+fs: merge: expected a selector, not gate
+fs: exec: -p and -P need -n 1
+fs: pipe: -1 cannot be used with -p or -P
+fs: run: $s must hold one word
+fs: run: $s must hold one word
+fs: setroot: empty path
+fs: bad mode q
+fs: chstat: bad time never
+fs: chstat: unknown option -z
+fs: merge: option -c needs a value
+fs: nosuch: file does not exist
+status fail:nosuch: file does not exist

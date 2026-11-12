@@ -15,6 +15,7 @@ purgatorio.workspace = true
 purg-styx.workspace = true
 filepat.workspace = true
 regexp.workspace = true
+proto = { package = "appl-lib-proto", path = "../../lib/proto" }
 
 [lints]
 workspace = true

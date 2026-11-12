@@ -496,6 +496,7 @@ name = "appl-cmd-fs"
 version = "0.1.0"
 dependencies = [
  "appl-lib-filepat",
+ "appl-lib-proto",
  "appl-lib-regexp",
  "purg-styx",
  "purgatorio",
