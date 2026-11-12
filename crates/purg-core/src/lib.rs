@@ -13,6 +13,8 @@ pub mod debug;
 pub mod dev;
 pub mod devcmd;
 pub mod devcons;
+#[cfg(feature = "draw")]
+pub mod devdraw;
 pub mod devdup;
 pub mod deveia;
 pub mod devenv;
@@ -23,6 +25,8 @@ pub mod devlethe;
 pub mod devmem;
 pub mod devmnt;
 pub mod devpipe;
+#[cfg(feature = "draw")]
+pub mod devpointer;
 pub mod devprog;
 pub mod devram;
 pub mod devroot;
@@ -70,12 +74,16 @@ pub struct Portable {
 }
 
 /// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C`, `#¤`, with the
-/// `tls` feature `#D` and with the `lethe` feature `#λ`. Embedders add `#/`
-/// and their own devices.
+/// `tls` feature `#D`, with the `lethe` feature `#λ`, and with the `draw`
+/// feature and a platform screen `#i` and `#m`. Embedders add `#/` and
+/// their own devices.
 pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Portable {
     let srv = Arc::new(devsrv::DevSrv::new(procs.clone()));
     let mnt = Arc::new(devmnt::DevMnt::new(platform.clone()));
-    #[cfg_attr(not(any(feature = "tls", feature = "lethe")), allow(unused_mut))]
+    #[cfg_attr(
+        not(any(feature = "tls", feature = "lethe", feature = "draw")),
+        allow(unused_mut)
+    )]
     let mut devs: Vec<Arc<dyn Dev>> = alloc::vec![
         Arc::new(devcons::DevCons::new(platform.clone(), procs.clone())),
         Arc::new(devenv::DevEnv::new(procs.clone())),
@@ -99,5 +107,18 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
     )));
     #[cfg(feature = "lethe")]
     devs.push(Arc::new(devlethe::DevLethe::new(platform.clone())));
+    #[cfg(feature = "draw")]
+    if let Some(screen) = platform.screen()
+        && let Some(draw) = devdraw::DevDraw::new(screen.clone(), procs.user().into())
+    {
+        devs.push(Arc::new(draw));
+        let p = platform.clone();
+        let clock = Arc::new(move || (p.monotonic_ns() / 1_000_000) as u32);
+        devs.push(Arc::new(devpointer::DevPointer::new(
+            screen,
+            procs.user().into(),
+            clock,
+        )));
+    }
     Portable { devs, srv, mnt }
 }

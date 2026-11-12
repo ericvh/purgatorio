@@ -1,0 +1,308 @@
+//! draw: checks `/dev/draw`, `/dev/pointer` and the SDK's draw module on
+//! the screen the emu has without a window. Each check draws through the
+//! device, reads the pixels back with `r`, and compares them with the
+//! same drawing done here by memdraw, plus a few pixels known by hand.
+//! Prints `ok <name>` per passing check and `FAIL <name>: <why>`
+//! otherwise; exits with status `fail:draw` if any check failed.
+
+use std::fs::OpenOptions;
+use std::io::Write;
+
+use purgatorio::draw::memdraw::{self, Image as MemImage};
+use purgatorio::draw::{
+    Display, ENDARROW, ENDDISC, ENDSQUARE, GREY8, Mouse, Op, Point, RGB24, Rect, XRGB32,
+};
+use purgatorio::{Context, Error};
+
+type Check = fn() -> Result<(), String>;
+
+fn e(err: Error) -> String {
+    err.0
+}
+
+/// A local image like one the device has: `chan`, `r`, filled with
+/// `rgba`.
+fn local(r: Rect, chan: memdraw::Chan, rgba: u32) -> MemImage {
+    let mut i = MemImage::new(r, chan).unwrap();
+    i.fill(memdraw::rgba(rgba));
+    i
+}
+
+fn solid(chan: memdraw::Chan, rgba: u32) -> MemImage {
+    let mut i = local(Rect::new(0, 0, 1, 1), chan, rgba);
+    i.repl = true;
+    i.clipr = Rect::infinite();
+    i
+}
+
+fn screen_info() -> Result<(), String> {
+    let d = Display::open().map_err(e)?;
+    let s = d.screen();
+    if s.id != 0 || s.chan != XRGB32 || s.r != Rect::new(0, 0, 640, 480) || s.clipr != s.r {
+        return Err(format!("screen is {s:?}"));
+    }
+    let dir: Vec<String> = std::fs::read_dir("/dev/draw")
+        .map_err(|x| x.to_string())?
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    if !dir.contains(&String::from("new")) || !dir.contains(&format!("{}", d.conn)) {
+        return Err(format!("/dev/draw holds {dir:?}"));
+    }
+    Ok(())
+}
+
+fn ctl_info() -> Result<(), String> {
+    let mut d = Display::open().map_err(e)?;
+    let i = d
+        .alloc(Rect::new(-3, 2, 13, 9), GREY8, false, 0x404040FF)
+        .map_err(e)?;
+    d.send().map_err(e)?;
+    let got = d.info(i.id).map_err(e)?;
+    if got != i {
+        return Err(format!("ctl says {got:?}, want {i:?}"));
+    }
+    match d.info(999) {
+        Err(x) if x.0 == "unknown id for draw image" => Ok(()),
+        other => Err(format!("info of a bad id: {other:?}")),
+    }
+}
+
+/// Rectangles, a mask and an operator on an RGB24 image, compared with
+/// memdraw.
+fn draw_and_read_back() -> Result<(), String> {
+    let mut d = Display::open().map_err(e)?;
+    let r = Rect::new(0, 0, 16, 12);
+    let dst = d.alloc(r, RGB24, false, 0xFFFFFFFF).map_err(e)?;
+    let red = d.color(0xFF0000FF).map_err(e)?;
+    let half = d.color(0x00008080).map_err(e)?;
+    let mask = d
+        .alloc(Rect::new(0, 0, 4, 4), GREY8, true, 0x808080FF)
+        .map_err(e)?;
+    d.draw(&dst, Rect::new(2, 2, 10, 8), &red, None, Point::new(0, 0))
+        .map_err(e)?;
+    d.draw(&dst, Rect::new(6, 4, 14, 11), &half, None, Point::new(0, 0))
+        .map_err(e)?;
+    d.gendraw_op(
+        &dst,
+        Rect::new(0, 9, 16, 12),
+        &red,
+        Point::new(0, 0),
+        Some(&mask),
+        Point::new(0, 0),
+        Op::S,
+    )
+    .map_err(e)?;
+    let got = d.unload(&dst, r).map_err(e)?;
+
+    let mut want = local(r, RGB24, 0xFFFFFFFF);
+    let lred = solid(RGB24, 0xFF0000FF);
+    let lhalf = solid(memdraw::RGBA32, 0x00008080);
+    let mut lmask = local(Rect::new(0, 0, 4, 4), GREY8, 0x808080FF);
+    lmask.repl = true;
+    lmask.clipr = Rect::infinite();
+    let z = Point::new(0, 0);
+    memdraw::draw(
+        &mut want,
+        Rect::new(2, 2, 10, 8),
+        &lred,
+        z,
+        None,
+        z,
+        Op::SOVER_D,
+    );
+    memdraw::draw(
+        &mut want,
+        Rect::new(6, 4, 14, 11),
+        &lhalf,
+        z,
+        None,
+        z,
+        Op::SOVER_D,
+    );
+    memdraw::draw(
+        &mut want,
+        Rect::new(0, 9, 16, 12),
+        &lred,
+        z,
+        Some(&lmask),
+        z,
+        Op::S,
+    );
+    if got != want.unload(r).unwrap() {
+        return Err(String::from("pixels differ from memdraw's"));
+    }
+    // Pixel (3, 3) is red: little-endian b, g, r.
+    let o = (3 * 16 + 3) * 3;
+    if got[o..o + 3] != [0, 0, 0xFF] {
+        return Err(format!("pixel (3,3) is {:?}", &got[o..o + 3]));
+    }
+    Ok(())
+}
+
+/// Lines, polygons, ellipses and arcs on a k8 image, compared with
+/// memdraw: every message's encoding has to arrive intact.
+fn shapes() -> Result<(), String> {
+    let mut d = Display::open().map_err(e)?;
+    let r = Rect::new(0, 0, 64, 48);
+    let dst = d.alloc(r, GREY8, false, 0x000000FF).map_err(e)?;
+    let white = d.color(0xFFFFFFFF).map_err(e)?;
+    let z = Point::new(0, 0);
+    let p = Point::new;
+    let star = [p(30, 2), (p(40, 40)), p(14, 16), p(46, 16), p(20, 40)];
+    let far = [p(1, 1), p(300, 2), p(-200, 30)];
+    d.line(&dst, p(2, 3), p(60, 20), ENDSQUARE, ENDSQUARE, 0, &white, z)
+        .map_err(e)?;
+    d.line(&dst, p(5, 40), p(50, 30), ENDDISC, ENDARROW, 1, &white, z)
+        .map_err(e)?;
+    d.poly(&dst, &star, ENDSQUARE, ENDDISC, 1, &white, z)
+        .map_err(e)?;
+    d.fill_poly(&dst, &star, 1, &white, z).map_err(e)?;
+    d.fill_poly(&dst, &far, !0, &white, z).map_err(e)?;
+    d.ellipse(&dst, p(12, 12), 9, 6, 0, &white, z).map_err(e)?;
+    d.fill_ellipse(&dst, p(52, 36), 6, 8, &white, z)
+        .map_err(e)?;
+    d.arc(&dst, p(32, 24), 14, 14, 1, &white, z, 200, -120)
+        .map_err(e)?;
+    d.fill_arc(&dst, p(55, 8), 7, 7, &white, z, 0, 90)
+        .map_err(e)?;
+    let got = d.unload(&dst, r).map_err(e)?;
+
+    let mut want = local(r, GREY8, 0x000000FF);
+    let w = solid(GREY8, 0xFFFFFFFF);
+    let op = Op::SOVER_D;
+    memdraw::line(
+        &mut want,
+        p(2, 3),
+        p(60, 20),
+        ENDSQUARE,
+        ENDSQUARE,
+        0,
+        &w,
+        z,
+        op,
+    );
+    memdraw::line(
+        &mut want,
+        p(5, 40),
+        p(50, 30),
+        ENDDISC,
+        ENDARROW,
+        1,
+        &w,
+        z,
+        op,
+    );
+    memdraw::poly(&mut want, &star, ENDSQUARE, ENDDISC, 1, &w, z, op);
+    memdraw::fill_poly(&mut want, &star, 1, &w, z, op);
+    memdraw::fill_poly(&mut want, &far, !0, &w, z, op);
+    memdraw::ellipse(&mut want, p(12, 12), 9, 6, 0, &w, z, op);
+    memdraw::fill_ellipse(&mut want, p(52, 36), 6, 8, &w, z, op);
+    memdraw::arc(&mut want, p(32, 24), 14, 14, 1, &w, z, 200, -120, op);
+    memdraw::fill_arc(&mut want, p(55, 8), 7, 7, &w, z, 0, 90, op);
+    if got != want.unload(r).unwrap() {
+        return Err(String::from("pixels differ from memdraw's"));
+    }
+    // A filled disc of radius 2 is 21 pixels.
+    let disc = d
+        .alloc(Rect::new(0, 0, 8, 8), GREY8, false, 0x000000FF)
+        .map_err(e)?;
+    d.fill_ellipse(&disc, p(4, 4), 2, 2, &white, z).map_err(e)?;
+    let px = d.unload(&disc, disc.r).map_err(e)?;
+    let n = px.iter().filter(|&&b| b == 255).count();
+    if n != 21 {
+        return Err(format!("disc of radius 2 has {n} pixels"));
+    }
+    Ok(())
+}
+
+/// Pixels written with `y` come back with `r`, on the screen too.
+fn load_and_screen() -> Result<(), String> {
+    let mut d = Display::open().map_err(e)?;
+    let screen = d.screen();
+    let r = Rect::new(100, 50, 140, 70);
+    let data: Vec<u8> = (0..r.dx() * r.dy() * 4)
+        .map(|i| (i * 7 % 251) as u8)
+        .collect();
+    d.load(&screen, r, &data).map_err(e)?;
+    d.flush().map_err(e)?;
+    let got = d.unload(&screen, r).map_err(e)?;
+    if got != data {
+        return Err(String::from("screen pixels differ from those written"));
+    }
+    // Another connection sees the same screen.
+    let mut d2 = Display::open().map_err(e)?;
+    let s2 = d2.screen();
+    if d2.unload(&s2, r).map_err(e)? != data {
+        return Err(String::from("a second connection sees another screen"));
+    }
+    Ok(())
+}
+
+/// devdraw's error strings, for messages written straight to `data`.
+fn errors() -> Result<(), String> {
+    let d = Display::open().map_err(e)?;
+    let mut data = OpenOptions::new()
+        .write(true)
+        .open(format!("/dev/draw/{}/data", d.conn))
+        .map_err(|x| x.to_string())?;
+    let mut bad_draw = vec![b'd'];
+    bad_draw.extend([0u32, 77, 0].iter().flat_map(|v| v.to_le_bytes()));
+    bad_draw.extend([0u8; 32]);
+    let mut outside = vec![b'r', 0, 0, 0, 0];
+    outside.extend([0i32, 0, 641, 1].iter().flat_map(|v| v.to_le_bytes()));
+    for (msg, want) in [
+        (&b"Q"[..], "bad draw command"),
+        (&b"b\x01\x00"[..], "short draw message"),
+        (&b"f\x09\x00\x00\x00"[..], "unknown id for draw image"),
+        (&bad_draw[..], "unknown id for draw image"),
+        (&outside[..], "readimage outside image"),
+    ] {
+        match data.write_all(msg) {
+            Ok(_) => return Err(format!("{:?} was accepted", msg[0] as char)),
+            Err(x) => {
+                let got = Error::from(x).0;
+                if got != want {
+                    return Err(format!("{:?}: got {got:?}, want {want:?}", msg[0] as char));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn pointer() -> Result<(), String> {
+    let mut m = Mouse::open().map_err(e)?;
+    m.set(Point::new(5, 6)).map_err(e)?;
+    let p = m.read().map_err(e)?;
+    if p.xy != Point::new(5, 6) || p.buttons != 0 {
+        return Err(format!("pointer read {p:?}"));
+    }
+    Ok(())
+}
+
+#[purgatorio::main]
+fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
+    let checks: &[(&str, Check)] = &[
+        ("screen", screen_info),
+        ("ctl", ctl_info),
+        ("draw", draw_and_read_back),
+        ("shapes", shapes),
+        ("load", load_and_screen),
+        ("errors", errors),
+        ("pointer", pointer),
+    ];
+    let mut failed = false;
+    for (name, check) in checks {
+        match check() {
+            Ok(()) => println!("ok {name}"),
+            Err(why) => {
+                println!("FAIL {name}: {why}");
+                failed = true;
+            }
+        }
+    }
+    if failed {
+        return Err(Error::from("fail:draw"));
+    }
+    Ok(())
+}

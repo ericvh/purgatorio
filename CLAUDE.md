@@ -30,8 +30,8 @@ cargo xtask clippy-guests        # lint the SDK and every guest for wasm32-wasip
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --target aarch64-unknown-none \
-  -p purg-abi -p purg-styx -p purg-auth -p purg-platform -p purg-core -p purg-vm \
-  -p purg-vm-wasmi -p purg-lethe -p purg-aarch64 -p purg-fs -p purg-system
+  -p purg-abi -p purg-styx -p purg-auth -p purg-platform -p purg-memdraw -p purg-core \
+  -p purg-vm -p purg-vm-wasmi -p purg-lethe -p purg-aarch64 -p purg-fs -p purg-system
 RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \
   cargo test -p purg-core --features std --test loom --release
 ```
@@ -45,8 +45,8 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 ## Rules
 
 - **Shared crates are `no_std` + `alloc`:** `purg-abi`, `purg-styx`, `purg-auth`,
-  `purg-aarch64`, `purg-platform`, `purg-core`, `purg-vm`, `purg-vm-wasmi`, `purg-lethe`,
-  `purg-fs`, `purg-system`. They must build for
+  `purg-aarch64`, `purg-platform`, `purg-memdraw`, `purg-core`, `purg-vm`, `purg-vm-wasmi`,
+  `purg-lethe`, `purg-fs`, `purg-system`. They must build for
   `aarch64-unknown-none` unchanged; the kernel reuses them. Only `purg-emu`
   and `purg-vm-wasmtime` use `std`.
 - **No `cfg(target_os)` outside `crates/purg-emu/src/host/`.** POSIX-common
@@ -81,11 +81,13 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 
 ```
 crates/purg-{abi,styx,platform,core,vm,vm-wasmi}   no_std shared core
+crates/purg-memdraw                                no_std memdraw: images, compositing, geometry (docs/graphics.md)
 crates/purg-fs                                     purgfs, the disk file system (docs/fs.md)
 crates/purg-system                                 the bare-metal boot namespace and test runner
 crates/purg-vm-wasmtime                            wasmtime backend (std)
 crates/purg-lethe                                  no_std Lethe codec, tickets, server engine, client
-crates/purg-emu                                    the emu and lethed binaries; host code in src/host/
+crates/purg-emu                                    the emu and lethed binaries; host code in src/host/;
+                                                   the `emu -g` window in src/window.rs
 crates/purg-probe                                  bare-metal aarch64 QEMU image; expected.out
 crates/purg-aarch64                                boot, link.x, DTB, GIC, timer, vectors, MMU, PL011,
                                                    scheduler, platform, virtio-net, smoltcp #I
@@ -94,7 +96,7 @@ sdk/purgatorio, sdk/purgatorio-macros              guest SDK, #[purgatorio::main
 appl/cmd/<name>/                                   commands -> root/bin/<name>.wasm
 appl/lib/<name>/                                   cdylib crates are loadable reactors -> root/bin/lib/<name>.wasm;
                                                    others (regexp) are ordinary libraries
-appl/test/{abi,procs,m3,net,wasi}/                 conformance guests -> root/bin/test/
+appl/test/{abi,procs,m3,net,wasi,draw}/            conformance guests -> root/bin/test/
 root/                                              the tree emu serves as #U
 root/lib/test/sh/                                  sh script corpus with .out goldens
 xtask/                                             build-root, run-emu, probe, clippy-guests

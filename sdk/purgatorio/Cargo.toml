@@ -11,6 +11,9 @@ purg-abi.workspace = true
 purg-auth = { workspace = true, features = ["login"] }
 rand_core = { version = "0.6", default-features = false }
 purg-styx.workspace = true
+# Point, Rect, Chan and Op for the draw module, and memdraw itself for
+# programs that draw into a buffer of their own.
+purg-memdraw.workspace = true
 purgatorio-macros.workspace = true
 
 [lints]

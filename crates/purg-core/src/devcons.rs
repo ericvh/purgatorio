@@ -42,6 +42,7 @@ const FILES: &[(&str, u64, u32)] = &[
     ("consctl", 8, 0o220),
     ("drivers", 2, 0o444),
     ("jit", 12, 0o444),
+    ("keyboard", 14, 0o444),
     ("kprint", 10, 0o660),
     ("memory", 13, 0o444),
     ("null", 3, 0o666),
@@ -65,6 +66,8 @@ const QKPRINT: u64 = 10;
 const QSYSCTL: u64 = 11;
 const QJIT: u64 = 12;
 const QMEMORY: u64 = 13;
+/// Only with a display ([`Platform::screen`]).
+const QKEYBOARD: u64 = 14;
 
 /// Input from a console with its own terminal, delivered a line at a time
 /// as Inferno's cons does.
@@ -86,10 +89,13 @@ pub struct DevCons {
     /// last read `cons`; 0 before any did.
     foreground: Arc<AtomicU32>,
     kprint: Queue,
+    /// The display whose keys `keyboard` reads, if there is one.
+    screen: Option<Arc<dyn purg_platform::screen::Screen>>,
 }
 
 impl DevCons {
     pub fn new(platform: Arc<dyn Platform>, procs: Arc<Procs>) -> DevCons {
+        let screen = platform.screen();
         DevCons {
             platform,
             procs,
@@ -98,7 +104,25 @@ impl DevCons {
             reader: Arc::new(ConsReader::new()),
             foreground: Arc::new(AtomicU32::new(0)),
             kprint: Queue::new(64 * 1024),
+            screen,
         }
+    }
+
+    /// The files this console has: `keyboard` only with a display.
+    fn files(&self) -> impl Iterator<Item = &'static (&'static str, u64, u32)> + '_ {
+        FILES
+            .iter()
+            .filter(|f| f.1 != QKEYBOARD || self.screen.is_some())
+    }
+
+    /// Reads typed characters from the display, waiting for one.
+    fn read_keyboard(&self, buf: &mut [u8]) -> Result<usize> {
+        let Some(screen) = &self.screen else {
+            return Err(Error::new(error::ENONEXIST));
+        };
+        let input = screen.input();
+        crate::block::park(&input.rendez, || input.has_keys())?;
+        Ok(input.take_keys(buf))
     }
 
     fn file_dir(&self, path: u64) -> Dir {
@@ -206,7 +230,7 @@ impl Dev for DevCons {
         if c.qid.path != QDIR {
             return Err(Error::new(error::ENOTDIR));
         }
-        let f = FILES.iter().find(|f| f.0 == name);
+        let f = self.files().find(|f| f.0 == name);
         let f = f.ok_or(Error::new(error::ENONEXIST))?;
         Ok(Walked {
             qid: Qid {
@@ -236,6 +260,7 @@ impl Dev for DevCons {
     fn read(&self, c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
         let text = match c.qid.path {
             QCONS => return self.read_cons(buf),
+            QKEYBOARD => return self.read_keyboard(buf),
             QNULL => return Ok(0),
             QRANDOM => {
                 self.platform.entropy(buf);
@@ -266,7 +291,7 @@ impl Dev for DevCons {
     }
 
     fn dirread(&self, _c: &Chan) -> Result<Vec<Dir>> {
-        Ok(FILES.iter().map(|f| self.file_dir(f.1)).collect())
+        Ok(self.files().map(|f| self.file_dir(f.1)).collect())
     }
 
     fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize> {

@@ -155,6 +155,19 @@ on_each_vm! {
         assert!(out.contains("ok bad_pointer_read"), "{vm}:\n{out}");
     }
 
+    /// `/dev/draw` and `/dev/pointer` on the in-memory screen: pixels drawn
+    /// through the device read back as memdraw draws them in the guest.
+    fn draw_conformance(vm) {
+        let o = emu(vm, &["/bin/test/draw.wasm"], b"");
+        let out = stdout(&o);
+        assert!(o.status.success(), "{vm}:\n{out}");
+        assert!(!out.contains("FAIL"), "{vm}:\n{out}");
+        assert!(out.contains("ok shapes\n") && out.contains("ok pointer\n"), "{vm}:\n{out}");
+        // The demo draws its scene without a window.
+        let o = emu(vm, &["draw/demo", "-n"], b"");
+        assert!(o.status.success(), "{vm}: {o:?}");
+    }
+
     /// Inferno names are byte-exact even on macOS's case-insensitive volumes.
     fn names_are_case_exact(vm) {
         let ok = emu(vm, &["cat", "/lib/probe/hello.txt"], b"");
@@ -331,7 +344,7 @@ on_each_vm! {
         let o = emu(vm, &["cat", "/dev/drivers"], b"");
         assert_eq!(
             stdout(&o),
-            "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#I ip\n#C cmd\n#¤ factotum\n#D ssl\n#λ lethe\n#U fs\n",
+            "#/ root\n#c cons\n#e env\n#| pipe\n#p prog\n#s srv\n#M mnt\n#d dup\n#% mem\n#I ip\n#C cmd\n#¤ factotum\n#D ssl\n#λ lethe\n#i draw\n#m pointer\n#U fs\n",
             "{vm}"
         );
     }

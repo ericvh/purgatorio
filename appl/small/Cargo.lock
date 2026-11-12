@@ -389,6 +389,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "purg-memdraw"
+version = "0.1.0"
+
+[[package]]
 name = "purg-styx"
 version = "0.1.0"
 dependencies = [
@@ -401,6 +405,7 @@ version = "0.1.0"
 dependencies = [
  "purg-abi",
  "purg-auth",
+ "purg-memdraw",
  "purg-styx",
  "purgatorio-macros",
  "rand_core",

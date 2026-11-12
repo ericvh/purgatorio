@@ -61,13 +61,14 @@ members = [
     "appl/cmd/dbm/keys",
     "appl/cmd/dbm/list",
     "appl/cmd/dbm/store",
+    "appl/cmd/draw/demo",
     # Libraries shared by commands, outside the globbed directories.
     "appl/archive",
     "appl/authlib",
     "xtask",
 ]
 # Matched by appl/cmd/* but hold crates, with no Cargo.toml of their own.
-exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/ip", "appl/cmd/auth", "appl/cmd/auxi", "appl/cmd/dbm"]
+exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/ip", "appl/cmd/auth", "appl/cmd/auxi", "appl/cmd/dbm", "appl/cmd/draw"]
 
 [workspace.package]
 version = "0.1.0"
