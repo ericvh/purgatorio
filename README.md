@@ -66,7 +66,6 @@ a `; ` prompt.
 | `dossrv`: FAT12, FAT16 and FAT32 read and write, with long names (dossrv(4)) | done; times are UTC, `-v -F -c -S` do nothing |
 | `ftpfs`: an FTP server's files, passive or active, read and write, with renames (ftpfs(4)) | tested against /bin/test/ftpd only; no symbolic links |
 | `dbm/store dbm/fetch dbm/delete dbm/keys dbm/list` | done; the hash is our own, so Inferno's dbm files are not readable |
-| Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd` | done |
 | System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext disk/mkdisk disk/chkdisk` | done |
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log; a `/prog` of its own progs only; remote sessions over encrypted `rcmd`, also on the kernel. See [docs/mcp.md](docs/mcp.md) | stage 3 |
 | Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
