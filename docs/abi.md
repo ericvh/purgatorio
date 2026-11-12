@@ -318,7 +318,8 @@ and a security review.
   transcript hash and a value bound to its keys (`docs/auth.md`, "Server
   authentication"). `MSRVAUTH` (`0x4000_0000`, `mount -S`) makes the
   mount read and check it against every key in `/lib/keys/servers`
-  (whatever host its line names) and `/lib/keys/signers` in the
+  (whatever host its line names) and `/lib/keys/serversigners` (or,
+  when there is no such file, `/lib/keys/signers`) in the
   mounter's namespace, before the attach, both with `afd = -1` and with
   an `afd`. No proof fails with `server did not authenticate`, a proof
   that does not check with `server authentication failed`. `MSRVAUTH`
@@ -344,6 +345,37 @@ and a security review.
 - With `afd = -1`, `mount` does all of this itself. A guest can instead run
   the exchange with `fauth` (below) and pass the auth fd to `mount`.
   `MNOAUTH` is ignored when an `afd` is given.
+
+### Users
+
+Each prog acts as a user, as each Inferno process has `up->env->user`.
+The first prog acts as the host owner: the platform's user (the login
+name that started the emu; `inferno` on the probe and the kernel). A
+spawned prog starts with its parent's user. No import changes; the user
+is read and set through `#c/user`:
+
+- A read of `/dev/user` gives the calling prog's user, with no newline.
+- A write of a name at offset 0 makes the calling prog act as that user
+  from then on, and the progs it starts afterwards. Progs it started
+  before keep theirs. A trailing newline is dropped.
+- Only a prog acting as the host owner may write it. Anyone else gets
+  `permission denied`, even for its own name, so a prog that has become
+  another user cannot become the host owner again. This is Inferno's
+  rule (`iseve()` in devcons).
+- A name must be a single path element of at most 64 bytes with no white
+  space or control characters; else `bad arg in system call`.
+
+The user is the uname a mount authenticates and attaches as, and whose
+`/usr/<user>/keyring/default` and `/usr/<user>/key` it proves with; the
+user an `export` serves as and signs its server proof as; the user in
+`/prog/<pid>/status` and the owner of a prog's `/prog/<pid>` files; and
+the owner of files a prog creates in a RAM tree (the probe's and the
+kernel's root). Only the host owner may open `#¤/ctl` and `#¤/rpc`
+(mode 0600), since `#¤` holds the host owner's key, and only a prog's
+own user, or the host owner, may open its `/prog/<pid>/ctl`. On the emu
+the host file tree is still read and written with the host's
+permissions for the host user who runs it. `runas user cmd` is the
+command for this (`docs/auth.md`, "Users").
 
 ### Read-only `export`
 

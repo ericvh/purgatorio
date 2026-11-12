@@ -224,7 +224,7 @@ impl Prog {
         }
         let flags = flags & !(MNOAUTH | MSRVAUTH);
         let fd = self.fgrp.get(fd)?;
-        let user = String::from(self.kernel.procs.user());
+        let user = self.proc.user();
         let pgrp = self.pgrp.clone();
         let platform = self.kernel.platform.clone();
         let check = move |keys: &purg_auth::session::Keys, proof: &[u8]| {
@@ -258,7 +258,7 @@ impl Prog {
     /// that does not authenticate fails with "authentication not required".
     pub fn fauth(&mut self, fd: i32, aname: &str) -> Result<i32> {
         let fd = self.fgrp.get(fd)?;
-        let user = String::from(self.kernel.procs.user());
+        let user = self.proc.user();
         let afd = self.kernel.mnt.auth(fd, aname, &user)?;
         self.fgrp.alloc(Arc::new(afd))
     }
@@ -333,7 +333,7 @@ impl Prog {
             noauth: flags & purg_abi::mount::MNOAUTH != 0,
             rdonly: flags & purg_abi::export::RDONLY != 0,
             encrypt: flags & purg_abi::export::ENCRYPT != 0,
-            user: String::from(self.kernel.procs.user()),
+            user: self.proc.user(),
             keyfile: (!keyfile.is_empty()).then(|| absolute(keyfile, &self.dot())),
         };
         crate::export::serve_with(self.pgrp.clone(), &dir, &fd, &self.kernel.platform, &opts)

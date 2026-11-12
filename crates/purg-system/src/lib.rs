@@ -53,7 +53,9 @@ pub fn boot(
     let portable = purg_core::portable_devices(&platform, &procs);
     devs.extend(portable.devs);
     devs.extend(b.extra);
-    devs.push(Arc::new(root(procs.user(), &platform)?));
+    devs.push(Arc::new(
+        root(procs.user(), &platform)?.with_users(procs.clone()),
+    ));
     let natives: Vec<char> = b.native.iter().map(|d| d.dc()).collect();
     devs.extend(b.native);
     let devtab = DevTab::new(devs);

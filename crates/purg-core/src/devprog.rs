@@ -1,7 +1,9 @@
 //! `#p`: one directory per prog. `wait` collects children's exit messages.
 //! `status`, `ns`, `fd` and `module` describe the prog; writing `kill` or
 //! `killgrp` to `ctl` interrupts it, and `modules warn` or `modules
-//! require` tightens its module policy (`docs/signing.md`).
+//! require` tightens its module policy (`docs/signing.md`). A prog's
+//! files are its user's; only that user or the host owner may open its
+//! `ctl` (`docs/abi.md`, "Users").
 //!
 //! Memory limits (`docs/abi.md`): `memlimit N` on `ctl` limits the wasm
 //! memory the prog holds (linear memory, and tables at
@@ -122,13 +124,18 @@ impl DevProg {
                 (String::from(f.0), f.2)
             }
         };
+        // A prog's files are its user's, as in Inferno.
+        let user = match self.procs.get(pid) {
+            Some(p) if kind != QROOT => p.user(),
+            _ => String::from(self.procs.user()),
+        };
         Dir {
             dtype: 'p' as u16,
             qid: DevProg::qid(pid, kind),
             mode,
             name,
-            uid: String::from(self.procs.user()),
-            gid: String::from(self.procs.user()),
+            uid: user.clone(),
+            gid: user,
             ..Dir::default()
         }
     }
@@ -212,7 +219,11 @@ impl Dev for DevProg {
         if !ok {
             return Err(Error::new(error::EPERM));
         }
-        self.get(c, pid)?;
+        let p = self.get(c, pid)?;
+        // Only its own user, or the host owner, controls a prog.
+        if kind == QCTL && !self.procs.is_owner() && p.user() != self.procs.current_user() {
+            return Err(Error::new(error::EPERM));
+        }
         Ok(())
     }
 
@@ -231,7 +242,7 @@ impl Dev for DevProg {
                 p.pid,
                 p.ppid,
                 p.group(),
-                self.procs.user(),
+                p.user(),
                 p.state(),
                 p.name()
             ),

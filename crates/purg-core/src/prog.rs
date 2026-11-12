@@ -60,6 +60,11 @@ pub struct Proc {
     pub ppid: u32,
     group: AtomicU32,
     name: Mutex<String>,
+    /// The user this prog acts as (Inferno's `up->env->user`): what
+    /// `/dev/user` reads, the name its mounts authenticate as, and the
+    /// owner of the files it creates in a RAM tree. Inherited at spawn;
+    /// only the host owner may change it ([`Procs::set_user`]).
+    user: Mutex<Arc<str>>,
     egrp: Mutex<Arc<Egrp>>,
     fgrp: Mutex<Arc<Fgrp>>,
     pgrp: Mutex<Arc<Pgrp>>,
@@ -90,6 +95,11 @@ pub struct Proc {
 }
 
 impl Proc {
+    /// The user this prog acts as.
+    pub fn user(&self) -> String {
+        String::from(&**self.user.lock())
+    }
+
     /// The name this prog's command was loaded by; empty before it is.
     pub fn module_path(&self) -> String {
         self.modules
@@ -283,6 +293,22 @@ impl Proc {
     }
 }
 
+/// The longest user name [`Procs::set_user`] takes, in bytes.
+pub const USER_MAX: usize = 64;
+
+/// Whether `user` can be a user name: a single file name of at most
+/// [`USER_MAX`] bytes with no white space or control characters, so it
+/// can name `/usr/<user>` and be quoted nowhere.
+pub fn valid_user(user: &str) -> bool {
+    !user.is_empty()
+        && user.len() <= USER_MAX
+        && user != "."
+        && user != ".."
+        && !user
+            .chars()
+            .any(|c| c == '/' || c.is_whitespace() || c.is_control())
+}
+
 /// The process table.
 pub struct Procs {
     platform: Arc<dyn Platform>,
@@ -387,8 +413,42 @@ impl Procs {
         *self.modpolicy.lock() = ModPolicy { level, trust };
     }
 
+    /// The host owner (Inferno's `eve`): the platform's user, which the
+    /// first prog acts as. It owns the devices and may become any user.
     pub fn user(&self) -> &str {
         &self.user
+    }
+
+    /// The user the prog on the calling kproc acts as; the host owner when
+    /// no prog is running on it (a kernel thread of its own).
+    pub fn current_user(&self) -> String {
+        match self.current() {
+            Ok(p) => p.user(),
+            Err(_) => self.user.clone(),
+        }
+    }
+
+    /// Whether the calling prog acts as the host owner (Inferno's
+    /// `iseve`).
+    pub fn is_owner(&self) -> bool {
+        self.current_user() == self.user
+    }
+
+    /// Makes `p` act as `user` from now on, and the progs it starts after.
+    /// Only a prog acting as the host owner may (the caller, which is the
+    /// prog on this kproc); anyone else gets [`error::EPERM`], even for
+    /// their own name, as in Inferno. A user name that could not be a
+    /// file name (empty, `.`, `..`, or with `/`, white space or a control
+    /// character) is [`error::EBADARG`].
+    pub fn set_user(&self, p: &Proc, user: &str) -> Result<()> {
+        if !self.is_owner() {
+            return Err(Error::new(error::EPERM));
+        }
+        if !valid_user(user) {
+            return Err(Error::new(error::EBADARG));
+        }
+        *p.user.lock() = Arc::from(user);
+        Ok(())
     }
 
     fn register(
@@ -406,6 +466,7 @@ impl Procs {
             ppid,
             group: AtomicU32::new(group.unwrap_or(pid)),
             name: Mutex::new(String::new()),
+            user: Mutex::new(Arc::from(self.user.as_str())),
             egrp: Mutex::new(egrp),
             fgrp: Mutex::new(fgrp),
             pgrp: Mutex::new(pgrp),
@@ -664,6 +725,8 @@ impl Prog {
         );
         // Set before the child runs, so nothing has charged it yet.
         proc.memlimit.store(self.proc.memlimit(), Ordering::Release);
+        let user = self.proc.user.lock().clone();
+        *proc.user.lock() = user;
         proc.debug.inherit(&self.proc.debug);
         *proc.domains.lock() = domains;
         let mut child = Prog {
