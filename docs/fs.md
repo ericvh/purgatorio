@@ -139,7 +139,10 @@ to the disk. The commit:
    transaction's home writes are on stable storage;
 2. writes the header and the images to the journal in one request;
 3. flushes again: the transaction is now durable;
-4. writes each image to its home block.
+4. writes the images to their home blocks, all at once (the kernel's
+   disk keeps up to four requests in flight); their order does not
+   matter, only that they are done before the next transaction's first
+   flush.
 
 At mount, a journal whose checksum matches is written home again. This
 is idempotent: the journal holds the newest copy of each of its blocks.
@@ -217,13 +220,19 @@ What a crash leaves:
 ## Memory
 
 The file system keeps a cache of metadata blocks (32 by default, 128 KiB
-at 4 KiB blocks), least recently used out first. File data is never
-cached: reads and writes go to the disk through one block-sized buffer.
+at 4 KiB blocks), least recently used out first. File data is not
+cached, with one exception: a read takes the blocks it wants that are
+contiguous on the disk in one request, and a sequential read (one that
+continues the last, or starts a file) also takes up to 64 KiB of the
+file's next contiguous blocks, which the following reads are served
+from. Any write through the file system forgets read-ahead data it
+overlaps. Writes go to the disk through one block-sized buffer.
 A transaction holds at most J-1 images (31 blocks), and its commit
 builds the journal write in one buffer of up to J blocks. So the file
-system's RAM is bounded: about 128 KiB of cache, plus up to about 250 KiB
-while a transaction commits. The virtio-blk driver adds four 16 KiB
-bounce buffers per disk.
+system's RAM is bounded: about 128 KiB of cache and 64 KiB read ahead,
+plus up to about 250 KiB while a transaction commits. The virtio-blk
+driver adds four 64 KiB bounce buffers per disk, so one read-ahead is
+one request.
 
 ## Limits
 

@@ -217,6 +217,9 @@ a 100 MiB file from the RAM tree, through Styx mounts and from purgfs,
 an `sh` loop, spawns, file operations and a CPU-bound guest, on a
 release emu with each engine and on the kernel under KVM or TCG. It
 prints medians and writes every sample to `target/bench/results.json`.
+With `--kprof` the kernel boots with its profiler, `#T` (`kpctl`,
+`kpdata`, as Inferno's kprof(3), and `kpcaller`), and xtask prints where
+each I/O benchmark spent its time, by kernel function.
 
 `xtask` builds the kernel and the probe without strict alignment, which
 makes wasmi about three times faster, except for `purg-aarch64` and its
