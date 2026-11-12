@@ -141,7 +141,7 @@ impl Shell {
         // them, as Inferno's sh keeps lists there, so a list comes back
         // as a list in every sub-shell.
         for (k, v) in std::env::vars() {
-            vars.insert(k, unquote(&v));
+            vars.insert(k, purgatorio::env::unquote_list(&v));
         }
         vars.insert(String::from("0"), vec![String::from(argv0)]);
         vars.insert(String::from("*"), args);
@@ -181,7 +181,7 @@ impl Shell {
             let res = if value.is_empty() {
                 purgatorio::env::unset(name)
             } else {
-                purgatorio::env::set(name, &env_value(&value))
+                purgatorio::env::set(name, &purgatorio::env::quote_list(&value))
             };
             if let Err(e) = res {
                 eprintln!("sh: {name}: {e}");
@@ -1090,7 +1090,7 @@ fn std_subst(argv: &[String]) -> Result<Vec<String>, Error> {
             let [arg] = list else {
                 return Err(Error::from("usage: unquote arg"));
             };
-            unquote(arg)
+            purgatorio::env::unquote_list(arg)
         }
     })
 }
@@ -1102,52 +1102,6 @@ fn fields(s: &str) -> Vec<String> {
         .filter(|w| !w.is_empty())
         .map(String::from)
         .collect()
-}
-
-/// A list as its `/env` file holds it: its words separated by spaces,
-/// each quoted as `unquote` needs to read it back (an empty word, or one
-/// with a blank or a quote in it; a single word too), so a list keeps its
-/// shape. Words without those are written as they are, so a program that
-/// reads a plain value such as `/env/home` sees no quotes.
-fn env_value(value: &[String]) -> String {
-    let needs = |v: &str| v.is_empty() || v.contains(|c| is_blank(c) || c == '\'');
-    let words: Vec<String> = value
-        .iter()
-        .map(|v| match needs(v) {
-            true => format!("'{}'", v.replace('\'', "''")),
-            false => v.clone(),
-        })
-        .collect();
-    words.join(" ")
-}
-
-/// Splits `s` into words at blanks, honouring `'quotes'` as `quote`
-/// writes them.
-fn unquote(s: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut c = s.chars().peekable();
-    loop {
-        while c.next_if(|&c| is_blank(c)).is_some() {}
-        if c.peek().is_none() {
-            return words;
-        }
-        let mut w = String::new();
-        while let Some(ch) = c.next_if(|&c| !is_blank(c)) {
-            if ch != '\'' {
-                w.push(ch);
-                continue;
-            }
-            loop {
-                match c.next() {
-                    None => break,
-                    Some('\'') if c.next_if_eq(&'\'').is_some() => w.push('\''),
-                    Some('\'') => break,
-                    Some(ch) => w.push(ch),
-                }
-            }
-        }
-        words.push(w);
-    }
 }
 
 /// The command name a word gives before expansion: its text if it is
@@ -1191,25 +1145,6 @@ mod tests {
     }
 
     #[test]
-    fn env_lists_round_trip() {
-        for l in [
-            v(&["a"]),
-            v(&["a", "b c"]),
-            v(&["a b"]),
-            v(&[""]),
-            v(&["", ""]),
-            v(&["a", ""]),
-            v(&["it's", "x\ny", "$x", "{echo}"]),
-        ] {
-            assert_eq!(unquote(&env_value(&l)), l, "{l:?}");
-        }
-        assert_eq!(env_value(&v(&["/usr/inferno"])), "/usr/inferno");
-        assert_eq!(env_value(&v(&["a", "b c"])), "a 'b c'");
-        assert_eq!(unquote("hello"), ["hello"]);
-        assert!(unquote("").is_empty());
-    }
-
-    #[test]
     fn concatenation() {
         assert_eq!(cat(&["a"], &["1", "2"]).unwrap(), ["a1", "a2"]);
         assert_eq!(cat(&["x", "y"], &[".c"]).unwrap(), ["x.c", "y.c"]);
@@ -1247,9 +1182,7 @@ mod tests {
         assert_eq!(quote("plain"), "plain");
         assert_eq!(quote(""), "''");
         assert_eq!(quote("it's here"), "'it''s here'");
-        assert_eq!(unquote("a 'b c' '' 'it''s'x"), ["a", "b c", "", "it'sx"]);
         assert_eq!(quote("a\u{a0}b"), "a\u{a0}b");
-        assert_eq!(unquote("a\u{a0}b\tc"), ["a\u{a0}b", "c"]);
         assert_eq!(fields(" a\u{a0}b\r\n\tc\n"), ["a\u{a0}b", "c"]);
         assert_eq!(
             std_subst(&v(&["index", "2", "a", "b", "c"])).unwrap(),

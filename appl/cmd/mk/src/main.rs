@@ -14,6 +14,12 @@
 //! `$NPROC` recipes (default 1) run at once; `$nproc` is the job's slot,
 //! from 0. When a recipe fails mk waits for the others, then stops
 //! (unless `-k`).
+//!
+//! A variable from the environment is read as a list, as sh writes it to
+//! `/env` (its quoted words, `purgatorio::env::unquote_list`). Inferno's
+//! mk splits an imported value at NULs, the Plan 9 rc form, which
+//! Inferno's sh does not write; reading sh's own form keeps a list that sh
+//! exports a list in mk.
 
 mod parse;
 
@@ -152,7 +158,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut file = Mkfile::default();
     for (k, v) in std::env::vars() {
         if parse::is_name(&k) {
-            let words = v.split_whitespace().map(String::from).collect();
+            let words = purgatorio::env::unquote_list(&v);
             file.vars.insert(
                 k,
                 Var {
