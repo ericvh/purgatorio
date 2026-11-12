@@ -121,32 +121,226 @@ impl Tree {
     }
 }
 
-/// The union of `trees`, under the first one's root. Directories of the
-/// same name are merged; of two files, or a file and a directory, the one
-/// from the earlier tree is kept.
-pub fn merge(trees: Vec<Tree>) -> Tree {
-    let root = trees.first().map(|t| t.root.clone()).unwrap_or_default();
-    let mut all: BTreeMap<Vec<String>, Item> = BTreeMap::new();
-    for t in trees {
-        let mut blocked: Option<Vec<String>> = None;
-        for item in t.items {
-            if blocked.as_ref().is_some_and(|p| item.rel.starts_with(p)) {
-                continue;
-            }
-            blocked = None;
-            match all.get(&item.rel) {
-                Some(old) if old.is_dir() && item.is_dir() => {}
-                Some(_) => blocked = Some(item.rel),
-                None => {
-                    all.insert(item.rel.clone(), item);
-                }
-            }
+/// Chooses between two entries of the same name, either of which may be
+/// missing: bit 0 of the result takes the first, bit 1 the second.
+/// Bits for a missing entry are ignored.
+pub type Selector = Box<dyn Fn(Option<&Item>, Option<&Item>) -> u8>;
+
+/// The bits of a compositing operator: where both entries exist the
+/// result is A (`IN_A`) or B (`IN_B`); where only A exists, A is kept
+/// with `OUT_A`; where only B does, B with `OUT_B`.
+const IN_A: u8 = 8;
+const IN_B: u8 = 4;
+const OUT_A: u8 = 2;
+const OUT_B: u8 = 1;
+
+/// The selector for a Porter-Duff operator (`AoverB`, `AinB`, ...). With
+/// `dirs`, two directories an operator would drop are both kept, so that
+/// what lies in them is still compared.
+pub fn compose(op: &str, dirs: bool) -> Option<Selector> {
+    let bits = match op {
+        "AinB" => IN_A,
+        "BinA" => IN_B,
+        "AoutB" => OUT_A,
+        "BoutA" => OUT_B,
+        "A" => IN_A | OUT_A,
+        "AoverB" => IN_A | OUT_A | OUT_B,
+        "AatopB" => IN_A | OUT_B,
+        "AxorB" | "BxorA" => OUT_A | OUT_B,
+        "B" => IN_B | OUT_B,
+        "BoverA" => IN_B | OUT_A | OUT_B,
+        "BatopA" => IN_B | OUT_A,
+        _ => return None,
+    };
+    Some(Box::new(move |a, b| {
+        let r = match (a, b) {
+            (Some(_), None) if bits & OUT_A != 0 => 1,
+            (None, Some(_)) if bits & OUT_B != 0 => 2,
+            (Some(_), Some(_)) if bits & IN_A != 0 => 1,
+            (Some(_), Some(_)) if bits & IN_B != 0 => 2,
+            _ => 0,
+        };
+        match (a, b) {
+            (Some(a), Some(b)) if r == 0 && dirs && a.is_dir() && b.is_dir() => 3,
+            _ => r,
+        }
+    }))
+}
+
+/// `sel`'s choice for `a` and `b`, without bits for what is missing.
+pub fn choose(sel: &Selector, a: Option<&Item>, b: Option<&Item>) -> u8 {
+    let have = u8::from(a.is_some()) | (u8::from(b.is_some()) << 1);
+    sel(a, b) & have
+}
+
+/// An item and, for a directory, what it holds, by name.
+pub struct Node {
+    pub item: Item,
+    pub kids: BTreeMap<String, Node>,
+}
+
+impl Node {
+    pub fn name(&self) -> String {
+        self.item.rel.last().cloned().unwrap_or_default()
+    }
+
+    fn flatten(self, out: &mut Vec<Item>) {
+        out.push(self.item);
+        for (_, k) in self.kids {
+            k.flatten(out);
         }
     }
-    Tree {
-        root,
-        items: all.into_values().collect(),
+}
+
+impl Tree {
+    /// The items as a hierarchy. They are in walk order: each after the
+    /// directory holding it.
+    pub fn nodes(self) -> Node {
+        fn attach(stack: &mut Vec<Node>) {
+            let n = stack.pop().expect("a node");
+            let name = n.name();
+            stack.last_mut().expect("a parent").kids.insert(name, n);
+        }
+        let mut stack: Vec<Node> = Vec::new();
+        for item in self.items {
+            while stack.len() > item.rel.len().max(1) {
+                attach(&mut stack);
+            }
+            stack.push(Node {
+                item,
+                kids: BTreeMap::new(),
+            });
+        }
+        while stack.len() > 1 {
+            attach(&mut stack);
+        }
+        stack.pop().expect("a root")
     }
+
+    pub fn from_nodes(root: String, n: Node) -> Tree {
+        let mut items = Vec::new();
+        n.flatten(&mut items);
+        Tree { root, items }
+    }
+}
+
+/// `a` and `b` merged, under `a`'s root. Each pair of entries of the same
+/// name goes to `sel`; two directories it keeps are merged in turn when
+/// `deep`, and otherwise the one it picks (A when it keeps both) comes
+/// whole.
+fn merge2(mut a: Node, mut b: Node, sel: &Selector, deep: bool) -> Node {
+    let mut names: Vec<String> = a.kids.keys().cloned().collect();
+    names.extend(b.kids.keys().filter(|k| !a.kids.contains_key(*k)).cloned());
+    let mut kids = BTreeMap::new();
+    for name in names {
+        let (ka, kb) = (a.kids.remove(&name), b.kids.remove(&name));
+        let r = choose(
+            sel,
+            ka.as_ref().map(|n| &n.item),
+            kb.as_ref().map(|n| &n.item),
+        );
+        let kept = match (ka, kb) {
+            _ if r == 0 => continue,
+            (Some(ka), Some(kb)) if deep && ka.item.is_dir() && kb.item.is_dir() => {
+                // B's directory when only B is chosen, holding what the
+                // merge chose in both.
+                let b_item = (r & 1 == 0).then(|| kb.item.clone());
+                let mut m = merge2(ka, kb, sel, deep);
+                if let Some(item) = b_item {
+                    m.item = item;
+                }
+                m
+            }
+            (Some(ka), _) if r & 1 != 0 => ka,
+            (_, Some(kb)) => kb,
+            (Some(ka), None) => ka,
+            (None, None) => continue,
+        };
+        kids.insert(name, kept);
+    }
+    a.kids = kids;
+    a
+}
+
+/// The union of `trees`, under the first one's root, merged in order:
+/// the first with the second, that with the third and so on. `deep` is
+/// false for `merge -1`: only the roots are merged, and of two
+/// directories below them one is taken whole.
+pub fn merge(trees: Vec<Tree>, sel: &Selector, deep: bool) -> Tree {
+    let mut it = trees.into_iter();
+    let Some(first) = it.next() else {
+        return Tree {
+            root: String::new(),
+            items: Vec::new(),
+        };
+    };
+    let root = first.root.clone();
+    let mut acc = first.nodes();
+    for t in it {
+        acc = merge2(acc, t.nodes(), sel, deep);
+    }
+    Tree::from_nodes(root, acc)
+}
+
+/// `tree` with its root named `path`. With `explicit`, each element of
+/// `path` becomes a directory of its own (`/` first for an absolute
+/// path), made with the root's attributes, and the tree goes under the
+/// last.
+pub fn setroot(mut tree: Tree, path: &str, explicit: bool) -> Tree {
+    if !explicit {
+        if let Some(root) = tree.items.first_mut() {
+            root.dir.name = String::from(path);
+        }
+        tree.root = String::from(path);
+        return tree;
+    }
+    let mut elems: Vec<String> = path
+        .split('/')
+        .filter(|e| !e.is_empty())
+        .map(String::from)
+        .collect();
+    let top = if path.starts_with('/') {
+        String::from("/")
+    } else if elems.is_empty() {
+        return tree;
+    } else {
+        elems.remove(0)
+    };
+    let Some(root) = tree.items.first().cloned() else {
+        return tree;
+    };
+    let mut items = Vec::new();
+    let mut rel: Vec<String> = Vec::new();
+    let mut top_item = root.clone();
+    top_item.dir.name = top.clone();
+    if !elems.is_empty() {
+        top_item.data = Data::None;
+        top_item.dir.mode |= DMDIR;
+        top_item.dir.length = 0;
+    }
+    items.push(Item {
+        rel: Vec::new(),
+        ..top_item
+    });
+    for (i, e) in elems.iter().enumerate() {
+        rel.push(e.clone());
+        let mut it = root.clone();
+        it.rel = rel.clone();
+        it.dir.name = e.clone();
+        if i + 1 < elems.len() {
+            it.data = Data::None;
+            it.dir.mode |= DMDIR;
+            it.dir.length = 0;
+        }
+        items.push(it);
+    }
+    for mut item in tree.items.into_iter().skip(1) {
+        let mut r = rel.clone();
+        r.append(&mut item.rel);
+        item.rel = r;
+        items.push(item);
+    }
+    Tree { root: top, items }
 }
 
 pub const MAGIC: &[u8] = b"pgfsbundle1\n";
@@ -364,7 +558,8 @@ mod tests {
             item("b.c/inside", Some(b"z")),
             item("c", Some(b"c")),
         ]);
-        let m = merge(vec![sample(), other]);
+        let over = compose("AoverB", false).unwrap();
+        let m = merge(vec![sample(), other], &over, true);
         assert_eq!(
             paths(&m),
             [
@@ -380,6 +575,66 @@ mod tests {
         // The earlier file wins, and a directory does not replace a file.
         assert_eq!(m.items[3].read().unwrap(), b"xx");
         assert!(!m.items[5].is_dir());
+    }
+
+    fn other() -> Tree {
+        tree(vec![
+            item("", None),
+            item("a", None),
+            item("a/w", Some(b"new")),
+            item("a/x.c", Some(b"other")),
+            item("c", Some(b"c")),
+        ])
+    }
+
+    #[test]
+    fn composes() {
+        let run = |op: &str, dirs: bool, deep: bool| {
+            let sel = compose(op, dirs).unwrap();
+            paths(&merge(vec![sample(), other()], &sel, deep))
+        };
+        assert_eq!(run("AinB", false, true), ["top", "top/a", "top/a/x.c"]);
+        assert_eq!(run("AoutB", false, true), ["top", "top/b.c"]);
+        assert_eq!(
+            run("AoutB", true, true),
+            ["top", "top/a", "top/a/y.o", "top/b.c"]
+        );
+        assert_eq!(run("BoutA", false, true), ["top", "top/c"]);
+        assert_eq!(
+            run("AxorB", true, true),
+            ["top", "top/a", "top/a/w", "top/a/y.o", "top/b.c", "top/c"]
+        );
+        let b = compose("BoverA", false).unwrap();
+        let m = merge(vec![sample(), other()], &b, true);
+        assert_eq!(m.items[3].read().unwrap(), b"other");
+        // With -1 the directory a is taken whole from one side.
+        assert_eq!(
+            run("AoverB", false, false),
+            ["top", "top/a", "top/a/x.c", "top/a/y.o", "top/b.c", "top/c"]
+        );
+        assert_eq!(
+            run("BoverA", false, false),
+            ["top", "top/a", "top/a/w", "top/a/x.c", "top/b.c", "top/c"]
+        );
+        assert!(compose("AunderB", false).is_none());
+        // Three trees merge in order.
+        let sel = compose("AoverB", false).unwrap();
+        let m = merge(vec![sample(), other(), other()], &sel, true);
+        assert_eq!(m.items.len(), 7);
+    }
+
+    #[test]
+    fn setroots() {
+        let t = setroot(sample(), "/x/y", false);
+        assert_eq!(paths(&t)[..2], ["/x/y", "/x/y/a"]);
+        assert_eq!(t.items[0].dir.name, "/x/y");
+        let t = setroot(sample(), "/x/y", true);
+        assert_eq!(paths(&t)[..4], ["/", "/x", "/x/y", "/x/y/a"]);
+        assert_eq!(t.items[1].dir.name, "x");
+        let t = setroot(sample(), "p/q", true);
+        assert_eq!(paths(&t)[..3], ["p", "p/q", "p/q/a"]);
+        assert_eq!(t.items[2].read().unwrap(), b"");
+        assert_eq!(t.items[3].read().unwrap(), b"xx");
     }
 
     #[test]
