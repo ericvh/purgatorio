@@ -205,6 +205,10 @@ pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, E
     platform.set_note(None);
     let res = match res {
         Ok(Stop::Exit(status)) => Ok(status),
+        // Killed while the engine was starting the module (compiling or
+        // instantiating it): the engine reports its interrupted start as
+        // an error, but the prog was killed, and says so.
+        Err(_) if ctx.prog.proc.note.killed() => Ok(String::from(KILLED)),
         Err(e) => Err(Error::from(alloc::format!("{path}: {e}"))),
     };
     (ctx, res)
