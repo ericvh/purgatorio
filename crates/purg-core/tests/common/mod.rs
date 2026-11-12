@@ -82,7 +82,7 @@ pub fn setup() -> (Prog, Arc<Mock>) {
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root("inferno"))];
     let portable = purg_core::portable_devices(&platform, &procs);
     devs.extend(portable.devs);
-    let ram = RamTree::new('R', "ram", "inferno", platform.clone());
+    let ram = RamTree::new('R', "ram", "inferno", platform.clone()).with_users(procs.clone());
     ram.add_dir("/mnt");
     ram.add_dir("/box");
     devs.push(Arc::new(ram));

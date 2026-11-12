@@ -4,6 +4,10 @@
 //! A console that is a bare byte stream gets its echo and line editing
 //! from [`crate::linedisc`]; the hosted console's terminal does that
 //! itself, so there the lines are only split.
+//!
+//! `user` reads as the calling prog's user. The host owner may write a
+//! name to it to become that user (`runas`); anyone else gets
+//! `permission denied`.
 
 use alloc::format;
 use alloc::string::String;
@@ -21,6 +25,7 @@ use crate::chan::Chan;
 use crate::dev::{Dev, DevTab, Walked, read_str};
 use crate::error::{Error, Result};
 use crate::linedisc::ConsReader;
+use crate::prog::Procs;
 
 const QDIR: u64 = 0;
 
@@ -38,7 +43,7 @@ const FILES: &[(&str, u64, u32)] = &[
     ("sysctl", 11, 0o666),
     ("sysname", 5, 0o444),
     ("time", 6, 0o444),
-    ("user", 7, 0o444),
+    ("user", 7, 0o666),
 ];
 const QCONS: u64 = 1;
 const QDRIVERS: u64 = 2;
@@ -64,6 +69,7 @@ struct LineBuf {
 
 pub struct DevCons {
     platform: Arc<dyn Platform>,
+    procs: Arc<Procs>,
     drivers: Mutex<String>,
     input: Mutex<LineBuf>,
     /// Holds the raw flag, and reads a console that wants the line
@@ -73,9 +79,10 @@ pub struct DevCons {
 }
 
 impl DevCons {
-    pub fn new(platform: Arc<dyn Platform>) -> DevCons {
+    pub fn new(platform: Arc<dyn Platform>, procs: Arc<Procs>) -> DevCons {
         DevCons {
             platform,
+            procs,
             drivers: Mutex::new(String::new()),
             input: Mutex::new(LineBuf::default()),
             reader: ConsReader::new(),
@@ -182,7 +189,10 @@ impl Dev for DevCons {
     }
 
     fn open(&self, c: &mut Chan, omode: u8) -> Result<()> {
-        let writable = matches!(c.qid.path, QCONS | QNULL | QCONSCTL | QKPRINT | QSYSCTL);
+        let writable = matches!(
+            c.qid.path,
+            QCONS | QNULL | QCONSCTL | QKPRINT | QSYSCTL | QUSER
+        );
         if omode & mode::ACCESS != mode::OREAD && !writable {
             return Err(Error::new(error::EPERM));
         }
@@ -201,7 +211,7 @@ impl Dev for DevCons {
             QDRIVERS => self.drivers.lock().clone(),
             QPID => format!("{}", self.platform.current_pid()),
             QSYSNAME => self.platform.sysname(),
-            QUSER => self.platform.user(),
+            QUSER => self.procs.current_user(),
             QTIME => format!("{}", self.platform.now_ns() / 1000),
             QJIT => String::from("0\n"),
             // Inferno's format: one line per pool.
@@ -225,8 +235,21 @@ impl Dev for DevCons {
         Ok(FILES.iter().map(|f| self.file_dir(f.1)).collect())
     }
 
-    fn write(&self, c: &Chan, buf: &[u8], _offset: u64) -> Result<usize> {
+    fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize> {
         match c.qid.path {
+            QUSER => {
+                if !self.procs.is_owner() {
+                    return Err(Error::new(error::EPERM));
+                }
+                let name = core::str::from_utf8(buf).map_err(|_| Error::new(error::EBADARG))?;
+                let name = name.strip_suffix('\n').unwrap_or(name);
+                if offset != 0 {
+                    return Err(Error::new(error::EBADARG));
+                }
+                let p = self.procs.current()?;
+                self.procs.set_user(&p, name)?;
+                Ok(buf.len())
+            }
             QCONS => self.platform.console().write(buf).map_err(Error::from),
             QNULL => Ok(buf.len()),
             QKPRINT | QSYSCTL => self.kprint.write(buf),

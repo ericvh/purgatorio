@@ -4,6 +4,9 @@
 //!
 //! `ctl` takes `key <hex>`, a bare 32-byte seed, `cert <pgcert1 line>` or
 //! `delkey`, and reads as `key <public hex>` and the certificate line.
+//!
+//! It holds the host owner's key: only a prog acting as the host owner
+//! may open `ctl` or `rpc` (`docs/auth.md`, "Users").
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -18,6 +21,7 @@ use crate::auth;
 use crate::chan::Chan;
 use crate::dev::{Dev, Walked, read_str};
 use crate::error::{Error, Result};
+use crate::prog::Procs;
 
 const QROOT: u64 = 0;
 const QCTL: u64 = 1;
@@ -29,6 +33,7 @@ struct Rpc {
 
 pub struct DevFactotum {
     platform: Arc<dyn Platform>,
+    procs: Arc<Procs>,
     /// `None` until `ctl` is given a seed.
     key: Mutex<Option<[u8; auth::SEED]>>,
     /// A certificate for the key, loaded with `cert ...`.
@@ -36,9 +41,10 @@ pub struct DevFactotum {
 }
 
 impl DevFactotum {
-    pub fn new(platform: Arc<dyn Platform>) -> DevFactotum {
+    pub fn new(platform: Arc<dyn Platform>, procs: Arc<Procs>) -> DevFactotum {
         DevFactotum {
             platform,
+            procs,
             key: Mutex::new(None),
             cert: Mutex::new(None),
         }
@@ -166,8 +172,8 @@ impl Dev for DevFactotum {
     fn stat(&self, c: &Chan) -> Result<Dir> {
         let (name, qtype, perm) = match c.qid.path {
             QROOT => ("#¤", QTDIR, DMDIR | 0o555),
-            QCTL => ("ctl", QTFILE, 0o666),
-            _ => ("rpc", QTFILE, 0o666),
+            QCTL => ("ctl", QTFILE, 0o600),
+            _ => ("rpc", QTFILE, 0o600),
         };
         let user = self.platform.user();
         Ok(Dir {
@@ -186,6 +192,9 @@ impl Dev for DevFactotum {
     }
 
     fn open(&self, c: &mut Chan, _omode: u8) -> Result<()> {
+        if c.qid.path != QROOT && !self.procs.is_owner() {
+            return Err(Error::new(error::EPERM));
+        }
         if c.qid.path == QRPC {
             c.aux = Some(Arc::new(Rpc {
                 msg: Mutex::new(Vec::new()),
@@ -240,7 +249,7 @@ impl Dev for DevFactotum {
                 vers: 0,
                 qtype: QTFILE,
             },
-            mode: 0o666,
+            mode: 0o600,
             name: String::from(name),
             uid: user.clone(),
             gid: user.clone(),

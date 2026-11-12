@@ -248,7 +248,7 @@ fn fds_and_modes() {
         error::EISDIR
     );
     assert_eq!(
-        p.open("/dev/user", mode::OWRITE).unwrap_err().as_str(),
+        p.open("/dev/sysname", mode::OWRITE).unwrap_err().as_str(),
         error::EPERM
     );
 }

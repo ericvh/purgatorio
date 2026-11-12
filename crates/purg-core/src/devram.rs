@@ -17,6 +17,7 @@ use crate::chan::Chan;
 use crate::dev::{Dev, Walked, read_str};
 use crate::error::{Error, Result};
 use crate::initrd::Kind;
+use crate::prog::Procs;
 
 const ROOT: u64 = 0;
 
@@ -28,6 +29,8 @@ struct Node {
     data: Cow<'static, [u8]>,
     vers: u32,
     mtime: u32,
+    /// Who created it, when that is not the tree's owner.
+    uid: Option<Arc<str>>,
 }
 
 impl Node {
@@ -85,6 +88,7 @@ impl Tree {
                 data,
                 vers: 0,
                 mtime,
+                uid: None,
             },
         );
         path
@@ -97,6 +101,9 @@ pub struct RamTree {
     name: &'static str,
     owner: String,
     platform: Arc<dyn Platform>,
+    /// Where a creating prog's user is found; without it every file is
+    /// the owner's.
+    procs: Option<Arc<Procs>>,
     tree: Mutex<Tree>,
 }
 
@@ -128,6 +135,7 @@ impl RamTree {
                 data: Cow::Borrowed(&[]),
                 vers: 0,
                 mtime: 0,
+                uid: None,
             },
         );
         RamTree {
@@ -135,8 +143,16 @@ impl RamTree {
             name,
             owner: String::from(owner),
             platform,
+            procs: None,
             tree: Mutex::new(Tree { nodes, next: 1 }),
         }
+    }
+
+    /// Makes the files a prog creates its user's (as `stat` shows them),
+    /// finding that user in `procs`.
+    pub fn with_users(mut self, procs: Arc<Procs>) -> RamTree {
+        self.procs = Some(procs);
+        self
     }
 
     fn now(&self) -> u32 {
@@ -229,7 +245,10 @@ impl RamTree {
             mtime: n.mtime,
             length: if n.is_dir() { 0 } else { n.data.len() as u64 },
             name: n.name.clone(),
-            uid: self.owner.clone(),
+            uid: n
+                .uid
+                .as_deref()
+                .map_or_else(|| self.owner.clone(), String::from),
             gid: self.owner.clone(),
             muid: self.owner.clone(),
         }
@@ -331,6 +350,12 @@ impl Dev for RamTree {
     fn create(&self, dir: &Chan, name: &str, perm: u32) -> Result<Walked> {
         check_name(name)?;
         let now = self.now();
+        let uid = self
+            .procs
+            .as_ref()
+            .map(|p| p.current_user())
+            .filter(|u| *u != self.owner)
+            .map(Arc::from);
         let mut t = self.tree.lock();
         if !t.get(dir.qid.path)?.is_dir() {
             return Err(Error::new(error::ENOTDIR));
@@ -346,13 +371,17 @@ impl Dev for RamTree {
                 n.mtime = now;
                 p
             }
-            None => t.add(
-                dir.qid.path,
-                name,
-                perm & (DMDIR | 0o777),
-                Cow::Owned(Vec::new()),
-                now,
-            ),
+            None => {
+                let p = t.add(
+                    dir.qid.path,
+                    name,
+                    perm & (DMDIR | 0o777),
+                    Cow::Owned(Vec::new()),
+                    now,
+                );
+                t.get_mut(p)?.uid = uid;
+                p
+            }
         };
         Ok(Walked {
             qid: qid(p, t.get(p)?),

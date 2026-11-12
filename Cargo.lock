@@ -922,6 +922,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-runas"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-sed"
 version = "0.1.0"
 dependencies = [

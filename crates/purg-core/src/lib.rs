@@ -77,7 +77,7 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
     let mnt = Arc::new(devmnt::DevMnt::new(platform.clone()));
     #[cfg_attr(not(any(feature = "tls", feature = "lethe")), allow(unused_mut))]
     let mut devs: Vec<Arc<dyn Dev>> = alloc::vec![
-        Arc::new(devcons::DevCons::new(platform.clone())),
+        Arc::new(devcons::DevCons::new(platform.clone(), procs.clone())),
         Arc::new(devenv::DevEnv::new(procs.clone())),
         Arc::new(devpipe::DevPipe::new(procs.user())),
         Arc::new(devprog::DevProg::new(procs.clone())),
@@ -87,7 +87,10 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
         Arc::new(devmem::DevMem::new(platform.clone())),
         Arc::new(devip::DevIp::new(platform.clone())),
         Arc::new(devcmd::DevCmd::new(platform.clone())),
-        Arc::new(devfactotum::DevFactotum::new(platform.clone())),
+        Arc::new(devfactotum::DevFactotum::new(
+            platform.clone(),
+            procs.clone(),
+        )),
     ];
     #[cfg(feature = "tls")]
     devs.push(Arc::new(devssl::DevSsl::new(

@@ -8,8 +8,9 @@
 //! prog's thread, so a prog killed while it waits for the disk stops at
 //! once (reads are interruptible; writes finish, see `docs/fs.md`).
 //!
-//! All progs act as one user (the platform's), as in the emu; the mode
-//! bits still apply to files other users own. `DMEXCL` files admit one
+//! Progs act as the platform's user, or, given the process table
+//! ([`DevFs::with_users`]), each as its own user (`/dev/user`); the mode
+//! bits apply to files other users own. `DMEXCL` files admit one
 //! open at a time (`exclusive use file already open`), and `ORCLOSE`
 //! removes the file at its last close.
 
@@ -19,7 +20,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use purg_abi::{error, mode};
-use purg_core::{Chan, Dev, Error, Platform, Result, Walked};
+use purg_core::{Chan, Dev, Error, Platform, Procs, Result, Walked};
 use purg_platform::sync::Mutex;
 use purg_styx::{Dir, QTAPPEND, QTDIR, QTEXCL, QTFILE, Qid};
 
@@ -40,6 +41,9 @@ fn e(err: crate::Error) -> Error {
 pub struct DevFs<D: Disk + Send> {
     fs: Mutex<Fs<D>>,
     user: String,
+    /// Where the calling prog's user is found, when progs act as their
+    /// own users.
+    procs: Option<Arc<Procs>>,
     platform: Arc<dyn Platform>,
     /// Qid paths of the `DMEXCL` files that are open.
     excl: Mutex<BTreeSet<u64>>,
@@ -56,9 +60,24 @@ impl<D: Disk + Send> DevFs<D> {
     pub fn new(fs: Fs<D>, platform: Arc<dyn Platform>) -> DevFs<D> {
         DevFs {
             user: platform.user(),
+            procs: None,
             fs: Mutex::new(fs),
             platform,
             excl: Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    /// Makes each prog act as its own user, found in `procs`.
+    pub fn with_users(mut self, procs: Arc<Procs>) -> DevFs<D> {
+        self.procs = Some(procs);
+        self
+    }
+
+    /// The user the calling prog acts as.
+    fn user(&self) -> String {
+        match &self.procs {
+            Some(p) => p.current_user(),
+            None => self.user.clone(),
         }
     }
 
@@ -142,8 +161,9 @@ impl<D: Disk + Send + 'static> Dev for DevFs<D> {
     }
 
     fn walk(&self, c: &Chan, name: &str) -> Result<Walked> {
+        let user = self.user();
         let mut fs = self.fs();
-        let loc = fs.walk(Self::loc(c)?, name, &self.user).map_err(e)?;
+        let loc = fs.walk(Self::loc(c)?, name, &user).map_err(e)?;
         let d = fs.dentry(loc.me).map_err(e)?;
         Ok(Self::walked(loc, &d))
     }
@@ -154,13 +174,14 @@ impl<D: Disk + Send + 'static> Dev for DevFs<D> {
     }
 
     fn open(&self, c: &mut Chan, omode: u8) -> Result<()> {
+        let user = self.user();
         let loc = Self::loc(c)?;
         let mut fs = self.fs();
-        let d = fs.open_check(loc.me, &self.user, omode).map_err(e)?;
+        let d = fs.open_check(loc.me, &user, omode).map_err(e)?;
         let rclose = omode & mode::ORCLOSE != 0;
         if rclose {
             let parent = fs.dentry(loc.parent).map_err(e)?;
-            if loc.me.block == 0 || !perm_ok(&parent, &self.user, W) {
+            if loc.me.block == 0 || !perm_ok(&parent, &user, W) {
                 return Err(Error::new(error::EPERM));
             }
         }
@@ -197,7 +218,8 @@ impl<D: Disk + Send + 'static> Dev for DevFs<D> {
             self.excl.lock().remove(&loc.me.path);
         }
         if o.rclose {
-            let _ = self.fs().remove(loc, &self.user);
+            let user = self.user();
+            let _ = self.fs().remove(loc, &user);
         }
     }
 
@@ -211,25 +233,27 @@ impl<D: Disk + Send + 'static> Dev for DevFs<D> {
     }
 
     fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize> {
+        let user = self.user();
         self.fs()
-            .write(Self::loc(c)?.me, offset, buf, &self.user)
+            .write(Self::loc(c)?.me, offset, buf, &user)
             .map_err(e)
     }
 
     fn create(&self, dir: &Chan, name: &str, perm: u32) -> Result<Walked> {
+        let user = self.user();
         let mut fs = self.fs();
-        let loc = fs
-            .create(Self::loc(dir)?, name, perm, &self.user)
-            .map_err(e)?;
+        let loc = fs.create(Self::loc(dir)?, name, perm, &user).map_err(e)?;
         let d = fs.dentry(loc.me).map_err(e)?;
         Ok(Self::walked(loc, &d))
     }
 
     fn remove(&self, c: &Chan) -> Result<()> {
-        self.fs().remove(Self::loc(c)?, &self.user).map_err(e)
+        let user = self.user();
+        self.fs().remove(Self::loc(c)?, &user).map_err(e)
     }
 
     fn wstat(&self, c: &Chan, d: &Dir) -> Result<()> {
+        let user = self.user();
         let loc = Self::loc(c)?;
         let mut fs = self.fs();
         let cur = fs.dentry(loc.me).map_err(e)?;
@@ -250,6 +274,6 @@ impl<D: Disk + Send + 'static> Dev for DevFs<D> {
             mtime: (d.mtime != u32::MAX).then_some(d.mtime),
             atime: (d.atime != u32::MAX).then_some(d.atime),
         };
-        fs.wstat(loc, &w, &self.user).map_err(e)
+        fs.wstat(loc, &w, &user).map_err(e)
     }
 }
