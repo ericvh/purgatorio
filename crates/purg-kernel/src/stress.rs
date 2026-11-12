@@ -67,8 +67,10 @@ struct Job {
 /// and `netcs` post fixed names in `#s` (the plumber's ports, `mash`'s
 /// history, `ndb/cs`'s and `ndb/dns`'s files), `netcmds` serves TFTP on
 /// a fixed UDP port, and `modsig` puts a key in the factotum `#¤`, which
-/// every mount that authenticates then signs with.
-const SHARED: &[&str] = &["plumb", "mash", "netcs", "netcmds", "modsig"];
+/// every mount that authenticates then signs with. `ping` is left out
+/// for a different reason: it counts a reply as lost after a second,
+/// and under the stress load a reply can take longer than that.
+const SHARED: &[&str] = &["plumb", "mash", "netcs", "netcmds", "modsig", "ping"];
 
 /// The lines of a failed guest's output that are printed: its `FAIL`
 /// lines, or else its last lines.
