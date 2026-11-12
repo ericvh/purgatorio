@@ -195,12 +195,27 @@ messages. No host call is added and the ABI version is unchanged.
 - `/prog/<pid>/exception`: the trap that broke the prog, or empty.
 - `/prog/<pid>/prof`: a line `<samples> <function index> <path>` per
   sampled function of the prog and of its exited children.
+- `cprof on|off` and `mprof on|off` on `ctl` are as `prof on|off`, for
+  call counts and for the pages of memory grown. `/prog/<pid>/cprof`
+  and `/prog/<pid>/mprof` have the same lines as `prof`: `<calls>` or
+  `<pages> <function index> <path>`.
+- `stop` on `ctl` asks a traced prog to stop at its next host call or
+  check point; it is then in state `debug`. `start` lets it go on, and
+  `step` lets it go on until it enters a function; both return once it
+  has left the stop. `bpt set <func>` and `bpt del <func>` set and clear
+  a breakpoint on entry to function index `<func>` of its command
+  module. `stop` and `bpt` on a prog that is not traced fail with `prog
+  is not traced`, `step` on a running one with `prog not stopped`.
+- `/prog/<pid>/heap`: the linear memory of a stopped prog, read and
+  written at the file offset; a read past the end returns nothing. A
+  running prog's fails with `prog not stopped`.
 - A traced prog that traps stays in `/prog` with state `broken`, without
   its files and namespace, until `kill` is written to its `ctl`. Its
   parent gets the exit message when it traps.
 - A traced prog's command module is rewritten in memory before it runs:
   it gets a second memory, exported as `purgatorio.stack`. A guest cannot
-  tell, except that it can nest calls half as deep.
+  tell, except that it can nest calls half as deep, and that it waits
+  at a breakpoint.
 
 ### A restricted `/prog`: `#pdomain`
 

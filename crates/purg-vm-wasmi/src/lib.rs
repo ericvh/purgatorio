@@ -12,7 +12,8 @@
 //! (`docs/debug.md`) runs a module that keeps its own call stack
 //! (`purg_vm::trace`); the backend copies it into the prog before each
 //! host call, at the end of each slice, where it is also the profiler's
-//! sample, and after a trap.
+//! sample and the counts are copied, and after a trap. The same points
+//! are where a debugger's `stop` and breakpoints take hold.
 #![no_std]
 
 extern crate alloc;
@@ -118,31 +119,76 @@ fn memory<'c>(
     Ok(mem.data_and_store_mut(caller))
 }
 
-/// Records the call stack of the traced instance that exports `stack`
-/// (as `trace::STACK`) in its prog.
-fn record(mut store: impl AsContextMut<Data = Ctx>, stack: Option<Memory>, sample: bool) {
-    if let Some(stack) = stack {
+/// Records the call stack of a traced instance, whose stack memory
+/// (`trace::STACK`) is `stack` and linear memory `main`, in its prog, and
+/// does what a debugger wants of it there: a stop, or new breakpoints.
+fn debug_point(
+    mut store: impl AsContextMut<Data = Ctx>,
+    stack: Memory,
+    main: Option<Memory>,
+    sample: bool,
+) -> Result<(), Stop> {
+    let hit = {
         let (data, ctx) = stack.data_and_store_mut(&mut store);
-        trace::record(&ctx.prog.proc, data, sample);
+        trace::record(&ctx.prog.proc, data, sample)
+    };
+    if !store.as_context().data().prog.proc.debug.wanted(hit) {
+        return Ok(());
     }
+    let table = match main {
+        Some(main) => {
+            let (data, ctx) = main.data_and_store_mut(&mut store);
+            trace::stop_point(&ctx.prog.proc, hit, data)?
+        }
+        None => {
+            let proc = store.as_context().data().prog.proc.clone();
+            trace::stop_point(&proc, hit, &mut [])?
+        }
+    };
+    if let Some(table) = table {
+        trace::patch(stack.data_mut(&mut store), &table);
+    }
+    Ok(())
 }
 
-/// [`record`] for a host call's caller. Only the prog's command is
+/// [`debug_point`] for a host call's caller. Only the prog's command is
 /// traced: a call from a reactor leaves the stack as its `call` saw it.
-fn record_caller(caller: &mut Caller<'_, Ctx>) {
+fn debug_caller(caller: &mut Caller<'_, Ctx>) -> Result<(), wasmi::Error> {
     if !caller.data().prog.proc.debug.traced() {
-        return;
+        return Ok(());
     }
-    let stack = caller
+    let Some(stack) = caller
         .get_export(trace::STACK)
+        .and_then(Extern::into_memory)
+    else {
+        return Ok(());
+    };
+    let main = caller
+        .get_export(purg_abi::MEMORY)
         .and_then(Extern::into_memory);
-    record(caller, stack, false);
+    debug_point(caller, stack, main, false).map_err(|s| wasmi::Error::host(HostStop(s)))
 }
 
-/// [`record`] for a prog's command instance.
-fn record_instance(mut store: impl AsContextMut<Data = Ctx>, instance: &Instance, sample: bool) {
-    let stack = instance.get_memory(&store, trace::STACK);
-    record(&mut store, stack, sample);
+/// [`debug_point`] for a prog's command instance.
+fn debug_instance(
+    mut store: impl AsContextMut<Data = Ctx>,
+    instance: &Instance,
+    sample: bool,
+) -> Result<(), Stop> {
+    let Some(stack) = instance.get_memory(&store, trace::STACK) else {
+        return Ok(());
+    };
+    let main = instance.get_memory(&store, purg_abi::MEMORY);
+    debug_point(&mut store, stack, main, sample)
+}
+
+/// Records the stack of a prog's command instance, and its counts.
+fn record_instance(mut store: impl AsContextMut<Data = Ctx>, instance: &Instance) {
+    if let Some(stack) = instance.get_memory(&store, trace::STACK) {
+        let (data, ctx) = stack.data_and_store_mut(&mut store);
+        trace::record(&ctx.prog.proc, data, false);
+        trace::counts(&ctx.prog.proc, data);
+    }
 }
 
 fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
@@ -152,7 +198,7 @@ fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
                 $module,
                 $name,
                 |mut caller: Caller<'_, Ctx>, $($a: $t),*| -> Result<$r, wasmi::Error> {
-                    record_caller(&mut caller);
+                    debug_caller(&mut caller)?;
                     let (data, ctx) = memory(&mut caller)?;
                     purg_vm::host_call(ctx, |ctx| $f(ctx, &mut Mem(data), $($a),*))
                         .map_err(|s| wasmi::Error::host(HostStop(s)))
@@ -355,7 +401,8 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
             }
             TypedResumableCall::OutOfFuel(t) => {
                 if let Some(instance) = traced {
-                    record_instance(&mut ctx, instance, true);
+                    debug_instance(&mut ctx, instance, true)
+                        .map_err(|s| wasmi::Error::host(HostStop(s)))?;
                 }
                 if ctx.as_context().data().prog.proc.note.killed() {
                     return Err(wasmi::Error::host(HostStop(Stop::killed())));
@@ -383,7 +430,12 @@ impl Wasmi {
             .map_err(bad_exec)?;
         store.set_fuel(SLICE).map_err(bad_exec)?;
         let traced = store.data().prog.proc.debug.traced().then_some(&instance);
-        Ok(match call_sliced(&mut *store, &entry, (), traced) {
+        let res = call_sliced(&mut *store, &entry, (), traced);
+        // A traced prog's last stack, and its counts, stay readable.
+        if let Some(instance) = traced {
+            record_instance(&mut *store, instance);
+        }
+        Ok(match res {
             Ok(()) => Stop::Exit(String::new()),
             Err(e) => match e.downcast_ref::<HostStop>() {
                 Some(stop) => stop.0.clone(),
@@ -391,8 +443,7 @@ impl Wasmi {
                     let status = format!("trap: {e}");
                     // A traced prog that traps is broken: its stack at
                     // the trap and the trap itself stay readable.
-                    if let Some(instance) = traced {
-                        record_instance(&mut *store, instance, false);
+                    if traced.is_some() {
                         store.data().prog.proc.debug.set_exception(&status);
                     }
                     Stop::Exit(status)
