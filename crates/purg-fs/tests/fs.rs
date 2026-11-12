@@ -460,3 +460,115 @@ fn a_read_only_mount_sees_the_journal() {
     let got = names(&mut fs, root);
     assert!(got.is_empty() || got == ["x"], "{got:?}");
 }
+
+/// A disk that counts its reads.
+struct Counting(MemDisk, usize);
+
+impl Disk for Counting {
+    fn sector(&self) -> usize {
+        self.0.sector()
+    }
+    fn size(&self) -> u64 {
+        self.0.size()
+    }
+    fn read(&mut self, off: u64, buf: &mut [u8]) -> purg_fs::Result<()> {
+        self.1 += 1;
+        self.0.read(off, buf)
+    }
+    fn write(&mut self, off: u64, buf: &[u8]) -> purg_fs::Result<()> {
+        self.0.write(off, buf)
+    }
+    fn flush(&mut self) -> purg_fs::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// Reads of every size and alignment, sequential and not, see what was
+/// written, including writes that land in what was read ahead; and a
+/// sequential read of a contiguous file takes few requests.
+#[test]
+fn read_ahead() {
+    let f = Format {
+        bsize: 512,
+        now: 1000,
+        ..Format::default()
+    };
+    let disk = Counting(MemDisk::new(4 << 20, 512), 0);
+    let mut fs = Fs::format(disk, &f).expect("format");
+    let root = fs.root();
+    let a = fs.create(root, "a", 0o664, USER).unwrap();
+    let b = fs.create(root, "b", 0o664, USER).unwrap();
+    // Interleaved, so neither file is contiguous throughout, with a hole.
+    let mut want_a = pattern(512 * 300 + 11, 1);
+    let mut want_b = pattern(512 * 40, 2);
+    for i in 0..10 {
+        let (lo, hi) = (i * want_a.len() / 10, (i + 1) * want_a.len() / 10);
+        fs.write(a.me, lo as u64, &want_a[lo..hi], USER).unwrap();
+        let (lo, hi) = (i * want_b.len() / 10, (i + 1) * want_b.len() / 10);
+        fs.write(b.me, lo as u64, &want_b[lo..hi], USER).unwrap();
+    }
+    fs.write(b.me, 512 * 60, b"tail", USER).unwrap();
+    want_b.resize(512 * 60, 0);
+    want_b.extend_from_slice(b"tail");
+    for size in [1usize, 100, 511, 512, 513, 1000, 4096, 8192, 70000] {
+        for (f, want) in [(a, &want_a), (b, &want_b)] {
+            let mut got = Vec::new();
+            let mut buf = vec![0u8; size];
+            loop {
+                let n = fs.read(f.me, got.len() as u64, &mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            assert_eq!(&got, want, "size {size}");
+        }
+    }
+    // Backwards, and alternating between the files.
+    let mut buf = [0u8; 700];
+    for i in (0..200).rev() {
+        let off = i * 777 % want_a.len();
+        let n = fs.read(a.me, off as u64, &mut buf).unwrap();
+        assert_eq!(&buf[..n], &want_a[off..off + n]);
+        let off = i * 333 % want_b.len();
+        let n = fs.read(b.me, off as u64, &mut buf).unwrap();
+        assert_eq!(&buf[..n], &want_b[off..off + n]);
+    }
+    // A write into what the last read took ahead.
+    let mut buf = [0u8; 512];
+    fs.read(a.me, 0, &mut buf).unwrap();
+    fs.write(a.me, 1000, b"changed", USER).unwrap();
+    want_a[1000..1007].copy_from_slice(b"changed");
+    let mut got = vec![0u8; 2000];
+    fs.read(a.me, 512, &mut got).unwrap();
+    assert_eq!(&got[..], &want_a[512..2512]);
+    // Truncated and grown again: the tail reads as zeros.
+    fs.read(a.me, 512 * 100, &mut buf).unwrap();
+    let w = WStat {
+        length: Some(512 * 100 + 5),
+        ..WStat::default()
+    };
+    fs.wstat(a, &w, USER).unwrap();
+    fs.write(a.me, 512 * 102, b"x", USER).unwrap();
+    let mut got = vec![0u8; 512 * 3];
+    let n = fs.read(a.me, 512 * 100, &mut got).unwrap();
+    assert_eq!(n, 512 * 2 + 1);
+    assert_eq!(&got[..5], &want_a[512 * 100..512 * 100 + 5]);
+    assert!(got[5..512 * 2].iter().all(|&c| c == 0));
+    assert_eq!(got[512 * 2], b'x');
+    assert_clean(&mut fs);
+    // A contiguous file read in 512-byte pieces: one request per
+    // READAHEAD, not one per block.
+    let c = fs.create(root, "c", 0o664, USER).unwrap();
+    let data = pattern(512 * 1024, 3);
+    fs.write(c.me, 0, &data, USER).unwrap();
+    let before = fs.disk().1;
+    let mut off = 0;
+    while off < data.len() {
+        let n = fs.read(c.me, off as u64, &mut buf).unwrap();
+        assert_eq!(&buf[..n], &data[off..off + n]);
+        off += n;
+    }
+    let reads = fs.disk().1 - before;
+    assert!(reads < 1024 / 16, "{reads} reads for 1024 blocks");
+}

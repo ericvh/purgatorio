@@ -61,6 +61,11 @@ impl purg_fs::Disk for BlkDisk {
         self.0.write(off / SECTOR, buf, Wait::Uninterruptible)
     }
 
+    fn write_many(&mut self, writes: &[(u64, &[u8])]) -> purg_fs::Result<()> {
+        let w: Vec<(u64, &[u8])> = writes.iter().map(|&(o, b)| (o / SECTOR, b)).collect();
+        self.0.write_many(&w)
+    }
+
     fn flush(&mut self) -> purg_fs::Result<()> {
         self.0.flush()
     }
