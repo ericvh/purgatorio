@@ -19,6 +19,14 @@ use crate::shmods::Fail;
 
 pub const SH: &str = "/bin/sh.wasm";
 
+/// Writes `msg` to the `ctl` file of prog `pid`.
+fn ctl(pid: u32, msg: &str) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(format!("/prog/{pid}/ctl"))?
+        .write_all(msg.as_bytes())
+}
+
 /// Variables that are never written to `/env`.
 fn exported(name: &str) -> bool {
     !(name == "*" || name == "status" || name == "apid" || name.chars().all(|c| c.is_ascii_digit()))
@@ -108,6 +116,12 @@ pub struct Shell {
     /// `-e`: a command that fails in the middle of a sequence raises its
     /// status, so the script stops there.
     pub errexit: bool,
+    /// An interactive shell survives the console's interrupt
+    /// ([`Shell::catch_interrupts`]).
+    catchint: bool,
+    /// An interrupt came while a command ran: the rest of the input being
+    /// run is abandoned.
+    pub interrupted: bool,
 }
 
 /// Why execution stopped early.
@@ -142,7 +156,18 @@ impl Shell {
             tags: Default::default(),
             quiet: false,
             errexit: false,
+            catchint: false,
+            interrupted: false,
         }
+    }
+
+    /// For an interactive shell: a process group of its own, so that the
+    /// console's interrupt key reaches it and the commands it starts but
+    /// not the prog that started it, and `catchint on`, so that it
+    /// survives the `interrupt` note (`docs/abi.md`, "Interrupts").
+    pub fn catch_interrupts(&mut self) {
+        let _ = purgatorio::pctl(pctl::NEWPGRP, &[]);
+        self.catchint = ctl(purgatorio::pid(), "catchint on").is_ok();
     }
 
     pub(crate) fn set_var(&mut self, name: &str, value: Vec<String>, local: bool) {
@@ -209,6 +234,7 @@ impl Shell {
                 self.background_item(item, io);
             } else {
                 self.status = self.andor(&item.andor, io)?;
+                self.check_interrupt()?;
                 // As Inferno's sh, -e checks each command of a sequence
                 // but the last, whose status is the sequence's own.
                 if self.errexit && !self.status.is_empty() && n + 1 < items.len() {
@@ -222,6 +248,7 @@ impl Shell {
     fn andor(&mut self, a: &AndOr, io: &Io) -> Flow<String> {
         let mut status = self.pipeline(&a.first, io)?;
         for (and, p) in &a.rest {
+            self.check_interrupt()?;
             if status.is_empty() == *and {
                 self.status = status;
                 status = self.pipeline(p, io)?;
@@ -403,14 +430,34 @@ impl Shell {
         purgatorio::spawn(&path, &argv, pctl::NEWFD, &io.fdmap())
     }
 
+    /// An interrupt came while a command ran: abandon what is being run.
+    fn check_interrupt(&mut self) -> Flow<()> {
+        if self.interrupted {
+            return Err(Stop::Raise(String::from("interrupt")));
+        }
+        Ok(())
+    }
+
     /// Waits until every prog in `pids` has exited and returns their
     /// statuses, in order. Messages from other children are kept.
+    ///
+    /// An interrupt while waiting is passed on to the progs not yet
+    /// exited, which may have started after the console's note went to
+    /// the process group, or be in a group of their own, and the waiting
+    /// goes on: those that do not catch it die, and an interactive shell
+    /// among them gives its prompt back.
     fn wait_for(&mut self, pids: &[u32]) -> Vec<String> {
         while !pids.iter().all(|p| self.exited.contains_key(p)) {
             match purgatorio::wait() {
                 Ok(Waitmsg { pid, status, .. }) => {
                     if !self.background.remove(&pid) {
                         self.exited.insert(pid, status);
+                    }
+                }
+                Err(e) if self.catchint && e.0 == purgatorio::abi::error::EINTR => {
+                    self.interrupted = true;
+                    for &p in pids.iter().filter(|p| !self.exited.contains_key(p)) {
+                        let _ = ctl(p, "interrupt");
                     }
                 }
                 Err(e) => {
