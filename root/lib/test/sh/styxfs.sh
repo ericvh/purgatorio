@@ -24,7 +24,7 @@ echo 'd/e 600 alice bob 5 3' >> ar
 echo hi >> ar
 echo 'end of archive' >> ar
 archfs -m a ar
-ls -l a a/d
+ls -l a a/d | sed 's/ M [0-9][0-9]* / M n /'
 cat a/a a/d/e
 archfs -m a ar d
 ls a

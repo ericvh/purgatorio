@@ -15,7 +15,7 @@ while {! ls $d/n | grep -s held} {sleep 0.1}
 ls $d/n
 wait
 ls $d/n
-ls -ld $d/n/anything
+ls -ld $d/n/anything | sed 's/ M [0-9][0-9]* / M n /'
 ls -ld $d/n/anything/below
 mkdir $d/n/new
 memfs $d/n/x

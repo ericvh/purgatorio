@@ -510,6 +510,14 @@ impl Drop for Session {
     }
 }
 
+/// Stamps a Dir from the server with this mount's device type and number,
+/// whatever the server put there, as Inferno's mntdirfix does.
+fn fix(c: &Chan, mut d: Dir) -> Dir {
+    d.dtype = u16::from(b'M');
+    d.dev = c.devno;
+    d
+}
+
 fn file(c: &Chan) -> Result<&MntFile> {
     c.aux::<MntFile>().ok_or(Error::new(error::EBADUSEFD))
 }
@@ -905,7 +913,7 @@ impl Dev for DevMnt {
         let buf = f.session.rpc(Fcall::Tstat { fid: f.fid })?;
         match f.session.decode(&buf)? {
             Fcall::Rstat { stat } => Dir::unpack(stat)
-                .map(|(d, _)| d)
+                .map(|(d, _)| fix(c, d))
                 .map_err(|_| Error::new(error::EIO)),
             _ => Err(Error::new(error::EIO)),
         }
@@ -1023,7 +1031,7 @@ impl Dev for DevMnt {
             // fewer entries than fit (the 9P2000.u shim's replies shrink).
             offset += data.len() as u64;
             for d in dirs(&data) {
-                out.push(d.map_err(|_| Error::new(error::EIO))?);
+                out.push(fix(c, d.map_err(|_| Error::new(error::EIO))?));
             }
         }
         Ok(out)
