@@ -58,6 +58,7 @@
 //!   See `docs/footprint.md`.
 //! - `bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=wasmtime,wasmi]
 //!   [--rounds N] [--boots N] [--features F,...] [--profile P] [--label L]
+//!   [--strict-align] [--rustflags FLAGS] [--config K=V] [--aot native|pulley]
 //!   [--out FILE]`: run the benchmark suite (`root/lib/bench/bench.sh`,
 //!   `docs/perf.md`) on a release emu with each engine and on the kernel
 //!   under KVM (or TCG), print each benchmark's median and spread, and
@@ -69,11 +70,15 @@
 //! The probe's and the kernel's images leave out the guests' `.names`
 //! files, except the test guests'; `--names` puts them all in, so that
 //! `stack` and `prof` name functions on bare metal (`docs/debug.md`).
+//! Both images are built without strict alignment, except for the crates
+//! whose code runs with the MMU off, and each build checks that boot path
+//! (`align.rs`).
 //! - `check-wasm <file.wasm>...`: check modules without building.
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
 //!   `wasm32-wasip1`, and on the experimental guests in `appl/small`,
 //!   denying warnings.
 
+mod align;
 mod bench;
 mod disk;
 mod letheperf;
@@ -756,7 +761,7 @@ fn probe(kvm: bool) -> Result<()> {
     build_root()?;
     let ws = workspace();
     run(cargo().current_dir(&ws).args(["build", "-p", "purg-emu"]))?;
-    run(cargo().current_dir(&ws).args([
+    run(align::image_cargo(&ws, false)?.args([
         "build",
         "-p",
         "purg-probe",
@@ -769,6 +774,7 @@ fn probe(kvm: bool) -> Result<()> {
         .join("target")
         .join(PROBE_TARGET)
         .join("probe/purg-probe");
+    align::check_image(&ws, &elf)?;
     let bytes = fs::read(&elf).map_err(|e| format!("{}: {e}", elf.display()))?;
     let image = elf.with_extension("img");
     fs::write(&image, elf_to_image(&bytes)?).map_err(|e| format!("{}: {e}", image.display()))?;
@@ -1234,7 +1240,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         .ok_or("initrd path is not UTF-8")?
         .to_owned();
     run(cargo().current_dir(&ws).args(["build", "-p", "purg-emu"]))?;
-    run(cargo().current_dir(&ws).args([
+    run(align::image_cargo(&ws, false)?.args([
         "build",
         "-p",
         "purg-kernel",
@@ -1247,6 +1253,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         .join("target")
         .join(PROBE_TARGET)
         .join("kernel/purg-kernel");
+    align::check_image(&ws, &image)?;
     let elf = fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let image = image.with_extension("img");
     fs::write(&image, elf_to_image(&elf)?).map_err(|e| format!("{}: {e}", image.display()))?;
@@ -1957,8 +1964,8 @@ fn size_report(args: &[String]) -> Result<()> {
     }
     let ws = workspace();
     let profile = if small { "kernel-small" } else { "kernel" };
-    let mut build = cargo();
-    build.current_dir(&ws).args([
+    let mut build = align::image_cargo(&ws, false)?;
+    build.args([
         "build",
         "--quiet",
         "-p",
@@ -2166,6 +2173,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     if env::var_os(WRAPPER_ENV).is_some() {
         return rustc_wrapper(&args);
+    }
+    if env::var_os(align::WRAPPER_ENV).is_some() {
+        return align::rustc_wrapper(&args);
     }
     let rest: Vec<String> = args
         .iter()

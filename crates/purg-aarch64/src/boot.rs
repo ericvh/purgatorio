@@ -41,10 +41,12 @@
 //!    high-half address, installs the early vectors, records the boot EL
 //!    and calls `purg_main(dtb)`.
 //!
-//! The Rust code run with the MMU off is safe there because the target is
-//! `+strict-align` (no unaligned accesses to what is then Device memory),
-//! the relocation model is static (symbol addresses are `adrp`/`add`, so
-//! PC-relative), and [`crate::mmu`]'s builder neither indexes slices nor
+//! The Rust code run with the MMU off is safe there because this crate
+//! and its dependencies are built `+strict-align` (no unaligned accesses
+//! to what is then Device memory; images build the other crates without
+//! it, and `xtask/src/align.rs` checks that the boot path calls nothing
+//! of theirs), the relocation model is static (symbol addresses are
+//! `adrp`/`add`, so PC-relative), and [`crate::mmu`]'s builder neither indexes slices nor
 //! keeps pointers in statics. Addresses read from linker symbols are
 //! normalized to physical, so it would also be correct if they were
 //! absolute.

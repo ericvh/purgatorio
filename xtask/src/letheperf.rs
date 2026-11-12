@@ -868,7 +868,7 @@ fn kernel(ws: &Path, tree: &Path, reps: usize) -> Result<String> {
     }
     let out = ws.join("target/lethe-perf");
     let initrd = initrd()?;
-    run(cargo().current_dir(ws).args([
+    run(crate::align::image_cargo(ws, false)?.args([
         "build",
         "-p",
         "purg-kernel",
