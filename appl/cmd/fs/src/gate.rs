@@ -84,6 +84,22 @@ pub fn mode_ok(clauses: &[Clause], mode: u32) -> bool {
     })
 }
 
+/// `mode` changed by each clause in turn, as chmod(1) changes it: `+`
+/// sets the bits, `-` clears them and `=` makes the named classes'
+/// permissions exactly the ones given. Whether it is a directory never
+/// changes.
+pub fn apply_mode(clauses: &[Clause], mode: u32) -> u32 {
+    let mut m = mode;
+    for c in clauses {
+        m = match c.op {
+            '+' => m | c.bits,
+            '-' => m & !c.bits,
+            _ => (m & !c.within) | c.bits,
+        };
+    }
+    (m & !DMDIR) | (mode & DMDIR)
+}
+
 fn clean(path: &str) -> Vec<&str> {
     path.split('/')
         .filter(|e| !e.is_empty() && *e != ".")
@@ -137,6 +153,18 @@ mod tests {
         for bad in ["", "u", "u+", "+q", "z+r", "u+r,"] {
             assert!(parse_mode(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn changes() {
+        let ch = |spec: &str, mode: u32| apply_mode(&parse_mode(spec).unwrap(), mode);
+        assert_eq!(ch("u+w", 0o444), 0o644);
+        assert_eq!(ch("-w", 0o666), 0o444);
+        assert_eq!(ch("go=r", 0o777), 0o744);
+        assert_eq!(ch("+x,o-r", 0o644), 0o751);
+        assert_eq!(ch("-d", DMDIR | 0o755), DMDIR | 0o755);
+        assert_eq!(ch("+d", 0o644), 0o644);
+        assert_eq!(ch("+a", 0o644), DMAPPEND | 0o644);
     }
 
     #[test]

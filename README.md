@@ -60,7 +60,7 @@ a `; ` prompt.
 | Remote commands: `rcmd cpu auxi/rstyxd auxi/cpuslave`, authenticated with the mount proof both ways (`-S` requires the server's) and encrypted after it; `rcmd host mcpd` is a remote MCP server. See [docs/rcmd.md](docs/rcmd.md) | done |
 | Plan 9 interop: `9export -A` and `import -9 tree` (exportfs's opening, no `p9any`) | tested against each other only |
 | `dbfs`: the records of a text file as files (dbfs(4)) | done; `rawdbfs` remains |
-| `fs`: trees as values (`walk filter select merge write bundle unbundle exec query` and the gates) | done; fs(1)'s other modules remain |
+| `fs`: trees as values, with all of fs(1)'s modules (`walk filter select merge write bundle unbundle exec pipe proto run setroot chstat compose mergewrite void` and the gates), `@{...}` command blocks | done; `mergewrite` takes its selector as `-c` |
 | Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd ip/ping ip/dhcp ip/virgild`. `ip/dhcp` is for the kernel (QEMU's DHCP server) and does not renew its lease | done |
 | System tools: `stream timestamp pause mk plumber plumb install/mkproto install/proto2list install/ckproto disk/mkfs disk/mkext disk/mkdisk disk/chkdisk` | done |
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log; a `/prog` of its own progs only; remote sessions over encrypted `rcmd`, also on the kernel. See [docs/mcp.md](docs/mcp.md) | stage 3 |
