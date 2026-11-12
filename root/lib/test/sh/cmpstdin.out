@@ -1,0 +1,5 @@
+stdin first same
+stdin second same
+cmp: files differ: byte 1
+stdin differ fail:differ
+redirected differ fail:differ
