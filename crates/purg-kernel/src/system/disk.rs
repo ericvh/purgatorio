@@ -19,6 +19,7 @@
 //! throttled disk, and the files a second boot finds again
 //! ([`System::disk_persist`]).
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -88,6 +89,27 @@ pub struct Disks {
     /// The unit the file system is on, and its device once it is up.
     pub fs_unit: Option<usize>,
     pub fs: Option<Arc<DiskFs>>,
+}
+
+impl Disks {
+    /// What gives a line per disk with its queue's indices and counters,
+    /// for the test mode's watchdog.
+    pub fn blks_rings(&self) -> Box<dyn Fn() -> Vec<String> + Send> {
+        let blks = self.blks.clone();
+        Box::new(move || {
+            blks.iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    let (avail, used, events) = b.rings();
+                    let st = b.stats();
+                    format!(
+                        "sdV{i}: avail {avail} used {used} events {events} requests {} abandoned {} errors {}",
+                        st.requests, st.abandoned, st.errors
+                    )
+                })
+                .collect()
+        })
+    }
 }
 
 /// Every virtio-blk disk in the DTB, with interrupts routed (so after

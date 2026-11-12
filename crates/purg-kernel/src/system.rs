@@ -347,11 +347,13 @@ pub fn start(
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
             Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref()), sys.bind_disk(&disks)) {
                 (Mode::Test { memstat, sh }, host, bound) => {
+                    let watch = crate::watchdog::start(sys.0.clone(), disks.blks_rings());
                     let failed = sys.run_tests(memstat, sh)
                         + sys.host9p_tests(host, p9.as_deref())
                         + sys.disk_tests(&disks, bound)
                         + sys.net_tests(&checks)
                         + sys.console_session();
+                    watch.stop();
                     if memstat {
                         sys.memstat();
                     }

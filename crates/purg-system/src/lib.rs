@@ -97,8 +97,8 @@ pub struct System {
     /// The number of live kernel threads.
     threads: fn() -> usize,
     /// The step under way: the last line [`System::say`] wrote, less its
-    /// `<who>: ` prefix.
-    step: Arc<Mutex<String>>,
+    /// `<who>: ` prefix, and how many steps there have been.
+    step: Arc<Mutex<(u64, String)>>,
     /// The failures counted so far, for the image's last line.
     failures: Arc<Mutex<Vec<String>>>,
 }
@@ -117,7 +117,7 @@ impl System {
             kernel,
             pgrp,
             threads,
-            step: Arc::new(Mutex::new(String::new())),
+            step: Arc::new(Mutex::new((0, String::new()))),
             failures: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -141,7 +141,15 @@ impl System {
 
     /// Names the step under way without printing anything.
     pub fn step(&self, step: &str) {
-        *self.step.lock() = String::from(step.lines().next().unwrap_or(""));
+        let mut g = self.step.lock();
+        g.0 += 1;
+        g.1 = String::from(step.lines().next().unwrap_or(""));
+    }
+
+    /// The step under way and its number, which moves with every step:
+    /// for a watchdog that reports a step that does not end.
+    pub fn step_now(&self) -> (u64, String) {
+        self.step.lock().clone()
     }
 
     fn write_line(&self, s: &str) {
@@ -157,7 +165,7 @@ impl System {
             Ok(v) => self.write_line(&format!("{prefix}: {v}")),
             Err(v) => {
                 self.write_line(&format!("{prefix}: FAIL {v}"));
-                let step = self.step.lock().clone();
+                let step = self.step.lock().1.clone();
                 self.note_failure(&format!("{step}: {v}"));
                 *failed += 1;
             }

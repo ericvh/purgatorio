@@ -15,6 +15,12 @@ pub struct Blks;
 #[derive(Default)]
 pub struct Disks;
 
+impl Disks {
+    pub fn blks_rings(&self) -> alloc::boxed::Box<dyn Fn() -> Vec<alloc::string::String> + Send> {
+        alloc::boxed::Box::new(Vec::new)
+    }
+}
+
 pub fn find(_fdt: &purg_aarch64::dtb::Fdt<'_>) -> Blks {
     Blks
 }
