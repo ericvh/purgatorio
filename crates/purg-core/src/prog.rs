@@ -241,10 +241,12 @@ impl Proc {
     }
 
     /// `running` until [`Proc::kill`] or a trap under tracing, then
-    /// `broken`.
+    /// `broken`; `debug` while a debugger holds it stopped.
     pub fn state(&self) -> &'static str {
         if self.note.killed() || self.debug.broken() {
             "broken"
+        } else if self.debug.stopped() {
+            "debug"
         } else {
             "running"
         }
@@ -556,12 +558,11 @@ impl Procs {
             self.table.lock().remove(&pid);
         }
         let parent = self.get(p.ppid);
-        // The samples of a profiled prog and of its children go to its
-        // parent, where `prof` reads them after the prog has gone.
-        if let Some(parent) = &parent
-            && parent.debug.profiling()
-        {
-            parent.debug.absorb(p.profile());
+        // The samples and counts of a profiled prog and of its children
+        // go to its parent, where `prof`, `cprof` and `mprof` read them
+        // after the prog has gone.
+        if let Some(parent) = &parent {
+            p.debug.give(&parent.debug, &p.module_path());
         }
         let Some(status) = status else {
             return;

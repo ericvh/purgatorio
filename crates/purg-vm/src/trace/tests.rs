@@ -243,3 +243,181 @@ fn numbers() {
     assert_eq!(enc(u32::MAX), [0x7f]);
     assert_eq!(enc(0x8000_0000), [0x80, 0x80, 0x80, 0x80, 0x78]);
 }
+
+fn instance(wasm: &[u8], fuel: bool) -> (Store<()>, wasmi::Instance) {
+    let mut config = wasmi::Config::default();
+    config.consume_fuel(fuel);
+    // Translation is free, as in the backend, so running out of fuel
+    // can only happen where a call can be resumed.
+    config.fuel_cost(wasmi::CustomFuelCosts {
+        bytes_copied_per_fuel: 64,
+        fuel_per_bytes_translated: 0,
+        fuel_per_bytes_validated: 0,
+    });
+    let engine = Engine::new(&config);
+    let module = Module::new(&engine, wasm).unwrap();
+    let mut store = Store::new(&engine, ());
+    if fuel {
+        store.set_fuel(1000).unwrap();
+    }
+    let instance = Linker::new(&engine)
+        .instantiate_and_start(&mut store, &module)
+        .unwrap();
+    (store, instance)
+}
+
+fn u64_at(m: &[u8], at: u32) -> u64 {
+    u64::from_le_bytes(m[at as usize..at as usize + 8].try_into().unwrap())
+}
+
+fn u32_at(m: &[u8], at: u32) -> u32 {
+    u32::from_le_bytes(m[at as usize..at as usize + 4].try_into().unwrap())
+}
+
+/// Counted, every call of every function adds one.
+#[test]
+fn counts_calls() {
+    let opts = Options {
+        calls: true,
+        pages: true,
+    };
+    let (traced, layout) = rewrite(&recursive(), opts).unwrap();
+    // No memory 0: no pages to count.
+    assert_eq!(layout.pages, None);
+    let at = layout.calls.unwrap();
+    assert_eq!((layout.imported, layout.funcs, at % 8), (0, 2, 0));
+    let (mut store, instance) = instance(&traced, false);
+    let top = instance
+        .get_typed_func::<(i32, i32), i32>(&store, "top")
+        .unwrap();
+    assert_eq!(top.call(&mut store, (5, 0)).unwrap(), 5);
+    assert_eq!(top.call(&mut store, (2, 0)).unwrap(), 2);
+    let stack = instance.get_memory(&store, STACK).unwrap();
+    let m = stack.data(&store);
+    assert_eq!((u64_at(m, at), u64_at(m, at + 8)), (9, 2));
+    assert_eq!(read(m), Stack::default());
+}
+
+/// Two functions: `o`, function 0, calls `g`, function 1, twice, and
+/// `g` grows memory 0 by a page.
+fn growing() -> Vec<u8> {
+    module(&[
+        (1, &[1, 0x60, 0, 0]),
+        (3, &[2, 0, 0]),
+        (5, &[1, 0, 1]),
+        (7, &[1, 1, b'o', 0, 0]),
+        (
+            10,
+            &[
+                2, 6, 0, 0x10, 1, 0x10, 1, 0x0b, 7, 0, 0x41, 1, 0x40, 0, 0x1a, 0x0b,
+            ],
+        ),
+    ])
+}
+
+/// A function's pages are those grown while it ran, in it or in what it
+/// called.
+#[test]
+fn counts_pages() {
+    let opts = Options {
+        calls: false,
+        pages: true,
+    };
+    let (traced, layout) = rewrite(&growing(), opts).unwrap();
+    assert_eq!(layout.calls, None);
+    let at = layout.pages.unwrap();
+    let (mut store, instance) = instance(&traced, false);
+    let o = instance.get_typed_func::<(), ()>(&store, "o").unwrap();
+    o.call(&mut store, ()).unwrap();
+    let m = instance.get_memory(&store, STACK).unwrap().data(&store);
+    assert_eq!((u32_at(m, at), u32_at(m, at + 4)), (2, 2));
+}
+
+/// A function with its breakpoint set records its index plus one in the
+/// hit word on entry, and waits there, with itself on the stack, until
+/// the word is cleared.
+#[test]
+fn stops_at_a_breakpoint() {
+    let (traced, layout) = rewrite(&recursive(), Options::default()).unwrap();
+    assert_eq!(layout.breaks, BREAKS);
+    let (mut store, instance) = instance(&traced, true);
+    let stack = instance.get_memory(&store, STACK).unwrap();
+    patch(stack.data_mut(&mut store), &[1, 0]);
+    let top = instance
+        .get_typed_func::<(i32, i32), i32>(&store, "top")
+        .unwrap();
+    let mut call = top.call_resumable(&mut store, (3, 0)).unwrap();
+    for depth in 2..5 {
+        let wasmi::TypedResumableCall::OutOfFuel(t) = call else {
+            panic!("did not wait");
+        };
+        let m = stack.data(&store);
+        assert_eq!(u32_at(m, HIT), 1);
+        assert_eq!((read(m).depth, read(m).frames[0]), (depth, 0));
+        // Released, it stops again at the next call of `rec`.
+        patch(stack.data_mut(&mut store), &[1, 0]);
+        store.set_fuel(1000).unwrap();
+        call = t.resume(&mut store).unwrap();
+    }
+    // Released with the breakpoint taken away: it runs to the end.
+    let wasmi::TypedResumableCall::OutOfFuel(t) = call else {
+        panic!("did not wait");
+    };
+    patch(stack.data_mut(&mut store), &[0, 0]);
+    store.set_fuel(1_000_000).unwrap();
+    let wasmi::TypedResumableCall::Finished(n) = t.resume(&mut store).unwrap() else {
+        panic!("did not finish");
+    };
+    assert_eq!(n, 3);
+    assert_eq!(u32_at(stack.data(&store), HIT), 0);
+}
+
+/// Modules with more functions than the bytes and counts of one page
+/// hold get a stack memory big enough.
+#[test]
+fn grows_the_stack_memory_for_big_modules() {
+    let n = 9000u32;
+    let mut funcs = Vec::new();
+    leb(n, &mut funcs);
+    funcs.resize(funcs.len() + n as usize, 0);
+    let mut code = Vec::new();
+    leb(n, &mut code);
+    for _ in 0..n {
+        code.extend_from_slice(&[2, 0, 0x0b]);
+    }
+    let wasm = module(&[
+        (1, &[1, 0x60, 0, 0]),
+        (3, &funcs),
+        (5, &[1, 0, 1]),
+        (10, &code),
+    ]);
+    let opts = Options {
+        calls: true,
+        pages: true,
+    };
+    let (traced, layout) = rewrite(&wasm, opts).unwrap();
+    let end = layout.pages.unwrap() + 4 * n;
+    let (store, instance) = instance(&traced, false);
+    let stack = instance.get_memory(&store, STACK).unwrap();
+    assert_eq!(
+        stack.data(&store).len(),
+        end.div_ceil(PAGE) as usize * 65536
+    );
+}
+
+/// The guests the build installs, counted every way, still validate.
+#[test]
+fn rewrites_built_guests_with_counts() {
+    let opts = Options {
+        calls: true,
+        pages: true,
+    };
+    for name in ["sh", "test/debug"] {
+        let Ok(wasm) = std::fs::read(root().join(std::format!("bin/{name}.wasm"))) else {
+            continue;
+        };
+        let (traced, layout) = rewrite(&wasm, opts).unwrap();
+        assert!(layout.calls.is_some() && layout.pages.is_some());
+        Module::new(&Engine::default(), &traced).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}

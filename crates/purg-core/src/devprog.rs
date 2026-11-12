@@ -16,10 +16,14 @@
 //! is `permission denied`. `mem` reads `<bytes held> <limit>`, the limit
 //! being `-` for none.
 //!
-//! `stack`, `exception` and `prof` are the debugging files
-//! (`docs/debug.md`): the call stack of a traced prog, the trap that broke
-//! it, and its profile. `trace on|off` and `prof on|off` on `ctl` set what
-//! the prog's future children are started with.
+//! `stack`, `exception`, `prof`, `cprof`, `mprof` and `heap` are the
+//! debugging files (`docs/debug.md`): the call stack of a traced prog, the
+//! trap that broke it, its profiles (samples, calls, memory grown), and
+//! its linear memory, readable and writable while a debugger holds it
+//! stopped. `trace on|off`, `prof on|off`, `cprof on|off` and `mprof
+//! on|off` on `ctl` set what the prog's future children are started with;
+//! `stop`, `start`, `step`, `bpt set <func>` and `bpt del <func>` are the
+//! debugger's.
 //!
 //! `#pdomain` is a restricted view, for sandboxes (`docs/abi.md`).
 //! Attaching it founds a prog domain for the attaching prog's process
@@ -58,17 +62,23 @@ const QSTACK: u64 = 8;
 const QEXCEPTION: u64 = 9;
 const QPROF: u64 = 10;
 const QMEM: u64 = 11;
+const QCPROF: u64 = 12;
+const QMPROF: u64 = 13;
+const QHEAP: u64 = 14;
 
-/// The error of reading the `stack` of a prog started without tracing.
-pub const ENOTTRACED: &str = "prog is not traced";
+use crate::debug::{Access, Kind, MAX_ACCESS, Resume};
+pub use crate::debug::{ENOTSTOPPED, ENOTTRACED};
 
 /// `(name, kind, perm)` of the files in each prog directory.
 const FILES: &[(&str, u64, u32)] = &[
+    ("cprof", QCPROF, 0o444),
     ("ctl", QCTL, 0o222),
     ("exception", QEXCEPTION, 0o444),
     ("fd", QFD, 0o444),
+    ("heap", QHEAP, 0o600),
     ("mem", QMEM, 0o444),
     ("module", QMODULE, 0o444),
+    ("mprof", QMPROF, 0o444),
     ("ns", QNS, 0o444),
     ("prof", QPROF, 0o444),
     ("stack", QSTACK, 0o444),
@@ -213,6 +223,8 @@ impl Dev for DevProg {
         let access = omode & mode::ACCESS;
         let ok = if kind == QCTL {
             access == mode::OWRITE || access == mode::ORDWR
+        } else if kind == QHEAP {
+            access != mode::OEXEC
         } else {
             access == mode::OREAD
         };
@@ -236,6 +248,13 @@ impl Dev for DevProg {
             buf[..n].copy_from_slice(&msg.as_bytes()[..n]);
             return Ok(n);
         }
+        if kind == QHEAP {
+            let len = buf.len().min(MAX_ACCESS);
+            let data = p.debug.access(Access::Read { at: offset, len })?;
+            let n = data.len().min(buf.len());
+            buf[..n].copy_from_slice(&data[..n]);
+            return Ok(n);
+        }
         let text = match kind {
             QSTATUS => format!(
                 "{} {} {} {} {} {}\n",
@@ -254,7 +273,9 @@ impl Dev for DevProg {
                 e if e.is_empty() => e,
                 e => format!("{e}\n"),
             },
-            QPROF => prof_text(&p),
+            QPROF => counts_text(&p, Kind::Samples),
+            QCPROF => counts_text(&p, Kind::Calls),
+            QMPROF => counts_text(&p, Kind::Pages),
             QMEM => mem_text(&p),
             _ => return Err(Error::new(error::EPERM)),
         };
@@ -304,8 +325,19 @@ impl Dev for DevProg {
         })
     }
 
-    fn write(&self, c: &Chan, buf: &[u8], _offset: u64) -> Result<usize> {
+    fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize> {
         let (pid, kind) = split(c);
+        if kind == QHEAP {
+            let p = self.get(c, pid)?;
+            if buf.len() > MAX_ACCESS {
+                return Err(Error::new(error::EBADARG));
+            }
+            p.debug.access(Access::Write {
+                at: offset,
+                data: buf.to_vec(),
+            })?;
+            return Ok(buf.len());
+        }
         if kind != QCTL {
             return Err(Error::new(error::EPERM));
         }
@@ -332,6 +364,29 @@ impl Dev for DevProg {
             "trace off" => p.debug.set_trace(false),
             "prof on" => p.debug.set_prof(true),
             "prof off" => p.debug.set_prof(false),
+            "cprof on" => p.debug.set_collect(Kind::Calls, true),
+            "cprof off" => p.debug.set_collect(Kind::Calls, false),
+            "mprof on" => p.debug.set_collect(Kind::Pages, true),
+            "mprof off" => p.debug.set_collect(Kind::Pages, false),
+            "stop" => p.debug.request_stop()?,
+            "start" => p.debug.resume(Resume::Cont)?,
+            "step" => p.debug.resume(Resume::Step)?,
+            _ if cmd.starts_with("bpt ") => {
+                let mut w = cmd.split_ascii_whitespace().skip(1);
+                let on = match w.next() {
+                    Some("set") => true,
+                    Some("del") => false,
+                    _ => return Err(Error::new(error::EBADARG)),
+                };
+                let func = w
+                    .next()
+                    .and_then(|f| f.parse::<u32>().ok())
+                    .ok_or(Error::new(error::EBADARG))?;
+                if w.next().is_some() {
+                    return Err(Error::new(error::EBADARG));
+                }
+                p.debug.set_break(func, on)?;
+            }
             _ if cmd.starts_with("memlimit ") || cmd.starts_with("domain ") => {
                 self.limit(&p, cmd)?
             }
@@ -460,12 +515,13 @@ fn stack_text(p: &crate::prog::Proc) -> Result<String> {
     Ok(out)
 }
 
-/// A line per sampled function: `<samples> <function index> <path>`, for
+/// A line per function counted: `<count> <function index> <path>`, for
 /// the prog and for its children that have exited, ordered by path and
-/// index.
-fn prof_text(p: &crate::prog::Proc) -> String {
+/// index. What is counted is `kind`: samples (`prof`), calls (`cprof`) or
+/// pages grown (`mprof`).
+fn counts_text(p: &crate::prog::Proc, kind: Kind) -> String {
     let mut out = String::new();
-    for ((path, func), n) in p.profile() {
+    for ((path, func), n) in p.debug.counts(kind, &p.module_path()) {
         out.push_str(&format!("{n} {func} {}\n", crate::names::quote(&path)));
     }
     out

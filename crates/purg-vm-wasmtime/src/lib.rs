@@ -10,7 +10,8 @@
 //! stack (`purg_vm::trace`), the same module wasmi runs, so that a stack
 //! reads the same on both engines. The backend copies it into the prog
 //! before each host call, at each tick, where it is also the profiler's
-//! sample, and after a trap.
+//! sample and the counts are copied, and after a trap. The same points
+//! are where a debugger's `stop` and breakpoints take hold.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -89,30 +90,74 @@ fn memory<'c>(caller: &'c mut Caller<'_, Ctx>) -> wasmtime::Result<(&'c mut [u8]
     Ok(mem.data_and_store_mut(caller.as_context_mut()))
 }
 
-/// Records the call stack of the traced instance that exports `stack`
-/// (as `trace::STACK`) in its prog.
-fn record(store: &impl AsContext<Data = Ctx>, stack: Option<Memory>, sample: bool) {
-    if let Some(stack) = stack {
-        let proc = &store.as_context().data().prog.proc;
-        trace::record(proc, stack.data(store), sample);
+/// Records the call stack of a traced instance, whose stack memory
+/// (`trace::STACK`) is `stack` and linear memory `main`, in its prog, and
+/// does what a debugger wants of it there: a stop, or new breakpoints.
+///
+/// The tick callback has the store only to read: wasmtime keeps guests
+/// from changing wasm state there. The debugger must write the stack
+/// memory to release a function held at a breakpoint, and may write the
+/// linear memory, so both are written through their raw contents.
+fn debug_point(
+    store: &impl AsContext<Data = Ctx>,
+    (stack, main): Mems,
+    sample: bool,
+) -> Result<(), Stop> {
+    let proc = &store.as_context().data().prog.proc;
+    let hit = trace::record(proc, stack.data(store), sample);
+    if !proc.debug.wanted(hit) {
+        return Ok(());
     }
+    // SAFETY, for both slices: this is the thread of the store's guest,
+    // which is suspended in a host call or at an epoch check, and each
+    // slice is the only reference to its memory's contents while it
+    // lives. The memories cannot grow meanwhile: that needs the store,
+    // which this only reads.
+    let table = match main {
+        Some(main) => {
+            let (at, len) = raw(main, store);
+            trace::stop_point(proc, hit, unsafe {
+                std::slice::from_raw_parts_mut(at, len)
+            })?
+        }
+        None => trace::stop_point(proc, hit, &mut [])?,
+    };
+    if let Some(table) = table {
+        let (at, len) = raw(stack, store);
+        trace::patch(unsafe { std::slice::from_raw_parts_mut(at, len) }, &table);
+    }
+    Ok(())
 }
 
-/// [`record`] for a host call's caller. Only the prog's command is
+/// Where the contents of `mem` are, and their size.
+fn raw(mem: Memory, store: &impl AsContext) -> (*mut u8, usize) {
+    (mem.data_ptr(store), mem.data_size(store))
+}
+
+/// [`debug_point`] for a host call's caller. Only the prog's command is
 /// traced: a call from a reactor leaves the stack as its `call` saw it.
-fn record_caller(caller: &mut Caller<'_, Ctx>) {
+fn debug_caller(caller: &mut Caller<'_, Ctx>) -> wasmtime::Result<()> {
     if !caller.data().prog.proc.debug.traced() {
-        return;
+        return Ok(());
     }
-    let stack = caller
+    let Some(stack) = caller
         .get_export(trace::STACK)
+        .and_then(Extern::into_memory)
+    else {
+        return Ok(());
+    };
+    let main = caller
+        .get_export(purg_abi::MEMORY)
         .and_then(Extern::into_memory);
-    record(caller, stack, false);
+    debug_point(caller, (stack, main), false).map_err(wasmtime::Error::new)
 }
 
-/// The stack memory of a traced prog's command instance, for its store's
+/// A traced command instance's stack memory and linear memory.
+type Mems = (Memory, Option<Memory>);
+
+/// The memories of a traced prog's command instance, for its store's
 /// tick callback.
-type Traced = Arc<Mutex<Option<Memory>>>;
+type Traced = Arc<Mutex<Option<Mems>>>;
 
 fn link(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
     macro_rules! register {
@@ -121,7 +166,7 @@ fn link(linker: &mut Linker<Ctx>) -> wasmtime::Result<()> {
                 $module,
                 $name,
                 |mut caller: Caller<'_, Ctx>, $($a: $t),*| -> wasmtime::Result<$r> {
-                    record_caller(&mut caller);
+                    debug_caller(&mut caller)?;
                     let (data, ctx) = memory(&mut caller)?;
                     purg_vm::host_call(ctx, |ctx| $f(ctx, &mut Mem(data), $($a),*))
                         .map_err(wasmtime::Error::new)
@@ -320,8 +365,16 @@ impl Wasmtime {
         } else {
             None
         };
-        *traced.lock().unwrap_or_else(|e| e.into_inner()) = stack;
-        Ok(match entry.call(&mut *store, ()) {
+        let main = instance.get_memory(&mut *store, purg_abi::MEMORY);
+        *traced.lock().unwrap_or_else(|e| e.into_inner()) = stack.map(|s| (s, main));
+        let res = entry.call(&mut *store, ());
+        // A traced prog's last stack, and its counts, stay readable.
+        if let Some(stack) = stack {
+            let proc = &store.data().prog.proc;
+            trace::record(proc, stack.data(&*store), false);
+            trace::counts(proc, stack.data(&*store));
+        }
+        Ok(match res {
             Ok(()) => Stop::Exit(String::new()),
             Err(e) => match e.downcast_ref::<Stop>() {
                 Some(stop) => stop.clone(),
@@ -330,7 +383,6 @@ impl Wasmtime {
                     // A traced prog that traps is broken: its stack at
                     // the trap and the trap itself stay readable.
                     if stack.is_some() {
-                        record(&*store, stack, false);
                         store.data().prog.proc.debug.set_exception(&status);
                     }
                     Stop::Exit(status)
@@ -385,9 +437,11 @@ impl purg_vm::Engine for Wasmtime {
         let ticked = traced.clone();
         store.epoch_deadline_callback(move |state| {
             // Each tick records a traced prog's stack, and a sample if
-            // the prog is profiled.
-            let stack = *ticked.lock().unwrap_or_else(|e| e.into_inner());
-            record(&state, stack, true);
+            // the prog is profiled, and stops it for a debugger.
+            let mems = *ticked.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(mems) = mems {
+                debug_point(&state, mems, true).map_err(wasmtime::Error::new)?;
+            }
             if state.data().prog.proc.note.killed() {
                 return Err(wasmtime::Error::new(Stop::killed()));
             }
