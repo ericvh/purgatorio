@@ -13,7 +13,7 @@ use ndb::{Entry, quote};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "query [-a] [-f dbfile] attr [value [rattr]]";
+const USAGE: &str = "ndb/query [-a] [-f dbfile] attr [value [rattr]]";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -37,7 +37,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let db = match open(&file) {
         Ok(db) => db,
         Err(e) => {
-            eprintln!("query: {e}");
+            eprintln!("ndb/query: {e}");
             purgatorio::exits("fail:error");
         }
     };

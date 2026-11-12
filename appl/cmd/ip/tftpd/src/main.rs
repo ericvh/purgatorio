@@ -25,7 +25,7 @@ use purgatorio::abi::pctl;
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, dial};
 
-const USAGE: &str = "tftpd [-dr] [-p port] [-h homedir] [-x net]";
+const USAGE: &str = "ip/tftpd [-dr] [-p port] [-h homedir] [-x net]";
 const SELF: &str = "/bin/ip/tftpd.wasm";
 const XFER: &str = "--xfer";
 const SEGSIZE: usize = 512;
@@ -113,7 +113,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let mut child = vec![argv[0].clone(), String::from(XFER), conn.dir.clone()];
         child.extend(argv.iter().skip(1).cloned());
         if let Err(e) = purgatorio::spawn(SELF, &child, pctl::NEWFD, &fds) {
-            eprintln!("tftpd: {e}");
+            eprintln!("ip/tftpd: {e}");
         }
     }
 }

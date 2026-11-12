@@ -38,7 +38,7 @@ struct Inst {
 
 impl Inst {
     fn fail(&mut self, msg: String) -> Result<(), Error> {
-        eprintln!("inst: {msg}");
+        eprintln!("install/inst: {msg}");
         self.errors += 1;
         if self.keep_going {
             Ok(())
@@ -105,7 +105,10 @@ impl Inst {
                 let local = wrap::md5_file(&path).unwrap_or_default();
                 let units = self.installed.as_deref().unwrap_or(&[]);
                 if wrap::installed_digest(units, &name) != Some(local.as_str()) {
-                    eprintln!("inst: {}: locally modified; not removed", quote(&name));
+                    eprintln!(
+                        "install/inst: {}: locally modified; not removed",
+                        quote(&name)
+                    );
                     continue;
                 }
             }
@@ -127,11 +130,17 @@ impl Inst {
                 match wrap::installed_digest(units, &h.name) {
                     Some(d) if d == local => {}
                     Some(_) => {
-                        eprintln!("inst: {}: locally modified; not installed", quote(&h.name));
+                        eprintln!(
+                            "install/inst: {}: locally modified; not installed",
+                            quote(&h.name)
+                        );
                         return Ok(());
                     }
                     None => {
-                        eprintln!("inst: {}: already exists; not installed", quote(&h.name));
+                        eprintln!(
+                            "install/inst: {}: already exists; not installed",
+                            quote(&h.name)
+                        );
                         return Ok(());
                     }
                 }

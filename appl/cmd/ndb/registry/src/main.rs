@@ -446,7 +446,7 @@ impl StyxFs for Registry {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut arg = Arg::new(args, "registry [-f dbfile]");
+    let mut arg = Arg::new(args, "ndb/registry [-f dbfile]");
     let mut file = None;
     while let Some(c) = arg.opt() {
         match c {
@@ -455,7 +455,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     if !arg.argv().is_empty() {
-        return Err(Error::from("usage: registry [-f dbfile]"));
+        return Err(Error::from("usage: ndb/registry [-f dbfile]"));
     }
     let mut reg = Registry {
         services: BTreeMap::new(),

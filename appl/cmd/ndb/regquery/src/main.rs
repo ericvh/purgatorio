@@ -11,7 +11,7 @@ use ndb::quote;
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "regquery [-n] [-m mntpt] [attr value ...]";
+const USAGE: &str = "ndb/regquery [-n] [-m mntpt] [attr value ...]";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -40,7 +40,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             return Ok(());
         }
         if let Err(e) = query(&mnt, line.trim(), names) {
-            eprintln!("regquery: {e}");
+            eprintln!("ndb/regquery: {e}");
         }
     }
 }

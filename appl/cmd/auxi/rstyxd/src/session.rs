@@ -78,7 +78,7 @@ pub fn run(args: &[String]) -> Result<(), Error> {
     let status = match command(flags.parse().unwrap_or(0), keyfile, cmd) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("rstyxd: {e}");
+            eprintln!("auxi/rstyxd: {e}");
             format!("fail:{e}")
         }
     };

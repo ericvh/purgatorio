@@ -17,7 +17,7 @@ use purg_fs::{Format, Fs};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "mkdisk [-b blocksize] [-j journal] [-s size] [-u user] [-r dir] image";
+const USAGE: &str = "disk/mkdisk [-b blocksize] [-j journal] [-s size] [-u user] [-r dir] image";
 
 fn number(arg: &mut Arg, what: &str) -> Result<u64, Error> {
     let s = arg.earg()?;

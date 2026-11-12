@@ -193,7 +193,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         .try_into()
         .map_err(|_| Error::from(format!("usage: {USAGE}")))?;
     let editing = !print && !write;
-    let mut disk = Disk::open("prep", &path, secsize, write || (editing && !read_only))?;
+    let mut disk = Disk::open(
+        "disk/prep",
+        &path,
+        secsize,
+        write || (editing && !read_only),
+    )?;
     let parts = if blank {
         Vec::new()
     } else {

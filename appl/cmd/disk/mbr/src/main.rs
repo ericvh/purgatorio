@@ -46,7 +46,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         .argv()
         .try_into()
         .map_err(|_| Error::from(format!("usage: {USAGE}")))?;
-    let mut disk = Disk::open("mbr", &path, None, true)?;
+    let mut disk = Disk::open("disk/mbr", &path, None, true)?;
     if disk.secsize < 512 || disk.secs < 2 {
         return Err(Error::from(format!(
             "{path}: not a disk with 512-byte sectors"

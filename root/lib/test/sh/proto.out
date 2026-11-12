@@ -15,7 +15,7 @@ src/bin
 	two
 src/lib/sub
 	deep
-mkproto: cannot stat src/nosuch: file does not exist
+install/mkproto: cannot stat src/nosuch: file does not exist
 /tmp/prototest/src	-	0	-2147483139	2000000	0	0
 /tmp/prototest/src/bin	-	0	-2147483139	2000000	0	0
 /tmp/prototest/src/bin/one	-	4	436	1000000	-132667233	0
@@ -82,7 +82,7 @@ done
 part/lib
 part/lib/sub
 part/lib/sub/deep
-mkext: too few fields in file header
+disk/mkext: too few fields in file header
 premature end of archive
 processing p4
 /bin/one
@@ -100,6 +100,6 @@ processing p4
 /lib/sub/deep
 file system made
 processing nosuchproto
-mkfs: can't open nosuchproto: file does not exist: skipping
+disk/mkfs: can't open nosuchproto: file does not exist: skipping
 file system made
-disk/mkfs: usage: mkfs [-aprvxS] [-d root] [-n kfscmdname] [-s src-fs] [-u userfile] [-z n] [-G group] [-U user] proto ...
+disk/mkfs: usage: disk/mkfs [-aprvxS] [-d root] [-n kfscmdname] [-s src-fs] [-u userfile] [-z n] [-G group] [-U user] proto ...

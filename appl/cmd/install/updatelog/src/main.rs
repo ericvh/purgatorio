@@ -78,7 +78,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         &root,
         &Namespace,
         &mut |level, line, msg| {
-            eprintln!("updatelog: {proto_file}:{line}: {msg}");
+            eprintln!("install/updatelog: {proto_file}:{line}: {msg}");
             failed |= level == Level::Error;
         },
         &mut |f| files.push(f.clone()),

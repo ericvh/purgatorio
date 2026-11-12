@@ -123,7 +123,7 @@ fn ping(o: &Opts, mut out: File, replies: &mut Replies) -> Result<u32, Error> {
         let msg = request(o.size, seq);
         let sent = Instant::now();
         if let Err(e) = out.write_all(&msg) {
-            eprintln!("ping: write failed: {e}");
+            eprintln!("ip/ping: write failed: {e}");
             return Err(Error(String::from("write failed")));
         }
         let mut answered = false;

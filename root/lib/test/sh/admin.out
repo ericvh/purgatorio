@@ -18,7 +18,7 @@ sys=gate dom=gate.example.org ip=10.0.0.1 ip=10.0.1.1 SIGNER=gate
 ipnet=lan ip=10.0.0.0 ipmask=255.255.255.0 ipgw=10.0.0.1 dns=10.0.0.1
 sys='a host' ip=10.0.0.9
 miss 
-query: can't open /tmp/admin/nodb: file does not exist
+ndb/query: can't open /tmp/admin/nodb: file does not exist
 fail:error
 abcdef
 ghijklm

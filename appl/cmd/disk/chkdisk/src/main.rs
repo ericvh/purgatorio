@@ -13,7 +13,7 @@ use purg_fs::{Fs, Mount};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "chkdisk [-v] image";
+const USAGE: &str = "disk/chkdisk [-v] image";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
