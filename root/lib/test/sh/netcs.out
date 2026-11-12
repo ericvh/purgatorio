@@ -45,6 +45,8 @@ here.example.test ip 10.9.9.9
 /net/udp/clone 10.1.2.5!53
 /net/cs
 /net/icmp
+/net/ipifc
+/net/iproute
 /net/tcp
 /net/udp
 tcp!10.0.0.2!6666

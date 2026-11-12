@@ -582,6 +582,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-ip-dhcp"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ip-ping"
 version = "0.1.0"
 dependencies = [
@@ -597,6 +604,13 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ip-tftpd"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-ip-virgild"
 version = "0.1.0"
 dependencies = [
  "purgatorio",

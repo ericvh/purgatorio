@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ip-virgild"
+description = "ip/virgild: answer virgil name queries on UDP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "virgild"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ip-dhcp"
+description = "ip/dhcp: configure an IP interface from a DHCP or BOOTP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dhcp"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

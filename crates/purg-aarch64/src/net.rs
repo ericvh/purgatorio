@@ -15,8 +15,10 @@
 //! [`MAX_WAIT_MS`] passes, so TCP timers still run. A killed prog's sleep
 //! ends with `interrupted`, as with `purg_core::block::park`.
 //!
-//! The interface has one IPv4 address and a default route ([`Ipv4Config`]);
-//! there is no DHCP, and ARP for the gateway is smoltcp's.
+//! The interface has one IPv4 address and a default route ([`Ipv4Config`]),
+//! static at boot; `/net/ipifc/0/ctl` and `/net/iproute` replace them, as
+//! `ip/dhcp` does. ARP for the gateway is smoltcp's. UDP `headers` mode is
+//! one smoltcp socket whose datagrams all go to one conversation.
 //!
 //! UDP follows Inferno: a dialed conversation reads and writes datagrams
 //! with one remote, and an announced port starts a conversation for each
@@ -127,13 +129,15 @@ impl NetStack {
             .ok_or("no virtio-net device")
             .and_then(|t| {
                 let dev = VirtioNet::new(&t)?;
+                let mac = dev.mac();
                 let stack = Stack::open(dev, cfg)?;
                 IRQ_MMIO.call_once(|| t.mmio);
                 WAKE.call_once(Rendez::new);
                 irq::register(t.intid, card_irq);
                 Ok(Arc::new(Smol {
                     inner: Mutex::new(stack),
-                    local: Ipv4Address::from(cfg.addr),
+                    cfg: Mutex::new(*cfg),
+                    mac,
                 }))
             });
         NetStack {
@@ -187,6 +191,39 @@ impl Net for NetStack {
             return Err(Cow::Borrowed("no translation"));
         }
         self.stack()?.announce_udp(port)
+    }
+
+    fn announce_udp_headers(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
+        if is_loopback(host) {
+            let sock = self.loopback.udp_port(port, true)?;
+            return Ok(Arc::new(LoopUdpHeaders {
+                ports: Arc::clone(&self.loopback.udp),
+                sock,
+            }));
+        }
+        if !(host.is_empty() || host == "*" || host == "0.0.0.0" || parse_v4(host).is_some()) {
+            return Err(Cow::Borrowed("no translation"));
+        }
+        self.stack()?.announce_udp_headers(port)
+    }
+
+    fn interfaces(&self) -> Vec<net::Ifc> {
+        self.smol
+            .as_ref()
+            .map(|s| vec![s.interface()])
+            .unwrap_or_default()
+    }
+
+    fn set_address(&self, n: usize, addr: [u8; 4], prefix: u8) -> Result<()> {
+        if n != 0 {
+            return Err(Cow::Borrowed("file does not exist"));
+        }
+        self.stack()?.set_address(addr, prefix);
+        Ok(())
+    }
+
+    fn set_gateway(&self, gateway: Option<[u8; 4]>) -> Result<()> {
+        self.stack()?.set_gateway(gateway)
     }
 
     fn dial_icmp(&self, host: &str) -> Result<Arc<dyn Conn>> {
@@ -320,12 +357,63 @@ fn new_socket() -> tcp::Socket<'static> {
 /// The smoltcp stack, shared by listeners and connections.
 struct Smol {
     inner: Mutex<Stack>,
-    local: Ipv4Address,
+    /// The interface's configuration, as `/net/ipifc` and `/net/iproute`
+    /// last set it.
+    cfg: Mutex<Ipv4Config>,
+    mac: [u8; 6],
 }
 
 impl Smol {
     fn lock(&self) -> MutexGuard<'_, Stack> {
         self.inner.lock()
+    }
+
+    /// The interface's address.
+    fn local_ip(&self) -> Ipv4Address {
+        Ipv4Address::from(self.cfg.lock().addr)
+    }
+
+    fn interface(&self) -> net::Ifc {
+        let cfg = *self.cfg.lock();
+        net::Ifc {
+            device: String::from("ether0"),
+            mtu: IP_MTU,
+            mac: self.mac,
+            addr: cfg.addr,
+            prefix: cfg.prefix,
+            gateway: (cfg.gateway != [0; 4]).then_some(cfg.gateway),
+        }
+    }
+
+    /// Replaces the interface's address. Connections already open keep
+    /// the old one and fail.
+    fn set_address(&self, addr: [u8; 4], prefix: u8) {
+        let mut stack = self.lock();
+        stack.iface.update_ip_addrs(|addrs| {
+            addrs.clear();
+            addrs
+                .push(IpCidr::new(
+                    IpAddress::Ipv4(Ipv4Address::from(addr)),
+                    prefix,
+                ))
+                .ok();
+        });
+        let mut cfg = self.cfg.lock();
+        cfg.addr = addr;
+        cfg.prefix = prefix;
+    }
+
+    fn set_gateway(&self, gateway: Option<[u8; 4]>) -> Result<()> {
+        let mut stack = self.lock();
+        let routes = stack.iface.routes_mut();
+        routes.remove_default_ipv4_route();
+        if let Some(gw) = gateway {
+            routes
+                .add_default_ipv4_route(Ipv4Address::from(gw))
+                .map_err(|_| Cow::Borrowed("no route"))?;
+        }
+        self.cfg.lock().gateway = gateway.unwrap_or([0; 4]);
+        Ok(())
     }
 
     /// Polls and runs `f` on the stack until it returns `Some`, sleeping
@@ -414,7 +502,7 @@ impl Smol {
             smol: Arc::clone(self),
             handle: Mutex::new(handle),
             port,
-            local: format!("{}!{port}", self.local),
+            local: format!("{}!{port}", self.local_ip()),
         }))
     }
 }
@@ -433,7 +521,7 @@ impl Smol {
             smol: Arc::clone(self),
             handle,
             demux: Mutex::new(UdpDemux::new(announced)),
-            local: format!("{}!{port}", self.local),
+            local: format!("{}!{port}", self.local_ip()),
             open: AtomicBool::new(true),
         }))
     }
@@ -584,6 +672,90 @@ impl Conn for SmolUdpConn {
     }
 }
 
+impl Smol {
+    /// UDP port `port` (0: an ephemeral one) in `headers` mode.
+    fn announce_udp_headers(self: &Arc<Self>, port: u16) -> Result<Arc<dyn Conn>> {
+        let mut stack = self.lock();
+        let port = if port == 0 { stack.ephemeral() } else { port };
+        let mut socket = new_udp_socket();
+        if socket.bind(port).is_err() {
+            return Err(Cow::Borrowed("address in use"));
+        }
+        let handle = stack.sockets.add(socket);
+        Ok(Arc::new(SmolUdpHeaders {
+            smol: Arc::clone(self),
+            handle,
+            port,
+        }))
+    }
+}
+
+/// A smoltcp UDP socket in `headers` mode: every datagram, with a header
+/// naming its sender; each write names its destination, which may be a
+/// broadcast address.
+struct SmolUdpHeaders {
+    smol: Arc<Smol>,
+    handle: SocketHandle,
+    port: u16,
+}
+
+impl Conn for SmolUdpHeaders {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        let local = self.smol.local_ip();
+        self.smol.run(|stack| {
+            let socket = stack.sockets.get_mut::<udp::Socket>(self.handle);
+            let (data, meta) = socket.recv().ok()?;
+            let IpAddress::Ipv4(from) = meta.endpoint.addr;
+            let to = match meta.local_address {
+                Some(IpAddress::Ipv4(a)) => a,
+                _ => local,
+            };
+            let mut whole =
+                net::udp_header(from.octets(), meta.endpoint.port, to.octets(), self.port).to_vec();
+            whole.extend_from_slice(data);
+            let n = whole.len().min(buf.len());
+            buf[..n].copy_from_slice(&whole[..n]);
+            Some(Ok(n))
+        })
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        let (addr, port) = net::udp_header_remote(buf).ok_or(Cow::Borrowed("bad udp header"))?;
+        let data = &buf[net::UDP_HEADER..];
+        if data.len() > UDP_MAX {
+            return Err(Cow::Borrowed("message too long"));
+        }
+        let to = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::from(addr)), port);
+        self.smol.run(|stack| {
+            let socket = stack.sockets.get_mut::<udp::Socket>(self.handle);
+            match socket.send_slice(data, to) {
+                Ok(()) => {
+                    stack.poll();
+                    Some(Ok(buf.len()))
+                }
+                Err(udp::SendError::BufferFull) => None,
+                Err(udp::SendError::Unaddressable) => Some(Err(Cow::Borrowed("no route"))),
+            }
+        })
+    }
+
+    fn local(&self) -> String {
+        format!("{}!{}", self.smol.local_ip(), self.port)
+    }
+
+    fn remote(&self) -> String {
+        String::new()
+    }
+
+    fn hangup(&self) {}
+}
+
+impl Drop for SmolUdpHeaders {
+    fn drop(&mut self) {
+        self.smol.lock().sockets.remove(self.handle);
+    }
+}
+
 /// Identifiers for ICMP echo conversations.
 static ICMP_IDENT: AtomicU16 = AtomicU16::new(1);
 /// The TTL echo requests are sent with, and loopback replies carry.
@@ -671,7 +843,7 @@ impl Conn for SmolIcmp {
         }
         net::icmp_fill_checksum(&mut msg);
         let mut pkt = net::ipv4_header(
-            self.smol.local.octets(),
+            self.smol.local_ip().octets(),
             self.remote.octets(),
             ICMP_TTL,
             msg.len(),
@@ -691,7 +863,7 @@ impl Conn for SmolIcmp {
     }
 
     fn local(&self) -> String {
-        format!("{}!{}", self.smol.local, self.ident)
+        format!("{}!{}", self.smol.local_ip(), self.ident)
     }
 
     fn remote(&self) -> String {
@@ -1180,6 +1352,68 @@ struct LoopUdpConn {
     id: u64,
     remote: u16,
     closed: AtomicBool,
+}
+
+/// A loopback UDP port in `headers` mode.
+struct LoopUdpHeaders {
+    ports: Arc<LoopUdpPorts>,
+    sock: Arc<LoopUdp>,
+}
+
+impl Conn for LoopUdpHeaders {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        let lo = [127, 0, 0, 1];
+        let mut data = vec![0u8; UDP_MAX];
+        loop {
+            let got = self.sock.demux.lock().recv_any(&mut data);
+            if let Some((n, from)) = got {
+                let mut whole = net::udp_header(lo, from, lo, self.sock.port).to_vec();
+                whole.extend_from_slice(&data[..n]);
+                let k = whole.len().min(buf.len());
+                buf[..k].copy_from_slice(&whole[..k]);
+                return Ok(k);
+            }
+            sleep(
+                &self.sock.ready,
+                || self.sock.demux.lock().any_ready(),
+                None,
+            )?;
+        }
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        let (addr, port) = net::udp_header_remote(buf).ok_or(Cow::Borrowed("bad udp header"))?;
+        let data = &buf[net::UDP_HEADER..];
+        if data.len() > UDP_MAX {
+            return Err(Cow::Borrowed("message too long"));
+        }
+        // Loopback reaches only loopback; anything else is lost.
+        if addr != [127, 0, 0, 1] {
+            return Ok(buf.len());
+        }
+        let peer = self
+            .ports
+            .lock()
+            .iter()
+            .find(|(p, _)| *p == port)
+            .and_then(|(_, w)| w.upgrade());
+        if let Some(peer) = peer
+            && peer.demux.lock().deliver(self.sock.port, data.to_vec())
+        {
+            peer.ready.wakeup();
+        }
+        Ok(buf.len())
+    }
+
+    fn local(&self) -> String {
+        format!("127.0.0.1!{}", self.sock.port)
+    }
+
+    fn remote(&self) -> String {
+        String::new()
+    }
+
+    fn hangup(&self) {}
 }
 
 impl Conn for LoopUdpConn {

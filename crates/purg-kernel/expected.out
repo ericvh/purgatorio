@@ -218,6 +218,14 @@ kernel: ok
 kernel: ip/ping the QEMU gateway
 sending 3 64 byte messages 100 ms apart
 kernel: ok
+kernel: ip/dhcp from QEMU's DHCP server
+ip=10.0.2.15 ipmask=255.255.255.0 ipgw=10.0.2.2
+	dns=10.0.2.3
+	dhcp=10.0.2.2 lease=86400
+10.0.2.15 -> 10.0.2.255 10.0.2.0
+10.0.2.0 255.255.255.0 10.0.2.15 4i none 0
+0.0.0.0 0.0.0.0 10.0.2.2 4u none 0
+kernel: ok
 kernel: attach the host's lethed on /n/lethe
 hello from the host
 inner file

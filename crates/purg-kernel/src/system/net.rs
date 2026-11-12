@@ -10,6 +10,9 @@
 //!   `udp!10.0.2.2!PORT` and check the echo.
 //! - `ping`: `ip/ping` QEMU's gateway, 10.0.2.2, which answers ICMP echo
 //!   itself (through `/net/icmp`, a raw smoltcp socket).
+//! - `dhcp`: `ip/dhcp` the interface from QEMU's DHCP server, which hands
+//!   out the static configuration again (10.0.2.15/24, through 10.0.2.2),
+//!   and show `/net/ipifc/0` and `/net/iproute`.
 //! - `lethed=PORT`: attach the host's `lethed` at `tcp!10.0.2.2!PORT` on
 //!   `/n/lethe` with the `lethe` command and read it (`docs/lethe.md`).
 //! - `netexport`: announce `tcp!*!6666` and export `/` to the first
@@ -53,6 +56,7 @@ pub struct Checks {
     host_export: Option<u16>,
     udp_echo: Option<u16>,
     ping: bool,
+    dhcp: bool,
     lethed: Option<u16>,
     export: bool,
     rstyx: bool,
@@ -78,6 +82,7 @@ pub fn open(fdt: &Fdt<'_>, info: &BootInfo<'_>) -> (NetStack, Checks) {
         host_export: port("hostexport"),
         udp_echo: port("udpecho"),
         ping: has_bootarg(info, "ping"),
+        dhcp: has_bootarg(info, "dhcp"),
         lethed: port("lethed"),
         export: has_bootarg(info, "netexport"),
         rstyx: has_bootarg(info, "rstyx"),
@@ -112,6 +117,25 @@ impl System {
                 Ok(s) => Err(format!("status {s:?}")),
                 Err(e) => Err(format!("error: {e}")),
             };
+            self.verdict(&mut failed, v);
+        }
+        if checks.dhcp {
+            self.say("kernel: ip/dhcp from QEMU's DHCP server");
+            let steps: [&[&str]; 2] = [
+                &["ip/dhcp", "-p", "/net/ipifc/0"],
+                &["cat", "/net/ipifc/0/local", "/net/iproute"],
+            ];
+            let mut v = Ok(String::from("ok"));
+            for argv in steps {
+                match self.run(argv, None) {
+                    Ok(s) if s.is_empty() => {}
+                    Ok(s) => v = Err(format!("{}: status {s:?}", argv[0])),
+                    Err(e) => v = Err(format!("{}: {e}", argv[0])),
+                }
+                if v.is_err() {
+                    break;
+                }
+            }
             self.verdict(&mut failed, v);
         }
         if let Some(port) = checks.lethed {
