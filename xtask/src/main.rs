@@ -81,6 +81,7 @@
 mod align;
 mod bench;
 mod disk;
+mod kprof;
 mod letheperf;
 mod phases;
 mod size;

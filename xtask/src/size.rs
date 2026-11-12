@@ -132,6 +132,32 @@ fn kib(n: usize) -> String {
     format!("{:.1}", n as f64 / 1024.0)
 }
 
+/// The symbols of the ELF `elf` with an address: functions as
+/// `(address, size, name)` and every other named symbol with size 0,
+/// sorted by address. Names are raw (mangled).
+pub fn symbols(elf: &[u8]) -> Option<Vec<(u64, u64, String)>> {
+    let secs = sections(elf)?;
+    let symtab = secs.iter().find(|s| s.kind == SHT_SYMTAB)?;
+    let strtab = secs.get(symtab.link)?.offset;
+    let mut out = Vec::new();
+    for i in 0..symtab.size / symtab.entsize.max(1) {
+        let e = symtab.offset + i * symtab.entsize;
+        let info = *elf.get(e + 4)?;
+        let addr = u64_at(elf, e + 8)?;
+        let size = u64_at(elf, e + 0x10)?;
+        let Some(name) = u32_at(elf, e).and_then(|n| cstr(elf, strtab + n as usize)) else {
+            continue;
+        };
+        if name.is_empty() || addr == 0 {
+            continue;
+        }
+        let size = if info & 0xf == STT_FUNC { size } else { 0 };
+        out.push((addr, size, name.to_string()));
+    }
+    out.sort();
+    Some(out)
+}
+
 /// Prints the section sizes of the ELF at `path` and its code by crate.
 pub fn kernel(path: &Path) -> Result<()> {
     let elf = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;

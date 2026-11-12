@@ -51,6 +51,7 @@ pub fn native(console: &'static dyn Console, rtc: Option<usize>, user: &str) -> 
         let rtc = Arc::new(unsafe { Pl031::new(pa) });
         devs.push(Arc::new(DevRtc::new(rtc, String::from(user))));
     }
+    devs.extend(crate::kprof::dev(user));
     devs
 }
 

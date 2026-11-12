@@ -52,6 +52,8 @@ mod irq;
 #[cfg(target_os = "none")]
 mod kernel;
 #[cfg(target_os = "none")]
+mod kprof;
+#[cfg(target_os = "none")]
 mod memstat;
 #[cfg(target_os = "none")]
 mod selftest;

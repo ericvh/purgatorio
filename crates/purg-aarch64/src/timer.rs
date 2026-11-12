@@ -101,3 +101,36 @@ pub fn pending() -> bool {
     };
     ctl & (CTL_ENABLE | CTL_IMASK | CTL_ISTATUS) == CTL_ENABLE | CTL_ISTATUS
 }
+
+/// Arms the EL1 physical timer (`CNTP_*`) to fire `ns` nanoseconds from
+/// now, with its interrupt unmasked. The scheduler's tick is the virtual
+/// timer; the physical one is free for the kernel profiler. The deadline
+/// is relative (`CNTP_TVAL_EL0`): under KVM the physical counter is not
+/// the virtual one.
+pub fn phys_arm_after_ns(ns: u64) {
+    let tval = ns_to_ticks(ns).clamp(1, i32::MAX as u64);
+    // SAFETY: CNTP_TVAL_EL0 and CNTP_CTL_EL0 belong to the profiler. The
+    // boot code lets EL1 use the physical timer (CNTHCTL_EL2.EL1PCEN).
+    unsafe {
+        asm!(
+            "msr cntp_tval_el0, {tval}",
+            "msr cntp_ctl_el0, {ctl}",
+            "isb",
+            tval = in(reg) tval,
+            ctl = in(reg) CTL_ENABLE,
+            options(nostack, preserves_flags),
+        )
+    };
+}
+
+/// Stops the physical timer; its interrupt deasserts.
+pub fn phys_disable() {
+    // SAFETY: as in `phys_arm_after_ns`.
+    unsafe {
+        asm!(
+            "msr cntp_ctl_el0, xzr",
+            "isb",
+            options(nostack, preserves_flags)
+        )
+    };
+}

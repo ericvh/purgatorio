@@ -29,6 +29,10 @@ static CPU_TICKS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS
 /// IPIs taken by CPU.
 static CPU_IPIS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static TICK_NS: AtomicU64 = AtomicU64::new(0);
+/// Where each CPU's interrupted code was (`ELR_EL1`, and `x30`, the
+/// link register), for a handler to read: the kernel profiler.
+static INTERRUPTED: [(AtomicU64, AtomicU64); MAX_CPUS] =
+    [const { (AtomicU64::new(0), AtomicU64::new(0)) }; MAX_CPUS];
 /// The timer's PPI.
 static TIMER_INTID: AtomicU32 = AtomicU32::new(u32::MAX);
 
@@ -121,11 +125,14 @@ fn send_ipi(cpus: u64) {
 /// get to look. A device interrupt may have changed what a thread on any
 /// CPU waits for, so it wakes them all; the tick and the IPI only matter
 /// to this CPU.
-fn irq(_frame: &mut TrapFrame) {
+fn irq(frame: &mut TrapFrame) {
     let (Some(gic), Some(sched)) = (GIC.get(), SCHED.get()) else {
         return;
     };
     let Some(a) = gic.ack() else { return };
+    let at = &INTERRUPTED[cpu::id()];
+    at.0.store(frame.elr, Ordering::Relaxed);
+    at.1.store(frame.x[30], Ordering::Relaxed);
     let after = handler(a.intid).map_or(After::Return, |h| h());
     gic.eoi(a);
     if a.intid == IPI_INTID || a.intid == TIMER_INTID.load(Ordering::Relaxed) {
@@ -207,6 +214,13 @@ pub fn cpu_counts(cpu: usize) -> (u64, u64) {
         CPU_TICKS[cpu].load(Ordering::Relaxed),
         CPU_IPIS[cpu].load(Ordering::Relaxed),
     )
+}
+
+/// Where the code this CPU's interrupt stopped was: its PC and its link
+/// register. Meaningful only in a [`Handler`].
+pub fn interrupted() -> (u64, u64) {
+    let at = &INTERRUPTED[cpu::id()];
+    (at.0.load(Ordering::Relaxed), at.1.load(Ordering::Relaxed))
 }
 
 /// The tick period in nanoseconds.

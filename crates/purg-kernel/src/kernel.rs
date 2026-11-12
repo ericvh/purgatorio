@@ -375,6 +375,11 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         );
     }
     irq::init(&info);
+    crate::kprof::init(
+        has_bootarg(&info, "kprof") || bootarg(&info, "kprof").is_some(),
+        info.timer_phys_intid,
+        bootarg(&info, "kprof"),
+    );
     irq::wait_ticks(10);
     println!("kernel: timer interrupts at {} Hz", irq::TICK_HZ);
     irq::alternation_test();
