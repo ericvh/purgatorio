@@ -873,7 +873,7 @@ test -d /prog/$other && echo other session alive
                     "ls: /prog/{pid}: file does not exist\n\
                      sh: /prog/{pid}/ctl: file does not exist\n\
                      sh: /prog/{pid}/ctl: file does not exist\n\
-                     kill: file does not exist\n"
+                     kill: cannot open /prog/{pid}/ctl: file does not exist\n"
                 ),
                 "{vm} {who}"
             );
