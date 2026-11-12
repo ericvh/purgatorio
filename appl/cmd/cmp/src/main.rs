@@ -1,6 +1,6 @@
 //! cmp a b: report the first byte where two files differ. The status is
 //! `fail:differ`, `fail:EOF` when one file is a prefix of the other, or
-//! `fail:open`, as in cmp(1).
+//! `fail:open`, as in cmp(1). A file named `-` is standard input.
 
 use purgatorio::{Context, Error};
 
@@ -28,7 +28,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 }
 
 fn read(path: &str) -> Vec<u8> {
-    std::fs::read(path).unwrap_or_else(|_| {
+    let data = if path == "-" {
+        let mut v = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut v).map(|_| v)
+    } else {
+        std::fs::read(path)
+    };
+    data.unwrap_or_else(|_| {
         eprintln!("cmp: can't open {path}: {}", Error::last());
         purgatorio::exits("fail:open");
     })
