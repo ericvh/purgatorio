@@ -15,6 +15,9 @@
 //!   and show `/net/ipifc/0` and `/net/iproute`.
 //! - `lethed=PORT`: attach the host's `lethed` at `tcp!10.0.2.2!PORT` on
 //!   `/n/lethe` with the `lethe` command and read it (`docs/lethe.md`).
+//! - `udpserve`: announce `udp!*!6670` and send back the datagrams the
+//!   host sends through a QEMU `hostfwd=udp:...`: a short one, then one
+//!   of 4000 bytes, which travels in IP fragments.
 //! - `netexport`: announce `tcp!*!6666` and export `/` to the first
 //!   connection, which the host mounts through a QEMU `hostfwd`.
 //! - `rstyx`: announce `tcp!*!6668` and run `auxi/rstyxd` on the first
@@ -47,6 +50,11 @@ const HOST: &str = "10.0.2.2";
 /// The port the kernel exports `/` on.
 pub const EXPORT_PORT: u16 = 6666;
 
+/// The UDP port announced for the host's datagrams.
+pub const UDP_PORT: u16 = 6670;
+/// The most datagrams it echoes.
+const UDP_ECHOES: usize = 100;
+
 /// The port `auxi/rstyxd` is served on: `rstyx` in `/lib/ndb/common`.
 pub const RSTYX_PORT: u16 = 6668;
 
@@ -58,6 +66,7 @@ pub struct Checks {
     ping: bool,
     dhcp: bool,
     lethed: Option<u16>,
+    udp_serve: bool,
     export: bool,
     rstyx: bool,
 }
@@ -84,6 +93,7 @@ pub fn open(fdt: &Fdt<'_>, info: &BootInfo<'_>) -> (NetStack, Checks) {
         ping: has_bootarg(info, "ping"),
         dhcp: has_bootarg(info, "dhcp"),
         lethed: port("lethed"),
+        udp_serve: has_bootarg(info, "udpserve"),
         export: has_bootarg(info, "netexport"),
         rstyx: has_bootarg(info, "rstyx"),
     };
@@ -142,6 +152,10 @@ impl System {
             self.say("kernel: attach the host's lethed on /n/lethe");
             let v = self.lethe_host(port);
             self.verdict(&mut failed, v);
+        }
+        if checks.udp_serve {
+            let v = self.serve_udp().map(|()| String::from("udp served"));
+            self.verdict(&mut failed, v.map_err(|e| format!("udp: {e}")));
         }
         if checks.export && failed == 0 {
             let v = self.serve_export().map(|()| String::from("net served"));
@@ -223,6 +237,35 @@ impl System {
             }
         }
         Ok(String::from("ok"))
+    }
+
+    /// Announces `udp!*!6670` and writes the first datagram back to its
+    /// sender: an announced UDP port reached from outside the machine.
+    /// Each new remote is a conversation from `listen`, as for TCP.
+    fn serve_udp(&self) -> Result<(), Error> {
+        let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
+        self.kernel.platform.set_current_pid(prog.pid);
+        let ctl = prog.open("/net/udp/clone", mode::ORDWR)?;
+        let mut buf = [0u8; 32];
+        let n = prog.read(ctl, &mut buf)?;
+        let id = String::from(core::str::from_utf8(&buf[..n]).unwrap_or("").trim());
+        prog.write(ctl, format!("announce *!{UDP_PORT}").as_bytes())?;
+        self.say("kernel: udp ready");
+        let listen = prog.open(&format!("/net/udp/{id}/listen"), mode::OREAD)?;
+        let n = prog.read(listen, &mut buf)?;
+        let new_id = String::from(core::str::from_utf8(&buf[..n]).unwrap_or("").trim());
+        let data = prog.open(&format!("/net/udp/{new_id}/data"), mode::ORDWR)?;
+        // Until one past the MTU has gone back (the host repeats a
+        // datagram until its echo comes).
+        let mut dgram = alloc::vec![0u8; purg_aarch64::net::UDP_MAX];
+        for _ in 0..UDP_ECHOES {
+            let n = prog.read(data, &mut dgram)?;
+            prog.write(data, &dgram[..n])?;
+            if n > 1500 {
+                return Ok(());
+            }
+        }
+        Err(Error::from("no datagram past the MTU came"))
     }
 
     /// Announces `tcp!*!6666` and serves `/` to the first connection,
