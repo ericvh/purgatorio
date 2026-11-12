@@ -53,6 +53,7 @@ a `; ` prompt.
 | Lethe, a stateless protocol for static trees: tickets sealed under a server key, every request sealed, `stat`, `read` (conditional on a version) and `readdir` with a cookie. `lethed` serves a host directory read-only; `#λ` and `lethe addr mtpt [path]` attach it, on the emu and the kernel. A clear mode with no authentication and no encryption is an explicit option on both ends (`lethed -A`, `lethe -A`), for trusted links and measurement; neither end falls back to it. See [docs/lethe.md](docs/lethe.md) | read-only first cut; writes and streams designed only |
 | W1 commands: `bind cat cp date echo emuinit env ls mkdir mv pwd rm sleep unmount wc` | done |
 | W2 commands: `cmp diff du fc grep kill md5sum memfs mount ns ps ramfile sed tail tee xd` | done |
+| `sed`: sed(1) with `-n -g -e -f`, line, `$` and regular expression addresses, ranges and `!`, `{ }` blocks, labels, `b` and `t`, the hold space and `a i c d D g G h H l n N p P q r s w x y =`; `s` takes `g`, `p`, a count and `w file` | done |
 | W3 commands: `cs dial export import listen netstat os styxlisten` | done |
 | W4 archive commands: `gettar gunzip gzip lstar puttar tar` (ustar and gzip code in `appl/archive`) | done |
 | Admin commands: `cron logfile mntgen ndb/query`; `mount {command}` | done |
