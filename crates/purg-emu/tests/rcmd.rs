@@ -493,3 +493,55 @@ fn an_mcp_client_reaches_another_system() {
         assert!(lines.recv_timeout(Duration::from_secs(2)).is_err(), "{vm}");
     }
 }
+
+/// `mcpfs rcmd host mcpd`: a remote session's tools as files here. The
+/// call file carries the arguments over rcmd and the result back.
+#[test]
+fn mcpfs_over_rcmd() {
+    for vm in VMS {
+        let script = format!(
+            "load std
+{TEST_KEYS}
+d=/tmp/rcmd-mcpfs-{vm}
+rm -rf $d
+mkdir -p $d/m
+styxlisten tcp!127.0.0.1!0 /bin/auxi/rstyxd.wasm >[2] $d/l &
+lpid=$apid
+while {{! test -s $d/l}} {{sleep 0}}
+mcpfs -m $d/m rcmd tcp!`{{sed 's/styxlisten: //' $d/l}} mcpd
+ls $d/m/tools/run
+{{echo '{{\"command\":\"echo over rcmd\"}}' >[1=0]; cat}} <> $d/m/tools/run/call
+unmount $d/m
+kill $lpid
+rm -rf $d
+"
+        );
+        let out = common::output(
+            Command::new(env!("CARGO_BIN_EXE_emu"))
+                .arg("-r")
+                .arg(root())
+                .arg(format!("--vm={vm}"))
+                .args(["sh", "-c", &script]),
+            b"",
+        );
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{vm}: {text}");
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some(format!("/tmp/rcmd-mcpfs-{vm}/m/tools/run/call").as_str()),
+            "{vm}: {text}"
+        );
+        lines.next();
+        let v =
+            json::parse(lines.next().unwrap_or("")).unwrap_or_else(|e| panic!("{vm}: {e}: {text}"));
+        let s = v
+            .get("structuredContent")
+            .unwrap_or_else(|| panic!("{vm}: {text}"));
+        assert_eq!(
+            s.get("stdout").and_then(Value::as_str),
+            Some("over rcmd\n"),
+            "{vm}: {text}"
+        );
+    }
+}
