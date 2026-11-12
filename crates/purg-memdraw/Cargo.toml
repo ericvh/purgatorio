@@ -1,0 +1,13 @@
+[package]
+name = "purg-memdraw"
+description = "Inferno's memdraw for Purgatorio: images, channels, compositing and integer geometry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# no_std + alloc with no dependencies, so the kernel can reuse it.
+[dependencies]
+
+[lints]
+workspace = true
