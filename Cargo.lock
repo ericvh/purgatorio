@@ -573,10 +573,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-install-applylog"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "appl-lib-wrap",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-install-ckproto"
 version = "0.1.0"
 dependencies = [
  "appl-lib-proto",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-create"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "appl-lib-wrap",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-info"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "appl-lib-wrap",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-inst"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "appl-lib-wrap",
  "purgatorio",
 ]
 
@@ -593,6 +629,24 @@ name = "appl-cmd-install-proto2list"
 version = "0.1.0"
 dependencies = [
  "appl-lib-proto",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-updatelog"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "appl-lib-wrap",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-wrap2list"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "appl-lib-wrap",
  "purgatorio",
 ]
 
@@ -1315,6 +1369,14 @@ dependencies = [
 [[package]]
 name = "appl-lib-wasmobj"
 version = "0.1.0"
+
+[[package]]
+name = "appl-lib-wrap"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-test-abi"

@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-install-updatelog"
+description = "install/updatelog: log the changes to a tree since a replica log"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "updatelog"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+wrap = { package = "appl-lib-wrap", path = "../../../lib/wrap" }
+
+[lints]
+workspace = true
