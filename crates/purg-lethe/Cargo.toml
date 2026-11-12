@@ -6,15 +6,28 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# The AEAD from `ring` (with an HChaCha20 subkey) instead of the RustCrypto
+# crates: the same XChaCha20-Poly1305, several times faster. Only the
+# hosted emu and `lethed` turn it on; the kernel keeps the `no_std` crates.
+ring = ["dep:ring"]
+
 [dependencies]
 purg-abi.workspace = true
 purg-auth.workspace = true
 purg-styx.workspace = true
-# The crates purg-auth already uses, so nothing new is linked:
-# XChaCha20-Poly1305 is in the crate the record layer uses.
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# XChaCha20-Poly1305 is built from ChaCha20 and Poly1305 here
+# (`crypto::aead`): `chacha20` 0.10 picks its NEON backend at compile time
+# on aarch64, where 0.9 (under `chacha20poly1305` 0.10) needs a `--cfg`.
+chacha20 = { version = "0.10", default-features = false, features = ["cipher", "xchacha"] }
+poly1305 = { version = "0.8", default-features = false }
+ring = { version = "0.17", default-features = false, optional = true }
 hkdf = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+# The reference the AEAD is checked against, both directions.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 
 [lints]
 workspace = true
