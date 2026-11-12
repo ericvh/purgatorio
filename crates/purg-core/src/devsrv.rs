@@ -1,6 +1,15 @@
 //! `#s`: the file2chan registry. Each file's reads and writes are delivered
 //! as messages on kernel channels to the prog that created it, which replies
 //! on a channel named in the request.
+//!
+//! Each prog domain (`#pdomain`, see `devprog`) has a registry of its own.
+//! A file belongs to the innermost domain of the prog that created it, and
+//! an attach of `#s` shows only the files of the attaching prog's innermost
+//! domain, or, for a prog in no domain, the files made outside any. Names
+//! are unique within a registry. A sandbox under NODEVS may still attach
+//! `#s`, as in Inferno, so file2chan works there, but it cannot see or
+//! reach a file another domain or the host posted. A file already bound
+//! into a namespace stays usable wherever that namespace is copied.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -18,7 +27,7 @@ use crate::chan::Chan;
 use crate::dev::{Dev, Walked};
 use crate::error::{Error, Result};
 use crate::kchan::{KChan, KMsg, Kgrp};
-use crate::prog::Proc;
+use crate::prog::{Proc, Procs};
 
 const QROOT: u64 = 0;
 
@@ -33,20 +42,32 @@ struct SrvFile {
     pid: u32,
     server: Arc<Kgrp>,
     next_fid: AtomicU32,
+    /// The registry it is in: the innermost domain of its creator.
+    domain: Option<u32>,
+}
+
+/// A registry: a prog domain, or `None` for progs in no domain.
+type Registry = Option<u32>;
+
+/// An attach's registry, kept as the Chan's aux.
+struct View(Registry);
+
+fn view(c: &Chan) -> Registry {
+    c.aux::<View>().and_then(|v| v.0)
 }
 
 /// The `#s` device.
 pub struct DevSrv {
-    user: String,
+    procs: Arc<Procs>,
     next: AtomicU64,
     files: Mutex<BTreeMap<u64, Arc<SrvFile>>>,
-    by_name: Mutex<BTreeMap<String, u64>>,
+    by_name: Mutex<BTreeMap<(Registry, String), u64>>,
 }
 
 impl DevSrv {
-    pub fn new(user: &str) -> DevSrv {
+    pub fn new(procs: Arc<Procs>) -> DevSrv {
         DevSrv {
-            user: String::from(user),
+            procs,
             next: AtomicU64::new(1),
             files: Mutex::new(BTreeMap::new()),
             by_name: Mutex::new(BTreeMap::new()),
@@ -63,7 +84,9 @@ impl DevSrv {
         if name.is_empty() || name.contains('/') {
             return Err(Error::new(error::EBADARG));
         }
-        if self.by_name.lock().contains_key(name) {
+        let domain = proc.domains().last().copied();
+        let key = (domain, String::from(name));
+        if self.by_name.lock().contains_key(&key) {
             return Err(Error::new(error::EEXIST));
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
@@ -85,9 +108,10 @@ impl DevSrv {
             pid: proc.pid,
             server: proc.kgrp.clone(),
             next_fid: AtomicU32::new(1),
+            domain,
         });
         self.files.lock().insert(id, file);
-        self.by_name.lock().insert(String::from(name), id);
+        self.by_name.lock().insert(key, id);
         Ok((rh, wh))
     }
 
@@ -111,7 +135,7 @@ impl DevSrv {
         }
         let mut names = self.by_name.lock();
         for f in &gone {
-            names.remove(&f.name);
+            names.remove(&(f.domain, f.name.clone()));
             f.read.close();
             f.write.close();
         }
@@ -135,8 +159,8 @@ impl DevSrv {
             },
             mode: if dir { DMDIR | 0o555 } else { 0o666 },
             name: String::from(name),
-            uid: self.user.clone(),
-            gid: self.user.clone(),
+            uid: String::from(self.procs.user()),
+            gid: String::from(self.procs.user()),
             ..Dir::default()
         }
     }
@@ -221,14 +245,21 @@ impl Dev for DevSrv {
         "srv"
     }
 
+    /// The registry is the attaching prog's; an attach with no current
+    /// prog sees the one outside every domain.
     fn attach(&self, _spec: &str) -> Result<Walked> {
+        let registry = self
+            .procs
+            .current()
+            .ok()
+            .and_then(|p| p.domains().last().copied());
         Ok(Walked {
             qid: Qid {
                 path: QROOT,
                 vers: 0,
                 qtype: QTDIR,
             },
-            aux: None,
+            aux: Some(Arc::new(View(registry))),
         })
     }
 
@@ -239,7 +270,7 @@ impl Dev for DevSrv {
         let id = *self
             .by_name
             .lock()
-            .get(name)
+            .get(&(view(c), String::from(name)))
             .ok_or(Error::new(error::ENONEXIST))?;
         Ok(Walked {
             qid: Qid {
@@ -247,7 +278,7 @@ impl Dev for DevSrv {
                 vers: 0,
                 qtype: QTFILE,
             },
-            aux: None,
+            aux: c.aux.clone(),
         })
     }
 
@@ -282,9 +313,11 @@ impl Dev for DevSrv {
         if c.qid.path != QROOT {
             return Err(Error::new(error::ENOTDIR));
         }
+        let registry = view(c);
         let files = self.files.lock();
         Ok(files
             .values()
+            .filter(|f| f.domain == registry)
             .map(|f| self.dir(f.id, &f.name, false))
             .collect())
     }

@@ -32,6 +32,16 @@
 //! one within it, which the outer view still shows. Under `NODEVS`
 //! nothing can attach `#p` at all, so a sandbox that binds `#pdomain` on
 //! `/prog` and then gives up devices cannot get the full view back.
+//!
+//! `#pdomain=N` is the view of domain `N` (the process group that founded
+//! it) without joining it: how the prog that started a sandbox finds every
+//! prog left in it, whatever their groups, to kill them at the end. The
+//! whole table is no secret from a prog that may attach `#p` at all, so
+//! nothing more is checked.
+//!
+//! `nodev <chars>` on `ctl` forbids the prog's namespace, and every copy
+//! made of it afterwards, to attach the devices named by `<chars>`, NODEVS
+//! or not: a sandbox drops `#¤` that way.
 
 use alloc::format;
 use alloc::string::String;
@@ -172,7 +182,13 @@ impl Dev for DevProg {
                 }
                 Some(Arc::new(View(g)))
             }
-            _ => return Err(Error::new(error::EBADARG)),
+            _ => {
+                let id = spec
+                    .strip_prefix("domain=")
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .ok_or(Error::new(error::EBADARG))?;
+                Some(Arc::new(View(id)))
+            }
         };
         Ok(Walked {
             qid: DevProg::qid(0, QROOT),
@@ -334,6 +350,13 @@ impl Dev for DevProg {
             "prof off" => p.debug.set_prof(false),
             _ if cmd.starts_with("memlimit ") || cmd.starts_with("domain ") => {
                 self.limit(&p, cmd)?
+            }
+            _ if cmd.starts_with("nodev ") => {
+                let devs = cmd["nodev ".len()..].trim();
+                if devs.is_empty() || devs.contains(char::is_whitespace) {
+                    return Err(Error::new(error::EBADARG));
+                }
+                p.pgrp().deny_devs(devs);
             }
             _ => {
                 let level = cmd

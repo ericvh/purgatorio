@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use purg_abi::{error, pctl};
 use purg_platform::Platform;
-use purg_platform::sync::{Mutex, Rendez};
+use purg_platform::sync::{Mutex, MutexGuard, Rendez};
 
 use purg_platform::sync::Note;
 
@@ -320,6 +320,10 @@ pub struct Procs {
     /// The limits set on prog domains, by domain. The lock also makes
     /// each memory charge to a limited domain atomic with its check.
     domain_limits: Mutex<BTreeMap<u32, DomainLimits>>,
+    /// Held by a spawn into a domain with a prog limit from the check until
+    /// the child is counted as a member, so two spawns cannot both take
+    /// the last place.
+    admit: Mutex<()>,
 }
 
 impl Procs {
@@ -331,6 +335,7 @@ impl Procs {
             table: Mutex::new(BTreeMap::new()),
             modpolicy: Mutex::new(ModPolicy::default()),
             domain_limits: Mutex::new(BTreeMap::new()),
+            admit: Mutex::new(()),
         })
     }
 
@@ -387,8 +392,9 @@ impl Procs {
 
     /// Whether a prog in `domains` may start another: every one of those
     /// domains with a prog limit has fewer members than that. Fails with
-    /// [`error::ENOPROC`] otherwise.
-    fn check_prog_limit(&self, domains: &[u32]) -> Result<()> {
+    /// [`error::ENOPROC`] otherwise. When a limit applies, the guard
+    /// returned must be held until the new prog is in its domains.
+    fn check_prog_limit(&self, domains: &[u32]) -> Result<Option<MutexGuard<'_, ()>>> {
         let limits: Vec<(u32, u64)> = {
             let all = self.domain_limits.lock();
             domains
@@ -397,12 +403,16 @@ impl Procs {
                 .filter(|&(_, n)| n != UNLIMITED)
                 .collect()
         };
+        if limits.is_empty() {
+            return Ok(None);
+        }
+        let admit = self.admit.lock();
         for (d, n) in limits {
             if self.domain_usage(d).0 >= n {
                 return Err(Error::new(error::ENOPROC));
             }
         }
-        Ok(())
+        Ok(Some(admit))
     }
 
     /// Sets the system default module policy: that of every prog made
@@ -714,7 +724,7 @@ impl Prog {
             .map(|&(from, to)| Ok((to, self.fgrp.get(from)?)))
             .collect::<Result<Vec<_>>>()?;
         let domains = self.proc.domains();
-        self.kernel.procs.check_prog_limit(&domains)?;
+        let admit = self.kernel.procs.check_prog_limit(&domains)?;
         let proc = self.kernel.procs.register(
             self.pid,
             Some(self.proc.group()),
@@ -729,6 +739,7 @@ impl Prog {
         *proc.user.lock() = user;
         proc.debug.inherit(&self.proc.debug);
         *proc.domains.lock() = domains;
+        drop(admit);
         let mut child = Prog {
             pid: proc.pid,
             proc,

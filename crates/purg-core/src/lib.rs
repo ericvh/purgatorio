@@ -73,7 +73,7 @@ pub struct Portable {
 /// `tls` feature `#D` and with the `lethe` feature `#λ`. Embedders add `#/`
 /// and their own devices.
 pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Portable {
-    let srv = Arc::new(devsrv::DevSrv::new(procs.user()));
+    let srv = Arc::new(devsrv::DevSrv::new(procs.clone()));
     let mnt = Arc::new(devmnt::DevMnt::new(platform.clone()));
     #[cfg_attr(not(any(feature = "tls", feature = "lethe")), allow(unused_mut))]
     let mut devs: Vec<Arc<dyn Dev>> = alloc::vec![
