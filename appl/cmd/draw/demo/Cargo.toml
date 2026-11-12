@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-draw-demo"
+description = "draw/demo: draws shapes on /dev/draw and follows the pointer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "demo"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

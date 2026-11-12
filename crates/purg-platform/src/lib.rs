@@ -10,6 +10,7 @@ extern crate std;
 
 pub mod idle;
 pub mod net;
+pub mod screen;
 pub mod sync;
 pub mod waitq;
 
@@ -133,5 +134,11 @@ pub trait Platform: Send + Sync {
     /// with `"not implemented"`.
     fn command(&self, _line: &str) -> Result<alloc::sync::Arc<dyn net::Command>> {
         Err(Cow::Borrowed("not implemented"))
+    }
+    /// The display, if this platform has one. With one, the core serves
+    /// the draw device `#i`, the pointer `#m` and `#c/keyboard` (when
+    /// built with its `draw` feature).
+    fn screen(&self) -> Option<alloc::sync::Arc<dyn screen::Screen>> {
+        None
     }
 }

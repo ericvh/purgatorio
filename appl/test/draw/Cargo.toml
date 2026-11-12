@@ -1,0 +1,17 @@
+[package]
+name = "appl-test-draw"
+description = "Draw device checks run as a guest on the emu's in-memory screen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "draw"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

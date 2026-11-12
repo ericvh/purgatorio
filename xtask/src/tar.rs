@@ -9,7 +9,8 @@
 //! (`bin/<cmd>.names`, `docs/debug.md`) stay out of an image unless it is
 //! asked for them ([`NAMES_ENV`]): they are a sixth of the size of the
 //! modules. Those of the test guests in `bin/test` go in, because the sh
-//! corpus reads them.
+//! corpus reads them. The graphics programs ([`GRAPHICS`]) stay out: the
+//! kernel and the probe have no draw device yet.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,9 +29,15 @@ pub fn names_wanted() -> bool {
     std::env::var_os(NAMES_ENV).is_some_and(|v| v == "1")
 }
 
+/// Files for the draw device (docs/graphics.md), which only the emu has.
+const GRAPHICS: &[&str] = &["bin/draw/", "bin/test/draw."];
+
 /// Whether the file at `path` (relative to the root, `/`-separated) goes
 /// into an image; `names` is [`names_wanted`].
 pub fn in_image(path: &str, names: bool) -> bool {
+    if GRAPHICS.iter().any(|g| path.starts_with(g)) {
+        return false;
+    }
     names || !path.ends_with(".names") || path.starts_with("bin/test/")
 }
 
@@ -219,6 +226,15 @@ mod tests {
         };
         assert_eq!(paths(false), ["bin/test/t.names"]);
         assert_eq!(paths(true), ["bin/sh.names", "bin/test/t.names"]);
+    }
+
+    #[test]
+    fn graphics_stay_out() {
+        assert!(!in_image("bin/draw/demo.wasm", true));
+        assert!(!in_image("bin/test/draw.wasm", true));
+        assert!(!in_image("bin/test/draw.names", false));
+        assert!(in_image("bin/test/drawn.wasm", false));
+        assert!(in_image("bin/test/abi.wasm", false));
     }
 
     /// `crates/purg-core/tests/data/initrd.tar` is this writer's output for

@@ -26,13 +26,19 @@ purg-abi.workspace = true
 # cipher.
 purg-auth = { workspace = true, features = ["ring"] }
 purg-lethe = { workspace = true, features = ["ring"] }
-purg-core = { workspace = true, features = ["std", "tls", "lethe"] }
+purg-core = { workspace = true, features = ["std", "tls", "lethe", "draw"] }
 purg-platform = { workspace = true, features = ["std"] }
 purg-styx.workspace = true
 purg-vm.workspace = true
 purg-vm-wasmi.workspace = true
 purg-vm-wasmtime.workspace = true
 libc.workspace = true
+# The window for `emu -g` (docs/graphics.md): winit for the window and its
+# events, softbuffer to show a CPU framebuffer in it. X11 and Wayland on
+# Linux (loaded at run time, so the emu runs without them), AppKit on
+# macOS. No client-side decorations, which would pull in a font renderer.
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+softbuffer = "0.4.8"
 
 [lints]
 workspace = true

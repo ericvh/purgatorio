@@ -20,6 +20,7 @@ pub mod auth;
 pub mod bufio;
 pub mod daytime;
 pub mod dial;
+pub mod draw;
 pub mod env;
 pub mod file2chan;
 pub mod ns;

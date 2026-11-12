@@ -7,6 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use purg_abi::error;
 use purg_platform::net::{Command, Net};
+use purg_platform::screen::{Headless, Screen};
 use purg_platform::{Console, Platform, Result};
 
 use crate::host;
@@ -54,11 +55,22 @@ pub struct Emu {
     user: String,
     sysname: String,
     net: host::HostNet,
+    screen: Arc<dyn Screen>,
 }
 
+/// The size of the screen when there is no window (`emu` without `-g`).
+pub const HEADLESS: (u32, u32) = (640, 480);
+
 impl Emu {
+    /// An emu whose draw device has an in-memory screen.
     pub fn new() -> Emu {
+        Emu::with_screen(Arc::new(Headless::new(HEADLESS.0, HEADLESS.1)))
+    }
+
+    /// An emu whose draw device shows its screen on `screen`.
+    pub fn with_screen(screen: Arc<dyn Screen>) -> Emu {
         Emu {
+            screen,
             start: Instant::now(),
             console: StdConsole,
             user: host::user_name(),
@@ -128,5 +140,9 @@ impl Platform for Emu {
 
     fn command(&self, line: &str) -> Result<Arc<dyn Command>> {
         host::start_command(line)
+    }
+
+    fn screen(&self) -> Option<Arc<dyn Screen>> {
+        Some(self.screen.clone())
     }
 }

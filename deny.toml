@@ -37,7 +37,8 @@ allow = [
     # ed25519-dalek, subtle.
     "BSD-3-Clause",
     # Permissive, equivalent to MIT. ring (`Apache-2.0 AND ISC`),
-    # rustls-webpki, untrusted: dev-dependencies only (see include-dev).
+    # rustls-webpki, untrusted; libloading, with which the emu's window
+    # (winit, softbuffer) loads X11 and Wayland.
     "ISC",
     # Permissive with no conditions at all, not even a notice. smoltcp,
     # managed.
@@ -54,9 +55,8 @@ allow = [
 # `license` field and cargo-deny reads its license files instead.
 confidence-threshold = 0.93
 # Check dev-dependencies too (cargo-deny skips them by default). They are
-# not shipped, but we build and run them, and ISC is needed only by them
-# today: ring, rustls-webpki and untrusted come in through purg-emu's TLS
-# tests.
+# not shipped, but we build and run them: rustls-webpki and untrusted come
+# in through purg-emu's TLS tests.
 include-dev = true
 # An entry above that nothing uses any more should be removed.
 unused-allowed-license = "warn"
