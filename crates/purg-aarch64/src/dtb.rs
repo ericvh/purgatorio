@@ -813,6 +813,9 @@ pub struct BootInfo<'a> {
     pub gic: GicInfo,
     /// The generic timer's virtual timer (its third interrupt) as an INTID.
     pub timer_virt_intid: u32,
+    /// The EL1 physical timer (its second interrupt) as an INTID, if the
+    /// DTB gives one: the kernel profiler's clock.
+    pub timer_phys_intid: Option<u32>,
     /// `/chosen` `linux,initrd-start` to `linux,initrd-end` (exclusive).
     pub initrd: Option<Region>,
     /// `/chosen` `bootargs`.
@@ -865,6 +868,7 @@ impl<'a> BootInfo<'a> {
             .ok_or(Error::Missing("arm,armv8-timer"))?;
         let timer_virt_intid =
             interrupt_intid(&timer, icells, 2).ok_or(Error::Missing("timer interrupts"))?;
+        let timer_phys_intid = interrupt_intid(&timer, icells, 1);
 
         let initrd = match chosen {
             Some(c) => initrd(&c)?,
@@ -879,6 +883,7 @@ impl<'a> BootInfo<'a> {
             rtc,
             gic,
             timer_virt_intid,
+            timer_phys_intid,
             initrd,
             bootargs,
         })
@@ -966,6 +971,7 @@ mod tests {
             }
         );
         assert_eq!(bi.timer_virt_intid, 27);
+        assert_eq!(bi.timer_phys_intid, Some(30));
         assert_eq!(bi.initrd, None);
         assert_eq!(bi.bootargs, None);
         assert_eq!(fdt.memory_reservations().count(), 0);

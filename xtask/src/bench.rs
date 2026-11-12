@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use super::{PROBE_TARGET, Result, align, cargo, elf_to_image, initrd, run, run_qemu, workspace};
 
 const USAGE: &str = "usage: cargo xtask bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=wasmtime,wasmi] \
-[--rounds N] [--boots N] [--features F,...] [--profile P] [--label L] [--strict-align] [--rustflags FLAGS] [--config K=V] [--aot native|pulley] [--out FILE]";
+[--rounds N] [--boots N] [--features F,...] [--profile P] [--label L] [--strict-align] [--rustflags FLAGS] [--config K=V] [--aot native|pulley] [--kprof] [--out FILE]";
 
 /// The size of the kernel's disk image: room for the 100 MiB file, the
 /// file system's own blocks and the 1,000 small files `bench fs` makes.
@@ -54,8 +54,24 @@ struct Opts {
     /// Build the kernel with the `aot` feature and images of this kind
     /// (`native` or `pulley`) for [`AOT_MODULES`].
     aot: Option<String>,
+    /// Boot the kernel with its profiler and report where the profiled
+    /// benchmarks spent their time (`crate::kprof`).
+    kprof: bool,
     out: Option<PathBuf>,
 }
+
+/// The benchmarks `bench.sh` profiles under `--kprof`, as it names them.
+const PROFILED: &[&str] = &[
+    "cat-root",
+    "cat-styx",
+    "cat-styx-sealed",
+    "cat-disk",
+    "sha1-file-16m",
+    "fs-disk-1k",
+];
+
+/// Samples a second under `--kprof`.
+const KPROF_HZ: u32 = 2000;
 
 impl Opts {
     fn parse(args: &[String]) -> Result<Opts> {
@@ -74,6 +90,7 @@ impl Opts {
             rustflags: None,
             config: Vec::new(),
             aot: None,
+            kprof: false,
             out: None,
         };
         let mut it = args.iter();
@@ -88,6 +105,7 @@ impl Opts {
                 "--kernel" => o.kernel = true,
                 "--kvm" => o.kvm = true,
                 "--tcg" => o.tcg = true,
+                "--kprof" => o.kprof = true,
                 "--rounds" => o.rounds = num(it.next())?,
                 "--boots" => o.boots = num(it.next())?,
                 "--features" => {
@@ -337,9 +355,19 @@ fn build_kernel(ws: &Path, o: &Opts) -> Result<PathBuf> {
     Ok(image)
 }
 
-fn run_kernel(image: &Path, initrd: &str, disk: &Path, kvm: bool, s: &mut Samples) -> Result<()> {
+fn run_kernel(
+    image: &Path,
+    initrd: &str,
+    disk: &Path,
+    (kvm, kprof): (bool, bool),
+    s: &mut Samples,
+) -> Result<()> {
     let disk = disk.to_str().ok_or("disk path is not UTF-8")?;
     let drive = format!("file={disk},if=none,id=disk,format=raw,cache=unsafe");
+    let mut append = String::from(if kvm { "exit=psci bench" } else { "bench" });
+    if kprof {
+        let _ = write!(append, " kprof={KPROF_HZ}");
+    }
     let mut args: Vec<&str> = if kvm {
         vec!["-accel", "kvm", "-cpu", "host", "-M", "virt,gic-version=3"]
     } else {
@@ -358,7 +386,7 @@ fn run_kernel(image: &Path, initrd: &str, disk: &Path, kvm: bool, s: &mut Sample
         "-initrd",
         initrd,
         "-append",
-        if kvm { "exit=psci bench" } else { "bench" },
+        &append,
         "-global",
         "virtio-mmio.force-legacy=off",
         "-drive",
@@ -513,12 +541,26 @@ pub fn cmd(args: &[String]) -> Result<()> {
                 continue;
             }
             let mut s = Samples::default();
+            let mut profiles = crate::kprof::Profiles::default();
+            let names: Vec<String> = PROFILED.iter().map(|n| String::from(*n)).collect();
             for _ in 0..o.boots {
                 s.load.push(loadavg());
-                run_kernel(&image, &initrd, &disk, kvm, &mut s)?;
+                run_kernel(&image, &initrd, &disk, (kvm, o.kprof), &mut s)?;
+                if o.kprof {
+                    profiles.collect(&disk, &names, &round_args(o.rounds))?;
+                }
             }
             s.load.push(loadavg());
             let which = if kvm { "kvm" } else { "tcg" };
+            if o.kprof {
+                let elf = fs::read(image.with_extension(""))
+                    .map_err(|e| format!("{}: {e}", image.display()))?;
+                let report = profiles.report(&elf)?;
+                let path = ws.join(format!("target/bench/kprof-{which}{suffix}.txt"));
+                fs::write(&path, &report).map_err(|e| format!("{}: {e}", path.display()))?;
+                print!("{report}");
+                eprintln!("bench: wrote {}", path.display());
+            }
             configs.push((format!("kernel-{which}{suffix}"), s));
         }
     }
