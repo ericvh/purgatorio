@@ -496,6 +496,8 @@ pub struct Blk {
     requests: AtomicU64,
     abandoned: AtomicU64,
     errors: AtomicU64,
+    /// The queue's available and used rings, for [`Blk::rings`].
+    rings_at: (usize, usize),
 }
 
 impl Blk {
@@ -525,6 +527,7 @@ impl Blk {
                 can_flush: dev.can_flush,
                 xfer: dev.xfer(),
                 serial,
+                rings_at: (dev.avail, dev.used),
                 dev: Mutex::new(dev),
                 requests: AtomicU64::new(0),
                 abandoned: AtomicU64::new(0),
@@ -564,6 +567,25 @@ impl Blk {
             abandoned: self.abandoned.load(Ordering::Relaxed),
             errors: self.errors.load(Ordering::Relaxed),
         }
+    }
+
+    /// The queue's indices as they are in memory, read without the
+    /// device's lock: the requests the driver has made available and the
+    /// ones the device has used, modulo 2^16; and the interrupt events
+    /// counted so far. For a watchdog's report on a disk that seems stuck.
+    pub fn rings(&self) -> (u16, u16, u64) {
+        let (avail, used) = self.rings_at;
+        dcache_inval(used, 4 + 8 * DESCS + 2);
+        // SAFETY: both rings are this queue's, allocated for its life;
+        // each index is an aligned u16 the driver or the device writes
+        // whole.
+        let (a, u) = unsafe {
+            (
+                read_volatile((avail + 2) as *const u16),
+                read_volatile((used + 2) as *const u16),
+            )
+        };
+        (a, u, EVENTS.load(Ordering::Acquire))
     }
 
     /// Requests the device has not finished, abandoned ones included.

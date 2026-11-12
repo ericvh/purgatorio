@@ -61,3 +61,5 @@ mod selftest;
 mod stress;
 #[cfg(target_os = "none")]
 mod system;
+#[cfg(target_os = "none")]
+mod watchdog;
