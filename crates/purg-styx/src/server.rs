@@ -13,7 +13,7 @@ use crate::fcall::{Fcall, Msg, VERSION, kind};
 pub const IOHDRSZ: u32 = 24;
 
 /// The largest `msize` this framework offers.
-pub const MAX_MSIZE: u32 = 8192 + IOHDRSZ;
+pub const MAX_MSIZE: u32 = 65536 + IOHDRSZ;
 
 /// A file tree spoken as 9P2000. Errors are Inferno errstr text and become
 /// `Rerror`.

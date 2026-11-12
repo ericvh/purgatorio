@@ -31,7 +31,7 @@
 ?next tag is 13
 -> Tmsg.Clunk(20,2)
 <- Rmsg.Clunk(20)
-<- Tmsg.Version(65535,8216,"9P2000")
+<- Tmsg.Version(65535,65560,"9P2000")
 -> Rmsg.Version(65535,8192,"9P2000")
 <- Tmsg.Attach(0,1,4294967295,"user","")
 -> Rmsg.Attach(0,Qid(16r5,0,16r80))

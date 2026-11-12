@@ -606,7 +606,8 @@ impl<D: Disk> Vol<D> {
     /// and sets its time to `now`.
     pub fn write(&mut self, loc: Loc, off: u64, data: &[u8], now: u32) -> Result<usize, String> {
         let mut ent = self.get_ent(loc)?;
-        let end = off
+        let mut data = data;
+        let mut end = off
             .checked_add(data.len() as u64)
             .filter(|&e| e <= u64::from(u32::MAX))
             .ok_or_else(|| String::from(EFULL))?;
@@ -617,6 +618,14 @@ impl<D: Disk> Vol<D> {
         while chain.len() < need {
             let c = match self.alloc(false) {
                 Ok(c) => c,
+                // A full disk takes what fits: the write is short, and
+                // the next one fails.
+                Err(_) if chain.len() as u64 * cb > off.max(u64::from(ent.size)) => {
+                    let fit = chain.len() as u64 * cb - off;
+                    data = &data[..fit as usize];
+                    end = off + fit;
+                    break;
+                }
                 Err(e) => {
                     // Give back what was taken for this write.
                     for &c in &chain[had..] {
