@@ -1,0 +1,56 @@
+fat12
+d-rwxrwxrwx dos srv 0 m
+--rw-rw-rw- dos srv 6 m/A Long Mixed-Case Name.text
+d-rwxrwxrwx dos srv 0 m/Docs
+--rw-rw-rw- dos srv 8 m/Docs/readme.txt
+--r--r--r-- dos srv 7 m/ro
+read me
+hello
+writes
+same
+one
+more
+m/new/A much longer name than 8.3 allows.txt
+m/new/Two
+m/new/fs.sh
+sh: m/new/Two: permission denied
+rm: m/new/Two: permission denied
+rm: m/new: permission denied
+rm: m/ro: permission denied
+truncated
+again
+d-rwxrwxrwx dos srv 0 m
+--rw-rw-rw- dos srv 6 m/A Long Mixed-Case Name.text
+d-rwxrwxrwx dos srv 0 m/Docs
+--rw-rw-rw- dos srv 10 m/Docs/readme.txt
+d-rwxrwxrwx dos srv 0 m/new
+--rw-rw-rw- dos srv 35 m/new/A much longer name than 8.3 allows.txt
+--rw-rw-rw- dos srv 2205 m/new/fs.sh
+--r--r--r-- dos srv 7 m/ro
+same
+truncated
+fat16
+m/A Long Mixed-Case Name.text
+m/Docs
+m/ro
+m/Docs/readme.txt
+same
+fat32
+m/A Long Mixed-Case Name.text
+m/Docs
+m/ro
+m/Docs/readme.txt
+same
+full
+cp: m/c: file system full
+m/a
+m/b
+m/c
+mkdir: m/x: file system full
+errors
+sh: m/bad:name: file name syntax
+mkdir: m/Docs: file already exists
+rm: m/Docs: permission denied
+dossrv: cannot open /tmp/sh-dossrv/nosuch: file does not exist
+dossrv: /tmp/sh-dossrv/junk: not a FAT file system
+dossrv: usage: dossrv [-s] [-vFc] [-f devicefile] [-m mountpoint] [-S secs]
