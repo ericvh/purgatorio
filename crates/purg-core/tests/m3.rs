@@ -128,6 +128,38 @@ fn file2chan_serves_a_read() {
     server.join().unwrap();
 }
 
+/// Every close reaches a server that is slow to read, past the write
+/// channel's capacity; the closer never waits, and a server that never
+/// reads costs a bounded queue.
+#[test]
+fn file2chan_close_events_wait_for_the_server() {
+    let (mut p, _) = setup();
+    let (_rh, wh) = p.file2chan("#R/box", "c").unwrap();
+    let write_ch = p.proc.kgrp.get(wh).unwrap();
+    let opens = 40;
+    for _ in 0..opens {
+        let fd = p.open("#R/box/c", mode::OREAD).unwrap();
+        p.close(fd).unwrap();
+    }
+    let mut fids = Vec::new();
+    while let Some(m) = write_ch.try_recv().unwrap() {
+        let (_, fid, reply, data) = purg_abi::fio::unpack_write(&m.bytes).unwrap();
+        assert_eq!((reply, data.len()), (-1, 0), "a close event");
+        fids.push(fid);
+    }
+    assert_eq!(fids, (1..=opens).collect::<Vec<u32>>());
+    let past = purg_core::devsrv::CLOSE_BACKLOG as u32 + 100;
+    for _ in 0..past {
+        let fd = p.open("#R/box/c", mode::OREAD).unwrap();
+        p.close(fd).unwrap();
+    }
+    let mut n = 0;
+    while write_ch.try_recv().unwrap().is_some() {
+        n += 1;
+    }
+    assert_eq!(n, 16 + purg_core::devsrv::CLOSE_BACKLOG);
+}
+
 /// A file2chan file goes when its server exits: the name is free, a
 /// client that was using it is told, and the file no longer holds the
 /// server's namespace.
