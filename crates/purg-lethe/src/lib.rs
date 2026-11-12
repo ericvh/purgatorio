@@ -34,6 +34,8 @@ pub const HEADER: usize = 10;
 pub const MAX_FRAME: usize = 65536;
 /// The largest `count` of a read or a directory read.
 pub const MAX_COUNT: u32 = 32768;
+/// The most names one `Twalk` carries.
+pub const MAX_WALK: usize = 64;
 /// An XChaCha20-Poly1305 nonce.
 pub const NONCE: usize = 24;
 /// An XChaCha20-Poly1305 tag.
@@ -83,6 +85,10 @@ pub mod op {
     /// Reserved: the SHA-256 of a file's content.
     pub const TDIGEST: u8 = 0x16;
     pub const RDIGEST: u8 = 0x17;
+    /// A walk of several names from a directory in one request. Added in
+    /// version 1 at a code older servers answer `not implemented`.
+    pub const TWALK: u8 = 0x18;
+    pub const RWALK: u8 = 0x19;
     /// Reserved for writes.
     pub const WRITES: core::ops::RangeInclusive<u8> = 0x20..=0x2f;
     /// Reserved for streams.
