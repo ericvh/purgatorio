@@ -4,7 +4,9 @@
 Model Context Protocol (MCP). It is an ordinary guest command
 (`/bin/mcpd.wasm`). It speaks MCP on its standard input and output, so an
 MCP client starts it by starting `emu`. The plan and its later stages are
-in issue #70. This page describes stages 1 to 3.
+in issue #70. This page describes stages 1 to 3 and 5 of `mcpd`, and the
+first part of stage 4, `mcpfs`, which goes the other way: it mounts another
+MCP server's tools as files.
 
 ## Running it
 
@@ -49,6 +51,10 @@ Options, after `mcpd`:
   namespace(6) file. See below.
 - `-t ms` is how long a file tool may take before it is abandoned
   (default 30000). See "Protocol".
+- `-M bytes` is the most wasm memory all of a session's programs may hold
+  between them (default `256m`; `k`, `m` and `g` multiply by 2^10, 2^20
+  and 2^30). `-P progs` is how many programs a session may have at once
+  (default 128). See "Limits".
 
 You can try it by hand:
 
@@ -116,14 +122,14 @@ relative to `/tmp`.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `run` | `command`, and optional `stdin`, `cwd`, `timeout_ms` (default 30000, at most 600000), `max_output_bytes` (default 65536 for each stream, at most 1 MiB) | `stdout`, `stderr`, `status` (Inferno's exit status string; empty is success), `ok`, `timed_out`, `stdout_truncated`, `stderr_truncated` |
+| `run` | `command`, and optional `stdin`, `cwd`, `timeout_ms` (default 30000, at most 600000), `max_output_bytes` (default 65536 for each stream, at most 1 MiB) | `stdout`, `stderr`, `status` (Inferno's exit status string; empty is success), `ok`, `timed_out`, `stdout_truncated`, `stderr_truncated`, and `note` when the command ran into a limit |
 | `read_file` | `path`, optional `offset`, `length` (default 65536, at most 1 MiB), `encoding` (`auto` or `base64`) | `content`, `encoding` (`utf8` or `base64`), `offset`, `bytes`, `size`, `eof` |
 | `write_file` | `path`, `content`, optional `encoding` (`utf8` or `base64`), `mode` (`truncate`, `create` or `append`) | `bytes`, `size` |
 | `list_dir` | `path` | `entries` (each `name`, `type`, `size`, `mode`, `append_only`, `mtime`), `truncated` |
 | `stat` | `path` | the same fields, and `path`, `atime`, `uid`, `gid`, `muid` |
 | `remove` | `path`, optional `recursive` | `removed` |
-| `job_start` | `command` (an sh line) or `argv` (a program and its arguments, without sh), optional `stdin`, `cwd` | `id`, `pid` |
-| `job_read` | `id`, optional `offset`, `stderr_offset`, `wait_ms` (default 0, at most 600000), `max_bytes` (default 65536 for each stream, at most 1 MiB) | `stdout`, `stderr`, `offset`, `next_offset`, `stderr_offset`, `next_stderr_offset`, `lost`, `stderr_lost`, `running`, `status`, `ok` |
+| `job_start` | `command` (an sh line) or `argv` (a program and its arguments, without sh), optional `stdin`, `cwd`, `timeout_ms` (no limit by default, at most a day) | `id`, `pid` |
+| `job_read` | `id`, optional `offset`, `stderr_offset`, `wait_ms` (default 0, at most 600000), `max_bytes` (default 65536 for each stream, at most 1 MiB) | `stdout`, `stderr`, `offset`, `next_offset`, `stderr_offset`, `next_stderr_offset`, `lost`, `stderr_lost`, `running`, `status`, `ok`, and `note` when the job ran into a limit |
 | `job_write` | `id`, optional `data`, `encoding` (`utf8` or `base64`), `eof` | `queued`, `eof` |
 | `job_kill` | `id` | `killed` |
 | `job_list` | none | `jobs` (each `id`, `pid`, `command`, `running`, `status`, `stdout_bytes`, `stderr_bytes`) |
@@ -136,7 +142,11 @@ relative to `/tmp`.
 Notes on `run`:
 
 - The command line is run by `sh -c` in a new process group, with pipes
-  for its three standard files. It starts in `cwd`, or `/tmp`.
+  for its three standard files. It starts in `cwd`, or `/tmp`. A
+  launcher prog (`mcpd --exec`, shown by `ps` as `mcpd`) changes to that
+  directory and starts sh, so a file server that hangs there holds up
+  only this call, which its timeout ends. A `cwd` that does not exist is
+  the call's error, as before.
 - The namespace and the environment belong to the session, so `bind`,
   `mount` and variable assignments last until `reset`. The working
   directory does not.
@@ -183,7 +193,10 @@ long build, an interactive program.
   input after the data. Writing to a job that has exited, or after `eof`,
   fails.
 - `job_kill` kills the job's process group. Its status is then
-  `killed`.
+  `killed`. So does `timeout_ms`, after which `note` says it timed out.
+- A job starts through the same launcher as `run`. A program that cannot
+  be found or a `cwd` that does not exist ends the job at once, with
+  status `fail:` and the reason, also on its standard error.
 - Exited jobs stay in `job_list` and can be read until more than 32 have
   exited; the oldest go first. `reset` and the end of the session kill
   every job.
@@ -257,7 +270,8 @@ policy file binds it there.
 
 ## The sandbox
 
-`mcpd` is three progs, and a worker per file tool. The front end speaks the protocol, writes the log
+`mcpd` is three progs, a worker per file tool and a launcher per command
+or job. The front end speaks the protocol, writes the log
 and touches no file a tool names. A relay copies the client's input to a
 pipe, because the front end must wait on the client and the session at
 once and the console cannot be waited on. The front end starts a session
@@ -277,8 +291,11 @@ standard output. A tool that writes `/fd/1` therefore writes into its
 own worker's output, ahead of the real answer, and the session reads
 only that answer and only its `result` or `error`. The session prog's
 own pipes to the front end are not reachable from any tool or command,
-so a session cannot forge a reply or claim a process group for the
-front end to kill.
+so a session cannot forge a reply. The front end ends a session by
+killing every prog in its domain (below), which it finds through
+`#pdomain=<session pid>`, a view of the domain that does not join it: the
+session prog, its file servers, and everything they started, whatever
+their process groups and whether or not their parents still live.
 
 ### The session's `/prog`
 
@@ -302,10 +319,19 @@ The default namespace:
 | `/env`, `/prog`, `/fd` | `#e` (the session's own copy of the environment), `#pdomain`, `#d`. `/prog` shows only the session's own progs; see below. |
 | `/net`, `/chan`, `/n`, `/mnt` | Empty directories. |
 
-After building it the session prog calls `pctl(NODEVS)`. From then on
-neither it nor anything it starts can name a device with `#`, so
-`bind '#U' /n`, `'#C'` (host commands) and `'#I'` (the network) all fail
-with `mount/attach disallowed`.
+After building it the session prog drops `#¤` from its namespace
+(`nodev ¤` on its `ctl`, `docs/abi.md`) unless the policy file binds it,
+and calls `pctl(NODEVS)`. From then on neither it nor anything it starts
+can name a device with `#`, so `bind '#U' /n`, `'#C'` (host commands),
+`'#I'` (the network) and `'#¤'` (the factotum) all fail with
+`mount/attach disallowed`. `NODEVS` still allows `#e`, `#|`, `#M` and
+`#s`, as in Inferno. `#e` is the session's own copy of the environment.
+`#s` is the session's own file2chan registry: each prog domain has one, so
+a session sees only the files its own programs posted, and file2chan
+(sh's `load file2chan`, `ramfile`) works inside it. Why not bind an empty
+directory over `/srv` or drop `#s` too: a bind does not stop a name that
+starts with `#s`, and without `#s` file2chan cannot work, since it binds
+`#s/<name>` over the file it makes.
 
 What "read-only" means for `/bin` and `/lib`: the session reaches those
 trees only through a 9P connection to an `export` started with the new
@@ -320,30 +346,18 @@ code, not in the session, and the session has no other path to the files.
 and their descendants, and starts a new session prog. The same happens
 when the client closes the connection, and `mcpd` then exits.
 
-Limits of this stage, stated plainly:
+Limits of the sandbox, stated plainly:
 
 - A session can still kill its own progs, the session prog and its file
   servers among them. If it kills the session prog, the call in progress
   fails and a new session starts.
-- `NODEVS` still allows `#e`, `#s`, `#|`, `#M` and `#¤`, as in Inferno.
-  `#s` is the system-wide `file2chan` registry and `#¤` is the factotum.
-  A session can therefore reach a service another prog posted in `#s`,
-  and can ask a factotum that holds a key to sign. A stock `emu mcpd` has
-  neither.
-- `mcpd` sets no memory or CPU limits yet (stage 5). The kernel now has
-  per-prog and per-domain memory limits and a per-domain prog limit
-  (`docs/abi.md`, "Memory and prog limits"), which a session could set on
-  its domain. The `memfs` trees grow with what is written to them, and a
-  command can use a core until its timeout.
-- A prog that leaves its process group and whose parent has exited is not
-  found when the session ends. No command in `/bin` does this. (Such a
-  prog is still in the session's domain, so the session sees it; the
-  front end's own view does not say which domain a prog is in.)
-- The session prog itself still does a little that names files: it
-  changes to `/tmp` (or `cwd`) before it starts a command or job, and
-  the spawn looks up the command. A session that mounts a server that
-  never answers on `/tmp` can stall those, and then the front end
-  replaces the session.
+- The session prog still names a few files itself: `/bin/mcpd.wasm` and
+  `/bin/sh.wasm` when it starts a launcher or a worker, and
+  `/prog/<pid>/ctl` and `/prog` to kill a command. A session that mounts
+  a server that never answers on `/bin` or `/prog` can stall those, and
+  then the front end replaces the session. (`/tmp` and a `cwd` no longer
+  can: the launcher and the workers change directory, not the session
+  prog.)
 - Guest modules run with the engine's normal isolation; module signing
   (#33) is not applied.
 
@@ -400,6 +414,15 @@ bind '#C' /cmd
 
 A mount point can be bound whole: `bind /lib /n/lib` shows the read-only
 `/lib`, since #97.
+
+The factotum, `#¤`, is the one device `NODEVS` allows that the session
+loses. A policy grants it by binding it anywhere, which also leaves `#¤`
+itself attachable (the SDK and the kernel's mount authentication name it
+so):
+
+```
+bind '#¤' /n/factotum
+```
 
 ## Remote sessions (stage 3): `rcmd host mcpd`
 
@@ -483,21 +506,121 @@ encrypt, carry standard input and output, and give each connection its
 own process group that is killed when it ends. One path is tested in
 the hosted tests and on the kernel; a second would double that.
 
-## Later stages
+## Limits (stage 5)
 
-From issue #70:
+A session is a prog domain (`#pdomain`, `docs/abi.md`): the session prog,
+its two `memfs` and two `export -r`, and every launcher, command, job,
+worker and helper it starts, through any number of generations and
+whatever their process groups. Before it serves a call the session prog
+sets two limits on that domain, which can only be lowered, so nothing in
+the session can raise them:
 
-4. `mcpfs`, which mounts other MCP servers' tools as files. (`rcmd` as
-   the transport is done, above.)
-5. Fuel and memory limits per session.
+- `-M bytes` (default 256 MiB): the wasm memory, linear memory and
+  tables, that the domain's progs may hold between them. `/tmp` is a
+  `memfs`, a guest, so what is written there counts too. An idle session
+  holds about 2 MiB.
+- `-P progs` (default 128): how many progs the domain may have at once.
+  An idle session has six; a `run` adds a launcher, sh and what sh
+  starts; a file tool adds a worker for its length; a job adds a launcher
+  and its programs. Every prog holds a kernel thread and its stack, which
+  the memory limit does not count, so this limit bounds those.
 
-Notes for stage 5 from stage 3:
+Past a limit, what fails is the program that asked, and the result says
+which limit it was:
 
-- The cost of a session is mostly its progs: the session prog, two
-  `memfs`, two `export -r`, and now a short-lived worker per file tool,
-  each with its own wasm instance and kernel thread. On the kernel each
-  prog holds a stack and its memory until it exits, so a limit on the
-  number of progs in a domain would bound a session as much as a memory
-  limit would.
-- `#pdomain` already names the set of progs a session owns, which is
-  where per-session counters for fuel and memory could live.
+- A program that tries to grow its memory past `-M` is refused the
+  growth (`memory.grow` returns -1). A Rust program then prints `memory
+  allocation of N bytes failed` and traps. `run` and `job_read` add a
+  `note`, such as `out of memory: the session's programs may hold 16 MiB
+  of memory between them (mcpd -M), and a program asked for more; it was
+  stopped`, to the result. The memory it held is free again when it
+  exits.
+- A spawn past `-P` fails with `no free procs`: sh prints `sh: no free
+  procs`, and `note` names the limit. When mcpd itself cannot start the
+  launcher or a worker, the call fails with `mcpd: no free procs (no
+  free procs: the session may run at most 128 programs at once ...)`.
+- A fork bomb (`fn bomb {bomb & bomb &}; bomb`) never has more than `-P`
+  progs, and the session prog, its file servers and other sessions go on.
+  Its programs keep each other going in the background until `reset`,
+  which kills the whole domain.
+
+What is not limited, and why:
+
+- CPU. A `run` has its `timeout_ms` (30 s by default, at most ten
+  minutes), a file tool has `-t`, a `mount` has its own timeout, and a
+  job now takes an optional `timeout_ms`. At each the program's group is
+  killed. A job without one runs until `job_kill`, `reset` or the end of
+  the session, which is what a job is for. A CPU-time or fuel budget per
+  domain would need both engines to meter every prog and charge its
+  domain, which neither does yet (wasmi has fuel, wasmtime epochs, and
+  the kernel's scheduler has no per-domain account). With the prog limit,
+  a session can keep at most `-P` threads busy, and only until the
+  timeouts or the client end them; that is a bound, if a coarse one. A
+  per-domain CPU share is the next step if sessions must be isolated from
+  each other's load, not only from each other's files.
+- Kernel memory the session's files use: the session's `#e` (sh keeps
+  every variable there, so `s=$s^$s` in a loop grows it without limit),
+  pipes and `#s` buffers. `#e` is the one a session can grow at will;
+  bounding it needs a limit in `#e` itself.
+
+## mcpfs: other MCP servers as files (stage 4)
+
+`mcpfs` is the other direction: a file server that mounts another MCP
+server's tools, so that sh scripts and programs in Purgatorio can call
+them.
+
+```
+mcpfs [-m mntpt] command [arg ...]
+```
+
+`command` is started with pipes for its standard input and output and
+must speak MCP's stdio transport on them. It is any guest program:
+`mcpd` for a local sandbox, or `rcmd host mcpd` for one on another
+system. mcpfs makes the `initialize` handshake (revision 2025-11-25),
+lists the tools (following `nextCursor`), and mounts on `mntpt` (default
+`/n/mcp`):
+
+| Name | What it is |
+|---|---|
+| `server` | The server's `initialize` result as JSON: its `serverInfo`, `capabilities` and `instructions`. |
+| `tools/NAME/` | A directory per tool. A name that cannot be a file name (empty, `.`, `..`, or with `/`) is left out. |
+| `tools/NAME/schema` | The tool's definition from `tools/list` as JSON: `name`, `description`, `inputSchema`, `outputSchema`, `annotations`. |
+| `tools/NAME/call` | Write the arguments, a JSON object, then read the result on the same open file. |
+
+Each open of `call` is one call. Nothing written means `{}`. The first
+read sends `tools/call` and returns the `CallToolResult` as one line of
+JSON (`content`, `structuredContent`, `isError`). A tool that fails is a
+result with `isError: true`, as MCP has it. Arguments that are not a
+JSON object, and a request the server answers with a JSON-RPC error,
+fail the read with the message. The result can be read from 0 or from
+where the writes ended, so sh's read-write redirection works:
+
+```sh
+mcpfs mcpd
+cat /n/mcp/tools/run/schema
+{echo '{"command":"echo hello"}' >[1=0]; cat} <> /n/mcp/tools/run/call
+mcpfs -m /n/far rcmd tcp!host!rstyx mcpd
+```
+
+`mcpfs` exits when the mount goes (`unmount`), and the server's input
+then ends, so `mcpd` exits too. Tests: `root/lib/test/sh/mcpfs.sh` (on
+both engines, the probe and the kernel) with `mcpd` as the far end, and
+`mcpfs_over_rcmd` in `crates/purg-emu/tests/rcmd.rs`.
+
+What remains of stage 4:
+
+- A host MCP server through `#C`. `#C` here gives a command's output and
+  status but no way to write its input (`os` has none either), so a host
+  server cannot be spoken to yet. That needs `data` in `#C` to take
+  writes, as Inferno's cmd(3) does, and the platform's command to carry
+  them.
+- Resources (`resources/list` and `read` as files), prompts, and
+  notifications: a changed tool list is not seen until the next mount;
+  progress and log messages are dropped; cancellation is not sent.
+- One request at a time: the file server is one prog, so a long call
+  holds up every other request to the mount, `ls` included. Calls in
+  their own progs, as `mcpd`'s file workers do, would fix that.
+- No timeout: a server that never answers holds the mount until it is
+  unmounted, and then `mcpfs` waits for the answer before it exits.
+- Revision 2026-07-28 (stateless, with `_meta` on every request) is not
+  spoken; 2025-11-25 is, and `mcpd` and most servers answer it.
