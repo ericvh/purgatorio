@@ -7,9 +7,9 @@ echo: bad arg in system call
 echo: bad arg in system call
 echo: connection refused
 ls: #λ99: file does not exist
-lethe: usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]
+lethe: usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
 lethe: /nonexistent: file does not exist
 lethe: connection refused
-lethe: usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]
-lethe: usage: lethe [-abc] [-A] [-k keyfile] [-u user] addr mtpt [path]
+lethe: usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
+lethe: usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
 lethe: connection refused
