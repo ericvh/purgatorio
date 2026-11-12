@@ -23,7 +23,8 @@ while {~ $#pid 0} {
 	sleep 0.1
 	pid=`{pidof ' running +debug$'}
 }
-while {~ `{cat $d/addr} ()} {sleep 0.1}
+# The line is written in pieces (stderr is unbuffered): wait for all of it.
+while {! ~ `{wc -l < $d/addr} 1} {sleep 0.1}
 addr=`{sed 's/counter //' $d/addr}
 # The memory of a running prog cannot be touched, nor can it step.
 cat /prog/$pid/heap >[2=1] | sed 's/.*: //'
