@@ -56,10 +56,10 @@ pub fn read_sealed(c: &Chan, opener: &mut Opener, msize: u32) -> Result<Vec<u8>>
     let mut hdr = [0u8; record::HEADER];
     read_full(c, &mut hdr)?;
     let n = record::size(hdr, msize as usize).map_err(Error::new)?;
-    let mut rec = alloc::vec![0u8; n];
-    rec[..record::HEADER].copy_from_slice(&hdr);
-    read_full(c, &mut rec[record::HEADER..])?;
-    let msg = opener.open(rec).map_err(Error::new)?;
+    // The rest of the record, opened where it lands.
+    let mut msg = alloc::vec![0u8; n - record::HEADER];
+    read_full(c, &mut msg)?;
+    opener.open_body(hdr, &mut msg).map_err(Error::new)?;
     let size = msg
         .get(..4)
         .and_then(|s| s.try_into().ok())
@@ -73,7 +73,7 @@ pub fn read_sealed(c: &Chan, opener: &mut Opener, msize: u32) -> Result<Vec<u8>>
 /// Writes `msg` as one record when `sealer` is given, else as it is.
 pub fn write_sealed(c: &Chan, sealer: Option<&mut Sealer>, msg: &[u8]) -> Result<()> {
     match sealer {
-        Some(s) => write_full(c, &s.seal(msg).map_err(Error::new)?),
+        Some(s) => write_full(c, s.seal_buf(msg).map_err(Error::new)?),
         None => write_full(c, msg),
     }
 }

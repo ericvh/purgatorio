@@ -18,6 +18,11 @@
 //!
 //! The mount client and `export` send one Styx message per record, so the
 //! largest record is the negotiated msize plus [`OVERHEAD`].
+//!
+//! Neither end allocates per record on its hot path: [`Sealer::seal_buf`]
+//! builds each record in a buffer the sealer keeps, and
+//! [`Opener::open_body`] opens a record read without its header in place
+//! and leaves the plaintext where the ciphertext was.
 
 use alloc::vec::Vec;
 
@@ -160,6 +165,8 @@ pub fn size(header: [u8; HEADER], max_plain: usize) -> Result<usize, &'static st
 pub struct Sealer {
     aead: Cipher,
     seq: u64,
+    /// The last record [`Sealer::seal_buf`] made; its capacity is reused.
+    buf: Vec<u8>,
 }
 
 impl Sealer {
@@ -173,6 +180,7 @@ impl Sealer {
         Sealer {
             aead: Cipher::new(key),
             seq,
+            buf: Vec::new(),
         }
     }
 
@@ -183,12 +191,30 @@ impl Sealer {
 
     /// `plain` as the next record.
     pub fn seal(&mut self, plain: &[u8]) -> Result<Vec<u8>, &'static str> {
+        let mut rec = Vec::new();
+        self.seal_into(plain, &mut rec)?;
+        Ok(rec)
+    }
+
+    /// `plain` as the next record, in a buffer the sealer keeps and reuses
+    /// for the next one, so a stream of records allocates nothing once the
+    /// buffer has grown to the largest.
+    pub fn seal_buf(&mut self, plain: &[u8]) -> Result<&[u8], &'static str> {
+        let mut rec = core::mem::take(&mut self.buf);
+        let r = self.seal_into(plain, &mut rec);
+        self.buf = rec;
+        r.map(|()| &self.buf[..])
+    }
+
+    /// Replaces what `rec` holds with `plain` sealed as the next record.
+    fn seal_into(&mut self, plain: &[u8], rec: &mut Vec<u8>) -> Result<(), &'static str> {
         if self.seq >= LIMIT {
             return Err(EXHAUSTED);
         }
         let n = u32::try_from(plain.len() + OVERHEAD).map_err(|_| TOO_LONG)?;
         let header = n.to_le_bytes();
-        let mut rec = Vec::with_capacity(n as usize);
+        rec.clear();
+        rec.reserve(n as usize);
         rec.extend_from_slice(&header);
         rec.extend_from_slice(plain);
         let tag = self
@@ -197,7 +223,7 @@ impl Sealer {
             .ok_or(TOO_LONG)?;
         rec.extend_from_slice(&tag);
         self.seq += 1;
-        Ok(rec)
+        Ok(())
     }
 }
 
@@ -242,25 +268,51 @@ impl Opener {
         result.map(|()| rec)
     }
 
+    /// Opens the next record given as its `header` and the rest of it,
+    /// `body` (the ciphertext and the tag), in place: on success `body`
+    /// holds the plaintext. A reader that takes the header first (to learn
+    /// the size, [`size`]) reads the rest straight into `body`, so the
+    /// plaintext needs no move. After a failure every later record fails
+    /// too.
+    pub fn open_body(
+        &mut self,
+        header: [u8; HEADER],
+        body: &mut Vec<u8>,
+    ) -> Result<(), &'static str> {
+        if self.failed {
+            return Err(BAD_MAC);
+        }
+        let result = self.open_parts(header, body);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result.map(|n| body.truncate(n))
+    }
+
     fn open_in_place(&mut self, rec: &mut Vec<u8>) -> Result<(), &'static str> {
         let header: [u8; HEADER] = rec
             .get(..HEADER)
             .and_then(|h| h.try_into().ok())
             .ok_or(TOO_SHORT)?;
-        if size(header, usize::MAX)? != rec.len() {
+        let n = self.open_parts(header, &mut rec[HEADER..])?;
+        rec.truncate(HEADER + n);
+        rec.drain(..HEADER);
+        Ok(())
+    }
+
+    /// Opens `body` under `header` in place; returns the plaintext's length.
+    fn open_parts(&mut self, header: [u8; HEADER], body: &mut [u8]) -> Result<usize, &'static str> {
+        if size(header, usize::MAX)? != body.len() + HEADER {
             return Err(BAD_MAC);
         }
         if self.seq >= LIMIT {
             return Err(EXHAUSTED);
         }
         self.aead
-            .open(nonce(self.seq), &header, &mut rec[HEADER..])
+            .open(nonce(self.seq), &header, body)
             .ok_or(BAD_MAC)?;
         self.seq += 1;
-        let body_end = rec.len() - TAG;
-        rec.truncate(body_end);
-        rec.drain(..HEADER);
-        Ok(())
+        Ok(body.len() - TAG)
     }
 }
 
@@ -308,6 +360,40 @@ mod tests {
             assert_eq!(size(rec[..4].try_into().unwrap(), msg.len()), Ok(rec.len()));
             assert_eq!(o.open(rec).unwrap(), msg);
         }
+    }
+
+    /// `seal_buf` makes the same records as `seal`, and `open_body` opens
+    /// them from the header and the body apart.
+    #[test]
+    fn buffers_and_bodies() {
+        let (mut a, mut b) = (Sealer::new(&KEY), Sealer::new(&KEY));
+        let mut o = Opener::new(&KEY);
+        for i in [0usize, 1, 100, 8216, 3, 0] {
+            let msg = vec![i as u8; i];
+            let want = a.seal(&msg).unwrap();
+            let got = b.seal_buf(&msg).unwrap();
+            assert_eq!(got, &want[..], "len {i}");
+            let header = want[..HEADER].try_into().unwrap();
+            let mut body = want[HEADER..].to_vec();
+            o.open_body(header, &mut body).unwrap();
+            assert_eq!(body, msg);
+        }
+        // A changed body fails, and so does everything after it.
+        let rec = a.seal(b"x").unwrap();
+        let mut body = rec[HEADER..].to_vec();
+        body[0] ^= 1;
+        let header = rec[..HEADER].try_into().unwrap();
+        assert_eq!(o.open_body(header, &mut body), Err(BAD_MAC));
+        let rec = a.seal(b"y").unwrap();
+        assert_eq!(o.open(rec), Err(BAD_MAC));
+        // A header that does not match the body's length.
+        let mut o = Opener::new(&KEY);
+        let rec = Sealer::new(&KEY).seal(b"abc").unwrap();
+        let mut body = rec[HEADER..rec.len() - 1].to_vec();
+        assert_eq!(
+            o.open_body(rec[..HEADER].try_into().unwrap(), &mut body),
+            Err(BAD_MAC)
+        );
     }
 
     /// Any changed bit fails, and so does everything after it.
