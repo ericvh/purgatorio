@@ -67,6 +67,14 @@ echo $v;
 echo $v;
 { v = group };
 echo $v;
+# The new scope holds variables and functions only: as in Inferno's
+# mash, @{...} is not a new prog, so cd inside it reaches this mash.
+@{ fn scoped { echo scoped }; scoped; l := a b; echo (len $l) };
+whatis scoped;
+echo (len $l);
+@{ cd /lib/test };
+pwd;
+cd /;
 
 # Builtins.
 whatis echo whatis;
