@@ -1,0 +1,157 @@
+# addresses
+line1
+line3
+line4
+line5
+line1
+line2
+line3
+line4
+line2
+line3
+line4
+line2
+line3
+line4
+line2
+line3
+line4
+line4
+line3
+line4
+line5
+line5
+5
+# commands
+line1
+line5
+line1
+line2
+line3
+line2
+line2
+first
+line1
+line2
+line3
+line4
+line5
+last
+line1
+changed
+line5
+line1
+even
+line3
+even
+line5
+2
+line2
+line1
+line3
+line5
+line1+line2
+line3+line4
+line5
+line1
+line3
+line5
+line1
+line2
+line3
+line4
+line5
+LINE1
+LINE2
+LINE3
+LINE4
+LINE5
+tab\there\\ end
+# hold space
+line5
+line4
+line3
+line2
+line1
+,line1,line2,line3,line4,line5
+
+line1
+line2
+line3
+line4
+line1
+line1
+line3
+line4
+line5
+# branches
+a
+line1 !
+line2 !
+line3
+line4 !
+line5 !
+one 2 three yes
+one no
+# substitute
+f0o boo
+f00 b00
+foo b0o
+f00 b00
+<a>a.c <b>b.c
+b a
+x&&y
+path,to,f
+a
+c
+-a-b-c-
+LINE3
+in1
+in2
+in3
+in4
+in5
+# files
+line1
+line3
+line5
+two
+line1
+line2
+inserted
+line3
+line4
+line5
+line1
+line2
+line3
+line4
+line5
+L1
+line2
+L2
+L3
+L4
+L5
+line1
+inserted
+# errors
+sed: unrecognised command: 'k' (k)
+fail:error
+sed: line no 0 is illegal address
+sed: only one address allowed:  '1,2q'
+sed: leftover junk: q
+sed: too many {'s
+sed: too many }'s: p}
+sed: undefined label: 'nowhere'
+sed: duplicate label: 'a'
+sed: no closing / in replacement text: s/a/b
+sed: missing operand for * '*'
+sed: y command needs same length sets: y/ab/c/
+sed: First RE in address may not be null
+sed: can't open '/tmp/sh-sed/nonexistent'
+fail:error
+sed: couldn't open '/tmp/sh-sed/nonexistent': file does not exist
+sed: missing pattern
+usage: sed [-ngd] [-e expr] [-f file] [expr] [file...]
+fail:usage
