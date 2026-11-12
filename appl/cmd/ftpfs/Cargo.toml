@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-ftpfs"
+description = "ftpfs: mount the files of an FTP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ftpfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+purg-styx.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+
+[lints]
+workspace = true

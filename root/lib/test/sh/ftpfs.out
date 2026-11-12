@@ -1,0 +1,47 @@
+passive
+m/a.txt
+m/sub
+m/sub/b
+in home
+deeper
+d-rwxrwxrwx ftp ftp 0 m
+--rw-r----- bob staff 8 m/a.txt
+d-rwxr-xr-x bob staff 0 m/sub
+--rw-r--r-- bob staff 7 m/sub/b
+writes
+new file
+new file
+same
+new file
+more
+m/a.txt
+m/dir
+m/renamed
+m/sub
+new file
+more
+new file
+more
+rm: m/dir: permission denied
+srv/home/a.txt
+srv/home/sub
+cache
+m/a.txt
+m/sub
+m/a.txt
+m/sub
+ls: m/.flush.ftpfs: file does not exist
+m/a.txt
+m/sneaky
+m/sub
+root
+m/home
+m/top
+at the top
+made behind its back
+active write
+login
+User: Password: in home
+errors
+User: Password: ftpfs: login failed: Login incorrect.
+ftpfs: usage: ftpfs [-/dpq] [-m mountpoint] [-a password] ftphost
