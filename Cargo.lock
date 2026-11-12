@@ -982,6 +982,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-rawdbfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-rcmd"
 version = "0.1.0"
 dependencies = [

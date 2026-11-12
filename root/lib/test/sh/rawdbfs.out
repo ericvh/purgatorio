@@ -1,0 +1,41 @@
+n/new
+n/0
+n/1
+n/2
+n/new
+first
+
+record, with an empty line
+same binary
+n/1
+n/2
+n/new
+reloaded
+n/0
+n/1
+n/new
+changed
+same binary
+-x
+n/0
+n/index
+n/new
+n/stats
+0 0 0 0
+42
+43
+changed
+changed
+changed
+more
+2 1 1 0
+-l
+sh: n/0: device or object already in use
+again
+errors
+rawdbfs: /tmp/sh-rawdbfs/nodb: file does not exist
+rawdbfs: /tmp/sh-rawdbfs/junk: not a rawdbfs file
+sh: n/stats: mounted directory forbids creation
+sh: n/nosuch: mounted directory forbids creation
+mkdir: n/dir: mounted directory forbids creation
+rawdbfs: usage: rawdbfs [-abcelx] [-u cmd] file mountpoint
