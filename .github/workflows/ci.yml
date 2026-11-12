@@ -96,6 +96,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: build guest binaries into root/
         run: cargo xtask build-root
+      - name: allow unprivileged ICMP sockets (ip/ping's tests)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
       - name: unit and acceptance tests (wasmtime and wasmi)
         run: cargo test --workspace
       - name: experimental no_std and multi-call guests (docs/footprint.md)
