@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-dbm-list"
+description = "dbm/list: list the keys and values of a dbm database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "list"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+dbm = { package = "appl-lib-dbm", path = "../../../lib/dbm" }
+
+[lints]
+workspace = true

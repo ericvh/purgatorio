@@ -377,6 +377,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-dbm-delete"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-dbm",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-dbm-fetch"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-dbm",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-dbm-keys"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-dbm",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-dbm-list"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-dbm",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-dbm-store"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-dbm",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-dd"
 version = "0.1.0"
 dependencies = [
@@ -1268,6 +1308,10 @@ dependencies = [
 
 [[package]]
 name = "appl-lib-add"
+version = "0.1.0"
+
+[[package]]
+name = "appl-lib-dbm"
 version = "0.1.0"
 
 [[package]]
