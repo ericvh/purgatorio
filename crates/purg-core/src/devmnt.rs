@@ -545,7 +545,8 @@ impl Drop for Session {
     fn drop(&mut self) {
         // The replies still due, to clunks nobody waited for, are read
         // first: a server is not hung up on with replies it has yet to
-        // write. A prog killed meanwhile does not wait.
+        // write. A prog killed meanwhile does not wait; an interrupt
+        // neither ends the wait nor is taken by it.
         let _ = self.mux.settle();
         // The reader kproc holds its own reference to the connection, so
         // closing this one does not unblock it. Killing its note makes the

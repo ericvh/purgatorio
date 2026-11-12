@@ -69,8 +69,11 @@ fn describe(f: &Fcall<'_>) -> String {
 struct Rig {
     p: Prog,
     log: Log,
-    /// Set to swallow every `Tclunk`.
+    /// Set to hold back every `Tclunk`.
     hold: Arc<AtomicBool>,
+    /// Passes on the `Tclunk`s held back so far.
+    release: mpsc::Sender<()>,
+    mock: Arc<Mock>,
 }
 
 impl Rig {
@@ -107,22 +110,41 @@ impl Rig {
         let conn = serve(&mut p, &mock);
         let log = Log::default();
         let hold = Arc::new(AtomicBool::new(false));
+        let held = Arc::new(Mutex::new(Vec::new()));
         let [near, far] = p.pipe().unwrap();
         let (to_srv, from_cli) = (p.chan(conn).unwrap(), p.chan(near).unwrap());
         p.close(conn).unwrap();
         p.close(near).unwrap();
         {
-            let (from_cli, to_srv, hold, log) =
-                (from_cli.clone(), to_srv.clone(), hold.clone(), log.clone());
+            let (from_cli, to_srv, hold, held, log) = (
+                from_cli.clone(),
+                to_srv.clone(),
+                hold.clone(),
+                held.clone(),
+                log.clone(),
+            );
             thread::spawn(move || {
                 while let Ok(buf) = read_msg(&from_cli, MAX_MSIZE) {
                     let msg = Msg::decode(&buf, MAX_MSIZE).unwrap();
                     if matches!(msg.fcall, Fcall::Tclunk { .. }) && hold.load(Ordering::Acquire) {
+                        held.lock().unwrap().push(buf);
                         continue;
                     }
                     log.0.lock().unwrap().push(describe(&msg.fcall));
                     if write_full(&to_srv, &buf).is_err() {
                         break;
+                    }
+                }
+            });
+        }
+        let (release, released) = mpsc::channel::<()>();
+        {
+            let to_srv = to_srv.clone();
+            thread::spawn(move || {
+                while released.recv().is_ok() {
+                    let bufs: Vec<Vec<u8>> = held.lock().unwrap().drain(..).collect();
+                    for buf in bufs {
+                        let _ = write_full(&to_srv, &buf);
                     }
                 }
             });
@@ -136,7 +158,13 @@ impl Rig {
         });
         p.mount(far, -1, "#R/mnt", MREPL | MNOAUTH, "").unwrap();
         p.close(far).unwrap();
-        Rig { p, log, hold }
+        Rig {
+            p,
+            log,
+            hold,
+            release,
+            mock,
+        }
     }
 
     /// What `f` sent, once everything it sent has reached the relay: a
@@ -371,4 +399,54 @@ fn export_serves_an_old_client() {
         Fcall::Rread { data } => assert_eq!(data.len(), 8192),
         other => panic!("{other:?}"),
     }
+}
+
+/// Dropping a mount waits for the replies still due; an interrupt does
+/// not end that wait, and is not lost in it (issue #186): a prog that
+/// catches interrupts sees it at its next blocking call.
+#[test]
+fn an_interrupt_survives_a_mount_being_dropped() {
+    let mut r = Rig::new();
+    let pid = r.p.pid;
+    let fd = r.p.open(&format!("#p/{pid}/ctl"), mode::OWRITE).unwrap();
+    r.p.write(fd, b"catchint on").unwrap();
+    r.p.close(fd).unwrap();
+    // The fid a stat walks to is clunked without waiting; its Rclunk is
+    // still due when the mount goes.
+    r.hold.store(true, Ordering::Release);
+    r.p.stat("#R/mnt/one").unwrap();
+    let (procs, note, release) = (
+        r.p.kernel.procs.clone(),
+        r.p.proc.note.clone(),
+        r.release.clone(),
+    );
+    let (done, finished) = mpsc::channel();
+    thread::spawn(move || {
+        let Rig { mut p, mock, .. } = r;
+        enter(&mock, &p);
+        let unmount = p
+            .unmount(None, "#R/mnt")
+            .map_err(|e| e.as_str().to_string());
+        let [rd, w] = p.pipe().unwrap();
+        let mut b = [0u8; 1];
+        let read = p.read(rd, &mut b).map_err(|e| e.as_str().to_string());
+        p.close(rd).unwrap();
+        p.close(w).unwrap();
+        let _ = done.send((unmount, read));
+    });
+    assert!(
+        finished.recv_timeout(Duration::from_millis(200)).is_err(),
+        "the unmount did not wait for the Rclunk"
+    );
+    procs.interrupt(pid);
+    assert!(
+        finished.recv_timeout(Duration::from_millis(200)).is_err(),
+        "the interrupt ended the wait"
+    );
+    assert!(note.interrupted(), "the wait took the interrupt");
+    release.send(()).unwrap();
+    let (unmount, read) = finished.recv_timeout(LONG).expect("the unmount stalled");
+    assert_eq!(unmount, Ok(()));
+    assert_eq!(read, Err(error::EINTR.to_string()));
+    assert!(!note.killed());
 }
