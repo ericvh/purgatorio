@@ -1,0 +1,17 @@
+[package]
+name = "appl-test-ftpd"
+description = "ftpd: a small FTP server for the ftpfs tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ftpd"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

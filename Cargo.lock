@@ -522,6 +522,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-ftpfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "purg-styx",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-getauthinfo"
 version = "0.1.0"
 dependencies = [
@@ -1336,6 +1345,13 @@ dependencies = [
 
 [[package]]
 name = "appl-test-fsperf"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-test-ftpd"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
