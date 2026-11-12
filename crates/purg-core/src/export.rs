@@ -825,7 +825,18 @@ impl Export {
         })
     }
 
-    fn step(&self, path: &str, name: &str) -> KResult<Chan> {
+    /// Walks one name from `from`, which `path` names. A name is walked
+    /// from the Chan itself, one device walk ([`Pgrp::walk1`]), so a walk
+    /// of n names is n device walks. `..` is resolved from its name in
+    /// full, which keeps it inside the export and takes it back across a
+    /// mount point the way it came.
+    fn step(&self, from: &Chan, path: &str, name: &str) -> KResult<Chan> {
+        if name == "." {
+            return Ok(from.clone_unopened());
+        }
+        if name != ".." && !name.contains('/') {
+            return self.pgrp.walk1(from, name);
+        }
         let next = if name == ".." {
             if path == self.root || path == "/" {
                 self.root.clone()
@@ -940,12 +951,19 @@ impl Export {
         }
         let base = self.fid(fid)?;
         let mut path = base.path.clone();
-        let mut chan = base.chan.clone_unopened();
+        // An open fid's Chan may hold an open file of a server below
+        // (a mount's fid), which cannot be walked: a walk from it starts
+        // from its name.
+        let mut chan = if base.chan.open && !names.is_empty() {
+            self.pgrp.namec(&path, "/").map_err(|e| e.to_string())?
+        } else {
+            base.chan.clone_unopened()
+        };
         let mut qids = Vec::new();
         // The files walked through keep their paths until the walk ends.
         let mut uqids = Vec::new();
         for (i, name) in names.iter().enumerate() {
-            match self.step(&path, name) {
+            match self.step(&chan, &path, name) {
                 Ok(c) => {
                     let uqid = Uqid::new(&self.uqids, &c);
                     qids.push(uqid.qid(c.qid));

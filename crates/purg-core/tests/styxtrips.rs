@@ -15,7 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use common::{Mock, enter, setup};
-use purg_abi::mount::{MNOAUTH, MREPL};
+use purg_abi::mount::{MAFTER, MNOAUTH, MREPL};
 use purg_abi::{error, mode, pctl};
 use purg_core::Prog;
 use purg_core::rw::{read_msg, write_full};
@@ -187,6 +187,11 @@ fn put(p: &mut Prog, path: &str, data: &[u8]) {
 
 /// An export of `#R` by a child prog; returns the client's end.
 fn serve(p: &mut Prog, mock: &Arc<Mock>) -> i32 {
+    serve_at(p, mock, "#R")
+}
+
+/// An export of `root` by a child prog; returns the client's end.
+fn serve_at(p: &mut Prog, mock: &Arc<Mock>, root: &'static str) -> i32 {
     let [a, b] = p.pipe().unwrap();
     let mut child = p.spawn(pctl::NEWFD | pctl::FORKNS, &[(a, 0)]).unwrap();
     child.started();
@@ -196,7 +201,7 @@ fn serve(p: &mut Prog, mock: &Arc<Mock>) -> i32 {
     thread::spawn(move || {
         enter(&mock, &child);
         ready.send(()).unwrap();
-        let _ = child.export(0, "#R", MNOAUTH);
+        let _ = child.export(0, root, MNOAUTH);
     });
     started.recv().unwrap();
     b
@@ -218,6 +223,47 @@ fn a_deep_walk_is_one_twalk_for_16_names() {
         assert_eq!(d.name, "leaf");
     });
     assert_eq!(sent, ["Twalk 16", "Twalk 2", "Tclunk", "Tstat", "Tclunk"]);
+}
+
+/// `export` walks a fid's Chan one name at a time (issue #185): a walk
+/// of `deep` and the 17 names below it costs the server 18 names walked
+/// below it, where resolving each name from the root walked 171: each
+/// name and every name above it. The export is of the relayed mount, so
+/// the relay sees what the export walks. Mount points and unions in the
+/// exporter's namespace are crossed as a name resolved in full crosses
+/// them.
+#[test]
+fn an_export_walks_each_name_once() {
+    let mut r = Rig::new();
+    r.p.bind("#R/other", "#R/mnt/a/b", MREPL).unwrap();
+    r.p.bind("#R/deep", "#R/mnt/a", MAFTER).unwrap();
+    let conn = serve_at(&mut r.p, &r.mock.clone(), "#R/mnt");
+    r.p.mount(conn, -1, "#R/box", MREPL | MNOAUTH, "").unwrap();
+    r.p.close(conn).unwrap();
+    let mark = r.log.len();
+    let d = r.p.stat(&format!("#R/box/deep/{DEEP}")).unwrap();
+    assert_eq!(d.name, "leaf");
+    let walked: usize = r
+        .log
+        .since(mark)
+        .iter()
+        .filter_map(|s| s.strip_prefix("Twalk "))
+        .map(|n| n.parse::<usize>().unwrap())
+        .sum();
+    assert_eq!(walked, 18, "names walked through the relay");
+    let d = r.p.stat("#R/box/a/b/c/bound").unwrap();
+    assert_eq!(d.name, "bound");
+    let err = r.p.stat("#R/box/a/b/c/below").unwrap_err();
+    assert_eq!(err.as_str(), error::ENONEXIST);
+    let d = r.p.stat("#R/box/a/d01/d02").unwrap();
+    assert_eq!(d.name, "d02");
+    let d = r.p.stat("#R/box/a/b/c/../../d01/../b/c/bound").unwrap();
+    assert_eq!(d.name, "bound");
+    let fd = r.p.open("#R/box/a/b/c/bound", mode::OREAD).unwrap();
+    let mut buf = [0u8; 16];
+    let n = r.p.read(fd, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"bound");
+    r.p.close(fd).unwrap();
 }
 
 /// Open, read and close a small file: walk, open and read are waited
