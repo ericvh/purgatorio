@@ -15,6 +15,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use purg_platform::sync::{Rendez, Sched};
 use purg_system::System;
 
+use purg_aarch64::sched::ThreadInfo;
+
 use crate::irq::SCHED;
 
 /// Seconds one step may run before the watchdog reports it. The slowest
@@ -24,6 +26,49 @@ pub const STEP_WATCH_SECS: u64 = 60;
 
 /// Stack for the watchdog thread: it formats lines.
 const STACK: usize = 32 << 10;
+
+/// A kernel thread, for the reports: where it is, how it last left its
+/// CPU, the locks it holds and how often it has run.
+pub fn thread_line(t: &ThreadInfo) -> String {
+    let at = match t.cpu {
+        Some(c) => format!("on cpu{c}"),
+        None if t.parked => String::from("parked"),
+        None => String::from("ready"),
+    };
+    let pc = t.preempted_at.map_or(String::new(), |(pc, lr)| {
+        format!(" at pc {pc:#x} lr {lr:#x}")
+    });
+    format!(
+        "thread {:?} pid {} {at}, left by {:?}{pc}, {} locks, {} runs",
+        t.name, t.pid, t.left, t.preempt, t.runs
+    )
+}
+
+/// A prog, for the reports: its pid, name and state, and where it is
+/// asleep through its note.
+pub fn prog_line(p: &purg_core::Proc) -> String {
+    let at = p.note.waiting_at().map_or(String::new(), |l| {
+        format!(", asleep at {}:{}", l.file(), l.line())
+    });
+    format!(
+        "{} {} {} group {}{at}",
+        p.pid,
+        p.name(),
+        p.state(),
+        p.group()
+    )
+}
+
+/// The kernel threads of prog `pid`, for
+/// [`purg_system::System::with_thread_report`].
+pub fn threads_of(pid: u32) -> Vec<String> {
+    SCHED
+        .dump()
+        .iter()
+        .filter(|t| t.pid == pid)
+        .map(thread_line)
+        .collect()
+}
 
 pub struct Watchdog {
     stop: Arc<AtomicBool>,
@@ -63,25 +108,12 @@ pub fn start(sys: System, disks: Box<dyn Fn() -> Vec<String> + Send>) -> Watchdo
                 };
                 line(format!("kernel: watchdog: {step:?} has run for {secs} s"));
                 for t in SCHED.dump() {
-                    let at = match t.cpu {
-                        Some(c) => format!("on cpu{c}"),
-                        None if t.parked => String::from("parked"),
-                        None => String::from("ready"),
-                    };
-                    line(format!(
-                        "kernel: watchdog: thread {:?} pid {} {at}, left by {:?}, {} locks, {} runs",
-                        t.name, t.pid, t.left, t.preempt, t.runs
-                    ));
+                    line(format!("kernel: watchdog: {}", thread_line(&t)));
                 }
                 let procs = &sys.kernel.procs;
                 for pid in procs.pids() {
                     if let Some(p) = procs.get(pid) {
-                        line(format!(
-                            "kernel: watchdog: prog {} {} {}",
-                            p.pid,
-                            p.name(),
-                            p.state()
-                        ));
+                        line(format!("kernel: watchdog: prog {}", prog_line(&p)));
                     }
                 }
                 for d in disks() {

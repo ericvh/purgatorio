@@ -191,6 +191,10 @@ pub struct ThreadInfo {
     pub preempt: u32,
     /// Times it has been switched to.
     pub runs: u64,
+    /// Where the timer interrupt stopped it, its PC and link register,
+    /// when it last left by [`Left::Preempt`]: a thread that should be
+    /// asleep but keeps running shows where it loops.
+    pub preempted_at: Option<(u64, u64)>,
 }
 
 /// A thread. Its address is in `TPIDR_EL1` while it runs.
@@ -223,6 +227,8 @@ struct Thread {
     deadline: u64,
     /// Its last park ended at its deadline, not by an unpark.
     timed_out: AtomicBool,
+    /// PC and link register where the timer last preempted it.
+    preempted_at: (u64, u64),
 }
 
 impl Thread {
@@ -256,6 +262,7 @@ impl Thread {
             permit: false,
             deadline: 0,
             timed_out: AtomicBool::new(false),
+            preempted_at: (0, 0),
         }
     }
 
@@ -729,6 +736,10 @@ impl Scheduler {
                 panic!("kernel thread stack overflow (pid {})", th.pid);
             }
             th.left = how;
+            if how == Left::Preempt {
+                // Called from the timer's IRQ handler on this CPU.
+                th.preempted_at = crate::irq::interrupted();
+            }
             th.pending.store(false, Ordering::Relaxed);
             t.outgoing[cpu] = Some(Outgoing {
                 id: cur,
@@ -908,6 +919,7 @@ impl Scheduler {
                 parked: th.parked,
                 preempt: th.preempt.load(Ordering::Relaxed),
                 runs: th.runs,
+                preempted_at: (th.left == Left::Preempt).then_some(th.preempted_at),
             })
             .collect()
     }
