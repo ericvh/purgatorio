@@ -66,7 +66,9 @@ a `; ` prompt.
 | `mcpd`: an MCP server that gives an LLM client a sandboxed session in its own namespace: `run`, file tools, jobs, namespace tools, resources, a namespace(6) policy file and an audit log; a `/prog` of its own progs only; remote sessions over encrypted `rcmd`, also on the kernel. See [docs/mcp.md](docs/mcp.md) | stage 3 |
 | Text tools: `sort uniq comm tr fmt strings freq look tsort tokenize sha1sum sum uuencode uudecode tcs units calc unicode bytes p mc cal randpass zeros ed` (data in `/lib/units` and `/lib/convcs/charsets`) | done |
 | File and script tools: `basename cleanname touch chmod chgrp dd newer read test time xargs` | done |
-| Module and debugging tools: `wasmdump wasmdep` (Inferno's `disdump`, `disdep`), `trace stack broke prof`: call stacks and function profiles of traced progs through `/prog/<pid>/{stack,exception,prof}`, the same on both backends; function names in `/bin/<cmd>.names`. See [docs/debug.md](docs/debug.md) | done; `asm`, `mdb`, `mprof`, `cprof` open |
+| Module and debugging tools: `wasmdump wasmdep` (Inferno's `disdump`, `disdep`), `trace stack broke prof`: call stacks and function profiles of traced progs through `/prog/<pid>/{stack,exception,prof}`, the same on both backends; function names in `/bin/<cmd>.names`. See [docs/debug.md](docs/debug.md) | done; `asm` open |
+| `cprof` (call counts and coverage by function) and `mprof` (memory grown, by function and its callees), exact and the same on both backends, through `/prog/<pid>/{cprof,mprof}` | done; line coverage needs DWARF |
+| `mdb pid`: stop a traced prog (`stop`/`start`/`step` on `ctl`), breakpoints on function entry (`bpt set`, `bpt del`), its stack, and its memory through `/prog/<pid>/heap`, on both backends | done; locals need DWARF |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |

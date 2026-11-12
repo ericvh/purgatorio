@@ -1,7 +1,8 @@
 # Inspecting modules and debugging progs
 
 Inferno has a set of tools for Dis: `disdump` and `disdep` read a module,
-`stack` and `mdb` look into a prog, and `prof` says where time goes. Here
+`stack` and `mdb` look into a prog, and `prof`, `cprof` and `mprof` say
+where time, calls and memory go. Here
 modules are WebAssembly, so the tools are new, but the roles and the
 `/prog` files are Inferno's (issue #40).
 
@@ -13,6 +14,9 @@ modules are WebAssembly, so the tools are new, but the roles and the
 | `stack [-v] pid ...` | `stack`, `stackv` | prints a prog's call stack |
 | `broke [user]` | `broke` | kills the broken progs |
 | `prof [-n lines] command [arg ...]` | `prof` | runs a command and prints its hot functions |
+| `cprof [-u] [-n lines] command [arg ...]` | `cprof` | runs a command and prints how often each function was called |
+| `mprof [-n lines] command [arg ...]` | `mprof` | runs a command and prints which functions grew its memory |
+| `mdb pid` | `mdb` | stops a traced prog, sets breakpoints, reads and writes its memory |
 
 They are not called `disdump` and `disdep`: what they read is not Dis, and
 a script written for the Inferno tools would not understand the output.
@@ -128,10 +132,15 @@ running. `trace command` does this for one command.
 
 Whoever can write a prog's `ctl` can turn this on, as they can kill the
 prog. What they gain is less than a kill: the prog's later children run
-slower, and one that traps stays in `/prog` until it is killed.
+slower, and one that traps stays in `/prog` until it is killed. Those
+children can also be debugged (below): whoever can write their `ctl`
+can stop them and read and write their memory. That is more than a kill
+gives, since memory can hold keys; as in Inferno, it is open to whoever
+owns the progs, and a sandbox behind `#pdomain` sees only its own.
 
 What tracing costs, and only for traced progs: two wasm frames per call;
-one more 64 KiB page; about a dozen instructions per call. The frames
+one more 64 KiB page (more for a module of over 30,000 functions);
+about twenty instructions per call (see Costs below). The frames
 would halve how deep a traced prog can recurse, so wasmi, whose limit is
 a count of frames, lets a traced prog nest twice as deep (2,064 frames
 instead of 1,000; `trace mash ctl.mash` now runs as untraced). wasmi's
@@ -240,6 +249,146 @@ module /bin/test/debug.wasm samples 8
 100.0%       8 debug::burn
 ```
 
+## Call counts and coverage
+
+`cprof` counts calls, as Inferno's `cprof` counts the execution of each
+line. A prog started with call counting has thunks that each add one to
+a `u64` of their function, in the stack memory after the breakpoint
+bytes (`purg_vm::trace`). The counts are exact, and the same on both
+engines.
+
+```
+echo cprof on > /prog/<pid>/ctl      (or cprof off)
+```
+
+`cprof on` is like `prof on`: it implies `trace on`, clears the counts
+the prog collected, is inherited, and makes the prog collect the counts
+of its children as they exit. The engines copy a prog's counts at their
+check points and when it ends.
+
+### `/prog/<pid>/cprof`
+
+Read-only. A line per function called, for the prog and its exited
+children, as `prof`'s: `<calls> <function index> <path>`.
+
+`cprof command` prints, per module, `module <path> calls <n> functions
+<called> of <defined>`, the coverage by function, and then the functions
+by calls; with `-u`, the functions never called:
+
+```
+% cprof -n 3 test/debug spin
+module /bin/test/debug.wasm calls 118 functions 44 of 256
+ 12.7%      15 dlmalloc
+ 10.2%      12 malloc
+  9.3%      11 free
+```
+
+Coverage by line needs the DWARF line tables, which the guests are
+built without (`strip`); it is not done.
+
+## Memory
+
+Inferno's `mprof` records allocations in the Dis heap. Here the
+allocator is inside the module, and the host sees only `memory.grow`.
+So a prog started with page counting has thunks that note the size of
+memory 0 on entry and, on return, add what it grew to a `u32` of their
+function. A function's count is the pages grown while it ran, in it or
+in anything it called: the outermost functions have the most, the
+allocator's own the least, and the ones between say which paths took
+the memory. Like call counts, they are exact and the same on both
+engines.
+
+```
+echo mprof on > /prog/<pid>/ctl      (or mprof off)
+```
+
+`/prog/<pid>/mprof` has a line `<pages> <function index> <path>` per
+function that grew memory. `mprof command` prints them in bytes, per
+module the bytes the module grew and then the functions:
+
+```
+% mprof -n 4 test/debug grow
+module /bin/test/debug.wasm bytes 4194304
+100.0% 4194304 _start
+100.0% 4194304 std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+100.0% 4194304 debug::heap
+100.0% 4194304 alloc::vec::from_elem::<u8>
+```
+
+Sizes of allocations, rather than of growth, would need the SDK's
+allocator to record them: a wrapper around the global allocator, behind
+a feature so that guests not profiled stay byte-identical, that writes
+counts where the host can read them. It is not done: it needs a guest
+built for profiling, where everything else here works on any traced
+module, and a place in the module the host knows of, which today means
+either a new host call or a convention on an exported global.
+
+## The debugger
+
+`mdb pid` debugs a traced prog. It is built on four things:
+
+- **Stopping.** `stop` on `ctl` asks the prog to stop. Its engine takes
+  the stop at the prog's next host call or check point (the points
+  where it records the stack) and then holds the prog there, its state
+  `debug`, serving the debugger on the engine's own thread, the only
+  one that may touch the prog's memory. `start` lets it go on; `step`
+  lets it go on until it next enters a traced function. Both return once
+  the prog has left the stop, so a debugger that then finds it in state
+  `debug` knows it stopped again. A prog blocked in the system stops
+  when its call returns. `kill` ends a stopped prog as any other.
+- **Memory.** `/prog/<pid>/heap` is the stopped prog's linear memory, at
+  the file offset: reads past the end return nothing, writes past it fail
+  with `bad address`. A running prog's fails with `prog not stopped`.
+  (`/prog/<pid>/mem` already gives the memory a prog holds and its
+  limit, so the contents have another name; Inferno's `heap` file is
+  also where a debugger reads a prog's data.)
+- **Breakpoints.** After the frames, the stack memory has a byte per
+  function. A thunk whose byte is set writes its index plus one to the
+  stack memory's second word and spins until the host clears it. The
+  spin runs into the engine's next check point, where the host sees the
+  word and holds the prog, with the function on the stack. `bpt set
+  <func>` and `bpt del <func>` on `ctl` change the set; the engine writes
+  the bytes at the next host call or check point. `step` sets every
+  byte, and the next stop puts back the set. No host call or import is
+  added: an import would renumber every function, which the rewrite
+  avoids.
+- **Stacks**, as `stack` reads them.
+
+wasmtime does not let a host change wasm state from its epoch callback,
+where a prog spinning at a breakpoint is caught. The backend writes the
+two memories there through their raw contents: the guest is suspended
+on that same thread, and nothing can resize a memory without the store,
+which the callback only reads.
+
+The commands of `mdb`, a line each on its standard input:
+
+| command | |
+|---|---|
+| `t` | the stack, innermost first |
+| `x addr [n]` | `n` bytes (64) of memory at `addr`, in hex |
+| `w addr byte ...` | writes bytes, in hex, at `addr` |
+| `b [func]` | a breakpoint on entry to `func`, by name or index; alone, lists them |
+| `d func` | deletes a breakpoint |
+| `c` | continues until a breakpoint |
+| `s` | continues until the prog enters a function |
+| `k` | kills the prog |
+| `q` | deletes the breakpoints, lets the prog go on, and quits; so does the end of the input |
+
+```
+% trace test/debug tick >[2] /tmp/addr &
+% mdb 9
+stopped in debug::inner
+b debug::tick
+c
+stopped in debug::tick
+x 0x436d4 4
+000436d4 9c 00 00 00
+q
+```
+
+Values of locals and arguments need DWARF, which the guests do not
+carry, so `mdb` shows functions and memory, not variables.
+
 ## What each engine gives
 
 | | wasmtime | wasmi |
@@ -247,11 +396,34 @@ module /bin/test/debug.wasm samples 8
 | stack of a traced prog, running, blocked or broken | yes | yes, the same |
 | stack of a prog that was not started traced | no | no |
 | profile | by time, 10 ms | by fuel, 2^20 units |
+| call and page counts | exact | exact, the same |
+| `stop` taken | at a host call or a tick | at a host call or the end of a slice |
+| breakpoints, `step`, `heap` | yes | yes, the same |
 | trap wording in `exception` | wasmtime's | wasmi's |
 
 wasmtime could also give the stack of an untraced prog at a trap
 (`WasmBacktrace`). It is not used: the output would then depend on the
 engine, and the kernel has only wasmi.
+
+## Costs
+
+Untraced progs do exactly what they did: one atomic load at each host
+call and check point, as before. Traced, the thunk has the breakpoint
+check as well, a load and a branch, and counting adds a few
+instructions. `xd` of 6 MB piped to `sort`, the best of three runs on
+the Apple Silicon build host (aarch64 Linux):
+
+| | wasmtime | wasmi |
+|---|---|---|
+| untraced, before | 1.47 s | 6.04 s |
+| untraced, now | 1.28 s | 5.85 s |
+| `trace`, before | 2.01 s | 7.79 s |
+| `trace`, now | 2.10 s | 7.80 s |
+| `prof` | 2.16 s | 7.84 s |
+| `cprof` | 2.18 s | 8.47 s |
+| `mprof` | 2.20 s | 9.17 s |
+
+The untraced runs differ only by noise.
 
 ## Not done
 
@@ -265,21 +437,20 @@ engine, and the kernel has only wasmi.
   work (`docs/selfhost.md`, stage A), not a side effect of this one.
   For comparison, listing imports with `wasmparser` is 106 KB; `wasmdep`,
   with its own reader and the SDK, is 92 KB.
-- **`mdb`**, a debugger. It needs what `stack` has plus: reading and
-  writing a stopped prog's memory and globals (a `/prog/<pid>/mem` file
-  served from the engine's thread), stopping and resuming a prog
-  (`ctl` messages `stop` and `start`, checked at the same points as a
-  kill), and breakpoints, which with this design are one more rewrite:
-  a check in the thunk of the chosen function. Values of locals need
-  DWARF, which the guests do not carry.
-- **`mprof`** (memory). The guests' allocator is inside the module, so
-  the host cannot see allocations. It needs either an SDK allocator that
-  records each allocation with the caller's stack, or sampling of
-  `memory.grow` in the thunks.
-- **`cprof`** (coverage). The thunks can count calls per function with
-  one more word each; line coverage needs DWARF line tables.
-- Stacks through reactors, and `stack` of a prog that was not started
-  traced (attach).
+- Values of locals and globals in `mdb`, and coverage by line in
+  `cprof`: both need DWARF, which the guests are built without.
+- Allocation sizes in `mprof` (see above).
+- **Stacks through reactors.** A reactor loaded with `load` runs
+  untraced, so a stack ends at the command's `call`. Tracing it would
+  take a stack memory per reactor instance, frames that name their
+  module as well as their index (the `stack` file's format already
+  allows it), and the engines joining the command's stack and the
+  reactor's at each point.
+- **Attaching** to a prog that was not started traced. The rewrite must
+  happen before the module is compiled, and neither engine can replace
+  the code of a running instance. wasmtime can capture the frames of a
+  running guest (`WasmBacktrace`) from its own thread, but wasmi cannot,
+  and the output would then depend on the engine.
 - Demangling the `name` section of a module built elsewhere: `.names`
   files are demangled when written, a module's own section is shown as
   it is.
