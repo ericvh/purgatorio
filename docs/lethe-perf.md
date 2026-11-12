@@ -381,13 +381,57 @@ restart costs a delay, not a dead mount.
 
 ## 10. After the changes (issue #138)
 
-Lethe's part of issue #138 changed the client device, the server and the
-cipher, not the wire format (one op was added, Section 4 of
-`docs/lethe.md`):
+Issue #138 changed both clients, `lethed` and the Lethe cipher. Neither
+wire format changed, except that Lethe gained one op (`Twalk`, Section 4
+of `docs/lethe.md`).
+
+Both devices now walk names the same way. The namespace hands a device
+as many of the names left as it takes (`Dev::walk_names`; `#M` takes 16,
+the most a 9P `Twalk` carries, `#λ` 64), and the device walks them in
+one request. As Inferno's `walk` does, the namespace then looks the names
+walked past up in the mount table, and at the first mount point among
+them goes on from what is mounted there, dropping what the server walked
+beyond it. A walk that stops short fails with the server's reason on
+`#λ`, and with Inferno's on `#M` (`file does not exist`, or `not a
+directory` below a file).
+
+### Styx
+
+- **Batched walks**: one `Twalk` for up to 16 names, as above.
+- **Clunks not waited for.** `Tclunk` is sent and its reply dropped by
+  the reader when it comes, as for a killed prog's clunk before (#122).
+  The clunk of a fid opened for writing, with `ORCLOSE` or `OTRUNC`, or
+  on an exclusive-use file (`QTEXCL`) is still waited for: `export`
+  serves requests concurrently, so a request sent after the clunk could
+  be served before it and find the file still open or still there. A
+  session that goes away (an unmount, the last file closed) first reads
+  the replies still due, so a server is not hung up on in the middle of
+  answering.
+- **64 KiB messages.** `MAX_MSIZE` is 64 KiB of data plus the header, for
+  `#M`, `export` and the guest servers; a server that asks for less gets
+  it. The kernel's virtio-9p devices stay at 8 KiB (each has 32 buffers
+  of that size; 64 KiB would be 2 MiB of DMA memory a device) and lower
+  a client's `Tversion` to it.
+- **Readahead was not done.** `#M` cannot tell a file whose reads it may
+  send early from one where a read has an effect: a pipe, a stream or a
+  control file through a mount gives the data to whichever read comes
+  first, and ignores the offset. A read sent ahead would take data the
+  program never asked for, and when the program closes the file instead,
+  the data is lost. Several reads in flight for one large read have the
+  same problem, and more: `export` serves them concurrently, so they can
+  be answered out of order on such a file, and a short reply in the
+  middle leaves the later ones' data with nowhere to go. Inferno's
+  `devmnt` sends one read at a time for this reason, and caches only with
+  `mount -C`. Readahead would fit behind such a flag (`MCACHE`, which
+  purgatorio does not have yet), for trees the user says are disk-like.
+  Lethe can read ahead because a Lethe file is always a file: `lethed`
+  serves a host directory, and its reads are ranges.
+
+### Lethe
 
 - **`Twalk`**: a walk of the rest of a path in one request, answering
-  each name's qid and the last one's stat. The namespace tells the
-  device the names left (`Dev::walk_ahead`).
+  each name's qid and the last one's stat; answered from the attribute
+  cache instead when it knows every name.
 - **An attribute cache** with a 1 s lifetime (`lethe -t ms`; 0 turns it
   off), filled by stats, walks, listings and reads. Within it a cached
   block of the confirmed version is served without asking: a file is
@@ -409,63 +453,80 @@ there is `Twalk`, the larger reads, readahead and the crypto. The
 benchmark repeats each operation on the same names within a second, so
 the `lethe` column shows the attribute cache at its best; a workload
 that touches each name once, or a tree that must be seen changing at
-once, gets something near `lethe-t0`.
-
-Runs were taken one after another from a worktree of `next` (before)
-and this branch (after), with other agents building on the host: load
-average 5 to 7. 5 runs each, cold, median and range. The Styx columns
-are the before run's (their code did not change).
+once, gets something near `lethe-t0`. Styx has no cache, so its columns
+are what any workload gets.
 
 ### Round trips
 
 Requests from client to server per operation, through the counting
-relay. With readahead several requests share one round trip, so for the
-reads the round trips come from the sweep instead (time at 50 ms divided
-by 50).
+relay, one run of the combined tree (load average 2 to 3.5). For Styx
+the round trips the client waits for are given in brackets where they
+are fewer (a clunk is among the requests). With Lethe's readahead several
+requests share one round trip, so for the reads the round trips come
+from the sweep instead (time at 50 ms divided by 50). "Before" is
+Section 2.
 
-| case | styx-v3 | lethe before | lethe after | lethe-t0 after |
-|---|---:|---:|---:|---:|
-| `lat` (open, read, close) | 5 | 3 | 0.01 | 3 |
-| `latread` (one read) | 1 | 1 | 0 | 1 |
-| `walk` (17 elements) | 37 | 19 | 0.005 | 2 |
-| `stat` (2 elements) | 5 | 3 | 1 | 2 |
-| `readdir`, 10,000 entries, in all | 102 | 99 | 25 | 26 |
-| `lsl`, per entry | 5 | 3 | 0.96 | 2 |
-| `du`, 2,110 entries, in all | 975 | 432 | 122 | 222 |
-| `small` (open, read, close 1 KiB) | 7 | 4 | 2 | 3 |
-| `read1m`, requests | 132 | 130 | 34 | 34 |
-| `read1m`, round trips | 132 | 130 | 9 | 9 |
+| case | styx before | styx now | lethe before | lethe now | lethe-t0 now |
+|---|---:|---:|---:|---:|---:|
+| `lat` (open, read, close) | 5 | 5 (4) | 3 | 0.01 | 3 |
+| `latread` (one read) | 1 | 1 | 1 | 0 | 1 |
+| `walk` (`deep` and 17 names below) | 37 | 5 (3) | 19 | 0.005 | 2 |
+| `stat` (2 names) | 5 | 3 (2) | 3 | 1 | 2 |
+| `readdir`, 10,000 entries, in all | 102 | 17 | 99 | 25 | 26 |
+| `lsl`, per entry | 5 | 3 (2) | 3 | 0.35 | 2 |
+| `du`, 2,110 entries, in all | 975 | 555 | 432 | 112 | 222 |
+| `small` (open, read, close 1 KiB) | 7 | 5 (4) | 4 | 2 | 3 |
+| `read1m`, requests | 132 | 20 | 130 | 34 | 34 |
+| `read1m`, round trips | 132 | 20 | 130 | 9 | 9 |
 
-`lethe-t0`'s walk is the `Twalk` and the stat after it; its stat of a
-2-element name the same. The attribute cache then takes the stat (and
-the walk of a name seen within the second) away. The lifetime is short
-against a 50 ms link: `lsl` of 10,000 entries takes longer than a
-second there, so the listing's entries expire before the stats reach
-them (46 round trips for 20 entries at 50 ms against 26 at 10 ms).
+The Styx walk is two `Twalk`s (16 names, then 2), the stat and two
+clunks; `lethe-t0`'s is the `Twalk` and the stat after it. Opening a
+small file on Styx is a walk and an open, reading it two reads (the
+second finds the end), and the close is not waited for. Styx's bytes per
+operation fell with the requests: 2,695 to 711 for the walk on styx-v3,
+1,537 to 1,413 for a small file; a read's overhead is 0.1% (0.9% with
+8 KiB messages).
+
+The attribute cache takes Lethe's stat after a walk (and the walk of a
+name seen within the second) away. The lifetime is short against a
+50 ms link: `lsl` of 10,000 entries takes longer than a second there, so
+the listing's entries expire before the stats reach them (46 round trips
+for 20 entries at 50 ms against 26 at 10 ms).
 
 ### At distance
 
 The latency sweep (Section 5's cases: 20 files, 20 repetitions), time in
-ms at 50 ms RTT:
+ms at 50 ms RTT. "Now" is the combined tree (load average 2 to 3.4);
+"before" is Section 5 for Styx and the Lethe branch's before run.
 
-| case | styx-v3 | lethe before | lethe after | lethe-t0 after |
-|---|---:|---:|---:|---:|
-| `lat` (20) | 5084 | 3043 | 101 | 3035 |
-| `walk` (20) | 37463 | 19534 | 51 | 2028 |
-| `stat` (20) | 5057 | 3043 | 1009 | 2025 |
-| `readdir` (10,000) | 5300 | 7177 | 1368 | 1394 |
-| `lsl` (list, stat 20) | 10534 | 9816 | 2534 | 3529 |
-| `small` (20) | 7143 | 4043 | 2029 | 3038 |
-| `read1m` | 6741 | 6626 | 460 | 463 |
+| case | styx before | styx-v3 now | lethe before | lethe now | lethe-t0 now |
+|---|---:|---:|---:|---:|---:|
+| `lat` (20) | 5036 | 4024 | 3043 | 101 | 3013 |
+| `latread` (20) | 1160 | 1110 | 1059 | 0 | 1053 |
+| `walk` (20) | 37372 | 3051 | 19534 | 50 | 2007 |
+| `stat` (20) | 5058 | 2021 | 3043 | 1007 | 2009 |
+| `readdir` (10,000) | 5166 | 840 | 7177 | 1363 | 1337 |
+| `lsl` (list, stat 20) | 10445 | 2943 | 9816 | 2344 | 3462 |
+| `small` (20) | 7063 | 4015 | 4043 | 1005 | 3015 |
+| `read1m` | 6666 | 956 | 6626 | 454 | 454 |
 
-Without the attribute cache, a 17-element walk is 10 times faster than
-before and 18 times faster than Styx today; a 1 MiB read 14 times (160
-KiB a round trip instead of 8). `readdir` went from Lethe's worst case
-to 4 times faster than Styx, from the 32 KiB pages.
+Time is still round trips times the RTT for both. Styx's deep walk is 12
+times faster, a stat 2.5 times, a 1 MiB read 7 times (1 MiB/s at 50 ms
+instead of 160 KiB/s), and `readdir` 6 times, from the 64 KiB messages.
+Without its attribute cache Lethe is now within a round trip of Styx on
+names (`walk` 2007 against 3051 ms, `stat` the same, `lat` and `small`
+one round trip fewer, its open being free) and reads twice as fast at
+distance, from readahead; Styx lists a directory faster (64 KiB against
+32 KiB pages). With the cache, Lethe answers repeated names without
+asking.
 
 ### On loopback
 
-wasmtime, direct, cold; ms for the whole case unless a rate is given:
+wasmtime, direct, cold; ms for the whole case unless a rate is given.
+From the Lethe branch's runs, one after another from a worktree of
+`next` (before) and that branch (after), load average 5 to 7, 5 runs
+each, median and range; the Styx columns are its before run's, ahead of
+Styx's own changes:
 
 | case | styx-v3 | styx-A | lethe before | lethe-A before | lethe after | lethe-A after | lethe-t0 after |
 |---|---|---|---|---|---|---|---|
@@ -488,6 +549,27 @@ wide, and the single counting run had them the other way round (778
 against 1075 ms for `stat`, 241 against 358 ms for `read100m`), so that
 difference is the host's fast and slow cores, not the cache.
 
+Styx before and after its own changes, from two runs on one afternoon
+(wasmtime, direct, 5 runs, cold, median; load average 3 to 7 before and
+6 to 6.4 after):
+
+| case | styx-v3 before -> now | styx-A before -> now |
+|---|---:|---:|
+| `walk` (200) | 1507 -> 831 us/op | 1943 -> 780 us/op |
+| `stat` (10,000) | 242 -> 165 us/op | 215 -> 163 us/op |
+| `lsl` (10,000) | 242 -> 161 us/op | 199 -> 165 us/op |
+| `small` (10,000) | 293 -> 285 us/op | 272 -> 298 us/op |
+| `read100m` | 139 -> 201 MiB/s | 191 -> 639 MiB/s |
+
+The second run was the slower machine: Lethe, whose code had not changed
+between the two, took twice as long for `lat` and `stat` in it, and
+Styx's `lat` and `latread` moved the same way. So these gains are lower
+bounds, and only the large ones are clear of the noise: bulk reads
+(eight times fewer messages, and fewer system calls on both ends) and
+walks. `cargo xtask bench --emu` (`cat-styx`, whose `cat` reads 8 KiB at
+a time and so sends as many reads as before) was unchanged within its
+spread.
+
 ### The kernel
 
 Under KVM as in Section 7 (wasmi, the relay, QEMU user networking), 3
@@ -507,7 +589,7 @@ now with NEON. The load average rose from 5 to 11 during the after run.
 | `read1m` | 44 MiB/s | 25 MiB/s | 50 MiB/s | 24 MiB/s | 18 MiB/s | 12 MiB/s |
 | `read100m` | 32 MiB/s | 23 MiB/s | 41 MiB/s | 25 MiB/s | 37 MiB/s | 19 MiB/s |
 
-(Styx v3 from the after run; its code did not change.)
+(Styx v3 from the Lethe branch's after run, ahead of Styx's own changes.)
 
 The round trips are the emu's to the request: the device is the same
 code. Name-heavy work gains as on the emu: a 17-element walk without the
@@ -521,127 +603,29 @@ of round trips; `small` without the cache is also slower per file than
 before despite one round trip fewer. That needs a profile of the kernel's
 read path, which is being worked on separately, and is not solved here.
 
+### Memory
+
+From `KERNEL_MEMSTAT=1 cargo xtask kernel` against `next`, for Styx's
+64 KiB messages: the deepest export worker is still 18 KiB and the
+deepest mount reader 4 KiB (`docs/footprint.md`), as message buffers are
+on the heap. The heap peak of each test moved by at most 0.8 MiB
+(`netcmds.sh`: 14.2 -> 15.0 MiB; `styxcrypt.sh` 8.9 -> 9.1 MiB), from
+64 KiB messages in flight.
+
 ### What is left
 
+- Styx readahead, behind a cache flag (above).
+- The kernel's virtio-9p at 64 KiB messages: its buffers are fixed
+  (2 MiB a device); fewer, larger slots would do.
 - Bulk reads on the kernel (above): profile before changing the block
   size or the readahead depth there; cache blocks are copied on every
   hit and could be shared instead.
 - Requests are still about 150 bytes larger than Styx's (the ticket).
   Shrinking it changes the ticket format servers share, and at these
   sizes the round trip, not the bytes, is the cost.
-- Readahead is synchronous: the reader waits for all five replies. A
+- Lethe's readahead is synchronous: the reader waits for all five replies. A
   read that ran ahead in the background would overlap the network with
   the reader's own work.
 - The attribute lifetime is per attach. NFS ages it by how recently the
   file changed (`acregmin` to `acregmax`); a fixed second is simpler and
   enough for read-mostly trees.
-
-## 10. Styx after #138
-
-Three of the Styx recommendations are in:
-
-- **Batched walks.** Name resolution asks a device to walk several names
-  at once where it can (`Dev::walk_names`), and `#M` sends them in one
-  `Twalk`, up to 9P's 16. As Inferno's `walk` does, the names walked past
-  are then looked up in the mount table, and the walk goes on from the
-  first mount point among them, dropping what the server walked beyond
-  it. A walk that stops short fails with `file does not exist`, or with
-  `not a directory` when the last name walked is a file.
-- **Clunks not waited for.** `Tclunk` is sent and its reply dropped by the
-  reader when it comes, as for a killed prog's clunk before (#122). The
-  clunk of a fid opened for writing, with `ORCLOSE` or `OTRUNC`, or on an
-  exclusive-use file (`QTEXCL`) is still waited for: `export` serves
-  requests concurrently, so a request sent after the clunk could be served
-  before it and find the file still open or still there. A session that
-  goes away (an unmount, the last file closed) first reads the replies
-  still due, so a server is not hung up on in the middle of answering.
-- **64 KiB messages.** `MAX_MSIZE` is 64 KiB of data plus the header, for
-  `#M`, `export` and the guest servers; a server that asks for less gets
-  it. The kernel's virtio-9p devices stay at 8 KiB (each has 32 buffers
-  of that size; 64 KiB would be 2 MiB of DMA memory a device) and lower a
-  client's `Tversion` to it.
-
-Counts through the relay, cold, one run, wasmtime. "Requests" is
-client-to-server frames per operation; "RT" is the round trips the
-client waits for, which is fewer when a clunk is among the requests.
-
-| case | requests/op before | requests/op now | RT/op now | styx-v3 bytes/op before -> now | styx-A bytes/op before -> now |
-|---|---:|---:|---:|---:|---:|
-| `lat` (open, read, close) | 5 | 5 | 4 | 430 -> 430 | 230 -> 230 |
-| `latread` (one read) | 1 | 1 | 1 | 139 -> 139 | 98 -> 98 |
-| `walk` (18 names: `deep` and 17 below) | 37 | 5 | 3 | 2,695 -> 711 | 1,215 -> 511 |
-| `stat` (2 names) | 5 | 3 | 2 | 428 -> 304 | 228 -> 184 |
-| `readdir`, 10,000 entries | 102 in all | 17 in all | 17 | 80 -> 79 per entry | 79 -> 79 |
-| `lsl`, per entry | 5 | 3 | 2 | 508 -> 383 | 307 -> 263 |
-| `du`, 2,110 entries | 975 in all | 555 in all | | 109 -> 97 per entry | 91 -> 87 |
-| `small` (open, read, close 1 KiB) | 7 | 5 | 4 | 1,537 -> 1,413 | 1,257 -> 1,213 |
-| `read1m` | 132 | 20 | 20 | +0.9% -> +0.1% | +0.4% -> +0.06% |
-| `read100m` | 12,804 | 1,604 | 1,604 | +0.9% -> +0.1% | +0.4% -> +0.05% |
-
-The walk is two `Twalk`s (16 names, then 2), the stat and two clunks.
-Opening a small file is a walk and an open; reading it is two reads (the
-second finds the end); the close is not waited for. Lethe's counts are
-unchanged: 3, 19, 3 and 4 round trips for `lat`, `walk`, `stat` and
-`small`.
-
-The latency sweep (Section 5), Styx at 50 ms RTT, time in ms, 20 files
-and 20 repetitions, cold:
-
-| case | styx-v3 before | styx-v3 now | styx-A now | lethe |
-|---|---:|---:|---:|---:|
-| `lat` (20) | 5036 | 4027 | 4036 | 3078 |
-| `latread` (20) | 1160 | 1112 | 1109 | 1059 |
-| `walk` (20) | 37372 | 3039 | 3042 | 19423 |
-| `stat` (20) | 5058 | 2018 | 2016 | 3028 |
-| `readdir` (10,000) | 5166 | 866 | 863 | 6704 |
-| `lsl` (list, stat 20) | 10445 | 2981 | 2979 | 9051 |
-| `small` (20) | 7063 | 4030 | 4044 | 4055 |
-| `read1m` | 6666 | 964 | 962 | 6614 |
-
-Time is still round trips times the RTT. A deep walk is 12 times faster,
-a stat 2.5 times, a 1 MiB read 7 times (1 MiB/s at 50 ms instead of
-160 KiB/s), and Styx is now ahead of Lethe in every case but `lat`, where
-Lethe's free open still saves one round trip.
-
-On loopback (wasmtime, 5 runs, cold, median; the two runs on the same
-afternoon, load average 3 to 7 before and 6 to 6.4 after):
-
-| case | styx-v3 before -> now | styx-A before -> now |
-|---|---:|---:|
-| `walk` (200) | 1507 -> 831 us/op | 1943 -> 780 us/op |
-| `stat` (10,000) | 242 -> 165 us/op | 215 -> 163 us/op |
-| `lsl` (10,000) | 242 -> 161 us/op | 199 -> 165 us/op |
-| `small` (10,000) | 293 -> 285 us/op | 272 -> 298 us/op |
-| `read100m` | 139 -> 201 MiB/s | 191 -> 639 MiB/s |
-
-The second run was the slower machine: Lethe, whose code did not change,
-took twice as long for `lat` and `stat` in it (94 -> 243 and 112 ->
-222 us/op), and `lat` and `latread` for Styx moved the same way (101 ->
-249 and 18 -> 46 us/op for styx-v3). So the loopback gains above are
-lower bounds, and only the large ones are clear of the noise: bulk reads
-(eight times fewer messages, and fewer system calls on both ends) and
-walks. `cargo xtask bench --emu` (`cat-styx`, whose `cat` reads 8 KiB at
-a time and so sends as many reads as before) was unchanged within its
-spread: 0.554 -> 0.492 s on wasmtime, 0.680 -> 0.678 s on wasmi.
-
-Memory, from `KERNEL_MEMSTAT=1 cargo xtask kernel` against `next`: the
-deepest export worker is still 18 KiB and the deepest mount reader 4 KiB
-(`docs/footprint.md`), as the larger messages are on the heap. The heap
-peak of each test moved by at most 0.8 MiB (`netcmds.sh`: 14.2 -> 15.0
-MiB; `styxcrypt.sh` 8.9 -> 9.1 MiB), from 64 KiB messages in flight.
-
-**Readahead was not done.** `#M` cannot tell a file whose reads it may
-issue early from one where a read has an effect: a pipe, a stream or a
-control file through a mount gives the data to whichever read comes
-first, and ignores the offset. A read sent ahead would take data the
-program never asked for, and when the program closes the file instead,
-the data is lost. Several reads in flight for one large read have the
-same problem, and more: `export` serves them concurrently, so they can be
-answered out of order on such a file, and a short reply in the middle
-leaves the later ones' data with nowhere to go. Inferno's `devmnt` sends
-one read at a time for this reason, and caches only with `mount -C`.
-Readahead would fit behind such a flag (`MCACHE`, which purgatorio does
-not have yet), for trees the user says are disk-like. With 64 KiB reads a
-50 ms link already moves 1 MiB/s; readahead would take it toward the
-link's bandwidth.
-
