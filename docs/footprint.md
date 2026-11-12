@@ -444,6 +444,12 @@ the same module remains worth having for a system that runs many shells,
 and the generation scheme above is a way to get it; it is in the
 follow-up list rather than in this branch.
 
+**Since adopted: engines in generations, while any prog runs, at 1
+MiB** (`docs/perf.md` Section 9). With modules compiled lazily, sharing
+turned out to be most of a spawn's cost: a spawn under KVM went from
+0.80 ms to 0.26 ms. The test mode ends with the same heap as with an
+engine per prog, and makes 37% fewer allocations.
+
 ### Measured per test
 
 From `KERNEL_MEMSTAT=1 cargo xtask kernel --kvm`: the most the heap held
@@ -990,7 +996,7 @@ week or two, L is more.
 | 3 | Per-prog memory limits (a maximum number of pages) and allocation failures that fail the prog, not the kernel | Needed before any small-RAM target; today an allocation failure outside wasmi is a kernel panic (part of #27) | M |
 | 4 | wasmi without `validate`, loading only signed modules (#33) | About a quarter of the engine's code, by wasmi's figure | S after #33 |
 | 5 | Measure wasmi's `indirect-dispatch` (translated size, speed, stack) and `portable-dispatch` (stack bound by construction) | The translated copy is the largest per-prog cost; the stack depth depends on LLVM | S |
-| 6 | Share translated code between progs that run the same module: engines in generations (Section 4), or module unloading in wasmi | 1.2 MiB less for each extra shell; costs retained modules unless the bound is small | M |
+| 6 | Share translated code between progs that run the same module: engines in generations (Section 4), or module unloading in wasmi. Generations are done (`docs/perf.md` Section 9) | 1.2 MiB less for each extra shell; costs retained modules unless the bound is small | M |
 | 7 | A `no_std` mode of the SDK, and the dozen most-used commands ported to it | 40x smaller modules, one page of memory each | M to L |
 | 8 | A second engine behind `purg-vm`'s `Engine`: an in-place interpreter (Wasefire's, or DLR-FT's) | The only way to drop the translated copy; decides whether Step 3 is possible | L |
 | 9 | Split `purg-aarch64` into architecture code and shared kernel code (scheduler, heap, platform), then a Thumb build of the shared crates and the engine | The first step of an M-class port, and it shows what does not build | M |

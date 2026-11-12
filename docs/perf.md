@@ -4,7 +4,9 @@ This is the benchmark suite of issue #27, its results on one host, the
 performance targets for decision D6 (`docs/plan.md` Section 12), and what
 each D6 option measured: wasmi alone and tuned, wasmtime without `std`
 running modules compiled ahead of time on the host, and Pulley,
-wasmtime's interpreter. It ends with a recommendation.
+wasmtime's interpreter. It ends with a recommendation. Section 9 is the
+follow-up that adopted the first part of it: the kernel built without
+strict alignment, and wasmi's modules compiled lazily and shared.
 
 All numbers are from 2026-11-11 on one Apple Silicon host (8 cores,
 Asahi Linux 6.14, QEMU with KVM and TCG), on `next` at `746aa49` with
@@ -24,19 +26,20 @@ differences under about 20% between configurations are not meaningful.
 
 Seconds (a spawn in milliseconds), median and fastest. The wasmi and
 Pulley columns are built without strict alignment; Pulley also with its
-tail-call dispatch (Section 5.3).
+tail-call dispatch (Section 5.3). The last column is wasmi as the kernel
+is built now (Section 9), measured a day later under similar load.
 
-| Benchmark (kernel under KVM) | Target | `next` (wasmi) | wasmi, no strict-align | wasmtime AOT | Pulley |
-|---|---|---|---|---|---|
-| `cat` 100 MiB from the RAM tree | 0.5 | 1.05 (0.67) | 0.14 (0.12) | 0.045 (0.045) | 0.58 (0.58) |
-| `cat` 100 MiB through a Styx mount | 1 | 0.82 (0.74) | 0.33 (0.31) | 0.23 (0.21) | 0.76 (0.74) |
-| the same, encrypted | 2 | 3.56 (2.44) | 1.94 (1.89) | 1.92 (1.90) | 2.34 (2.31) |
-| `cat` 100 MiB from purgfs on virtio-blk | 2 | 4.20 (2.61) | 2.15 (1.37) | 1.40 (1.15) | 1.91 (1.70) |
-| SHA-1 of 16 MiB (CPU-bound) | 1 | 2.83 (2.22) | 0.73 (0.73) | 0.092 (0.092) | 1.66 (1.66) |
-| `sh`: 10,000 loops of a builtin | 0.5 | 0.76 (0.54) | 0.35 (0.34) | 0.092 (0.082) | 0.78 (0.77) |
-| spawn and wait, per spawn (ms) | 1 | 1.35 (1.34) | 1.27 (1.21) | 0.39 (0.39) | 0.43 (0.42) |
-| memfs: 1,000 creates | 0.1 | 0.072 (0.065) | 0.051 (0.047) | 0.028 (0.028) | 0.091 (0.091) |
-| purgfs: 1,000 creates | 1 | 1.38 (0.86); 7.18 before the fix | 0.82 (0.50) | 0.65 (0.55) | 0.55 (0.52) |
+| Benchmark (kernel under KVM) | Target | `next` (wasmi) | wasmi, no strict-align | wasmtime AOT | Pulley | wasmi now |
+|---|---|---|---|---|---|---|
+| `cat` 100 MiB from the RAM tree | 0.5 | 1.05 (0.67) | 0.14 (0.12) | 0.045 (0.045) | 0.58 (0.58) | 0.12 (0.12) |
+| `cat` 100 MiB through a Styx mount | 1 | 0.82 (0.74) | 0.33 (0.31) | 0.23 (0.21) | 0.76 (0.74) | 0.28 (0.28) |
+| the same, encrypted | 2 | 3.56 (2.44) | 1.94 (1.89) | 1.92 (1.90) | 2.34 (2.31) | 1.89 (1.88) |
+| `cat` 100 MiB from purgfs on virtio-blk | 2 | 4.20 (2.61) | 2.15 (1.37) | 1.40 (1.15) | 1.91 (1.70) | 1.40 (1.23) |
+| SHA-1 of 16 MiB (CPU-bound) | 1 | 2.83 (2.22) | 0.73 (0.73) | 0.092 (0.092) | 1.66 (1.66) | 0.73 (0.73) |
+| `sh`: 10,000 loops of a builtin | 0.5 | 0.76 (0.54) | 0.35 (0.34) | 0.092 (0.082) | 0.78 (0.77) | 0.35 (0.35) |
+| spawn and wait, per spawn (ms) | 1 | 1.35 (1.34) | 1.27 (1.21) | 0.39 (0.39) | 0.43 (0.42) | 0.26 (0.26) |
+| memfs: 1,000 creates | 0.1 | 0.072 (0.065) | 0.051 (0.047) | 0.028 (0.028) | 0.091 (0.091) | 0.048 (0.048) |
+| purgfs: 1,000 creates | 1 | 1.38 (0.86); 7.18 before the fix | 0.82 (0.50) | 0.65 (0.55) | 0.55 (0.52) | 0.58 (0.53) |
 
 - **`next` misses seven of the ten targets** (Section 4).
   The CPU-bound guest takes three times as long in the kernel as on the
@@ -55,6 +58,10 @@ tail-call dispatch (Section 5.3).
 - **Pulley is slower than wasmi** for code that computes, even at
   `opt-level` 3 with its tail-call dispatch (1.66 s against 0.73 s); only
   its spawn is fast, because nothing is translated at load. Section 5.3.
+- **Since then (Section 9)** the kernel is built without strict
+  alignment outside the code that runs with the MMU off, and wasmi
+  compiles modules lazily and shares engines between progs in
+  generations. wasmi now meets every target, and a spawn takes 0.26 ms.
 - **Two cheap fixes landed:** purgfs directory searches no longer thrash
   the metadata cache (a create in a directory of 1,000 files went from 7
   ms to 0.5 ms), and the kernel builds SHA-256 at `opt-level` 3, which
@@ -87,7 +94,7 @@ cargo xtask bench --emu --vm=wasmi
 cargo xtask bench --kvm --rounds 3 --boots 2
 cargo xtask bench --tcg
 cargo xtask bench --kvm --aot native --label aot           # the AOT prototype
-cargo xtask bench --kvm --label nsa --rustflags "-C target-feature=-strict-align"
+cargo xtask bench --kvm --label strict --strict-align        # strict alignment throughout, as before Section 9
 cargo xtask bench --kvm --label chacha --config profile.kernel.package.chacha20.opt-level=3
 ```
 
@@ -96,8 +103,10 @@ bootargs (its `Mode::Bench`), 1 GiB of RAM, and one virtio-blk disk that
 `xtask` makes: purgfs holding the 100 MiB file and the number of rounds.
 `xtask` prints a table (median, fastest, spread) and writes every sample
 and the load average before and after each boot to
-`target/bench/results.json`. Builds with `--rustflags` or `--config` use
-a target directory of their own under `target/bench/build/<label>`.
+`target/bench/results.json`. Builds with `--strict-align`, `--rustflags` or `--config`
+use a target directory of their own under `target/bench/build/<label>`.
+`--rustflags` adds to the environment's flags and to the kernel's own
+(Section 9).
 
 The suite is not part of CI's normal runs. `.github/workflows/bench.yml`
 runs it by hand (`workflow_dispatch`) on an arm64 runner, under TCG,
@@ -233,18 +242,14 @@ as fast (2.22 s to 0.73 s), `cat-root` five times (0.67 s to 0.12 s), and
 `sh-builtin-10k` 1.6 times. `SCTLR_EL1.A` is clear, so unaligned
 accesses to Normal memory are allowed once the MMU is on.
 
-The flag is not adopted here. Two things have to be settled first: the
+The flag was not adopted at first. Two things had to be settled: the
 code that runs with the MMU off (`boot_map` and what it calls) must not
-contain an unaligned access, which today is guaranteed by the target and
+contain an unaligned access, which was guaranteed by the target and
 nothing else; and the flag has to reach every kernel build, including
 CI's, where `RUSTFLAGS=-D warnings` replaces any `rustflags` in
 `.cargo/config.toml`. rustc also warns that `strict-align` is an
-unstable feature name. The kernel booted and ran the whole suite under
-KVM built this way, which shows the boot path happens to be clean now,
-not that it stays so. Options, in order of preference: compile only the
-boot path with strict alignment (a crate of its own, built by a wrapper
-that adds the flag for it alone), or keep the flag global and add a
-check that `boot_map`'s object code has no unaligned access.
+unstable feature name. Section 9 settles both, and the kernel and the
+probe are now built this way.
 
 **Optimisation levels.** wasmi is already at `opt-level` 3 in the kernel
 profile (`docs/footprint.md` Section 2). The crates the kernel runs on
@@ -270,7 +275,8 @@ for memory and stack depth, not speed.
 
 So the best wasmi kernel meets every target but spawn latency, which is
 the time to read, hash and translate a module and to start an engine
-for it (the kernel gives each prog its own wasmi engine, #79).
+for it (the kernel gave each prog its own wasmi engine, #79). Section 9
+brings it to a quarter of a millisecond.
 
 ### 5.2 wasmtime without `std`, modules compiled on the host
 
@@ -406,7 +412,8 @@ Fixed here:
 
 Found and not fixed:
 
-- **Strict alignment** (Section 5.1): the largest single cost.
+- **Strict alignment** (Section 5.1): the largest single cost. Fixed
+  in Section 9.
 - **Encrypted Styx** reads at 50 MB/s whatever the engine and whatever
   the cipher's optimisation level; the clear mount does 330 to 500 MB/s. The
   record layer seals each message into a fresh allocation and the
@@ -430,14 +437,16 @@ Found and not fixed:
 - **wasmi spawns translate the module from scratch** in a fresh engine
   per prog (#79), about 1 ms of a 1.2 ms spawn. Sharing translated code
   between progs would need wasmi to free a module's code (it does not;
-  `docs/footprint.md` Section 4).
+  `docs/footprint.md` Section 4). Fixed in Section 9 with lazy
+  compilation and engines shared in generations, which are freed whole.
 
 ## 7. Recommendation
 
 1. **Keep wasmi as the kernel's engine and make it fast:** build the
    kernel without strict alignment once the boot path is protected
    (Section 5.1). That alone meets every D6 target but spawn latency, at
-   no cost in size or risk to the sandbox.
+   no cost in size or risk to the sandbox. Done, with spawn latency too
+   (Section 9).
 2. **Adopt wasmtime AOT as the kernel's speed option, not its only
    engine.** It works without `std`, needs only thread-local storage
    and locks from the kernel, and runs code that computes an order of
@@ -455,8 +464,167 @@ Found and not fixed:
 
 - The `-smp 4` stress test and per-prog memory limits of #27 (other
   work).
-- Strict alignment in the boot path only (Section 5.1).
 - AOT: run-time image loading with signatures, TLS in the scheduler,
   merging `purg-vm-aot` with `purg-vm-wasmtime`'s host functions (the
   prototype copies them), and CI running the test mode with it.
 - The hot spots in Section 6.
+- The SHA-256 digest is most of a spawn now (Section 9.2): the CPU's
+  SHA-256 instructions, detected at boot.
+
+## 9. Follow-up: strict alignment and the module cache
+
+Measured on 2026-11-12, on the same host, on `next` at `4a6cd0b` with
+these changes. Other agents were building the workspace: the load
+average was 5 to 9 during the KVM runs and 4 to 6 during the emu runs.
+Each KVM column is three rounds in each of two boots, median and
+fastest in brackets, in seconds.
+
+### 9.1 Strict alignment outside the boot path
+
+The kernel and the probe are now built with `-C
+target-feature=-strict-align`, except for `purg-aarch64` and every crate
+it depends on, which keep the target's strict alignment
+(`xtask/src/align.rs`). Those crates hold all the Rust code that runs
+with the MMU off: `purg_boot_map` and `purg_boot_enable`, which `_start`
+calls before the MMU is on (`purg_aarch64::boot`). The rest of that
+path, the secondary CPUs' path up to their MMU switch and the early
+exception vectors are assembly, which the flag does not touch.
+
+Why that is enough: rustc compiles each function with the target
+features of the crate that generates its code, and records them on the
+function, so fat LTO keeps them. A crate's code can call only its own
+functions, those of the crates it depends on (including the generic
+instantiations it reuses from them) and the prebuilt `core`, `alloc` and
+`compiler_builtins`, which are built for the target as it is. A function
+of a crate built without strict alignment can be inlined into a strict
+one, but it is then compiled as part of the strict one. What the
+compiler cannot see is a call to an `extern` function defined in a
+later crate, or a call through a pointer. So `xtask kernel`, `probe`
+and `bench` read each image they build (`size` and `lethe-perf` build
+the same way but do not check), follow every `bl` and `b` from those
+two functions, and fail if one reaches a function of another crate or
+a `blr`. Functions that LLVM's machine outliner made at `opt-level =
+"z"` (`OUTLINED_FUNCTION_N`) hold instructions copied from their
+callers and are followed like them. Today the kernel's boot path
+reaches 32 functions and the probe's 4. Comparing the object code of
+the kernel's twelve named ones, with the outlined parts put back in
+place, between a kernel built with strict alignment throughout and one
+built this way, found them identical.
+
+How the flag reaches the build: xtask passes it in
+`CARGO_ENCODED_RUSTFLAGS`, which takes precedence over `RUSTFLAGS` and
+the config, after the environment's own flags, so CI's `-D warnings`
+still applies. Cargo has no stable way to give one crate other flags,
+so xtask runs itself as cargo's `RUSTC_WRAPPER` for these builds and
+adds `-C target-feature=+strict-align` for the strict crates; a
+`--cfg` naming that set goes in every crate's flags, so that cargo,
+which does not see what the wrapper adds, rebuilds when the set
+changes. The wrapper also drops rustc's warning that `strict-align` is not a known
+feature: it is not a lint, so `-D warnings` leaves it a warning, nothing
+can allow it, and it would be printed once for every crate. A plain
+`cargo build -p purg-kernel --target aarch64-unknown-none` still builds
+with strict alignment throughout, which is safe and slow;
+`cargo xtask bench --strict-align` builds that way on purpose.
+
+The kernel's text is 328 KiB smaller (1,778,276 bytes to 1,441,968),
+since an unaligned load is one instruction instead of fifteen. The
+kernel passes its test mode under KVM and TCG, with one and four CPUs,
+and the probe passes.
+
+### 9.2 Spawn latency
+
+With the alignment fixed, a spawn under KVM cost 1.1 ms. On the host,
+`Module::new` for `echo` took 540 µs in wasmi's default mode and 40 µs
+in its lazy mode. Timing a spawn's parts inside the kernel with lazy
+compilation (one run of the suite, averaged over 1,000 spawns of
+`echo`): reading the module 15 µs, the module policy (its SHA-256
+digest) 190 µs, `Module::new` 60 µs, the linker 17 µs, instantiation 21
+µs, and the run of `echo` itself, most of which is translating the
+functions it calls, 340 to 440 µs.
+
+Two changes, both in `purg-vm-wasmi`:
+
+- **Lazy compilation.** wasmi's default mode validates the whole
+  module at load and translates each function on its first call;
+  `CompilationMode::Lazy` validates each function on its first call
+  too. `Module::new` then checks only the module's structure (types,
+  imports, exports, sections): 60 µs instead of 540 µs for `echo`, and
+  a spawn costs 0.80 ms. The cost is that a function body that is not
+  valid WebAssembly is found only when it is called, and the call
+  traps; the prog may have run until then. Every function is still
+  validated before it runs. The emu's wasmtime backend, which the
+  hosted tests run every installed module on, still validates whole
+  modules at load.
+- **Engines in generations** (`docs/footprint.md` Section 4). The
+  current generation's engine keeps each module it has loaded, by the
+  digest the module policy takes anyway, so a command run again is
+  neither parsed nor translated again, and its progs share one linker.
+  A generation lives while a prog that started in it runs: when the
+  last one exits, its engine and all its code are freed, as an engine
+  per prog was. It stops taking new progs once 1 MiB of modules has
+  been loaded into it, or when one is loaded with under a quarter of
+  memory free; then a new prog starts a new generation, or, if memory
+  is tight, runs in an engine of its own. A traced prog's module is
+  rewritten, so its digest does not name it: it always gets an engine
+  of its own. Shared engines keep no value stacks between calls. A
+  spawn costs 0.26 ms.
+
+The modules a long-running prog's generation holds stay until that prog
+exits: an interactive shell keeps the commands run beside it, up to
+1 MiB of modules and about four times as much translated, then a new
+generation starts. Translated code cannot be freed module by module in
+wasmi 2.
+
+Memory in the kernel's test mode under KVM (`KERNEL_MEMSTAT=1`), an
+engine per prog against generations: the heap at the end is the same,
+1,495 KiB; the largest peaks of a single test are within 10% of each
+other (24.4 and 57.6 MiB against 26.6 and 51.7 MiB, the 64 MiB block of
+the heap self-test aside); the run makes 37% fewer allocations (6.01 M
+against 3.80 M). The leak check passes.
+
+### 9.3 Results
+
+| benchmark | Target | strict (as before) | no strict-align | + lazy | + generations |
+|---|---|---|---|---|---|
+| cat-root | 0.5 | 0.533 (0.532) | 0.124 (0.123) | 0.123 (0.122) | 0.123 (0.122) |
+| cat-styx | 1 | 0.735 (0.721) | 0.320 (0.309) | 0.296 (0.284) | 0.278 (0.277) |
+| cat-styx-sealed | 2 | 2.42 (2.40) | 1.90 (1.88) | 1.87 (1.85) | 1.89 (1.88) |
+| cat-disk | 2 | 1.92 (1.80) | 1.34 (1.27) | 1.39 (1.15) | 1.40 (1.23) |
+| sha1-pipe-16m | 1 | 2.30 (2.29) | 0.768 (0.767) | 0.765 (0.764) | 0.766 (0.765) |
+| sha1-file-16m | 1 | 2.19 (2.19) | 0.728 (0.726) | 0.727 (0.727) | 0.728 (0.728) |
+| sh-builtin-10k | 0.5 | 0.588 (0.586) | 0.386 (0.375) | 0.358 (0.350) | 0.352 (0.349) |
+| sh-spawn-1k | | 1.38 (1.36) | 1.27 (1.24) | 0.851 (0.836) | 0.327 (0.326) |
+| spawn-1k-total | 1 | 1.19 (1.15) | 1.11 (1.09) | 0.795 (0.763) | 0.263 (0.261) |
+| fs-root-1k-create | 0.1 | 0.046 (0.043) | 0.045 (0.042) | 0.039 (0.034) | 0.029 (0.028) |
+| fs-root-1k-read | 0.1 | 0.015 (0.015) | 0.014 (0.014) | 0.014 (0.013) | 0.013 (0.013) |
+| fs-root-1k-stat | 0.1 | 0.022 (0.021) | 0.019 (0.018) | 0.018 (0.018) | 0.017 (0.017) |
+| fs-root-1k-remove | 0.1 | 0.016 (0.015) | 0.015 (0.015) | 0.014 (0.014) | 0.013 (0.012) |
+| fs-memfs-1k-create | 0.1 | 0.068 (0.067) | 0.051 (0.050) | 0.051 (0.050) | 0.048 (0.048) |
+| fs-memfs-1k-read | 0.1 | 0.042 (0.041) | 0.033 (0.033) | 0.033 (0.033) | 0.032 (0.031) |
+| fs-memfs-1k-stat | 0.1 | 0.050 (0.050) | 0.038 (0.037) | 0.038 (0.038) | 0.038 (0.037) |
+| fs-memfs-1k-remove | 0.1 | 0.030 (0.030) | 0.024 (0.024) | 0.024 (0.024) | 0.023 (0.023) |
+| fs-disk-1k-create | 1 | 0.596 (0.580) | 0.559 (0.479) | 0.605 (0.479) | 0.580 (0.528) |
+| fs-disk-1k-read | 0.1 | 0.076 (0.067) | 0.068 (0.065) | 0.080 (0.061) | 0.070 (0.064) |
+| fs-disk-1k-stat | 0.1 | 0.023 (0.022) | 0.020 (0.019) | 0.020 (0.019) | 0.019 (0.019) |
+| fs-disk-1k-remove | 1 | 0.501 (0.396) | 0.459 (0.417) | 0.448 (0.426) | 0.492 (0.405) |
+
+A second run with strict alignment throughout agreed with the first to
+within 5% on every median. The disk rows vary by up to 30% between runs
+of the same build.
+
+The kernel now meets every D6 target (Section 4), spawn latency by a
+factor of four, and spawns faster than the AOT prototype did (0.26 ms
+against 0.26 to 0.39 ms). Code that computes is still 8 times slower
+than AOT (0.73 s against 0.092 s for the 16 MiB hash).
+
+The emu on wasmi gains the same way (three rounds, median and fastest):
+`spawn-1k-total` 2.62 s (2.09) before, 0.35 s (0.33) and 0.36 s (0.35) in
+two runs after; `sh-spawn-1k` 2.74 s (2.57) before, 0.41 s (0.37) and 0.43
+s (0.42) after. Its Styx and memfs rows moved by up to 30% either way
+between runs, with or without the change.
+
+What remains for spawns: the SHA-256 digest of each module is now most
+of a spawn (190 µs of 260 µs for `echo`, by the timing above). The
+kernel's `sha2` is the portable code; the CPU's SHA-256 instructions
+(FEAT_SHA256, which this host has) would need detection at boot, since
+not every aarch64 CPU has them.
