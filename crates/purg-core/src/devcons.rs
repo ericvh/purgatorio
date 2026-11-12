@@ -3,16 +3,23 @@
 //! `cons` reads a line at a time unless `rawon` was written to `consctl`.
 //! A console that is a bare byte stream gets its echo and line editing
 //! from [`crate::linedisc`]; the hosted console's terminal does that
-//! itself, so there the lines are only split.
+//! itself, so there the lines are only split. An interrupt-driven console
+//! ([`purg_platform::Console::interrupt_driven`]) is read by the `cons`
+//! kproc, started when the device table is built, so that typing is
+//! echoed as it arrives and the interrupt key (^C) acts at once: it posts
+//! the `interrupt` note to the console's foreground process group, the
+//! group of the prog that last read `cons` (`docs/abi.md`, "Interrupts").
 //!
 //! `user` reads as the calling prog's user. The host owner may write a
 //! name to it to become that user (`runas`); anyone else gets
 //! `permission denied`.
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use purg_abi::{error, mode};
 use purg_platform::Platform;
@@ -74,7 +81,10 @@ pub struct DevCons {
     input: Mutex<LineBuf>,
     /// Holds the raw flag, and reads a console that wants the line
     /// discipline.
-    reader: ConsReader,
+    reader: Arc<ConsReader>,
+    /// The console's foreground process group: that of the prog that
+    /// last read `cons`; 0 before any did.
+    foreground: Arc<AtomicU32>,
     kprint: Queue,
 }
 
@@ -85,7 +95,8 @@ impl DevCons {
             procs,
             drivers: Mutex::new(String::new()),
             input: Mutex::new(LineBuf::default()),
-            reader: ConsReader::new(),
+            reader: Arc::new(ConsReader::new()),
+            foreground: Arc::new(AtomicU32::new(0)),
             kprint: Queue::new(64 * 1024),
         }
     }
@@ -114,6 +125,9 @@ impl DevCons {
 
     fn read_cons(&self, buf: &mut [u8]) -> Result<usize> {
         let cons = self.platform.console();
+        if let Ok(p) = self.procs.current() {
+            self.foreground.store(p.group(), Ordering::Release);
+        }
         if cons.line_discipline() {
             return self.reader.read(cons, buf);
         }
@@ -154,6 +168,26 @@ impl Dev for DevCons {
         let mut s = self.drivers.lock();
         for d in tab.iter() {
             s.push_str(&format!("#{} {}\n", d.dc(), d.name()));
+        }
+        drop(s);
+        let cons = self.platform.console();
+        if !cons.line_discipline() {
+            return;
+        }
+        let (procs, fg) = (self.procs.clone(), self.foreground.clone());
+        self.reader
+            .set_interrupt(Box::new(move || match fg.load(Ordering::Acquire) {
+                0 => {}
+                g => procs.interrupt_group(g),
+            }));
+        if cons.interrupt_driven() {
+            let (reader, platform) = (self.reader.clone(), self.platform.clone());
+            self.reader.set_pumped(true);
+            let pump = Box::new(move || reader.pump(platform.console()));
+            // Without a kproc the reader runs the discipline.
+            if self.platform.spawn_kproc("cons", pump).is_err() {
+                self.reader.set_pumped(false);
+            }
         }
     }
 
@@ -250,7 +284,10 @@ impl Dev for DevCons {
                 self.procs.set_user(&p, name)?;
                 Ok(buf.len())
             }
-            QCONS => self.platform.console().write(buf).map_err(Error::from),
+            QCONS => {
+                self.reader.output(buf);
+                self.platform.console().write(buf).map_err(Error::from)
+            }
             QNULL => Ok(buf.len()),
             QKPRINT | QSYSCTL => self.kprint.write(buf),
             QCONSCTL => {
