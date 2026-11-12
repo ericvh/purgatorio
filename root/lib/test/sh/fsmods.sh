@@ -10,6 +10,8 @@ echo two > t/b
 echo three > u/a/x
 echo four > u/a/y
 echo five > u/c
+chmod 644 t/a/x t/b u/a/x u/a/y u/c
+chmod 755 t t/a u u/a
 echo compose and merge
 fs print {merge -c {compose AinB} t u}
 fs print {merge -c {compose AoutB} t u}

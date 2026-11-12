@@ -9,6 +9,8 @@ echo hello > 'src/A Long Mixed-Case Name'
 echo inner > src/deep/er/x
 chmod 640 src/docs/README.txt
 chmod 750 src/docs
+chmod 644 'src/A Long Mixed-Case Name' src/deep/er/x
+chmod 755 src/deep src/deep/er
 /bin/test/mkimg iso plain.iso src
 /bin/test/mkimg iso -r rock.iso src
 /bin/test/mkimg iso -j joliet.iso src
