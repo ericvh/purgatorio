@@ -51,7 +51,7 @@ use crate::chan::Chan;
 use crate::error::{Error, Result as KResult};
 use crate::names::cleanname;
 use crate::pgrp::{Pgrp, absolute};
-use crate::rw::{read_msg, read_sealed, write_full};
+use crate::rw::{Pool, read_msg_in, read_sealed_in, write_full};
 use crate::sysfile::{self, open};
 use crate::workq::{OutQ, Put, WorkQ};
 
@@ -194,6 +194,9 @@ struct Conn {
     quiet: Rendez,
     work: WorkQ<Req>,
     out: OutQ<Out>,
+    /// Buffers for the requests the reader reads; each is handed back
+    /// once its request is served ([`crate::rw::Pool`]).
+    bufs: Pool,
     /// The tag of the version 3 proof the reader switched on, and the
     /// sealer the replies take up once its reply is queued.
     switch: Mutex<Option<(u16, Sealer)>>,
@@ -287,6 +290,7 @@ pub fn serve_with(
         quiet: Rendez::new(),
         work: WorkQ::new(MAX_WORKERS, KEEP_IDLE),
         out: OutQ::new(),
+        bufs: Pool::new(),
         switch: Mutex::new(None),
         keys: Mutex::new(None),
         server: Mutex::new(None),
@@ -308,8 +312,8 @@ impl Conn {
         loop {
             let msize = self.msize.load(Ordering::Acquire);
             let got = match opener.as_mut() {
-                Some(o) => read_sealed(&self.fd, o, msize),
-                None => read_msg(&self.fd, msize),
+                Some(o) => read_sealed_in(&self.fd, o, msize, Some(&self.bufs)),
+                None => read_msg_in(&self.fd, msize, Some(&self.bufs)),
             };
             let buf = match got {
                 Ok(b) => b,
@@ -354,6 +358,8 @@ impl Conn {
             drop(msg);
             if for_worker {
                 self.submit(Req { tag, buf });
+            } else {
+                self.bufs.put(buf);
             }
             // A reply could not be written: the client has gone, as when
             // a read hangs up. Clients send `Tclunk` and need not wait for
@@ -422,6 +428,7 @@ impl Conn {
             sync::set_current_note(None);
         }
         self.finish(req.tag, reply);
+        self.bufs.put(req.buf);
     }
 
     fn handle(&self, req: &Req) -> Vec<u8> {
