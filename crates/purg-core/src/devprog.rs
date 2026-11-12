@@ -1,6 +1,9 @@
 //! `#p`: one directory per prog. `wait` collects children's exit messages.
 //! `status`, `ns`, `fd` and `module` describe the prog; writing `kill` or
-//! `killgrp` to `ctl` interrupts it, and `modules warn` or `modules
+//! `killgrp` to `ctl` kills it or its process group, `interrupt` or
+//! `interruptgrp` sends them the `interrupt` note, which kills a prog
+//! unless `catchint on` was written to its `ctl` (`docs/abi.md`,
+//! "Interrupts"), and `modules warn` or `modules
 //! require` tightens its module policy (`docs/signing.md`). A prog's
 //! files are its user's; only that user or the host owner may open its
 //! `ctl` and `heap` (`docs/abi.md`, "Users").
@@ -380,6 +383,15 @@ impl Dev for DevProg {
                     }
                 }
             },
+            "interrupt" => self.procs.interrupt(pid),
+            "interruptgrp" => match view(c) {
+                None => self.procs.interrupt_group(p.group()),
+                Some(d) => self
+                    .procs
+                    .interrupt_all(|q| q.group() == p.group() && q.in_domain(d)),
+            },
+            "catchint on" => p.set_catch_interrupt(true),
+            "catchint off" => p.set_catch_interrupt(false),
             "trace on" => p.debug.set_trace(true),
             "trace off" => p.debug.set_trace(false),
             "prof on" => p.debug.set_prof(true),

@@ -457,3 +457,24 @@ fn debug_hold_serves_then_resumes() {
         assert_eq!(engine.join().unwrap(), Some(Resume::Cont));
     });
 }
+
+/// An interrupt posted while a prog goes to sleep is never missed: the
+/// sleeper ends with the note pending, whichever runs first.
+#[test]
+fn note_interrupt_wakes_an_interruptible_sleeper() {
+    use purg_platform::sync::Note;
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(model.preemption_bound.map_or(5, |n| n.min(5)));
+    model.check(|| {
+        let note = Arc::new(Note::new());
+        let r = Rendez::new();
+        let poster = {
+            let note = note.clone();
+            thread::spawn(move || note.interrupt())
+        };
+        assert!(!note.sleep_interruptible(&r, || false));
+        assert!(note.take_interrupt());
+        assert!(!note.killed());
+        poster.join().unwrap();
+    });
+}

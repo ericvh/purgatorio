@@ -1,5 +1,9 @@
 //! Sleep until a condition holds, and wake early when the current prog is
-//! killed.
+//! killed or interrupted.
+//!
+//! An interrupt (`docs/abi.md`, "Interrupts") reaches only a prog that
+//! survives interrupts; it is pending until the prog next blocks here,
+//! and that call ends with [`error::EINTR`], taking it.
 
 use purg_abi::error;
 use purg_platform::sync::{Rendez, current_note};
@@ -11,15 +15,27 @@ pub fn interrupted() -> bool {
     current_note().is_some_and(|n| n.killed())
 }
 
+/// [`error::EINTR`] if the prog running on this thread has been killed or
+/// has an interrupt pending, which this takes.
+pub fn check() -> Result<()> {
+    match current_note() {
+        Some(n) if n.take_interrupt() || n.killed() => Err(Error::new(error::EINTR)),
+        _ => Ok(()),
+    }
+}
+
 /// Sleeps on `r` until `cond` returns true. `cond` may run more than once
-/// and must not itself sleep. A killed prog gets [`error::EINTR`].
+/// and must not itself sleep. A killed prog gets [`error::EINTR`], and so
+/// does an interrupted one, even if `cond` is true.
 pub fn park(r: &Rendez, mut cond: impl FnMut() -> bool) -> Result<()> {
-    let ok = if let Some(n) = current_note() {
-        n.sleep(r, &mut cond)
-    } else {
+    let Some(n) = current_note() else {
         r.sleep(&mut cond);
-        true
+        return Ok(());
     };
+    let ok = n.sleep_interruptible(r, &mut cond);
+    if n.take_interrupt() {
+        return Err(Error::new(error::EINTR));
+    }
     if ok || cond() {
         Ok(())
     } else {
@@ -34,29 +50,27 @@ pub fn park_timeout(r: &Rendez, mut cond: impl FnMut() -> bool, timeout_ms: i32)
         park(r, cond)?;
         return Ok(true);
     }
-    if cond() {
+    let note = current_note();
+    let intr = || note.as_ref().is_some_and(|n| n.interrupted());
+    if !intr() && cond() {
         return Ok(true);
     }
-    if interrupted() {
-        return Err(Error::new(error::EINTR));
-    }
+    check()?;
     if timeout_ms == 0 {
         return Ok(false);
     }
     let ns = u64::from(timeout_ms as u32).saturating_mul(1_000_000);
-    let note = current_note();
     if let Some(n) = &note {
         n.arm(r);
     }
-    let _hit = r.tsleep(|| cond() || interrupted(), ns);
+    let _hit = r.tsleep(|| cond() || interrupted() || intr(), ns);
     if let Some(n) = &note {
         n.disarm();
     }
-    if cond() {
+    if !intr() && cond() {
         Ok(true)
-    } else if interrupted() {
-        Err(Error::new(error::EINTR))
     } else {
+        check()?;
         Ok(false)
     }
 }

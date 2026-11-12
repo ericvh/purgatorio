@@ -528,6 +528,45 @@ child that a killed `spawn_prog` had not yet started is not started.
 There is no handler a guest can install to catch a kill. A guest still
 sees `interrupted` from a call when a file server returns that error.
 
+## Interrupts
+
+The `interrupt` note is a kill that a prog may choose to survive. It is
+how the console's interrupt key reaches the commands an interactive
+shell runs, as Inferno's `cons` posts `interrupt` to the console's
+process group, and no part of the import ABI: it goes through
+`/prog/<pid>/ctl`, so `ABI_VERSION` did not change for it.
+
+- `interrupt` on a prog's `ctl` sends it the note; `interruptgrp` sends it
+  to every prog in that prog's process group (in a `#pdomain` view, to
+  the members of the domain only, as `killgrp` does).
+- A prog that has not written `catchint on` to its own `ctl` is killed by
+  the note, exactly as by `kill` ("Killed progs" above), with the status
+  `killed`.
+- A prog that has written `catchint on` lives. The note is pending until
+  the prog next blocks in the kernel (a read that waits for data,
+  `wait`, a sleep, a 9P request); that call fails with `interrupted`
+  (WASI errno `INTR`) and takes the note, whether or not what it waited
+  for had already happened. A prog that computes without blocking does
+  not see the note until it next blocks. `catchint off` restores the
+  default. The setting is not inherited: the progs a catcher starts die
+  of the note.
+
+On the kernel, ^C typed on the console (in cooked mode) throws away the
+input not yet read and sends `interrupt` to the console's foreground
+process group, which is the group of the prog that last read
+`/dev/cons` (`purg_core::linedisc`; README, "Phase K"). Inferno's
+interrupt key is DEL; here DEL erases, since the terminals QEMU's serial
+console sits behind send DEL for Backspace. The hosted emu leaves ^C to
+the host terminal, which ends the emu.
+
+An interactive `sh` (one that prompts) takes a process group of its own
+(`pctl` `NEWPGRP`) and writes `catchint on`. When the note fails its
+`wait` for a command, it passes `interrupt` on to the progs of that
+command that have not exited (they may have started after the note, or
+be in another group), waits for them, abandons the rest of the line
+with the status `interrupt`, and prompts again. At the prompt, the note
+just ends the line being typed.
+
 ## WASI p1 functions implemented
 
 M1: `args_get`, `args_sizes_get`, `environ_get`, `environ_sizes_get`,

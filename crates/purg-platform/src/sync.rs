@@ -589,13 +589,18 @@ use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicBool, Ordering};
 
-/// A prog's kill flag and the [`Rendez`] it is parked on.
+/// A prog's kill flag, its pending `interrupt` note, and the [`Rendez`]
+/// it is parked on.
 ///
 /// `kill` sets the flag and wakes that rendez, so a sleeper whose condition
 /// also watches [`Note::killed`] cannot miss it: the condition is rechecked
-/// under the rendez lock, and `wakeup` takes the same lock.
+/// under the rendez lock, and `wakeup` takes the same lock. `interrupt`
+/// does the same for a prog that survives interrupts (`docs/abi.md`,
+/// "Interrupts"): its next blocking call that waits through
+/// [`Note::sleep_interruptible`] ends with `interrupted`, once.
 pub struct Note {
     killed: AtomicBool,
+    interrupt: AtomicBool,
     sleep: Mutex<Option<Rendez>>,
 }
 
@@ -603,8 +608,43 @@ impl Note {
     pub fn new() -> Note {
         Note {
             killed: AtomicBool::new(false),
+            interrupt: AtomicBool::new(false),
             sleep: Mutex::new(None),
         }
+    }
+
+    /// Posts an interrupt and wakes the prog if it is parked.
+    pub fn interrupt(&self) {
+        self.interrupt.store(true, Ordering::Release);
+        if let Some(r) = self.sleep.lock().clone() {
+            r.wakeup();
+        }
+    }
+
+    /// Whether an interrupt is pending.
+    pub fn interrupted(&self) -> bool {
+        self.interrupt.load(Ordering::Acquire)
+    }
+
+    /// Takes the pending interrupt, if there is one.
+    pub fn take_interrupt(&self) -> bool {
+        self.interrupt.swap(false, Ordering::AcqRel)
+    }
+
+    /// Like [`Note::sleep`], but an interrupt ends the sleep too: returns
+    /// whether `cond` became true before a kill or an interrupt. The
+    /// interrupt stays pending, for the caller to take.
+    pub fn sleep_interruptible(&self, r: &Rendez, mut cond: impl FnMut() -> bool) -> bool {
+        if self.killed() || self.interrupted() {
+            return false;
+        }
+        if cond() {
+            return true;
+        }
+        *self.sleep.lock() = Some(r.clone());
+        r.sleep(|| self.killed() || self.interrupted() || cond());
+        *self.sleep.lock() = None;
+        !self.killed() && !self.interrupted() && cond()
     }
 
     pub fn killed(&self) -> bool {
