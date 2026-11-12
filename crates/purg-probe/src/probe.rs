@@ -134,7 +134,6 @@ fn script(platform: MetalPlatform) -> Result<usize, Error> {
         platform: Arc::new(platform),
         native: Vec::new(),
         extra: Vec::new(),
-        cmd: true,
     };
     let sys = System::new(
         Arc::new(Wasmi::new()?),

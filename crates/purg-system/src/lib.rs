@@ -35,14 +35,15 @@ pub struct Boot {
     pub native: Vec<Arc<dyn Dev>>,
     /// Devices in the device table only (reached by `#x` names).
     pub extra: Vec<Arc<dyn Dev>>,
-    /// Bind `#C` on `/cmd`, as the emu does.
-    pub cmd: bool,
 }
 
 /// Builds the emu's boot namespace: `#/` the root, the RAM tree made by
 /// `root` (as `#U`, with its owner and the platform) unioned after it and
 /// taking creates, `#c` before `/dev`, and `#e`, `#p`, `#s`, `#d` and `#I`
-/// on `/env`, `/prog`, `/chan`, `/fd` and `/net`.
+/// on `/env`, `/prog`, `/chan`, `/fd` and `/net`. Unlike the emu, nothing
+/// is bound on `/cmd`: a bare-metal image has no host to run commands on.
+/// `#C` is still in the device table, and its `clone` fails with `not
+/// implemented`.
 pub fn boot(
     b: Boot,
     root: impl FnOnce(&str, &Arc<dyn Platform>) -> Result<RamTree, Error>,
@@ -68,9 +69,6 @@ pub fn boot(
     pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
     pgrp.bind("#d", "/fd", MREPL)?;
     pgrp.bind("#I", "/net", MREPL)?;
-    if b.cmd {
-        pgrp.bind("#C", "/cmd", MREPL)?;
-    }
     for dc in natives {
         pgrp.bind(&format!("#{dc}"), "/dev", MAFTER)?;
     }
