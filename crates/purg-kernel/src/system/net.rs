@@ -8,6 +8,8 @@
 //!   and list it.
 //! - `udpecho=PORT`: send a datagram to the host's UDP echo server at
 //!   `udp!10.0.2.2!PORT` and check the echo.
+//! - `ping`: `ip/ping` QEMU's gateway, 10.0.2.2, which answers ICMP echo
+//!   itself (through `/net/icmp`, a raw smoltcp socket).
 //! - `lethed=PORT`: attach the host's `lethed` at `tcp!10.0.2.2!PORT` on
 //!   `/n/lethe` with the `lethe` command and read it (`docs/lethe.md`).
 //! - `netexport`: announce `tcp!*!6666` and export `/` to the first
@@ -50,6 +52,7 @@ pub const RSTYX_PORT: u16 = 6668;
 pub struct Checks {
     host_export: Option<u16>,
     udp_echo: Option<u16>,
+    ping: bool,
     lethed: Option<u16>,
     export: bool,
     rstyx: bool,
@@ -74,6 +77,7 @@ pub fn open(fdt: &Fdt<'_>, info: &BootInfo<'_>) -> (NetStack, Checks) {
     let checks = Checks {
         host_export: port("hostexport"),
         udp_echo: port("udpecho"),
+        ping: has_bootarg(info, "ping"),
         lethed: port("lethed"),
         export: has_bootarg(info, "netexport"),
         rstyx: has_bootarg(info, "rstyx"),
@@ -94,6 +98,16 @@ impl System {
             self.say("kernel: run /bin/test/net.wasm --udp (the host's UDP echo)");
             let addr = format!("udp!{HOST}!{port}");
             let v = match self.run(&["/bin/test/net.wasm", "--udp", &addr], None) {
+                Ok(s) if s.is_empty() => Ok(String::from("ok")),
+                Ok(s) => Err(format!("status {s:?}")),
+                Err(e) => Err(format!("error: {e}")),
+            };
+            self.verdict(&mut failed, v);
+        }
+        if checks.ping {
+            self.say("kernel: ip/ping the QEMU gateway");
+            let argv = ["ip/ping", "-q", "-n", "3", "-i", "100", HOST];
+            let v = match self.run(&argv, None) {
                 Ok(s) if s.is_empty() => Ok(String::from("ok")),
                 Ok(s) => Err(format!("status {s:?}")),
                 Err(e) => Err(format!("error: {e}")),

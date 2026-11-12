@@ -26,6 +26,7 @@ members = [
     "appl/cmd/disk/chkdisk",
     "appl/cmd/disk/mkdisk",
     "appl/cmd/disk/mkfs",
+    "appl/cmd/ip/ping",
     "appl/cmd/ip/sntp",
     "appl/cmd/ip/tftpd",
     "appl/cmd/auxi/cpuslave",

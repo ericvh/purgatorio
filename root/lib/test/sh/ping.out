@@ -1,0 +1,13 @@
+/net/icmp/clone
+sending 3 64 byte messages 10 ms apart
+0: rtt N µs, avg rtt N µs, ttl = 64
+1: rtt N µs, avg rtt N µs, ttl = 64
+2: rtt N µs, avg rtt N µs, ttl = 64
+sending 1 64 byte messages 10 ms apart
+0: 127.0.0.1->127.0.0.1 rtt N µs, avg rtt N µs, ttl = 64
+sending 2 64 byte messages 10 ms apart
+sending 1 1000 byte messages 1000 ms apart
+status 
+ip/ping: usage: ip/ping [-alq] [-s msgsize] [-i millisecs] [-n #pings] destination
+status fail:usage: ip/ping [-alq] [-s msgsize] [-i millisecs] [-n #pings] destination
+protocol not supported
