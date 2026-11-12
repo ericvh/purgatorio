@@ -35,7 +35,7 @@ a `; ` prompt.
 | `#e` (per-Egrp environment), `#\|` (pipes over qio queues), `#p` (`status`, `ctl`, `ns`, `fd`, `wait`) | done |
 | Namespace: `namec`, `bind` with `MREPL`/`MBEFORE`/`MAFTER`/`MCREATE` unions, `unmount`, `chdir`, lexical `..` | done |
 | Progs: `spawn_prog`, `pctl` (`NEWFD FORKFD NEWNS FORKNS NEWPGRP NODEVS NEWENV FORKENV`), wait messages; `Rendez` and qio checked with loom | done |
-| WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`) | done |
+| WASM backends: wasmtime (default, with a compiled-module cache) and wasmi (`--vm=wasmi`; modules compiled lazily, and progs sharing engines in generations that keep each module by digest, see [docs/perf.md](docs/perf.md) Section 9) | done |
 | App ABI v0.7: all of WASI preview 1 plus the `purgatorio` module (see [docs/abi.md](docs/abi.md)). Stock Rust `std` programs with no SDK run and see the namespace | done |
 | `sh` subset: `-e`, pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, `<>` (read and write), builtins `cd exit run wait load` and `@{}` sub-shells (own variables, environment, fds and namespace); `load std` has `pctl` and `${pid}`; file-name patterns (`*`, `?`, `[class]`) | done |
 | `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`, `${hd}` `${tl}` `${index}` `${quote}` `${unquote}`. `load expr`: postfix `${expr}` | done |
@@ -217,6 +217,13 @@ a 100 MiB file from the RAM tree, through Styx mounts and from purgfs,
 an `sh` loop, spawns, file operations and a CPU-bound guest, on a
 release emu with each engine and on the kernel under KVM or TCG. It
 prints medians and writes every sample to `target/bench/results.json`.
+
+`xtask` builds the kernel and the probe without strict alignment, which
+makes wasmi about three times faster, except for `purg-aarch64` and its
+dependencies, which hold the code that runs with the MMU off. Each build
+checks that this code calls nothing outside those crates
+(`xtask/src/align.rs`). A plain `cargo build` of the kernel keeps strict
+alignment throughout.
 
 ## Building and running
 
