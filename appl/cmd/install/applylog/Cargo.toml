@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-install-applylog"
+description = "install/applylog: bring a replica up to date from a log"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "applylog"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+proto = { package = "appl-lib-proto", path = "../../../lib/proto" }
+wrap = { package = "appl-lib-wrap", path = "../../../lib/wrap" }
+
+[lints]
+workspace = true
