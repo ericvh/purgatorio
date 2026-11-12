@@ -90,6 +90,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-9660srv"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-iso9660",
+ "appl-lib-styxserv",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-9export"
 version = "0.1.0"
 dependencies = [
@@ -1288,6 +1297,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-lib-iso9660"
+version = "0.1.0"
+
+[[package]]
 name = "appl-lib-mashcase"
 version = "0.1.0"
 
@@ -1372,6 +1385,14 @@ dependencies = [
 name = "appl-test-m3"
 version = "0.1.0"
 dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-test-mkimg"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-iso9660",
  "purgatorio",
 ]
 

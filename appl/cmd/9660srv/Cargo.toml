@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-9660srv"
+description = "9660srv: serve an ISO 9660 image as a read-only file tree"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "9660srv"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+iso9660 = { package = "appl-lib-iso9660", path = "../../lib/iso9660" }
+
+[lints]
+workspace = true
