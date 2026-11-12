@@ -29,24 +29,43 @@ mount -k $d/info {export -e $d/src} $d/sealed
 memfs $d/mfs
 disk=()
 if {test -f /n/disk/big} {disk=/n/disk/big}
+# With `kprof` in the kernel's bootargs (`xtask bench --kprof`), profile
+# each benchmark below that names itself to kp, and keep the counts on
+# the disk for xtask to symbolize. Outside the timed commands.
+kprof=()
+if {test -f /dev/kpctl && ~ $#disk 1} {
+	kprof=/n/disk/kprof
+	rm -rf $kprof
+	mkdir $kprof
+}
+fn kp {
+	if {~ $#kprof 1} {echo startclr > /dev/kpctl}
+}
+fn kpsave {
+	if {~ $#kprof 1} {
+		echo stop > /dev/kpctl
+		cat /dev/kpdata > $kprof/$1^.^$r^.pc
+		cat /dev/kpcaller > $kprof/$1^.^$r^.lr
+	}
+}
 echo bench-start
 for r in $rounds {
 	echo bench-round $r
-	echo -n 'bench cat-root '; time cat $d/src/big >[2=1] >/dev/null
-	echo -n 'bench cat-styx '; time cat $d/clear/big >[2=1] >/dev/null
-	echo -n 'bench cat-styx-sealed '; time cat $d/sealed/big >[2=1] >/dev/null
+	kp; echo -n 'bench cat-root '; time cat $d/src/big >[2=1] >/dev/null; kpsave cat-root
+	kp; echo -n 'bench cat-styx '; time cat $d/clear/big >[2=1] >/dev/null; kpsave cat-styx
+	kp; echo -n 'bench cat-styx-sealed '; time cat $d/sealed/big >[2=1] >/dev/null; kpsave cat-styx-sealed
 	for f in $disk {
-		echo -n 'bench cat-disk '; time cat $f >[2=1] >/dev/null
+		kp; echo -n 'bench cat-disk '; time cat $f >[2=1] >/dev/null; kpsave cat-disk
 	}
 	echo -n 'bench sha1-pipe-16m '; time sh -c 'zeros 1024 16384 | sha1sum' >[2=1] >/dev/null
-	echo -n 'bench sha1-file-16m '; time sha1sum $d/src/c16 >[2=1] >/dev/null
+	kp; echo -n 'bench sha1-file-16m '; time sha1sum $d/src/c16 >[2=1] >/dev/null; kpsave sha1-file-16m
 	echo -n 'bench sh-builtin-10k '; time sh -c 'load std; ten=(0 1 2 3 4 5 6 7 8 9); for a in $ten {for b in $ten {for c in $ten {for e in $ten {x=$e}}}}' >[2=1] >/dev/null
 	echo -n 'bench sh-spawn-1k '; time sh -c 'load std; ten=(0 1 2 3 4 5 6 7 8 9); for a in $ten {for b in $ten {for c in $ten {echo -n}}}' >[2=1] >/dev/null
 	/bin/test/bench.wasm spawn spawn-1k 1000
 	/bin/test/bench.wasm fs fs-root-1k $d/src 1000
 	/bin/test/bench.wasm fs fs-memfs-1k $d/mfs 1000
 	for f in $disk {
-		/bin/test/bench.wasm fs fs-disk-1k /n/disk 1000
+		kp; /bin/test/bench.wasm fs fs-disk-1k /n/disk 1000; kpsave fs-disk-1k
 	}
 }
 echo bench-done
