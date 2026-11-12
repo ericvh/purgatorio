@@ -86,6 +86,7 @@ authlib = { package = "appl-authlib", path = "appl/authlib" }
 filepat = { package = "appl-lib-filepat", path = "appl/lib/filepat" }
 regexp = { package = "appl-lib-regexp", path = "appl/lib/regexp" }
 wasmobj = { package = "appl-lib-wasmobj", path = "appl/lib/wasmobj" }
+progdebug = { package = "appl-lib-progdebug", path = "appl/lib/progdebug" }
 ndb = { package = "appl-lib-ndb", path = "appl/lib/ndb" }
 
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "rwlock", "once"] }

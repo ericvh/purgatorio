@@ -323,6 +323,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-cprof"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-progdebug",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-cpu"
 version = "0.1.0"
 dependencies = [
@@ -742,6 +750,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-mprof"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-progdebug",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-mv"
 version = "0.1.0"
 dependencies = [
@@ -880,7 +896,7 @@ dependencies = [
 name = "appl-cmd-prof"
 version = "0.1.0"
 dependencies = [
- "appl-lib-wasmobj",
+ "appl-lib-progdebug",
  "purgatorio",
 ]
 
@@ -1275,6 +1291,14 @@ dependencies = [
 [[package]]
 name = "appl-lib-plumbmsg"
 version = "0.1.0"
+
+[[package]]
+name = "appl-lib-progdebug"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-wasmobj",
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-lib-proto"

@@ -1,4 +1,5 @@
-//! debug trap|spin|hot|nap|deep n: a guest for the `stack` and `prof` tests
+//! debug trap|spin|hot|nap|tick|grow|deep n: a guest for the `stack`,
+//! `prof`, `cprof`, `mprof` and `mdb` tests
 //! (`docs/debug.md`). Each mode goes through `outer`, `middle` and `inner`,
 //! which are never inlined, so that a stack taken inside names them.
 //!
@@ -11,11 +12,18 @@
 //!   wasmi by instructions). It needs profiling on, and fails with
 //!   `fail:no samples` if the samples have not come after [`LIMIT`];
 //! - `nap` sleeps in `inner` until it is killed;
+//! - `tick` prints `counter <address>` on standard error, the address of
+//!   a word in its memory, and then from `inner` calls `tick`, which adds
+//!   one to the word, every 10 ms until it is killed;
+//! - `grow` calls `inner` [`ROUNDS`] times, each of which calls `heap`
+//!   to allocate and touch a MiB that it keeps, so that memory grows in
+//!   `heap` and in its callers;
 //! - `deep n` recurses `n` calls deep in `down`, called from `inner`. A
 //!   traced prog takes two frames a call, so this checks that tracing
 //!   leaves room for a deep recursion (issue #112).
 
 use std::hint::black_box;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use purgatorio::{Context, Error};
@@ -34,7 +42,26 @@ enum Mode {
     Spin,
     Hot,
     Nap,
+    Tick,
+    Grow,
     Deep(u32),
+}
+
+/// The word `tick` counts in.
+static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+#[inline(never)]
+fn tick() {
+    COUNTER.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Allocates a MiB, touches it and keeps it.
+#[inline(never)]
+fn heap() -> u64 {
+    let v = black_box(vec![1u8; 1 << 20]);
+    let sum = u64::from(v[0]) + u64::from(v[v.len() - 1]);
+    std::mem::forget(v);
+    sum
 }
 
 /// Recurses `n` calls deep, each with a frame of its own.
@@ -93,6 +120,11 @@ fn inner(mode: Mode) -> u64 {
             x
         }
         Mode::Deep(n) => down(black_box(n)),
+        Mode::Tick => loop {
+            tick();
+            std::thread::sleep(Duration::from_millis(10));
+        },
+        Mode::Grow => heap(),
         Mode::Nap => loop {
             std::thread::sleep(Duration::from_secs(3600));
         },
@@ -126,12 +158,27 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some("spin") => Mode::Spin,
         Some("hot") => Mode::Hot,
         Some("nap") => Mode::Nap,
+        Some("tick") => Mode::Tick,
+        Some("grow") => Mode::Grow,
         Some("deep") => match args.get(2).and_then(|n| n.parse().ok()) {
             Some(n) => Mode::Deep(n),
             None => return Err(Error::from("usage: debug deep n")),
         },
-        _ => return Err(Error::from("usage: debug trap|spin|hot|nap|deep n")),
+        _ => {
+            return Err(Error::from(
+                "usage: debug trap|spin|hot|nap|tick|grow|deep n",
+            ));
+        }
     };
+    match mode {
+        Mode::Tick => eprintln!("counter {:#x}", COUNTER.as_ptr() as usize),
+        Mode::Grow => {
+            for _ in 1..ROUNDS {
+                black_box(outer(mode));
+            }
+        }
+        _ => {}
+    }
     black_box(outer(mode));
     Ok(())
 }
