@@ -1,4 +1,4 @@
-//! sh [-il] [-c command | file] [arg ...]: the command interpreter, a
+//! sh [-eil] [-c command | file] [arg ...]: the command interpreter, a
 //! subset of Inferno's sh.
 //!
 //! Supported: simple commands, pipelines (`|`), `;`, `&`, `&&`, `||`, `!`,
@@ -18,7 +18,10 @@
 //! these are compiled in; any other module name loads a reactor from
 //! `/bin/lib`.
 //!
-//! With `-l`, `/lib/sh/profile` runs first. Without `-c` or a file,
+//! With `-e`, a command that fails anywhere but at the end of a sequence
+//! stops the script with its status, as in Inferno's sh source (its
+//! man page leaves the flag out); sub-shells inherit it. With `-l`,
+//! `/lib/sh/profile` runs first. Without `-c` or a file,
 //! commands are read from standard input, with a `; ` prompt if it is the
 //! console or `-i` is given. Two options are for sh's own sub-shells: `-P
 //! prelude` runs `prelude` (the parent's `load`s and `fn`s) quietly first,
@@ -95,6 +98,10 @@ fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
                         other => return Some(other),
                     }
                 }
+                // Inferno's sh -e also stops reading at a failed command.
+                if sh.errexit && !sh.status.is_empty() {
+                    return None;
+                }
             }
         }
     }
@@ -102,13 +109,14 @@ fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut arg = Arg::new(args, "sh [-il] [-c command | file] [arg ...]");
+    let mut arg = Arg::new(args, "sh [-eil] [-c command | file] [arg ...]");
     let (mut login, mut force_prompt, mut command) = (false, false, None);
-    let (mut prelude, mut serve) = (None, false);
+    let (mut prelude, mut serve, mut errexit) = (None, false, false);
     while let Some(c) = arg.opt() {
         match c {
             'l' => login = true,
             'i' => force_prompt = true,
+            'e' => errexit = true,
             'c' => command = Some(arg.earg()?),
             'P' => prelude = Some(arg.earg()?),
             'F' => serve = true,
@@ -136,6 +144,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         None
     };
     let mut sh = Shell::new(file.as_deref().unwrap_or("sh"), rest);
+    sh.errexit = errexit;
     if let Some(src) = prelude {
         sh.quiet = true;
         let r = sh.run_src(&src);

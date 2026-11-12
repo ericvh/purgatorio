@@ -105,6 +105,9 @@ pub struct Shell {
     pub(crate) tags: crate::f2c::Tags,
     /// Running the `-P` prelude of a sub-shell: `load` stays quiet.
     pub(crate) quiet: bool,
+    /// `-e`: a command that fails in the middle of a sequence raises its
+    /// status, so the script stops there.
+    pub errexit: bool,
 }
 
 /// Why execution stopped early.
@@ -138,6 +141,7 @@ impl Shell {
             test: None,
             tags: Default::default(),
             quiet: false,
+            errexit: false,
         }
     }
 
@@ -200,11 +204,16 @@ impl Shell {
     }
 
     fn run_items(&mut self, items: &[Item], io: &Io) -> Flow<()> {
-        for item in items {
+        for (n, item) in items.iter().enumerate() {
             if item.background {
                 self.background_item(item, io);
             } else {
                 self.status = self.andor(&item.andor, io)?;
+                // As Inferno's sh, -e checks each command of a sequence
+                // but the last, whose status is the sequence's own.
+                if self.errexit && !self.status.is_empty() && n + 1 < items.len() {
+                    return Err(Stop::Raise(self.status.clone()));
+                }
             }
         }
         Ok(())
@@ -348,6 +357,9 @@ impl Shell {
             }
         }
         let mut argv = vec![String::from("sh")];
+        if self.errexit {
+            argv.push(String::from("-e"));
+        }
         if !prelude.is_empty() {
             argv.extend([String::from("-P"), prelude]);
         }
