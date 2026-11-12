@@ -59,6 +59,11 @@ outer
 sub
 outer
 group
+scoped
+2
+scoped: not found
+0
+/lib/test
 echo: not found
 load builtins; whatis;
 evaluated group
@@ -67,11 +72,11 @@ new%
 true
 0
 /lib
-/lib/test/mash/ctl.mash:85: rec: function nesting too deep
+/lib/test/mash/ctl.mash:93: rec: function nesting too deep
 after
-/lib/test/mash/ctl.mash:87: undefined: undefined
+/lib/test/mash/ctl.mash:95: undefined: undefined
 still running
-/lib/test/mash/ctl.mash:89: rescue not implemented
+/lib/test/mash/ctl.mash:97: rescue not implemented
 out/a.dis out/b.dis : src/c.m;
 all : out/a.dis out/b.dis {};
 prog : all { echo linking >> log; };
