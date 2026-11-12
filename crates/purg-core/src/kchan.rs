@@ -102,6 +102,7 @@ impl KChan {
     }
 
     /// Sends `msg`, blocking while the channel is full.
+    #[track_caller]
     pub fn send(&self, msg: KMsg) -> Result<()> {
         loop {
             park(&self.send_r, || {
@@ -123,6 +124,7 @@ impl KChan {
     }
 
     /// Receives one message. `Ok(None)` is a closed, empty channel.
+    #[track_caller]
     pub fn recv(&self) -> Result<Option<KMsg>> {
         {
             let mut s = self.state.lock();
@@ -138,6 +140,7 @@ impl KChan {
         result
     }
 
+    #[track_caller]
     fn recv_inner(&self) -> Result<Option<KMsg>> {
         loop {
             park(&self.recv_r, || {

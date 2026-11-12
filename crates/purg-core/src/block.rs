@@ -26,7 +26,9 @@ pub fn check() -> Result<()> {
 
 /// Sleeps on `r` until `cond` returns true. `cond` may run more than once
 /// and must not itself sleep. A killed prog gets [`error::EINTR`], and so
-/// does an interrupted one, even if `cond` is true.
+/// does an interrupted one, even if `cond` is true. The caller's location
+/// is what [`purg_platform::sync::Note::waiting_at`] reports meanwhile.
+#[track_caller]
 pub fn park(r: &Rendez, mut cond: impl FnMut() -> bool) -> Result<()> {
     let Some(n) = current_note() else {
         r.sleep(&mut cond);
@@ -61,6 +63,7 @@ pub fn park_killable(r: &Rendez, mut cond: impl FnMut() -> bool) -> Result<()> {
 
 /// Like [`park`], but gives up after `timeout_ms`. `timeout_ms < 0` waits
 /// without a limit; `0` does not sleep. Returns whether `cond` is true.
+#[track_caller]
 pub fn park_timeout(r: &Rendez, mut cond: impl FnMut() -> bool, timeout_ms: i32) -> Result<bool> {
     if timeout_ms < 0 {
         park(r, cond)?;

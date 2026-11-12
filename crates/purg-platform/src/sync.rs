@@ -589,6 +589,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(loom)]
 use loom::sync::atomic::{AtomicBool, Ordering};
 
+use core::panic::Location;
+
 /// A prog's kill flag, its pending `interrupt` note, and the [`Rendez`]
 /// it is parked on.
 ///
@@ -601,7 +603,9 @@ use loom::sync::atomic::{AtomicBool, Ordering};
 pub struct Note {
     killed: AtomicBool,
     interrupt: AtomicBool,
-    sleep: Mutex<Option<Rendez>>,
+    /// The rendez the prog sleeps on, and where it was asked to sleep
+    /// (for reports of a prog that will not die, [`Note::waiting_at`]).
+    sleep: Mutex<Option<(Rendez, &'static Location<'static>)>>,
 }
 
 impl Note {
@@ -616,9 +620,21 @@ impl Note {
     /// Posts an interrupt and wakes the prog if it is parked.
     pub fn interrupt(&self) {
         self.interrupt.store(true, Ordering::Release);
-        if let Some(r) = self.sleep.lock().clone() {
+        self.wake();
+    }
+
+    /// Wakes the rendez the prog sleeps on, if any.
+    fn wake(&self) {
+        let r = self.sleep.lock().as_ref().map(|(r, _)| r.clone());
+        if let Some(r) = r {
             r.wakeup();
         }
+    }
+
+    /// Where the prog is asleep through this note: the source location
+    /// that asked for the sleep, or `None` if it is not asleep here.
+    pub fn waiting_at(&self) -> Option<&'static Location<'static>> {
+        self.sleep.lock().as_ref().map(|&(_, at)| at)
     }
 
     /// Whether an interrupt is pending.
@@ -634,6 +650,7 @@ impl Note {
     /// Like [`Note::sleep`], but an interrupt ends the sleep too: returns
     /// whether `cond` became true before a kill or an interrupt. The
     /// interrupt stays pending, for the caller to take.
+    #[track_caller]
     pub fn sleep_interruptible(&self, r: &Rendez, mut cond: impl FnMut() -> bool) -> bool {
         if self.killed() || self.interrupted() {
             return false;
@@ -641,7 +658,7 @@ impl Note {
         if cond() {
             return true;
         }
-        *self.sleep.lock() = Some(r.clone());
+        *self.sleep.lock() = Some((r.clone(), Location::caller()));
         r.sleep(|| self.killed() || self.interrupted() || cond());
         *self.sleep.lock() = None;
         !self.killed() && !self.interrupted() && cond()
@@ -653,8 +670,9 @@ impl Note {
 
     /// Makes `kill` wake `r`. Paired with [`Note::disarm`] around a timed sleep
     /// that cannot register itself.
+    #[track_caller]
     pub fn arm(&self, r: &Rendez) {
-        *self.sleep.lock() = Some(r.clone());
+        *self.sleep.lock() = Some((r.clone(), Location::caller()));
     }
 
     /// Forgets the rendez [`Note::arm`] recorded.
@@ -665,14 +683,13 @@ impl Note {
     /// Marks the prog killed and wakes it if it is parked.
     pub fn kill(&self) {
         self.killed.store(true, Ordering::Release);
-        if let Some(r) = self.sleep.lock().clone() {
-            r.wakeup();
-        }
+        self.wake();
     }
 
     /// Sleeps on `r` until `cond` is true. Returns whether `cond` became
     /// true; `false` means the note was killed first. `cond` may run more
     /// than once and must not sleep.
+    #[track_caller]
     pub fn sleep(&self, r: &Rendez, mut cond: impl FnMut() -> bool) -> bool {
         if cond() {
             return true;
@@ -680,7 +697,7 @@ impl Note {
         if self.killed() {
             return false;
         }
-        *self.sleep.lock() = Some(r.clone());
+        *self.sleep.lock() = Some((r.clone(), Location::caller()));
         r.sleep(|| self.killed() || cond());
         *self.sleep.lock() = None;
         cond()

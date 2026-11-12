@@ -478,3 +478,25 @@ fn note_interrupt_wakes_an_interruptible_sleeper() {
         poster.join().unwrap();
     });
 }
+
+/// A kill posted while a prog goes to sleep is never missed, and the
+/// note says where it slept until it wakes (#182).
+#[test]
+fn note_kill_wakes_a_sleeper() {
+    use purg_platform::sync::Note;
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(model.preemption_bound.map_or(5, |n| n.min(5)));
+    model.check(|| {
+        let note = Arc::new(Note::new());
+        let r = Rendez::new();
+        let killer = {
+            let note = note.clone();
+            thread::spawn(move || note.kill())
+        };
+        assert!(!note.sleep(&r, || false));
+        assert!(note.killed());
+        assert!(note.waiting_at().is_none());
+        killer.join().unwrap();
+    });
+}
+
