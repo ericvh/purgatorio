@@ -1,0 +1,26 @@
+1
+three, after a space
+four
+one
+three
+two
+four	4
+one	1
+three	three, after a space
+two	2 with a tab before it
+errors
+one exists
+fail:store
+not found
+not found
+four
+one
+three
+dbm/store: bad input
+fail:bad input
+not found
+many
+same keys
+a value long enough to fill blocks soon
+dbm/fetch: nodb: file does not exist
+dbm/fetch: usage: dbm/fetch dbfile key
