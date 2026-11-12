@@ -10,6 +10,7 @@
 //!
 //! ```text
 //! cargo xtask lethe-perf [--reps N] [--parts direct,wasmi,counts,sweep,restart,kernel]
+//!                         [--protos styx-v3,styx-A,lethe,lethe-A,lethe-t0]
 //! ```
 //!
 //! It is a study, not a test: nothing checks the numbers, and nothing in
@@ -65,13 +66,17 @@ enum Proto {
     /// `lethe -A` against `lethed -A`: no ticket, in the clear. Run only
     /// when this tree's `lethed` takes `-A` (branch `lethe-clear`).
     LetheClear,
+    /// `lethe -t 0` against `lethed`: sealed, with nothing trusted from
+    /// the attribute cache, so every stat and read asks the server.
+    LetheStrict,
 }
 
-const ALL: [Proto; 4] = [
+const ALL: [Proto; 5] = [
     Proto::StyxSealed,
     Proto::StyxClear,
     Proto::Lethe,
     Proto::LetheClear,
+    Proto::LetheStrict,
 ];
 
 /// The configurations of this run, from [`protos`].
@@ -81,15 +86,23 @@ fn active() -> Vec<Proto> {
     ACTIVE.get().cloned().unwrap_or_else(|| ALL[..3].to_vec())
 }
 
-/// The configurations this tree can run: all four when `lethed -A`
-/// starts, else the first three.
-fn protos(ws: &Path, tree: &Path) -> Vec<Proto> {
+/// The configurations this tree can run, of those `only` names (all when
+/// it is empty): `lethe-A` when `lethed -A` starts, and `lethe-t0` when
+/// `lethe` takes `-t`.
+fn protos(ws: &Path, tree: &Path, only: &[String]) -> Vec<Proto> {
     let clear = server(ws, tree, Proto::LetheClear, 0, None).is_ok();
     if !clear {
         eprintln!("lethe-perf: lethed has no -A; leaving out lethe-A");
     }
+    let lethe_src = fs::read_to_string(ws.join("appl/cmd/lethe/src/main.rs")).unwrap_or_default();
+    let strict = lethe_src.contains("[-t ms]");
+    if !strict {
+        eprintln!("lethe-perf: lethe has no -t; leaving out lethe-t0");
+    }
     ALL.into_iter()
         .filter(|p| clear || *p != Proto::LetheClear)
+        .filter(|p| strict || *p != Proto::LetheStrict)
+        .filter(|p| only.is_empty() || only.iter().any(|n| n == p.name()))
         .collect()
 }
 
@@ -100,6 +113,7 @@ impl Proto {
             Proto::StyxClear => "styx-A",
             Proto::Lethe => "lethe",
             Proto::LetheClear => "lethe-A",
+            Proto::LetheStrict => "lethe-t0",
         }
     }
 
@@ -110,6 +124,7 @@ impl Proto {
             Proto::StyxClear => format!("mount -A {addr} {MTPT}"),
             Proto::Lethe => format!("lethe {addr} {MTPT}"),
             Proto::LetheClear => format!("lethe -A {addr} {MTPT}"),
+            Proto::LetheStrict => format!("lethe -t 0 {addr} {MTPT}"),
         }
     }
 }
@@ -117,6 +132,7 @@ impl Proto {
 struct Opts {
     reps: usize,
     parts: Vec<String>,
+    protos: Vec<String>,
 }
 
 fn parse(args: &[String]) -> Option<Opts> {
@@ -125,12 +141,14 @@ fn parse(args: &[String]) -> Option<Opts> {
         parts: ["direct", "wasmi", "counts", "sweep", "restart"]
             .map(String::from)
             .to_vec(),
+        protos: Vec::new(),
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--reps" => o.reps = it.next()?.parse().ok()?,
             "--parts" => o.parts = it.next()?.split(',').map(String::from).collect(),
+            "--protos" => o.protos = it.next()?.split(',').map(String::from).collect(),
             _ => return None,
         }
     }
@@ -139,7 +157,7 @@ fn parse(args: &[String]) -> Option<Opts> {
 
 pub fn cmd(args: &[String]) -> Result<()> {
     let o = parse(args).ok_or(
-        "usage: cargo xtask lethe-perf [--reps N] [--parts direct,wasmi,counts,sweep,restart,kernel]",
+        "usage: cargo xtask lethe-perf [--reps N] [--parts direct,wasmi,counts,sweep,restart,kernel] [--protos styx-v3,styx-A,lethe,lethe-A,lethe-t0]",
     )?;
     let ws = workspace();
     super::build_root()?;
@@ -149,7 +167,7 @@ pub fn cmd(args: &[String]) -> Result<()> {
     let out = ws.join("target/lethe-perf");
     fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let tree = make_tree(&ws)?;
-    let _ = ACTIVE.set(protos(&ws, &tree));
+    let _ = ACTIVE.set(protos(&ws, &tree, &o.protos));
     let mut summary = String::new();
     let _ = writeln!(summary, "# lethe-perf results\n");
     let _ = writeln!(summary, "{}", machine());
@@ -439,10 +457,10 @@ impl Drop for Server {
 /// ticket key file for `lethed`.
 fn server(ws: &Path, tree: &Path, p: Proto, port: u16, ticket: Option<&Path>) -> Result<Server> {
     match p {
-        Proto::Lethe | Proto::LetheClear => {
+        Proto::Lethe | Proto::LetheClear | Proto::LetheStrict => {
             let mut cmd = Command::new(ws.join("target/release/lethed"));
             cmd.args(["-a", &format!("127.0.0.1:{port}")]);
-            if p == Proto::Lethe {
+            if p != Proto::LetheClear {
                 cmd.arg("-k").arg(ws.join("root/lib/test/auth.key.pub"));
             } else {
                 cmd.arg("-A");
