@@ -38,7 +38,8 @@
 //!   and the timeouts are longer. `--stress SECS`
 //!   boots once instead (under KVM with `--kvm`, else the first TCG machine), in
 //!   the kernel's stress mode for SECS seconds, printing its console as it
-//!   runs. `KERNEL_MEMSTAT=1` in
+//!   runs; `--sh a,b` stresses only those corpus scripts (`shmods2,interrupt`),
+//!   with no guests. `KERNEL_MEMSTAT=1` in
 //!   the environment adds `memstat` to the bootargs: the kernel then
 //!   prints `kernel: mem ...` lines about its memory use, which the
 //!   comparison skips.
@@ -739,8 +740,12 @@ fn run_qemu(
     mut watch: impl FnMut(&str) -> Result<()>,
 ) -> Result<QemuRun> {
     let qemu = env::var("QEMU").unwrap_or_else(|_| String::from("qemu-system-aarch64"));
+    let monitor = Monitor::new();
+    let (front, last) = args.split_at(args.len().saturating_sub(1));
     let mut child = Command::new(&qemu)
-        .args(args)
+        .args(front)
+        .args(monitor.as_ref().map(Monitor::args).unwrap_or_default())
+        .args(last)
         .arg(image)
         .stdin(if !input.is_empty() {
             Stdio::piped()
@@ -784,6 +789,7 @@ fn run_qemu(
     let mut lines = Vec::new();
     let mut stamped = 0;
     let mut killed = None;
+    let mut cpus: Option<String> = None;
     let status = loop {
         let now = text();
         // Complete lines are never rewritten: only a partial UTF-8
@@ -820,6 +826,11 @@ fn run_qemu(
             Ok(()) => None,
         };
         if let Some(e) = err {
+            // Where each CPU was, before QEMU goes: the program counters
+            // say whether a hung guest spins, idles or is stuck in a loop.
+            cpus = monitor
+                .as_ref()
+                .map(|m| m.cpu_state(&image.with_extension("")));
             let _ = child.kill();
             killed = Some(e);
             break child.wait().map_err(|e| format!("{qemu}: {e}"))?;
@@ -837,14 +848,146 @@ fn run_qemu(
         lines.push((elapsed, serial[stamped..stamped + n].to_owned()));
         stamped += n + 1;
     }
+    let mut stderr = stderr_reader.join().unwrap_or_default();
+    if let Some(c) = cpus {
+        for l in c.lines() {
+            stderr.push_str(&format!("monitor: {l}\n"));
+        }
+    }
+    drop(monitor);
     Ok(QemuRun {
         status,
         serial,
-        stderr: stderr_reader.join().unwrap_or_default(),
+        stderr,
         elapsed,
         lines,
         killed,
     })
+}
+
+/// QEMU's human monitor on a Unix socket, for the state of a run that is
+/// about to be killed (#187). `None` where the socket's name would be too
+/// long for a socket address.
+struct Monitor {
+    path: PathBuf,
+    spec: String,
+}
+
+/// Monitor sockets made so far by this xtask, for unique names.
+static MONITORS: AtomicUsize = AtomicUsize::new(0);
+
+impl Monitor {
+    fn new() -> Option<Monitor> {
+        let dir = workspace().join("target/qemu-mon");
+        fs::create_dir_all(&dir).ok()?;
+        let n = MONITORS.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("{}-{n}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        // sun_path is 104 bytes on macOS, 108 on Linux, with its NUL.
+        let spec = format!("unix:{},server=on,wait=off", path.to_str()?);
+        (path.as_os_str().len() < 100).then_some(Monitor { path, spec })
+    }
+
+    fn args(&self) -> Vec<&str> {
+        vec!["-monitor", &self.spec]
+    }
+
+    /// Each CPU's registers, as `info registers -a` gives them, less all
+    /// but the lines with the CPU's number, its PC and its PSTATE, with
+    /// the function at each PC in `elf` if `addr2line` can say; or why
+    /// they could not be had.
+    fn cpu_state(&self, elf: &Path) -> String {
+        use std::os::unix::net::UnixStream;
+        let ask = || -> std::io::Result<String> {
+            let mut s = UnixStream::connect(&self.path)?;
+            s.set_read_timeout(Some(Duration::from_secs(2)))?;
+            s.write_all(b"info registers -a\n")?;
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            let start = Instant::now();
+            // Until the prompt after the answer, or two seconds of quiet.
+            while start.elapsed() < Duration::from_secs(10) {
+                match s.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+                let text = String::from_utf8_lossy(&got);
+                if text.matches("(qemu)").count() >= 2 {
+                    break;
+                }
+            }
+            Ok(String::from_utf8_lossy(&got).into_owned())
+        };
+        match ask() {
+            Ok(text) => {
+                let kept: Vec<&str> = text
+                    .split(['\r', '\n'])
+                    .map(str::trim)
+                    .filter(|l| l.starts_with("CPU#") || l.contains("PC=") || l.contains("PSTATE="))
+                    .collect();
+                if kept.is_empty() {
+                    return String::from("no registers in the answer");
+                }
+                let mut out = String::new();
+                for l in kept {
+                    out.push_str(l);
+                    out.push('\n');
+                    if let Some(pc) = l.strip_prefix("PC=").and_then(|r| r.split(' ').next())
+                        && let Some(f) = addr2line(elf, pc)
+                    {
+                        out.push_str(&format!("  at {f}\n"));
+                    }
+                }
+                out
+            }
+            Err(e) => format!("{}: {e}", self.path.display()),
+        }
+    }
+}
+
+/// The function at address `pc` (hex) in `elf`, from `addr2line`, if it
+/// is installed and knows.
+fn addr2line(elf: &Path, pc: &str) -> Option<String> {
+    if !elf.is_file() {
+        return None;
+    }
+    let out = Command::new("addr2line")
+        .args(["-f", "-C", "-e"])
+        .arg(elf)
+        .arg(format!("0x{pc}"))
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let f = text.lines().next()?.trim();
+    (out.status.success() && !f.is_empty() && f != "??").then(|| String::from(f))
+}
+
+/// The functions at the `pc 0x...` and `lr 0x...` addresses in the
+/// kernel's reports on `serial` (the watchdog's, and a prog that would
+/// not die), from `addr2line` on `elf`, one line each.
+fn explain_pcs(serial: &str, elf: &Path) -> Vec<String> {
+    let mut seen = Vec::new();
+    for l in serial.lines() {
+        let mut words = l.split([' ', ',', ';', ')']).peekable();
+        while let Some(w) = words.next() {
+            if (w == "pc" || w == "lr")
+                && let Some(a) = words.peek().and_then(|a| a.strip_prefix("0x"))
+                && !seen.iter().any(|s: &String| s == a)
+            {
+                seen.push(String::from(a));
+            }
+        }
+    }
+    seen.iter()
+        .filter_map(|a| addr2line(elf, a).map(|f| format!("0x{a} is in {f}")))
+        .collect()
+}
+
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 /// Directories under `root/` packed into the initrd.
@@ -1173,13 +1316,16 @@ fn kernel_stress(
 ) -> Result<()> {
     let smp = opts.smp.to_string();
     let bootargs = format!(
-        "{}stress={secs}{}",
+        "{}stress={secs}{}{}",
         if opts.kvm { "exit=psci " } else { "" },
         if env::var_os("KERNEL_MEMSTAT").is_some() {
             " memstat"
         } else {
             ""
-        }
+        },
+        opts.sh
+            .as_ref()
+            .map_or(String::new(), |l| format!(" sh={l}"))
     );
     let mut args: Vec<&str> = k.args.to_vec();
     args.extend(["-m", &opts.mem, "-smp", &smp, "-nographic"]);
@@ -1207,6 +1353,9 @@ fn kernel_stress(
     }
     for l in r.stderr.lines() {
         eprintln!("kernel: stress: qemu: {l}");
+    }
+    for l in explain_pcs(&r.serial, &image.with_extension("")) {
+        eprintln!("kernel: stress: {l}");
     }
     if let Some(e) = &r.killed {
         return Err(format!("kernel: stress: {e}"));
@@ -1284,6 +1433,9 @@ struct KernelOpts {
     smp: usize,
     /// `--stress SECS`: one boot in the kernel's stress mode instead.
     stress: Option<u64>,
+    /// `--sh a,b`: the stress mode runs only these corpus scripts (by
+    /// base name), and no guests.
+    sh: Option<String>,
     /// Boot only the configurations whose names contain this.
     only: Option<String>,
     /// How many times to boot them, to look for a failure that comes and
@@ -1292,12 +1444,12 @@ struct KernelOpts {
 }
 
 impl KernelOpts {
-    /// `--mem SIZE`, `--smp N`, `--stress SECS`, `--only NAME`,
+    /// `--mem SIZE`, `--smp N`, `--stress SECS`, `--sh LIST`, `--only NAME`,
     /// `--repeat N`, and the flags [`image_flags`] takes.
     fn parse(args: &[String]) -> Option<KernelOpts> {
         let mut mem = String::from("512M");
         let mut smp = 1;
-        let mut stress = None;
+        let (mut stress, mut sh) = (None, None);
         let (mut only, mut repeat) = (None, 1);
         let mut rest = Vec::new();
         let mut it = args.iter();
@@ -1306,6 +1458,7 @@ impl KernelOpts {
                 "--mem" => mem = it.next()?.clone(),
                 "--smp" => smp = it.next()?.parse().ok().filter(|&n| (1..=8).contains(&n))?,
                 "--stress" => stress = Some(it.next()?.parse().ok()?),
+                "--sh" => sh = Some(it.next()?.clone()),
                 "--only" => only = Some(it.next()?.clone()),
                 "--repeat" => repeat = it.next()?.parse().ok().filter(|&n| n > 0)?,
                 _ => rest.push(a.clone()),
@@ -1317,6 +1470,7 @@ impl KernelOpts {
             mem,
             smp,
             stress,
+            sh,
             only,
             repeat,
         })
@@ -1628,6 +1782,9 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             show_console(&o.serial);
             for l in o.qemu_stderr.lines() {
                 eprintln!("kernel: {}: qemu: {l}", k.name);
+            }
+            for l in explain_pcs(&o.serial, &image.with_extension("")) {
+                eprintln!("kernel: {}: {l}", k.name);
             }
             match o.verdict {
                 Ok(t) => eprintln!("kernel: {}: passed in {:.2}s", k.name, t.as_secs_f64()),
@@ -2351,7 +2508,7 @@ fn main() -> ExitCode {
         Some("kernel") => match KernelOpts::parse(&rest) {
             Some(o) => kernel(&o).map(|()| ExitCode::SUCCESS),
             None => Err(String::from(
-                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS] [--only NAME] [--repeat N]",
+                "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N]",
             )),
         },
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
@@ -2359,7 +2516,7 @@ fn main() -> ExitCode {
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         Some("bench") => bench::cmd(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS] [--only NAME] [--repeat N] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
