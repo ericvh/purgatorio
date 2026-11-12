@@ -43,6 +43,22 @@ pub fn park(r: &Rendez, mut cond: impl FnMut() -> bool) -> Result<()> {
     }
 }
 
+/// Like [`park`], but only a kill ends the sleep early: an interrupt is
+/// left pending for the prog's next blocking call. For waits a prog does
+/// on its way out of something, such as a mount's last reference being
+/// dropped, which an interrupt is not meant to end.
+pub fn park_killable(r: &Rendez, mut cond: impl FnMut() -> bool) -> Result<()> {
+    let Some(n) = current_note() else {
+        r.sleep(&mut cond);
+        return Ok(());
+    };
+    if n.sleep(r, &mut cond) {
+        Ok(())
+    } else {
+        Err(Error::new(error::EINTR))
+    }
+}
+
 /// Like [`park`], but gives up after `timeout_ms`. `timeout_ms < 0` waits
 /// without a limit; `0` does not sleep. Returns whether `cond` is true.
 pub fn park_timeout(r: &Rendez, mut cond: impl FnMut() -> bool, timeout_ms: i32) -> Result<bool> {

@@ -12,7 +12,7 @@ use purg_abi::error;
 use purg_platform::sync::{Mutex, Rendez};
 use purg_styx::NOTAG;
 
-use crate::block::park;
+use crate::block::{park, park_killable};
 use crate::error::{Error, Result};
 
 struct Slot {
@@ -182,9 +182,10 @@ impl Mux {
 
     /// Blocks until no tag is in use (every reply has arrived, including
     /// those nobody waits for) or the connection has closed. A killed
-    /// prog gets [`error::EINTR`].
+    /// prog gets [`error::EINTR`]; an interrupt does not end the wait and
+    /// stays pending for the prog's next blocking call.
     pub fn settle(&self) -> Result<()> {
-        park(&self.wake, || {
+        park_killable(&self.wake, || {
             self.slots.lock().is_empty() || self.closed.load(core::sync::atomic::Ordering::Acquire)
         })
     }
