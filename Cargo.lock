@@ -2973,11 +2973,14 @@ dependencies = [
 name = "purg-lethe"
 version = "0.1.0"
 dependencies = [
+ "chacha20 0.10.2",
  "chacha20poly1305 0.10.1",
  "hkdf",
+ "poly1305 0.8.0",
  "purg-abi",
  "purg-auth",
  "purg-styx",
+ "ring",
  "sha2",
 ]
 

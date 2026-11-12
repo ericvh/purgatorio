@@ -25,7 +25,7 @@ purg-abi.workspace = true
 # "Cost"). The records are the same bytes; the kernel keeps the no_std
 # cipher.
 purg-auth = { workspace = true, features = ["ring"] }
-purg-lethe.workspace = true
+purg-lethe = { workspace = true, features = ["ring"] }
 purg-core = { workspace = true, features = ["std", "tls", "lethe"] }
 purg-platform = { workspace = true, features = ["std"] }
 purg-styx.workspace = true

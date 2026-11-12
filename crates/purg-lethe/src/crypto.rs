@@ -1,17 +1,16 @@
 //! The key schedule and the sealing of Lethe frames (`docs/lethe.md`,
-//! Section 6). Everything sealed uses XChaCha20-Poly1305 with a random
-//! 24-byte nonce, so neither side ever needs a counter it would have to
-//! keep across requests.
+//! Section 6). Everything sealed uses XChaCha20-Poly1305 ([`crate::aead`])
+//! with a random 24-byte nonce, so neither side ever needs a counter it
+//! would have to keep across requests.
 
 use alloc::vec::Vec;
 
-use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 
+use crate::aead;
 use crate::error::MAC;
-use crate::msg::{self, Frame, Msg};
+use crate::msg;
 use crate::{EPH, HEADER, NONCE, TAG, kind};
 
 const MASTER: &[u8] = b"lethe1 master";
@@ -62,11 +61,11 @@ impl Keys {
 
 /// `plain` sealed under `key`: ciphertext and tag.
 pub fn seal(key: &[u8; 32], nonce: &[u8; NONCE], aad: &[u8], plain: &[u8]) -> Vec<u8> {
-    let aead = XChaCha20Poly1305::new(Key::from_slice(key));
-    // Encryption fails only for messages longer than the cipher allows,
-    // far beyond a frame.
-    aead.encrypt(XNonce::from_slice(nonce), Payload { msg: plain, aad })
-        .unwrap_or_default()
+    let mut v = Vec::with_capacity(plain.len() + TAG);
+    v.extend_from_slice(plain);
+    let tag = aead::seal(key, nonce, aad, &mut v);
+    v.extend_from_slice(&tag);
+    v
 }
 
 /// Opens what [`seal`] made. Fails with `bad record mac`.
@@ -76,12 +75,12 @@ pub fn open(
     aad: &[u8],
     sealed: &[u8],
 ) -> Result<Vec<u8>, &'static str> {
-    if sealed.len() < TAG {
-        return Err(MAC);
-    }
-    let aead = XChaCha20Poly1305::new(Key::from_slice(key));
-    aead.decrypt(XNonce::from_slice(nonce), Payload { msg: sealed, aad })
-        .map_err(|_| MAC)
+    let at = sealed.len().checked_sub(TAG).ok_or(MAC)?;
+    let (body, tag) = sealed.split_at(at);
+    let tag: &[u8; TAG] = tag.try_into().map_err(|_| MAC)?;
+    let mut v = body.to_vec();
+    aead::open(key, nonce, aad, &mut v, tag)?;
+    Ok(v)
 }
 
 fn concat(a: &[u8], b: &[u8]) -> Vec<u8> {
@@ -91,21 +90,46 @@ fn concat(a: &[u8], b: &[u8]) -> Vec<u8> {
     v
 }
 
+/// A frame of type `ty` whose body is `prefix` and then `plain` sealed
+/// under `key` with `aad`, built in one buffer: the plaintext is
+/// encrypted where it lies and the tag appended.
+fn sealed_frame(
+    ty: u8,
+    id: u32,
+    prefix: &[&[u8]],
+    key: &[u8; 32],
+    nonce: &[u8; NONCE],
+    aad_tail: &[u8],
+    plain: &[u8],
+) -> Vec<u8> {
+    let pre: usize = prefix.iter().map(|p| p.len()).sum();
+    let size = HEADER + pre + plain.len() + TAG;
+    let h = msg::header(ty, id, size);
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(&h);
+    for p in prefix {
+        out.extend_from_slice(p);
+    }
+    let at = out.len();
+    out.extend_from_slice(plain);
+    let tag = aead::seal(key, nonce, &concat(&h, aad_tail), &mut out[at..]);
+    out.extend_from_slice(&tag);
+    out
+}
+
 /// A `Treq` frame: `request` (an encoded [`msg::Request`]) sealed under
 /// `c2s`, with the header and the ticket as associated data.
 pub fn treq(keys: &Keys, id: u32, ticket: &[u8], nonce: &[u8; NONCE], request: &[u8]) -> Vec<u8> {
-    let size = HEADER + 2 + ticket.len() + NONCE + request.len() + TAG;
-    let h = msg::header(kind::TREQ, id, size);
-    let sealed = seal(&keys.c2s, nonce, &concat(&h, ticket), request);
-    Msg {
+    let len = (ticket.len() as u16).to_le_bytes();
+    sealed_frame(
+        kind::TREQ,
         id,
-        frame: Frame::Treq {
-            ticket,
-            nonce: *nonce,
-            sealed: &sealed,
-        },
-    }
-    .encode()
+        &[&len, ticket, nonce],
+        &keys.c2s,
+        nonce,
+        ticket,
+        request,
+    )
 }
 
 /// Opens a `Treq`'s sealed request. `frame` is the whole frame.
@@ -128,17 +152,7 @@ pub fn rreq(
     nonce: &[u8; NONCE],
     reply: &[u8],
 ) -> Vec<u8> {
-    let size = HEADER + NONCE + reply.len() + TAG;
-    let h = msg::header(kind::RREQ, id, size);
-    let sealed = seal(&keys.s2c, nonce, &concat(&h, req_nonce), reply);
-    Msg {
-        id,
-        frame: Frame::Rreq {
-            nonce: *nonce,
-            sealed: &sealed,
-        },
-    }
-    .encode()
+    sealed_frame(kind::RREQ, id, &[nonce], &keys.s2c, nonce, req_nonce, reply)
 }
 
 /// Opens an `Rreq` answering the request sealed with `req_nonce`.
@@ -156,18 +170,7 @@ pub fn open_rreq(
 /// An `Rauth` frame: `grant` sealed under `s2c`, with the header and the
 /// server's ephemeral key as associated data.
 pub fn rauth(keys: &Keys, id: u32, eph: &[u8; EPH], nonce: &[u8; NONCE], grant: &[u8]) -> Vec<u8> {
-    let size = HEADER + EPH + NONCE + grant.len() + TAG;
-    let h = msg::header(kind::RAUTH, id, size);
-    let sealed = seal(&keys.s2c, nonce, &concat(&h, eph), grant);
-    Msg {
-        id,
-        frame: Frame::Rauth {
-            eph: *eph,
-            nonce: *nonce,
-            sealed: &sealed,
-        },
-    }
-    .encode()
+    sealed_frame(kind::RAUTH, id, &[eph, nonce], &keys.s2c, nonce, eph, grant)
 }
 
 /// Opens an `Rauth`'s grant.
@@ -185,6 +188,7 @@ pub fn open_rauth(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::msg::{Frame, Msg};
 
     /// draft-irtf-cfrg-xchacha-03, appendix A.3.1: the AEAD vector, so the
     /// cipher is XChaCha20-Poly1305 as specified and not something close.
