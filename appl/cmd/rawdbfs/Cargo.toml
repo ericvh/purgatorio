@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-rawdbfs"
+description = "rawdbfs: serve the records of a binary database as files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rawdbfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+
+[lints]
+workspace = true
