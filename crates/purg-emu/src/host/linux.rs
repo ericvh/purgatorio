@@ -1,6 +1,8 @@
 //! Linux-specific host code.
 
 use std::io;
+use std::net::Ipv4Addr;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
 /// Linux file systems are case-sensitive and byte-exact, so a successful host
@@ -34,4 +36,98 @@ pub fn memory_usage() -> (u64, u64) {
         })
         .unwrap_or(0);
     (rss, total)
+}
+
+/// Why an ICMP socket could not be opened when the host refuses it.
+pub const ICMP_DENIED: &str = "permission denied: this host does not allow unprivileged ICMP \
+     sockets for the emu's group (see the sysctl net.ipv4.ping_group_range)";
+
+/// Whether the host replaces an ICMP datagram socket's echo identifier
+/// with its own and delivers only the replies that match it. Linux does.
+pub const ICMP_IDENT_BY_HOST: bool = true;
+
+/// An unprivileged ICMP datagram socket (`SOCK_DGRAM`, `IPPROTO_ICMP`),
+/// which Linux allows to the groups in `net.ipv4.ping_group_range`. It
+/// asks for each reply's TTL.
+pub fn icmp_socket() -> io::Result<OwnedFd> {
+    // SAFETY: plain socket(2); the result is checked.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_INET,
+            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+            libc::IPPROTO_ICMP,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fd is a fresh descriptor this function owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let on: libc::c_int = 1;
+    // SAFETY: the option value is a c_int of the size given.
+    let r = unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::IPPROTO_IP,
+            libc::IP_RECVTTL,
+            (&on as *const libc::c_int).cast(),
+            core::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(fd)
+}
+
+/// One ICMP message received: it is `buf[start..start + len]`.
+pub struct IcmpIn {
+    pub start: usize,
+    pub len: usize,
+    pub ttl: u8,
+    pub src: Ipv4Addr,
+}
+
+/// Receives one message on an [`icmp_socket`]. Linux gives the ICMP
+/// message alone; the TTL comes in a control message.
+pub fn icmp_recv(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<IcmpIn> {
+    // SAFETY: zeroed sockaddr_in and msghdr are valid; every pointer set
+    // below refers to a live local or to `buf` with its length.
+    let mut name: libc::sockaddr_in = unsafe { core::mem::zeroed() };
+    let mut control = [0u64; 16];
+    let mut iov = libc::iovec {
+        iov_base: buf.as_mut_ptr().cast(),
+        iov_len: buf.len(),
+    };
+    let mut msg: libc::msghdr = unsafe { core::mem::zeroed() };
+    msg.msg_name = (&mut name as *mut libc::sockaddr_in).cast();
+    msg.msg_namelen = core::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = control.as_mut_ptr().cast();
+    msg.msg_controllen = core::mem::size_of_val(&control);
+    // SAFETY: msg describes valid buffers, as above.
+    let n = unsafe { libc::recvmsg(fd.as_raw_fd(), &mut msg, 0) };
+    if n < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut ttl = 0u8;
+    // SAFETY: the CMSG macros walk the control buffer recvmsg filled in,
+    // within msg_controllen; the TTL is read unaligned.
+    unsafe {
+        let mut c = libc::CMSG_FIRSTHDR(&msg);
+        while !c.is_null() {
+            if (*c).cmsg_level == libc::IPPROTO_IP && (*c).cmsg_type == libc::IP_TTL {
+                let v = core::ptr::read_unaligned(libc::CMSG_DATA(c).cast::<libc::c_int>());
+                ttl = v.clamp(0, 255) as u8;
+            }
+            c = libc::CMSG_NXTHDR(&msg, c);
+        }
+    }
+    Ok(IcmpIn {
+        start: 0,
+        len: n as usize,
+        ttl,
+        src: Ipv4Addr::from(u32::from_be(name.sin_addr.s_addr)),
+    })
 }

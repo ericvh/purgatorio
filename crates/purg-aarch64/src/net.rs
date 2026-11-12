@@ -22,6 +22,12 @@
 //! with one remote, and an announced port starts a conversation for each
 //! new remote, which `listen` returns ([`UdpDemux`]). There is no IP
 //! fragmentation, so a datagram is at most [`UDP_MAX`] bytes.
+//!
+//! ICMP (`/net/icmp`) is echo only. A conversation with another host is a
+//! raw smoltcp socket for IPv4 ICMP: it sends the echo requests with an
+//! IPv4 header it builds, and keeps the echo replies from that host that
+//! carry its identifier, with their headers (TTL included). `127.0.0.1`
+//! is answered in process.
 
 use alloc::borrow::Cow;
 use alloc::collections::VecDeque;
@@ -33,13 +39,16 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use purg_platform::Result;
-use purg_platform::net::{Conn, Listener, Net, UdpDemux};
+use purg_platform::net::{self, Conn, Listener, Net, UdpDemux};
 use purg_platform::sync::{Mutex, MutexGuard, Rendez};
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp::{self, State};
-use smoltcp::socket::udp;
+use smoltcp::socket::{raw, udp};
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint, Ipv4Address};
+use smoltcp::wire::{
+    EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion,
+    Ipv4Address,
+};
 use spin::Once;
 
 use crate::dtb::Fdt;
@@ -178,6 +187,14 @@ impl Net for NetStack {
             return Err(Cow::Borrowed("no translation"));
         }
         self.stack()?.announce_udp(port)
+    }
+
+    fn dial_icmp(&self, host: &str) -> Result<Arc<dyn Conn>> {
+        if is_loopback(host) {
+            return Ok(Arc::new(LoopIcmp::new()));
+        }
+        let ip = parse_v4(host).ok_or(Cow::Borrowed("no translation"))?;
+        self.stack()?.dial_icmp(Ipv4Address::from(ip))
     }
 
     fn resolve(&self, host: &str, _port: u16) -> Result<String> {
@@ -565,6 +582,190 @@ impl Conn for SmolUdpConn {
             self.sock.close(&mut stack);
         }
     }
+}
+
+/// Identifiers for ICMP echo conversations.
+static ICMP_IDENT: AtomicU16 = AtomicU16::new(1);
+/// The TTL echo requests are sent with, and loopback replies carry.
+const ICMP_TTL: u8 = 64;
+/// Packets each ICMP socket buffers each way.
+const ICMP_PACKETS: usize = 8;
+/// The largest IPv4 packet: the MTU, with no fragmentation.
+const IP_MTU: usize = 1500;
+
+impl Smol {
+    /// An ICMP echo conversation with `ip` on a raw IPv4 socket for ICMP:
+    /// it sees every ICMP packet the interface receives (smoltcp still
+    /// answers echo requests itself) and keeps the echo replies from
+    /// `ip` that carry this conversation's identifier.
+    fn dial_icmp(self: &Arc<Self>, ip: Ipv4Address) -> Result<Arc<dyn Conn>> {
+        let buf = || {
+            raw::PacketBuffer::new(
+                vec![raw::PacketMetadata::EMPTY; ICMP_PACKETS],
+                vec![0; ICMP_PACKETS * IP_MTU],
+            )
+        };
+        let socket = raw::Socket::new(Some(IpVersion::Ipv4), Some(IpProtocol::Icmp), buf(), buf());
+        let handle = self.lock().sockets.add(socket);
+        Ok(Arc::new(SmolIcmp {
+            smol: Arc::clone(self),
+            handle,
+            remote: ip,
+            ident: ICMP_IDENT.fetch_add(1, Ordering::Relaxed),
+        }))
+    }
+}
+
+struct SmolIcmp {
+    smol: Arc<Smol>,
+    handle: SocketHandle,
+    remote: Ipv4Address,
+    ident: u16,
+}
+
+impl SmolIcmp {
+    /// The reply in the IPv4 packet `pkt`, as `#I` returns it, if it is
+    /// an echo reply to this conversation.
+    fn reply(&self, pkt: &[u8]) -> Option<Vec<u8>> {
+        let ihl = usize::from(pkt.first()? & 0x0f) * 4;
+        if pkt.len() < ihl + 8 || ihl < net::IPV4_HEADER || pkt[9] != net::PROTO_ICMP {
+            return None;
+        }
+        let src: [u8; 4] = pkt[12..16].try_into().ok()?;
+        let dst: [u8; 4] = pkt[16..20].try_into().ok()?;
+        let msg = &pkt[ihl..];
+        if src != self.remote.octets()
+            || msg[0] != net::ICMP_ECHO_REPLY
+            || u16::from_be_bytes([msg[4], msg[5]]) != self.ident
+        {
+            return None;
+        }
+        let mut out = net::ipv4_header(src, dst, pkt[8], msg.len()).to_vec();
+        out.extend_from_slice(msg);
+        Some(out)
+    }
+}
+
+impl Conn for SmolIcmp {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        self.smol.run(|stack| {
+            let socket = stack.sockets.get_mut::<raw::Socket>(self.handle);
+            while let Ok(pkt) = socket.recv() {
+                if let Some(r) = self.reply(pkt) {
+                    let n = r.len().min(buf.len());
+                    buf[..n].copy_from_slice(&r[..n]);
+                    return Some(Ok(n));
+                }
+            }
+            None
+        })
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        if buf.len() + net::IPV4_HEADER > IP_MTU {
+            return Err(Cow::Borrowed("message too long"));
+        }
+        let mut msg = buf.to_vec();
+        if msg.len() >= 8 {
+            msg[4..6].copy_from_slice(&self.ident.to_be_bytes());
+        }
+        net::icmp_fill_checksum(&mut msg);
+        let mut pkt = net::ipv4_header(
+            self.smol.local.octets(),
+            self.remote.octets(),
+            ICMP_TTL,
+            msg.len(),
+        )
+        .to_vec();
+        pkt.extend_from_slice(&msg);
+        self.smol.run(|stack| {
+            let socket = stack.sockets.get_mut::<raw::Socket>(self.handle);
+            match socket.send_slice(&pkt) {
+                Ok(()) => {
+                    stack.poll();
+                    Some(Ok(buf.len()))
+                }
+                Err(raw::SendError::BufferFull) => None,
+            }
+        })
+    }
+
+    fn local(&self) -> String {
+        format!("{}!{}", self.smol.local, self.ident)
+    }
+
+    fn remote(&self) -> String {
+        format!("{}!1", self.remote)
+    }
+
+    fn hangup(&self) {}
+}
+
+impl Drop for SmolIcmp {
+    fn drop(&mut self) {
+        self.smol.lock().sockets.remove(self.handle);
+    }
+}
+
+/// An ICMP echo conversation with `127.0.0.1`: each echo request written
+/// is answered at once, in process, as a host's loopback would.
+struct LoopIcmp {
+    replies: Mutex<VecDeque<Vec<u8>>>,
+    ready: Rendez,
+    ident: u16,
+}
+
+impl LoopIcmp {
+    fn new() -> LoopIcmp {
+        LoopIcmp {
+            replies: Mutex::new(VecDeque::new()),
+            ready: Rendez::new(),
+            ident: ICMP_IDENT.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+}
+
+impl Conn for LoopIcmp {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        loop {
+            if let Some(r) = self.replies.lock().pop_front() {
+                let n = r.len().min(buf.len());
+                buf[..n].copy_from_slice(&r[..n]);
+                return Ok(n);
+            }
+            sleep(&self.ready, || !self.replies.lock().is_empty(), None)?;
+        }
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        let mut msg = buf.to_vec();
+        if msg.len() >= 8 {
+            msg[4..6].copy_from_slice(&self.ident.to_be_bytes());
+        }
+        net::icmp_fill_checksum(&mut msg);
+        if let Some(reply) = net::icmp_echo_reply(&msg) {
+            let lo = [127, 0, 0, 1];
+            let mut r = net::ipv4_header(lo, lo, ICMP_TTL, reply.len()).to_vec();
+            r.extend_from_slice(&reply);
+            let mut q = self.replies.lock();
+            if q.len() < UDP_PACKETS {
+                q.push_back(r);
+            }
+            drop(q);
+            self.ready.wakeup();
+        }
+        Ok(buf.len())
+    }
+
+    fn local(&self) -> String {
+        format!("127.0.0.1!{}", self.ident)
+    }
+
+    fn remote(&self) -> String {
+        String::from("127.0.0.1!1")
+    }
+
+    fn hangup(&self) {}
 }
 
 fn endpoint(ep: Option<IpEndpoint>) -> String {

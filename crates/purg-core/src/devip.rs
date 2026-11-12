@@ -1,6 +1,6 @@
-//! `#I`, the IP device. It serves `/net/tcp`, `/net/udp` and `/net/cs` the way
-//! Inferno's `devip` and connection server do, and asks the platform's
-//! [`purg_platform::net::Net`] to open the sockets.
+//! `#I`, the IP device. It serves `/net/tcp`, `/net/udp`, `/net/icmp` and
+//! `/net/cs` the way Inferno's `devip` and connection server do, and asks
+//! the platform's [`purg_platform::net::Net`] to open the sockets.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use purg_abi::{error, mode};
-use purg_platform::net::{Conn, Listener, Net};
+use purg_platform::net::{Conn, IPV4_HEADER, Listener, Net};
 use purg_platform::sync::Mutex;
 use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 
@@ -23,9 +23,18 @@ const QROOT: u64 = 0;
 const QTCP: u64 = 1;
 const QUDP: u64 = 2;
 const QCS: u64 = 3;
+const QICMP: u64 = 4;
 
 const PROTO_TCP: u8 = 1;
 const PROTO_UDP: u8 = 2;
+const PROTO_ICMP: u8 = 3;
+
+/// Every protocol directory, in the order `#I` lists them.
+const PROTOS: [(u8, u64, &str); 3] = [
+    (PROTO_TCP, QTCP, "tcp"),
+    (PROTO_UDP, QUDP, "udp"),
+    (PROTO_ICMP, QICMP, "icmp"),
+];
 
 const FDIR: u8 = 0;
 const FCTL: u8 = 1;
@@ -128,7 +137,7 @@ impl DevIp {
 
     fn qid(path: u64) -> Qid {
         let qtype = match path {
-            QROOT | QTCP | QUDP => QTDIR,
+            QROOT | QTCP | QUDP | QICMP => QTDIR,
             q if is_conv(q) && conv_file(q) == FDIR => QTDIR,
             _ => QTFILE,
         };
@@ -144,10 +153,9 @@ impl DevIp {
             QROOT => (String::from("#I"), QTDIR, DMDIR | 0o555),
             QTCP => (String::from("tcp"), QTDIR, DMDIR | 0o555),
             QUDP => (String::from("udp"), QTDIR, DMDIR | 0o555),
+            QICMP => (String::from("icmp"), QTDIR, DMDIR | 0o555),
             QCS => (String::from("cs"), QTFILE, 0o666),
-            q if q == qclone(PROTO_TCP) || q == qclone(PROTO_UDP) => {
-                (String::from("clone"), QTFILE, 0o666)
-            }
+            q if clone_proto(q).is_some() => (String::from("clone"), QTFILE, 0o666),
             q if is_conv(q) => match conv_file(q) {
                 FDIR => (conv_id(q).to_string(), QTDIR, DMDIR | 0o555),
                 FCTL => (String::from("ctl"), QTFILE, 0o666),
@@ -194,11 +202,13 @@ impl Dev for DevIp {
             QROOT => match name {
                 "tcp" => QTCP,
                 "udp" => QUDP,
+                "icmp" => QICMP,
                 "cs" => QCS,
                 _ => return Err(Error::new(error::ENONEXIST)),
             },
             QTCP => proto_child(self, PROTO_TCP, name)?,
             QUDP => proto_child(self, PROTO_UDP, name)?,
+            QICMP => proto_child(self, PROTO_ICMP, name)?,
             q if is_conv(q) && conv_file(q) == FDIR => file_child(q, name)?,
             _ => return Err(Error::new(error::ENOTDIR)),
         };
@@ -220,12 +230,7 @@ impl Dev for DevIp {
             c.state.lock().replace(Box::new(String::new()));
             return Ok(());
         }
-        if c.qid.path == qclone(PROTO_TCP) || c.qid.path == qclone(PROTO_UDP) {
-            let proto = if c.qid.path == qclone(PROTO_UDP) {
-                PROTO_UDP
-            } else {
-                PROTO_TCP
-            };
+        if let Some(proto) = clone_proto(c.qid.path) {
             let conv = self.alloc(proto);
             c.qid = Self::qid(qconv(proto, conv.id, FCTL));
         }
@@ -314,12 +319,14 @@ impl Dev for DevIp {
         let mut entries = Vec::new();
         match c.qid.path {
             QROOT => {
-                entries.push(self.dirent(QTCP));
-                entries.push(self.dirent(QUDP));
+                for (_, dir, _) in PROTOS {
+                    entries.push(self.dirent(dir));
+                }
                 entries.push(self.dirent(QCS));
             }
             QTCP => self.push_proto(&mut entries, PROTO_TCP),
             QUDP => self.push_proto(&mut entries, PROTO_UDP),
+            QICMP => self.push_proto(&mut entries, PROTO_ICMP),
             q if is_conv(q) && conv_file(q) == FDIR => {
                 for f in [FCTL, FDATA, FLISTEN, FLOCAL, FREMOTE, FSTATUS] {
                     entries.push(self.dirent(qconv(conv_proto(q), conv_id(q), f)));
@@ -358,6 +365,16 @@ impl Dev for DevIp {
                     .lock()
                     .clone()
                     .ok_or(Error::new("not connected"))?;
+                if conv.proto == PROTO_ICMP {
+                    // Inferno's icmp writes start with room for an IPv4
+                    // header, which the stack fills in; it drops writes
+                    // too short to hold an ICMP header after it.
+                    if buf.len() < IPV4_HEADER + 8 {
+                        return Ok(buf.len());
+                    }
+                    conn.write(&buf[IPV4_HEADER..]).map_err(Error::from)?;
+                    return Ok(buf.len());
+                }
                 conn.write(buf).map_err(Error::from)
             }
             _ => Err(Error::new(error::EPERM)),
@@ -392,8 +409,19 @@ impl DevIp {
     }
 
     fn connect(&self, conv: &Conv, addr: &str) -> Result<()> {
-        let (host, port) = host_port(addr)?;
         let net = self.net()?;
+        if conv.proto == PROTO_ICMP {
+            // `connect host!1`: ICMP has no ports; the number is ignored.
+            let host = addr.split('!').next().unwrap_or("").trim();
+            let host = host.trim_matches(|c| c == '[' || c == ']');
+            let conn = net.dial_icmp(host).map_err(Error::from)?;
+            *conv.local.lock() = conn.local();
+            *conv.remote.lock() = conn.remote();
+            *conv.status.lock() = String::from("Established");
+            *conv.conn.lock() = Some(conn);
+            return Ok(());
+        }
+        let (host, port) = host_port(addr)?;
         let conn = if conv.proto == PROTO_UDP {
             net.dial_udp(&host, port).map_err(Error::from)?
         } else {
@@ -407,6 +435,9 @@ impl DevIp {
     }
 
     fn announce(&self, conv: &Conv, addr: &str) -> Result<()> {
+        if conv.proto == PROTO_ICMP {
+            return Err(Error::new("protocol not supported"));
+        }
         let (host, port) = host_port(addr)?;
         let host = if host.is_empty() {
             String::from("*")
@@ -438,6 +469,14 @@ impl DevIp {
         let ip = self.net()?.resolve(&host, p).map_err(Error::from)?;
         Ok(format!("{net}!{ip}!{port}\n"))
     }
+}
+
+/// The protocol whose clone file `path` is, if it is one.
+fn clone_proto(path: u64) -> Option<u8> {
+    PROTOS
+        .iter()
+        .map(|(p, _, _)| *p)
+        .find(|&p| path == qclone(p))
 }
 
 fn proto_child(dev: &DevIp, proto: u8, name: &str) -> Result<u64> {

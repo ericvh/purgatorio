@@ -1305,7 +1305,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         // network checks instead of an interactive shell.
         let smoke = k.smoke && !full;
         let bootargs = format!(
-            "{}test hostexport={} udpecho={} lethed={} netexport rstyx{}{}",
+            "{}test hostexport={} udpecho={} ping lethed={} netexport rstyx{}{}",
             if kvm { "exit=psci " } else { "" },
             host.port,
             echo.port,
