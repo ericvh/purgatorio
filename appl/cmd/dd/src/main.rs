@@ -9,6 +9,12 @@
 //! `x` multiplies two sizes. The record counts go to standard error.
 //!
 //! The EBCDIC conversions (`ascii`, `ebcdic`, `ibm`) are not provided.
+//!
+//! As in Inferno's dd, a bad argument fails with `fail:arg`, `fail:range`
+//! or `fail:counts`, and a file that cannot be opened or created with
+//! `fail:open` or `fail:create`. A read or write error is reported as
+//! `read: ...` or `write: ...`, the counts are printed, and dd exits with
+//! no status.
 
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -34,7 +40,17 @@ impl Conv {
     }
 }
 
-fn number(key: &str, s: &str) -> Result<u64, Error> {
+/// Reports `msg` as `dd: msg` and exits with `fail:status`.
+fn die(msg: &str, status: &str) -> ! {
+    eprintln!("dd: {msg}");
+    purgatorio::exits(&format!("fail:{status}"));
+}
+
+fn range() -> ! {
+    die("argument out of range", "range")
+}
+
+fn number(key: &str, s: &str) -> u64 {
     let mut total = 1u64;
     for part in s.split('x') {
         let (digits, mul) = match part.as_bytes().last() {
@@ -42,15 +58,15 @@ fn number(key: &str, s: &str) -> Result<u64, Error> {
             Some(b'b') => (&part[..part.len() - 1], 512),
             _ => (part, 1),
         };
-        let n: u64 = digits
-            .parse()
-            .map_err(|_| Error(format!("bad number for {key}: {s}")))?;
+        let Ok(n) = digits.parse::<u64>() else {
+            die(&format!("bad number for {key}: {s}"), "arg");
+        };
         total = total
             .checked_mul(n)
             .and_then(|t| t.checked_mul(mul))
-            .ok_or_else(|| Error::from("argument out of range"))?;
+            .unwrap_or_else(|| range());
     }
-    Ok(total)
+    total
 }
 
 #[derive(Default)]
@@ -110,24 +126,24 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut i = 1;
     while i < args.len() {
         let Some(key) = args[i].strip_prefix('-') else {
-            return Err(Error(format!("bad arg: {}", args[i])));
+            die(&format!("bad arg: {}", args[i]), "arg");
         };
         let Some(val) = args.get(i + 1) else {
-            return Err(Error(format!("arg {key} needs a value")));
+            die(&format!("arg {key} needs a value"), "arg");
         };
         i += 2;
         match key {
             "if" => ifile = Some(val.clone()),
             "of" => ofile = Some(val.clone()),
-            "ibs" => ibs = number(key, val)?,
-            "obs" => obs = number(key, val)?,
-            "bs" => bs = number(key, val)?,
-            "cbs" => cbs = number(key, val)?,
-            "skip" => skip = number(key, val)?,
-            "iseek" | "seek" => iseek = number(key, val)?,
-            "oseek" => oseek = number(key, val)?,
-            "count" => count = Some(number(key, val)?),
-            "files" => files = number(key, val)?,
+            "ibs" => ibs = number(key, val),
+            "obs" => obs = number(key, val),
+            "bs" => bs = number(key, val),
+            "cbs" => cbs = number(key, val),
+            "skip" => skip = number(key, val),
+            "iseek" | "seek" => iseek = number(key, val),
+            "oseek" => oseek = number(key, val),
+            "count" => count = Some(number(key, val)),
+            "files" => files = number(key, val),
             "conv" => {
                 for c in val.split(',') {
                     match c {
@@ -138,11 +154,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                         "swab" => conv.swab = true,
                         "noerror" => conv.noerror = true,
                         "sync" => conv.sync = true,
-                        _ => return Err(Error(format!("bad arg: {c}"))),
+                        _ => die(&format!("bad arg: {c}"), "arg"),
                     }
                 }
             }
-            _ => return Err(Error(format!("bad arg: {key}"))),
+            _ => die(&format!("bad arg: {key}"), "arg"),
         }
     }
     if bs != 0 {
@@ -150,18 +166,18 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         obs = bs;
     }
     if ibs == 0 || obs == 0 {
-        return Err(Error::from("counts: cannot be zero"));
+        die("counts: cannot be zero", "counts");
     }
     let direct = bs != 0 && !conv.any();
     let (ibs, obs) = (
-        usize::try_from(ibs).map_err(|_| Error::from("argument out of range"))?,
-        usize::try_from(obs).map_err(|_| Error::from("argument out of range"))?,
+        usize::try_from(ibs).unwrap_or_else(|_| range()),
+        usize::try_from(obs).unwrap_or_else(|_| range()),
     );
-    let cbs = usize::try_from(cbs).map_err(|_| Error::from("argument out of range"))?;
+    let cbs = usize::try_from(cbs).unwrap_or_else(|_| range());
     let mut input: Box<dyn Read> = match &ifile {
         Some(f) => {
-            let mut file =
-                File::open(f).map_err(|_| Error(format!("open {f}: {}", purgatorio::errstr())))?;
+            let mut file = File::open(f)
+                .unwrap_or_else(|_| die(&format!("open {f}: {}", purgatorio::errstr()), "open"));
             if iseek > 0 {
                 file.seek(SeekFrom::Start(iseek * ibs as u64))?;
             }
@@ -187,7 +203,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             } else {
                 File::create(f)
             }
-            .map_err(|_| Error(format!("create {f}: {}", purgatorio::errstr())))?;
+            .unwrap_or_else(|_| die(&format!("create {f}: {}", purgatorio::errstr()), "create"));
             if oseek > 0 {
                 file.seek(SeekFrom::Start(oseek * obs as u64))?;
             }
@@ -210,105 +226,119 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut records = 0u64;
     let mut ended = 0u64;
     let pad = if conv.block || conv.unblock { b' ' } else { 0 };
-    loop {
-        if count.is_some_and(|c| records >= c) {
-            break;
-        }
-        let n = match input.read(&mut buf) {
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!("dd: read error: {}", Error::from(e));
-                if conv.noerror {
-                    continue;
-                }
+    // Only a write error leaves the copy early: dd reports it and the
+    // counts, and exits with no status.
+    let copied = (|| -> io::Result<()> {
+        loop {
+            if count.is_some_and(|c| records >= c) {
                 break;
             }
-        };
-        if n == 0 {
-            ended += 1;
-            if ended >= files {
-                break;
-            }
-            continue;
-        }
-        if skipped < skip {
-            skipped += 1;
-            continue;
-        }
-        records += 1;
-        if n == ibs {
-            st.nifr += 1;
-        } else {
-            st.nipr += 1;
-        }
-        let mut rec = buf[..n].to_vec();
-        if conv.sync && rec.len() < ibs {
-            rec.resize(ibs, pad);
-        }
-        if direct {
-            out.write_block(&rec, &mut st)?;
-            continue;
-        }
-        if conv.swab {
-            for p in rec.as_chunks_mut::<2>().0 {
-                p.swap(0, 1);
-            }
-        }
-        if conv.lcase {
-            rec.make_ascii_lowercase();
-        }
-        if conv.ucase {
-            rec.make_ascii_uppercase();
-        }
-        if conv.block && cbs > 0 {
-            for &b in &rec {
-                if b == b'\n' {
-                    let mut r = std::mem::take(&mut cline);
-                    if r.len() > cbs {
-                        r.truncate(cbs);
-                        st.ntrunc += 1;
+            let n = match input.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("read: {}", Error::from(e));
+                    if !conv.noerror {
+                        break;
                     }
-                    r.resize(cbs, b' ');
-                    out.push(&r, &mut st)?;
-                } else {
-                    cline.push(b);
+                    // With noerror the failed read counts as the end of a
+                    // file, after a report of the counts so far.
+                    stats(&st);
+                    0
+                }
+            };
+            if n == 0 {
+                ended += 1;
+                if ended >= files {
+                    break;
+                }
+                continue;
+            }
+            if skipped < skip {
+                skipped += 1;
+                continue;
+            }
+            records += 1;
+            if n == ibs {
+                st.nifr += 1;
+            } else {
+                st.nipr += 1;
+            }
+            let mut rec = buf[..n].to_vec();
+            if conv.sync && rec.len() < ibs {
+                rec.resize(ibs, pad);
+            }
+            if direct {
+                out.write_block(&rec, &mut st)?;
+                continue;
+            }
+            if conv.swab {
+                for p in rec.as_chunks_mut::<2>().0 {
+                    p.swap(0, 1);
                 }
             }
-        } else if conv.unblock && cbs > 0 {
-            for &b in &rec {
-                crec.push(b);
-                if crec.len() == cbs {
-                    let r = std::mem::take(&mut crec);
-                    let end = r.iter().rposition(|&c| c != b' ').map_or(0, |p| p + 1);
-                    out.push(&r[..end], &mut st)?;
-                    out.push(b"\n", &mut st)?;
-                }
+            if conv.lcase {
+                rec.make_ascii_lowercase();
             }
-        } else {
-            out.push(&rec, &mut st)?;
+            if conv.ucase {
+                rec.make_ascii_uppercase();
+            }
+            if conv.block && cbs > 0 {
+                for &b in &rec {
+                    if b == b'\n' {
+                        let mut r = std::mem::take(&mut cline);
+                        if r.len() > cbs {
+                            r.truncate(cbs);
+                            st.ntrunc += 1;
+                        }
+                        r.resize(cbs, b' ');
+                        out.push(&r, &mut st)?;
+                    } else {
+                        cline.push(b);
+                    }
+                }
+            } else if conv.unblock && cbs > 0 {
+                for &b in &rec {
+                    crec.push(b);
+                    if crec.len() == cbs {
+                        let r = std::mem::take(&mut crec);
+                        let end = r.iter().rposition(|&c| c != b' ').map_or(0, |p| p + 1);
+                        out.push(&r[..end], &mut st)?;
+                        out.push(b"\n", &mut st)?;
+                    }
+                }
+            } else {
+                out.push(&rec, &mut st)?;
+            }
         }
-    }
-    if conv.block && cbs > 0 && !cline.is_empty() {
-        let mut r = std::mem::take(&mut cline);
-        if r.len() > cbs {
-            r.truncate(cbs);
-            st.ntrunc += 1;
+        if conv.block && cbs > 0 && !cline.is_empty() {
+            let mut r = std::mem::take(&mut cline);
+            if r.len() > cbs {
+                r.truncate(cbs);
+                st.ntrunc += 1;
+            }
+            r.resize(cbs, b' ');
+            out.push(&r, &mut st)?;
         }
-        r.resize(cbs, b' ');
-        out.push(&r, &mut st)?;
+        if conv.unblock && cbs > 0 && !crec.is_empty() {
+            let end = crec.iter().rposition(|&c| c != b' ').map_or(0, |p| p + 1);
+            out.push(&crec[..end], &mut st)?;
+            out.push(b"\n", &mut st)?;
+        }
+        out.flush(&mut st)
+    })();
+    if let Err(e) = copied {
+        eprintln!("write: {}", Error::from(e));
     }
-    if conv.unblock && cbs > 0 && !crec.is_empty() {
-        let end = crec.iter().rposition(|&c| c != b' ').map_or(0, |p| p + 1);
-        out.push(&crec[..end], &mut st)?;
-        out.push(b"\n", &mut st)?;
-    }
-    out.flush(&mut st)?;
+    stats(&st);
+    Ok(())
+}
+
+fn stats(st: &Stats) {
     eprintln!("{}+{} records in", st.nifr, st.nipr);
     eprintln!("{}+{} records out", st.nofr, st.nopr);
     if st.ntrunc > 0 {
         eprintln!("{} truncated records", st.ntrunc);
     }
-    Ok(())
 }
 
 /// Standard input read straight from fd 0, so that one read is one record.

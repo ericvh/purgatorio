@@ -1,18 +1,19 @@
 //! diff a b: a small line diff. Identical files produce no output; files
-//! that differ give the status `fail:some`, as in diff(1).
+//! that differ give the status `fail:some`, as in diff(1). A file that
+//! cannot be opened is reported and sets no status, as in Inferno's diff;
+//! a bad command line fails with `fail:error`.
 
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let [a, b] = args
-        .get(1..3)
-        .ok_or_else(|| Error::from("usage: diff a b"))?
-    else {
-        return Err(Error::from("usage: diff a b"));
+    let [a, b] = &args[1..] else {
+        eprintln!("diff: usage: diff file1 file2");
+        purgatorio::exits("fail:error");
     };
-    let la = lines(a)?;
-    let lb = lines(b)?;
+    let (Some(la), Some(lb)) = (lines(a), lines(b)) else {
+        return Ok(());
+    };
     if la == lb {
         return Ok(());
     }
@@ -59,7 +60,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     purgatorio::exits("fail:some");
 }
 
-fn lines(path: &str) -> Result<Vec<String>, Error> {
-    let text = std::fs::read_to_string(path).map_err(|_| Error::last())?;
-    Ok(text.lines().map(String::from).collect())
+/// The lines of `path`, or `None` once a failure to read it is reported.
+fn lines(path: &str) -> Option<Vec<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text.lines().map(String::from).collect()),
+        Err(e) => {
+            eprintln!("diff: cannot open {path}: {}", Error::from(e));
+            None
+        }
+    }
 }

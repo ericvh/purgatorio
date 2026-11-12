@@ -60,7 +60,7 @@ cat: /tmp/sh-filetools/nonexistent: file does not exist
 fail:errors
 xargs: can't load nonexistent: file does not exist
 timed
-fail:nonexistent: file does not exist
+
 2+0 records in
 2+0 records out
 hello wo
@@ -82,4 +82,4 @@ cdef
 0+1 records in
 0+1 records out
 dd: bad arg: foo
-fail:bad arg: foo
+fail:arg
