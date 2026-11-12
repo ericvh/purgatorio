@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-mdb"
+description = "mdb: a debugger for traced progs: stack, memory, breakpoints, stepping"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mdb"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+progdebug.workspace = true
+wasmobj.workspace = true
+
+[lints]
+workspace = true

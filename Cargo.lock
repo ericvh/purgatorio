@@ -693,6 +693,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-mdb"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-progdebug",
+ "appl-lib-wasmobj",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-memfs"
 version = "0.1.0"
 dependencies = [
