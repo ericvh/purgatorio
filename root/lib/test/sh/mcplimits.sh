@@ -2,7 +2,9 @@
 # fails and the result says it was the memory limit; a fork bomb stops at
 # -P with no free procs; a second session goes on meanwhile. A prog that
 # left its group, and whose parent exited, dies with the session. The
-# session has its own #s and no #¤.
+# session has its own #s and no #¤. Twenty background sleeps after the
+# bomb reach the prog limit however slowly the bomb spreads (a 4-CPU TCG
+# machine did not reach it in a second).
 load std expr
 d=/tmp/mcplimits.${pid}
 rm -rf $d
@@ -23,7 +25,7 @@ file2chan '#s/mcplimits'^${pid} {rread host} {}
 	init
 	call 2 'load std; fn grow {grow $1^$1}; grow xxxxxxxxxxxxxxxx'
 	call 3 'echo after the memory'
-	call 4 'load std; fn bomb {bomb & bomb &}; bomb; sleep 1'
+	call 4 'load std; fn bomb {bomb & bomb &}; bomb; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 {sleep 100 &}'
 	echo '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"reset","arguments":{}}}'
 	call 6 'echo after the bomb'
 	call 7 'load std; @{pctl newpgrp; sleep 1000 & echo stray $apid}'
