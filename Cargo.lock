@@ -397,6 +397,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-disk-fdisk"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-disk",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-disk-mbr"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-disk",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-disk-mkdisk"
 version = "0.1.0"
 dependencies = [
@@ -417,6 +433,14 @@ name = "appl-cmd-disk-mkfs"
 version = "0.1.0"
 dependencies = [
  "appl-lib-proto",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-disk-prep"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-disk",
  "purgatorio",
 ]
 
@@ -1232,6 +1256,13 @@ dependencies = [
 [[package]]
 name = "appl-lib-add"
 version = "0.1.0"
+
+[[package]]
+name = "appl-lib-disk"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-lib-filepat"
