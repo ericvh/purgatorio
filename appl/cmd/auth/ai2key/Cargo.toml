@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-auth-ai2key"
+description = "auth/ai2key: print an authinfo as a factotum key line"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ai2key"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+authlib.workspace = true
+
+[lints]
+workspace = true

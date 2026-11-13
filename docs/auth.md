@@ -832,6 +832,8 @@ The Inferno page each one takes its role from is in brackets.
 | `runas user cmd [arg ...]` | [runas(1)] Runs `cmd` as `user`, in a namespace, environment and process group of its own. Only the host owner may (see "Users"). |
 | `auth/secstore [-s dir] [-C m,t] [-g file \| -G file \| -p file \| -r file]` | [secstore(1)] Files encrypted under a password, kept in a store directory (default `/usr/<user>/secstore`, which can be an authenticated import). `-g` gets a file into the current directory, `-G` prints it, `-p` puts one, `-r` removes one, and no option lists the store. |
 | `crypt [-d] [-C m,t] (-k secret \| -f secretfile)` | [crypt(1)] Encrypts or decrypts standard input to standard output with ChaCha20-Poly1305 in 64 KiB chunks, under an Argon2id key. |
+| `auth/aescbc -e\|-d [-k key] [-f keyfile]` | [secstore(1)] Encrypts or decrypts standard input in the file format of Plan 9's and Inferno's secstore, for files shared with them (below). Without `-k` or `-f` the key is read from `/dev/cons`. |
+| `auth/ai2key [-t tag] keyfile ...` | [ai2key(8)] Prints each authinfo as the `key proto=ed25519 [tag] user=... !seed=... cert=...` line that loads it into `auth/factotum`'s `ctl`, so keys can be kept in a store and loaded later. |
 | `netkey` | [netkey(1)] Reads a password, then challenges, and prints each response: the first 8 hex digits of HMAC-SHA256 keyed with SHA-256 of the password. It replaces the DES SecureNet calculator; it is only useful with a server that computes the same. |
 
 ### Merged, dropped or deferred
@@ -851,6 +853,33 @@ The Inferno page each one takes its role from is in brackets.
   station-to-station protocol over Inferno's keyring formats, which
   nothing here uses. A site that wants the Inferno name can start
   `auth/signer` under `listen` as its `logind` service.
+- **`dsagen`, `rsagen`** are superseded. They printed DSA and RSA keys as
+  factotum lines for Inferno's `infauth` and Plan 9's protocols. Every
+  key here is Ed25519 and nothing reads DSA or RSA keys; the keys this
+  system uses are made by `auth/createsignerkey` (a signer),
+  `auth/mkauthinfo` and `getauthinfo` (a user's key and certificate).
+- **`convpasswd`** is superseded. It turned Inferno's old
+  `/keydb/password` file into keyfs's format. That file holds keys made
+  from passwords with Inferno's own hashing; keyfs here keeps Argon2id
+  verifiers, which cannot be made without the passwords, so there is
+  nothing to convert. Users are added with `auth/changelogin`.
+- **`ai2key`** is adapted. Inferno's turned an Inferno authinfo into a
+  factotum `infauth` key; ours turns an authinfo here into factotum's
+  `ed25519` key, the same line `auth/factotum keyfile` loads. There is
+  no `server`, `dom` or `service` attribute: factotum picks `ed25519`
+  keys by `user` and `role`.
+- **`aescbc`** is kept for interchange. Its format, from Plan 9's
+  `aescbc`, is `"AES CBC SHA1  2\n" || iv[16] || c0[16] || data ||
+  mac[20]`: AES-128 in CBC mode under the first 16 bytes of
+  SHA-1(`"aescbc file"` || password), `c0` a random block encrypted
+  first, a final partial block XORed with the encryption of the last
+  cipher block, and HMAC-SHA1 over `c0 || data` keyed with MD5 of the
+  AES key. `-d` also reads the older format, with no header and a
+  final block of 16 `X`s. The key is one SHA-1 of the password, so
+  `crypt` and `auth/secstore` (ChaCha20-Poly1305 under Argon2id) stay
+  the choice for files kept here; `aescbc` is for files that go to or
+  come from a Plan 9 or Inferno secstore. Unlike Inferno's, it writes
+  nothing until the whole input has been checked.
 - **`verify`** keeps the name and checks a certificate, since there is no
   pending "box" to confirm.
 - **`spki/verify`** is dropped. It checked SPKI S-expression certificates,
@@ -1072,6 +1101,10 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   (factotum, countersigning, keysrv and passwd, keyfs's sealed file, crypt,
   secstore, netkey) run on both VMs in the emu only, to keep the QEMU runs
   short.
+- `auth/aescbc`: unit tests against a vector made separately (Python's
+  `hashlib` and `hmac`, and `openssl` for the AES blocks) in both formats,
+  every length up to five blocks, and every changed byte; `aescbc.sh` in
+  the corpus runs it and `auth/ai2key` everywhere the corpus runs.
 
 ## Decisions and open questions
 

@@ -1,0 +1,21 @@
+[package]
+name = "appl-cmd-auth-aescbc"
+description = "auth/aescbc: encrypt or decrypt a file in the format of Plan 9's and Inferno's secstore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "aescbc"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+aes = { version = "0.8", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+md-5 = { version = "0.10", default-features = false }
+hmac = { version = "0.12", default-features = false }
+
+[lints]
+workspace = true

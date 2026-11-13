@@ -58,6 +58,8 @@ members = [
     "appl/cmd/auth/sign",
     "appl/cmd/auth/signer",
     "appl/cmd/auth/verify",
+    "appl/cmd/auth/aescbc",
+    "appl/cmd/auth/ai2key",
     "appl/cmd/disk/kfs",
     "appl/cmd/disk/kfscmd",
     "appl/cmd/disk/format",
