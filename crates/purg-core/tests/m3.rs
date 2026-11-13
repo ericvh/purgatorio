@@ -533,8 +533,8 @@ fn stream_copies_through_a_small_buffer() {
     assert!(p.stream(r, out, -1).is_err());
 }
 
-/// A prog blocked reading in stream is interrupted by kill, writes out what
-/// it holds, and returns the count.
+/// A prog blocked reading in stream is interrupted by kill and returns the
+/// count of what it copied.
 #[cfg(feature = "std")]
 #[test]
 fn kill_interrupts_a_blocked_stream() {
@@ -549,7 +549,7 @@ fn kill_interrupts_a_blocked_stream() {
         child.stream(0, 1, 4).unwrap()
     });
     assert_eq!(p.write(w, b"full").unwrap(), 4);
-    // A full buffer goes straight to the file. Once it is there, the child
+    // A read goes straight to the file. Once it is there, the child
     // is in (or about to enter) its next read.
     let mut buf = [0u8; 8];
     while p.pread(out, &mut buf, 0).unwrap() < 4 {
@@ -561,6 +561,31 @@ fn kill_interrupts_a_blocked_stream() {
     assert_eq!(failed.unwrap().as_str(), purg_abi::error::EINTR);
     assert_eq!(&buf[..4], b"full");
     let _ = w;
+}
+
+/// Each read is written as it comes, as in Inferno: a few bytes reach the
+/// destination while the source is still open and the buffer far from full.
+#[cfg(feature = "std")]
+#[test]
+fn stream_writes_each_read_at_once() {
+    let (mut p, _) = setup();
+    let [r, w] = p.pipe().unwrap();
+    let out = p.create("#R/box/each", mode::ORDWR, 0o644).unwrap();
+    let mut child = p.spawn(0, &[(r, 0), (out, 1)]).unwrap();
+    child.started();
+    let join = thread::spawn(move || child.stream(0, 1, 8192).unwrap());
+    assert_eq!(p.write(w, b"abc").unwrap(), 3);
+    let mut buf = [0u8; 8];
+    let start = std::time::Instant::now();
+    while p.pread(out, &mut buf, 0).unwrap() < 3 {
+        assert!(start.elapsed().as_secs() < 10, "stream held a short read");
+        thread::yield_now();
+    }
+    assert_eq!(&buf[..3], b"abc");
+    p.close(w).unwrap();
+    let (n, failed) = join.join().unwrap();
+    assert_eq!(n, 3);
+    assert!(failed.is_none());
 }
 
 /// A read-only export serves reads and refuses every change.

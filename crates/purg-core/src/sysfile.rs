@@ -275,38 +275,33 @@ impl Prog {
         self.fgrp.get(src)?;
         self.fgrp.get(dst)?;
         let mut buf = alloc::vec![0u8; bufsiz.min(STREAM_MAX)];
-        let (mut total, mut held) = (0u64, 0usize);
+        let mut total = 0u64;
         let mut failed = None;
+        // As Inferno's: each read is written as it comes, so a reader at
+        // the other end sees data as soon as the source has it.
         while !buf.is_empty() {
             if crate::block::interrupted() {
                 failed = Some(Error::new(error::EINTR));
                 break;
             }
-            match self.read(src, &mut buf[held..]) {
+            let n = match self.read(src, &mut buf) {
                 Ok(0) => break,
-                Ok(n) => held += n,
+                Ok(n) => n,
                 Err(e) => {
                     failed = Some(e);
                     break;
                 }
-            }
-            if held == buf.len() {
-                let wrote = self.write(dst, &buf);
-                held = 0;
-                match wrote {
-                    Ok(n) if n == buf.len() => total += n as u64,
-                    Ok(_) => break,
-                    Err(e) => {
-                        failed = Some(e);
-                        break;
-                    }
+            };
+            match self.write(dst, &buf[..n]) {
+                Ok(w) if w == n => total += n as u64,
+                Ok(w) => {
+                    total += w as u64;
+                    break;
                 }
-            }
-        }
-        if held != 0 {
-            match self.write(dst, &buf[..held]) {
-                Ok(n) => total += n as u64,
-                Err(e) => failed = failed.or(Some(e)),
+                Err(e) => {
+                    failed = Some(e);
+                    break;
+                }
             }
         }
         Ok((total, failed))
