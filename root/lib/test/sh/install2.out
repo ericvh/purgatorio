@@ -1,0 +1,43 @@
+archiving package hello to 5000
+/app/lib/two removed
+/app/one modified
+/app/lib/two removed
+1c1
+< one
+---
+> ONE
+archiving package hello to 6000
+/app/lib/two modified
+/app/one modified
+no such file nosuch
+no such package found
+usage: install/wdiff [-blp] [-r root] package
+/app/lib/two
+	c193497a1a06b2c72230e6146ff47080 hello/5000(package )	/install/hello
+	c193497a1a06b2c72230e6146ff47080 hello/5000(package )	/wrap/hello
+	27f10bdaa05147344a35b68a0b21181b hello/6000(update  )	/wrap/hello
+	27f10bdaa05147344a35b68a0b21181b /app/lib/two
+/app/one
+	5bbf5a52328e7439ae6e719dfe712200 hello/5000(package )	/install/hello
+	5bbf5a52328e7439ae6e719dfe712200 hello/5000(package )	/wrap/hello
+	5bbf5a52328e7439ae6e719dfe712200 hello/6000(update  )	/wrap/hello
+	47c6ae5cf32da4c59b625a3471f74de3 /app/one
+/app/keep
+	b260098afc93a054427d63c4de6be6a1 hello/5000(package )	/install/hello
+	b260098afc93a054427d63c4de6be6a1 hello/5000(package )	/wrap/hello
+	b260098afc93a054427d63c4de6be6a1 hello/6000(update  )	/wrap/hello
+	b260098afc93a054427d63c4de6be6a1 /app/keep
+usage: install/wfind [-p package ... ] file ...
+mergelog: note: app/x contents but no entry
+100 0 a app - 20000000775 inferno inf 10 0
+200 1 a app/b - 600 inferno inf 10 2
+200 2 a app/c - 664 inferno inf 20 3
+200 3 d app/a - 664 inferno inf 20 5
+mergelog: can't open nosuch: file does not exist
+mergelog: bad log entry: bad entry
+install/mergelog: usage: install/mergelog [-dv] oldlog <newlog
+0 a src/app - 20000000775 inferno inf 1000000 0
+1 a src/app/keep - 664 inferno inf 1000000 5
+2 a src/app/lib - 20000000775 inferno inf 1000000 0
+3 a src/app/lib/two - 664 inferno inf 1000000 4
+4 a src/app/one - 664 inferno inf 1000000 4
