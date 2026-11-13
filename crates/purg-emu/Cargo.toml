@@ -39,6 +39,12 @@ libc.workspace = true
 # macOS. No client-side decorations, which would pull in a font renderer.
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 softbuffer = "0.4.8"
+# The screen in a browser for `emu -w` (src/web.rs): SHA-1 for the
+# WebSocket handshake and zlib for the pixels. Both are already in the
+# graph (purg-auth's cipher, the archive guests); the HTTP and WebSocket
+# code is ours.
+ring = { version = "0.17", default-features = false }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 
 [lints]
 workspace = true

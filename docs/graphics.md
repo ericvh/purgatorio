@@ -662,7 +662,7 @@ drawing done by memdraw inside the guest, checks `ctl`, the shared
 screen, devdraw's errors and `/dev/pointer`. The emu's acceptance tests
 run it and `draw/demo -n` on both VMs.
 
-### 8.2 The screen trait
+### 8.2 The screen trait and the browser screen
 
 ```rust
 pub trait Screen: Send + Sync {
@@ -684,18 +684,142 @@ memdraw. The emu's window is one; ramfb and virtio-gpu in the kernel
 would be others (copy into the framebuffer; transfer and flush the
 rectangle).
 
-**A browser backend** would be a third. It would serve a page with a
-`<canvas>` and keep a WebSocket (or a WebTransport stream) open to it.
-`flush` sends the rectangle and its pixels, converted to RGBA and
-compressed if the link is slow; the page puts them with `putImageData`
-at that offset. The page sends `pointermove`, `pointerdown`,
-`pointerup`, `wheel` and `keydown` back, and the backend turns them into
-`Input::pointer` and `Input::key` calls, with the same keyboard(6)
-mapping as the window. `size` is the canvas's size, fixed when the
-page connects. Nothing in the device, memdraw or the programs changes;
-the server could live in the emu as host code (`emu -w port`) or, on
-the kernel, as a program over `/net`. A higher-level web UI (HTML
-widgets instead of pixels) would be a different design, above draw.
+**The browser screen** is a third backend: `emu -w` serves the screen
+to a web page (`crates/purg-emu/src/web.rs`, the page in `web.html`).
+Nothing in the device, memdraw or the programs changed for it.
+
+- **Flags.** `emu -w [addr] [-s WxH] cmd ...`. The emu listens on
+  `addr`, by default `127.0.0.1` and a port the system picks, and
+  prints `emu: screen at http://127.0.0.1:PORT/?t=TOKEN` on standard
+  error. `addr` is a socket address (`127.0.0.1:8080`, `[::1]:8080`,
+  `0.0.0.0:8080`). `-s WxH` sets the screen's size, 800x600 by default,
+  as with `-g`; `-g` and `-w` together are a usage error.
+- **The page.** One HTML file with its script and style inline; it
+  fetches nothing else. It shows a `<canvas>` of the screen's size in
+  CSS pixels (scaled by the browser on a high-density display) and
+  opens `ws://HOST/ws?t=TOKEN`. A line above the canvas says whether
+  the page is connected and whether it has the input.
+- **Server to page.** A text message
+  `{"width":W,"height":H,"input":true|false}` first, and
+  `{"input":true}` when the page takes over the input. Each damaged
+  rectangle is a binary message: the byte 1, then x, y, width and height
+  as little-endian `u32`, then the rectangle's RGBA rows compressed with
+  zlib. The page inflates them with `DecompressionStream("deflate")`
+  and draws them with `putImageData`, one at a time in the order they
+  came. A new page gets the whole screen first.
+- **Page to server.** `m` with x, y (`i32`) and buttons (`u32`:
+  1, 2, 4 for the left, middle and right buttons, 8 and 16 for a wheel
+  step up or down, sent as a press and a release), from `pointermove`,
+  `pointerdown`, `pointerup` and `wheel`, with the pointer captured
+  while a button is down so a drag can leave the canvas. `k` with a
+  modifier byte (bit 0: control) and `KeyboardEvent.key`. The emu turns
+  a one-character key into that character (with control, its control
+  code, as the window does), a named key into keyboard(6)'s code (the
+  same table as the window: Enter, Tab, Backspace, Escape, Delete,
+  Home, End, Page Up and Down, Insert, Print Screen, the arrows, F1 to
+  F12), and drops modifier and dead keys. Keys with the Meta (Command)
+  key held stay with the browser.
+- **Several pages.** Any number may watch, and all see the same screen.
+  Only one sends input: the page connected longest. When it closes, the
+  next oldest takes over and is told so. Pointer and key messages from
+  the others are dropped. This keeps two people from fighting over the
+  pointer without any locking in the page.
+- **Threads.** One thread accepts connections. Each connection has a
+  reader thread (the request, then the page's messages) and, once it is
+  a WebSocket, a writer thread. `flush` copies the damage into the
+  emu's copy of the screen and adds the rectangle to every page's
+  pending damage; it never writes to a socket, so a slow or stalled
+  page cannot hold up a prog. The writer sends the union of what was
+  damaged since its last send, read from the screen as it is then, so
+  a page that falls behind skips frames instead of queueing them. When
+  the first prog exits the emu sends every page a close frame and waits
+  up to a second for them to close before it exits; the page then says
+  "disconnected".
+- **HTTP and WebSocket.** Written in the emu, a few hundred lines: one GET
+  for the page, one upgrade (RFC 6455's handshake, version 13),
+  unfragmented frames out, fragments assembled on the way in, ping
+  answered, close echoed, messages from the page limited to 4 KiB.
+  `tungstenite` would have brought `http`, `httparse`, `sha1`, `rand`,
+  `thiserror`, `utf-8`, `bytes` and `data-encoding` for the same work.
+  SHA-1 for the handshake is `ring`'s and zlib is `miniz_oxide`'s; both
+  were already in the graph (purg-auth's cipher and the archive
+  guests), so `-w` adds no crate. Requests that are not GET get 405,
+  other paths 404, a malformed upgrade 400.
+
+**Security.** The screen is a remote desktop: whoever reaches the
+socket sees the screen and, with the input, types into the emu's shell
+as its user. So:
+
+- The emu listens on loopback unless told otherwise.
+- The URL carries a 128-bit random token from the host's entropy
+  source. The page and the WebSocket both need it (403 Forbidden
+  otherwise), so other users of the same machine cannot attach, and
+  neither can a web page in the user's own browser: it can reach
+  `127.0.0.1` but cannot know the token. The token is compared in
+  constant time.
+- A WebSocket request with an `Origin` header must come from
+  `http://` and the `Host` it was sent to, that is, from the emu's own
+  page; anything else gets 403. (A request without `Origin` is not
+  from a browser and still needs the token.) The page is sent with
+  `Content-Security-Policy` allowing only its inline script and a
+  connection to its own server, no framing, and no referrer, so the
+  token does not leak in a `Referer` header.
+- `-w 0.0.0.0:port` (or any non-loopback address) puts the screen on
+  the network with only the token for protection, in clear text: anyone
+  who can see the traffic gets the token and the session, and the
+  token stays the same for the emu's life. Use it only on a network you
+  trust, or keep loopback and use an SSH tunnel
+  (`ssh -L 8080:127.0.0.1:8080 host`). There is no TLS.
+
+**Bandwidth.** `draw/demo -n`'s 800x600 screen is 1,920,000 bytes of
+RGBA. Compressed with miniz_oxide (release build, this host, median of
+ten runs):
+
+| zlib level | Bytes | Time |
+|---|---|---|
+| 1 | 23,552 | 1.4 ms |
+| 2 (used) | 11,001 | 3.1 ms |
+| 3 | 10,326 | 2.9 ms |
+| 6 | 9,946 | 3.4 ms |
+| 9 | 7,952 | 5.2 ms |
+
+So the first frame is about 11 KB. Following the pointer, the demo
+redraws its 15x15 marker in two places per event; each update is a
+rectangle of a few hundred pixels, about 30 to 100 bytes compressed
+plus 17 bytes of header, so a pointer moving at 60 events a second
+costs a few KB/s. Sending RGB instead of RGBA, or PNG, would save
+little: deflate already removes the constant alpha.
+
+**Checking it.** `crates/purg-emu/tests/web.rs` is the browser for the
+tests: on both VMs it runs `draw/demo -n` under `emu -w`, opens a
+WebSocket, checks the hello and that the first frame's pixels equal
+those of an emu without a window after the same demo (read back with
+`test/draw -d`), connects a second page and checks it is only
+watching, sends pointer and key messages from both, reads
+`m 10 20 1` from `/dev/pointer` and keyboard(6)'s up arrow from
+`/dev/keyboard` (only the first page's), and sees both pages get a
+close frame when the emu exits. A second test checks that requests
+without the token, with a wrong token, or with another `Origin` get
+403, and that the page needs the token too. Unit tests check the
+handshake against RFC 6455's example, frame lengths, request parsing
+and the key table.
+
+The page itself is checked by hand: run
+`cargo xtask run-emu -- -w draw/demo`, open the printed URL, and check
+that the scene appears, that the marker follows the pointer, that
+button 1 paints and button 3 ends the demo (the page then says
+"disconnected"), and that a second tab says "watching" and takes over
+when the first is closed. For the keyboard, run
+`cargo xtask run-emu -- -w sh -c 'draw/demo -n; cat /dev/keyboard'`
+and type in the page: characters, and three-byte codes for the arrows,
+appear on the emu's standard output. No browser or Playwright was
+available on the host where this was written (no `node`, no Chromium),
+so there is no automated test of the page, and the page has not yet
+been checked in a real browser.
+
+On the kernel the same page could be served by a program over `/net`.
+A higher-level web UI (HTML widgets instead of pixels) would be a
+different design, above draw.
 
 ### 8.3 Sizes
 
@@ -708,7 +832,7 @@ Measured on Linux aarch64 with Rust 1.99.1.
 | `purg-core` for `aarch64-unknown-none`, opt-level `z`, same measure: `tls,lethe` / `tls,lethe,draw` | 409,950 / 436,773 bytes (the devices: 26,823) |
 | The emu, release, stripped | 14,164,608 bytes |
 | In it, by symbol: memdraw / the devices and screen trait / `window.rs` (with winit's generic code it instantiates) / winit, softbuffer and their X11 and Wayland crates | 52 KB / 48 KB / 145 KB / 1,867 KB |
-| `draw/demo.wasm` / `test/draw.wasm` (`echo.wasm` is 63,896) | 80,063 / 133,832 bytes |
+| `draw/demo.wasm` / `test/draw.wasm` (`echo.wasm` is 63,896) | 80,063 / 135,563 bytes (with `-d`) |
 
 The emu figures attribute symbols by crate name, so they are close but
 not exact; about 2.1 MB of the emu is G1, almost all of it the window
@@ -728,8 +852,8 @@ module 640.
 - The device in the kernel and the probe (ramfb, virtio-input), and a
   kernel feature for it; graphics is off in `kernel-small` by not being
   built at all.
-- HiDPI scaling, window resizing (the screen keeps its size), and
-  pointer events outside the window.
+- HiDPI scaling, window resizing (the screen keeps its size, in the
+  window and in the browser), and pointer events outside the window.
 - Goldens rendered by real Inferno; the pixels follow our reading of
   draw(2), listed above.
 - A screen image drawn onto itself, or any image drawn through itself,

@@ -4,6 +4,10 @@
 //! same drawing done here by memdraw, plus a few pixels known by hand.
 //! Prints `ok <name>` per passing check and `FAIL <name>: <why>`
 //! otherwise; exits with status `fail:draw` if any check failed.
+//!
+//! `test/draw -d` checks nothing: it writes the screen's width and
+//! height as a line of text and then its pixels, rows of `x8r8g8b8`, to
+//! standard output, for the tests that compare screens.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -280,8 +284,23 @@ fn pointer() -> Result<(), String> {
     Ok(())
 }
 
+/// Writes the screen to standard output (`-d`).
+fn dump() -> Result<(), Error> {
+    let mut d = Display::open()?;
+    let screen = d.screen();
+    let px = d.unload(&screen, screen.r)?;
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{} {}", screen.r.dx(), screen.r.dy())?;
+    out.write_all(&px)?;
+    out.flush()?;
+    Ok(())
+}
+
 #[purgatorio::main]
-fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
+fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    if args.get(1).is_some_and(|a| a == "-d") {
+        return dump();
+    }
     let checks: &[(&str, Check)] = &[
         ("screen", screen_info),
         ("ctl", ctl_info),

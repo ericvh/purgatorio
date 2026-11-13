@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Purgatorio</title>
+<style>
+  html, body { margin: 0; background: #222; color: #ccc; font: 13px sans-serif; }
+  #bar { padding: 4px 8px; }
+  canvas { display: block; margin: 0 8px; outline: none; cursor: crosshair;
+           image-rendering: pixelated; background: #fff; }
+</style>
+</head>
+<body>
+<div id="bar">connecting</div>
+<canvas id="screen" width="1" height="1" tabindex="0"></canvas>
+<script>
+"use strict";
+// The emu's screen (docs/graphics.md, Section 8.2). The server sends a
+// JSON hello and then rectangles: byte 1, x, y, w, h as little-endian
+// u32, and zlib-compressed RGBA rows. We send pointer ("m", x, y,
+// buttons) and key ("k", modifiers, key name) messages.
+const bar = document.getElementById("bar");
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d");
+const token = new URLSearchParams(location.search).get("t") || "";
+const ws = new WebSocket("ws://" + location.host + "/ws?t=" + encodeURIComponent(token));
+ws.binaryType = "arraybuffer";
+let input = false;
+let buttons = 0;
+let at = [0, 0];
+let queue = Promise.resolve();
+
+function status(s) { bar.textContent = s; }
+
+async function inflate(bytes) {
+  const s = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+  return new Uint8ClampedArray(await new Response(s).arrayBuffer());
+}
+
+async function rect(buf) {
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== 1) return;
+  const x = v.getUint32(1, true), y = v.getUint32(5, true);
+  const w = v.getUint32(9, true), h = v.getUint32(13, true);
+  if (w === 0 || h === 0) return;
+  const px = await inflate(new Uint8Array(buf, 17));
+  if (px.length !== w * h * 4) return;
+  ctx.putImageData(new ImageData(px, w, h), x, y);
+}
+
+ws.onmessage = (e) => {
+  if (typeof e.data === "string") {
+    const m = JSON.parse(e.data);
+    if (m.width) { canvas.width = m.width; canvas.height = m.height; }
+    if ("input" in m) input = m.input;
+    status(input ? "connected: this page has the pointer and keyboard"
+                 : "connected: watching (another page has the input)");
+    return;
+  }
+  // Rectangles are drawn in the order they came.
+  queue = queue.then(() => rect(e.data)).catch((err) => status("error: " + err));
+};
+ws.onclose = () => status("disconnected");
+ws.onerror = () => status("cannot connect");
+
+function send(bytes) {
+  if (input && ws.readyState === WebSocket.OPEN) ws.send(bytes);
+}
+
+function pointer() {
+  const b = new ArrayBuffer(13), v = new DataView(b);
+  v.setUint8(0, 0x6d);
+  v.setInt32(1, at[0], true);
+  v.setInt32(5, at[1], true);
+  v.setUint32(9, buttons, true);
+  send(b);
+}
+
+function place(e) {
+  const r = canvas.getBoundingClientRect();
+  at = [Math.floor((e.clientX - r.left) * canvas.width / r.width),
+        Math.floor((e.clientY - r.top) * canvas.height / r.height)];
+}
+
+// DOM buttons 0, 1, 2 (left, middle, right) are pointer(3)'s 1, 2 and 4.
+const bit = [1, 2, 4];
+canvas.addEventListener("pointermove", (e) => { place(e); pointer(); });
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.focus();
+  canvas.setPointerCapture(e.pointerId);
+  place(e);
+  buttons |= bit[e.button] || 0;
+  pointer();
+  e.preventDefault();
+});
+canvas.addEventListener("pointerup", (e) => {
+  place(e);
+  buttons &= ~(bit[e.button] || 0);
+  pointer();
+});
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+// A wheel step is a press and release of button 4 (up) or 5 (down).
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  if (e.deltaY === 0) return;
+  const b = e.deltaY < 0 ? 8 : 16;
+  buttons |= b; pointer();
+  buttons &= ~b; pointer();
+}, { passive: false });
+canvas.addEventListener("keydown", (e) => {
+  if (e.metaKey) return;
+  const name = new TextEncoder().encode(e.key);
+  const b = new Uint8Array(2 + name.length);
+  b[0] = 0x6b;
+  b[1] = e.ctrlKey ? 1 : 0;
+  b.set(name, 2);
+  send(b.buffer);
+  e.preventDefault();
+});
+canvas.focus();
+</script>
+</body>
+</html>
