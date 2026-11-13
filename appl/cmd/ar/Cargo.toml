@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ar"
+description = "ar: maintain archives in the portable UNIX format"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ar"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
