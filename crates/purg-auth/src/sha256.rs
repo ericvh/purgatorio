@@ -228,6 +228,7 @@ pub(crate) mod hw {
 mod tests {
     extern crate std;
 
+    #[cfg(target_arch = "aarch64")]
     use alloc::vec::Vec;
 
     use super::*;
@@ -258,6 +259,7 @@ mod tests {
 
     const MILLION_A: &str = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
 
+    #[cfg(target_arch = "aarch64")]
     fn bytes(n: usize, seed: u32) -> Vec<u8> {
         let mut x = seed.wrapping_mul(2_654_435_761) | 1;
         (0..n)
