@@ -422,7 +422,8 @@ impl System {
     /// copy of the boot namespace with the directory `tmp` (a boot
     /// namespace name) bound on `/tmp`, its fds 1 and 2 on `/tmp/cons`
     /// there, and in a prog domain of its own, whose `#pdomain` view is
-    /// its `/prog`. So it sees only its own progs, and everything it
+    /// its `/prog`, and whose `#s` registry is its `/chan`. So it sees
+    /// only its own progs and file2chan files, and everything it
     /// starts, whatever its process group, can be found afterwards and
     /// killed without touching another run's. Returns the exit status and
     /// what it wrote. The file is named `cons` because `abi.wasm` checks
@@ -436,6 +437,11 @@ impl System {
         let domain = prog.proc.group();
         self.kernel.platform.set_current_pid(prog.pid);
         ns.bind("#pdomain", "/prog", MREPL)?;
+        // `#s` keeps a registry per domain, and the boot namespace's
+        // `/chan` shows the one outside any. Attached again as the new
+        // prog, `/chan` shows the domain's, where file2chan puts the
+        // files the run makes, so it can find them there.
+        ns.bind("#s", "/chan", MREPL | MCREATE)?;
         let status = self.run_prog(prog, argv, Some("/tmp/cons"));
         let out = format!("{tmp}/cons");
         let got = self.read_file(&out);
