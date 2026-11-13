@@ -226,7 +226,9 @@ fn build_tables(ram: Region, pages: usize) -> (mmu::KernelMap, *mut u8, usize) {
         size: pages * PAGE_SIZE,
     };
     // SAFETY: the pool is ours and writable through the linear map.
-    let mut alloc = unsafe { TableAlloc::new(pool, KERNEL_VBASE) };
+    // No 1 GiB blocks: the code region (`purg_aarch64::code`) changes the
+    // permissions of single 2 MiB blocks.
+    let mut alloc = unsafe { TableAlloc::new(pool, KERNEL_VBASE) }.without_gib_blocks();
     match boot::kernel_map_for(&mut alloc, ram) {
         Ok(m) => (m, va, alloc.remaining()),
         Err(e) => fail(format_args!("runtime page tables: {}", e.as_str())),
@@ -436,6 +438,10 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         (false, false) => Mode::Interactive,
     };
     println!("kernel: root {from}");
+    #[cfg(feature = "aot")]
+    if !crate::aot::set_engine(bootarg(&info, "engine")) {
+        println!("kernel: aot: engine= takes wasmi, aot or auto; using auto");
+    }
     let net = system::net::open(&fdt, &info);
     let host = system::host9p::find(&fdt);
     let blks = system::disk::find(&fdt);
