@@ -7,6 +7,9 @@
 //! operators ([`Op`]); [`line`], [`poly`], [`fill_poly`], [`ellipse`],
 //! [`fill_ellipse`], [`arc`] and [`fill_arc`] build a coverage mask with
 //! integer geometry and composite a source through it the same way.
+//! [`file`] reads and writes image(6) files, and [`Subfont`],
+//! [`FontFile`] and [`draw_char`] are font(6)'s files and the font
+//! cache's glyph drawing.
 //!
 //! Colour is worked on as premultiplied 8-bit red, green, blue and alpha,
 //! whatever the channels. Nothing is antialiased and no arithmetic uses
@@ -18,6 +21,8 @@ extern crate alloc;
 mod chan;
 mod cover;
 mod draw;
+pub mod file;
+mod font;
 mod geom;
 mod image;
 mod shapes;
@@ -27,6 +32,8 @@ pub use chan::{
     XBGR32, XRGB32,
 };
 pub use draw::{Op, draw};
+pub use file::{read_image, write_image};
+pub use font::{CacheChar, EBADFONT, FontFile, Fontchar, Range, Subfont, draw_char};
 pub use geom::{Point, Rect};
 pub use image::{EREADOUTSIDE, ESHORT, EWRITEOUTSIDE, Image, bytes_per_line};
 pub use shapes::{
