@@ -92,6 +92,38 @@ fn mux_deliver_or_flush() {
     });
 }
 
+/// A watcher of a read sent ahead (`purgatorio.wait` on a served file)
+/// is never left asleep when the reply comes; and a reply racing its
+/// requester giving up on it (`drop_tag`) leaves the tag free or flushed.
+#[test]
+fn mux_watcher_wakes_and_drop_tag() {
+    loom::model(|| {
+        let mux = Arc::new(Mux::new());
+        let tag = mux.begin().unwrap();
+        let w = Rendez::new();
+        mux.watch(&w);
+        let other = mux.clone();
+        let reader = thread::spawn(move || {
+            other.deliver(tag, b"x".to_vec());
+        });
+        w.sleep(|| mux.arrived(tag));
+        mux.unwatch(&w);
+        reader.join().unwrap();
+        assert!(!mux.drop_tag(tag));
+        assert_eq!(mux.outstanding(), 0);
+
+        let tag = mux.begin().unwrap();
+        let other = mux.clone();
+        let reader = thread::spawn(move || {
+            other.deliver(tag, b"y".to_vec());
+        });
+        let flushed = mux.drop_tag(tag);
+        reader.join().unwrap();
+        // A flushed tag stays taken until its `Rflush`.
+        assert_eq!(mux.outstanding(), usize::from(flushed));
+    });
+}
+
 /// A reply racing the caller giving up on it: either way the tag is
 /// free afterwards.
 #[test]
