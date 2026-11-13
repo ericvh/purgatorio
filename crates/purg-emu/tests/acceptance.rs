@@ -163,6 +163,7 @@ on_each_vm! {
         assert!(o.status.success(), "{vm}:\n{out}");
         assert!(!out.contains("FAIL"), "{vm}:\n{out}");
         assert!(out.contains("ok shapes\n") && out.contains("ok pointer\n"), "{vm}:\n{out}");
+        assert!(out.contains("ok windows\n"), "{vm}:\n{out}");
         // The demo draws its scene without a window.
         let o = emu(vm, &["draw/demo", "-n"], b"");
         assert!(o.status.success(), "{vm}: {o:?}");

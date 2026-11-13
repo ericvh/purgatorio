@@ -15,6 +15,17 @@
 //! d.draw(&screen, Rect::new(10, 10, 100, 100), &red, None, Point::new(0, 0));
 //! d.flush()?;
 //! ```
+//!
+//! **In a window.** When `/dev/winname` exists (a window system such as
+//! `rio` serves it), [`Display::open`] does what Plan 9's `getwindow`
+//! does: it looks up the image of that name (`n`), makes a screen of its
+//! own on it and a window on that screen inside the image's border of
+//! [`BORDER`] pixels, and [`Display::screen`] is that window rather than
+//! the whole display. When the window system gives the window a new
+//! image (after a resize or a move it changes the name and sends a
+//! pointer event), [`Display::check_resize`] notices the new name, makes
+//! the window again on the new image and returns true, so a program that
+//! redraws on a resize redraws in its window.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -38,6 +49,10 @@ pub use purg_memdraw as memdraw;
 /// small enough for one Styx message.
 const BUFSIZE: usize = 8000;
 
+/// The width of a window's border, which [`Display::screen`] leaves out
+/// in a window (Plan 9's `Borderwidth`).
+pub const BORDER: i32 = 4;
+
 /// The fill colour for images that need none.
 pub const TRANSPARENT: u32 = 0x0000_0000;
 pub const BLACK: u32 = 0x0000_00FF;
@@ -54,6 +69,29 @@ pub struct Image {
     pub clipr: Rect,
 }
 
+/// A screen on the draw device (draw(2)'s `Screen`): an image that
+/// windows are stacked on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Screen {
+    pub id: u32,
+    /// The image it is on.
+    pub image: u32,
+    /// Its image's channels, which its windows have.
+    pub chan: Chan,
+}
+
+/// The window a program in a window system draws in.
+struct Window {
+    /// `/dev/winname`, kept open.
+    winname: File,
+    name: String,
+    /// The window system's image of that name, the screen made on it and
+    /// the fill for that screen.
+    named: Image,
+    screen: Screen,
+    fill: Image,
+}
+
 /// One connection to the draw device.
 pub struct Display {
     /// Holds the connection open; `ctl`.
@@ -65,6 +103,9 @@ pub struct Display {
     buf: Vec<u8>,
     next: u32,
     opaque: Option<u32>,
+    /// Screens made, for their ids.
+    screens: u32,
+    window: Option<Window>,
 }
 
 fn field(info: &[u8], i: usize) -> Result<&str, Error> {
@@ -106,6 +147,11 @@ fn parse_info(info: &[u8]) -> Result<(u32, Image), Error> {
     ))
 }
 
+/// `r` made smaller by `n` on each side.
+pub fn inset(r: Rect, n: i32) -> Rect {
+    Rect::new(r.min.x + n, r.min.y + n, r.max.x - n, r.max.y - n)
+}
+
 fn put_rect(m: &mut Vec<u8>, r: Rect) {
     for v in [r.min.x, r.min.y, r.max.x, r.max.y] {
         m.extend(v.to_le_bytes());
@@ -144,7 +190,7 @@ impl Display {
             .read(true)
             .write(true)
             .open(format!("/dev/draw/{conn}/data"))?;
-        Ok(Display {
+        let mut d = Display {
             ctl,
             data,
             conn,
@@ -152,12 +198,196 @@ impl Display {
             buf: Vec::with_capacity(BUFSIZE),
             next: 1,
             opaque: None,
+            screens: 0,
+            window: None,
+        };
+        if let Ok(f) = File::open("/dev/winname") {
+            d.attach(f)?;
+        }
+        Ok(d)
+    }
+
+    /// The image to draw on: the whole display (id 0), or in a window
+    /// system the window.
+    pub fn screen(&self) -> Image {
+        self.screen.clone()
+    }
+
+    /// The display's image, id 0, whole, even in a window.
+    pub fn display_image(&mut self) -> Result<Image, Error> {
+        self.info(0)
+    }
+
+    /// Reads the window's name from `f`, at its start.
+    fn winname(f: &mut File) -> Result<String, Error> {
+        use std::io::{Seek, SeekFrom};
+        f.seek(SeekFrom::Start(0))?;
+        let mut b = [0u8; 256];
+        let n = f.read(&mut b)?;
+        Ok(String::from_utf8_lossy(&b[..n]).trim().to_string())
+    }
+
+    /// Makes the window on the image `/dev/winname` names, as Plan 9's
+    /// `getwindow`. The window system may be giving the window a new
+    /// image as this runs, so a name that has gone is read again.
+    fn attach(&mut self, mut f: File) -> Result<(), Error> {
+        let mut tries = 0;
+        loop {
+            let name = Display::winname(&mut f)?;
+            match self.attach_to(&name) {
+                Ok(w) => {
+                    self.screen = self.alloc_window(&w.0, inset(w.1.r, BORDER), WHITE)?;
+                    self.window = Some(Window {
+                        winname: f,
+                        name,
+                        named: w.1,
+                        screen: w.0,
+                        fill: w.2,
+                    });
+                    return Ok(());
+                }
+                Err(e) if tries < 10 => {
+                    tries += 1;
+                    let _ = e;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// The image named `name`, a screen on it and the screen's fill.
+    fn attach_to(&mut self, name: &str) -> Result<(Screen, Image, Image), Error> {
+        let named = self.named(name)?;
+        let fill = self.color(WHITE)?;
+        match self.alloc_screen(&named, &fill, false) {
+            Ok(s) => Ok((s, named, fill)),
+            Err(e) => {
+                let _ = self.free(named);
+                let _ = self.free(fill);
+                let _ = self.write_out();
+                Err(e)
+            }
+        }
+    }
+
+    /// Lets go of the window and what it was made on.
+    fn detach(&mut self) -> Result<(), Error> {
+        if let Some(w) = self.window.take() {
+            let screen = self.screen.clone();
+            self.free(screen)?;
+            self.free_screen(w.screen)?;
+            self.free(w.named)?;
+            self.free(w.fill)?;
+        }
+        Ok(())
+    }
+
+    /// The image named `name` (`n`), as a new id of this connection.
+    pub fn named(&mut self, name: &str) -> Result<Image, Error> {
+        if name.len() > 255 {
+            return Err(Error::from("image name too long"));
+        }
+        let id = self.next;
+        self.next += 1;
+        let mut m = vec![b'n'];
+        m.extend(id.to_le_bytes());
+        m.push(name.len() as u8);
+        m.extend(name.as_bytes());
+        self.msg(&m)?;
+        self.write_out()?;
+        self.info(id)
+    }
+
+    /// Gives `i` the name `name` (`N`), or with `add` false takes it away.
+    pub fn name_image(&mut self, i: &Image, name: &str, add: bool) -> Result<(), Error> {
+        if name.len() > 255 {
+            return Err(Error::from("image name too long"));
+        }
+        let mut m = vec![b'N'];
+        m.extend(i.id.to_le_bytes());
+        m.push(add as u8);
+        m.push(name.len() as u8);
+        m.extend(name.as_bytes());
+        self.msg(&m)?;
+        self.write_out()
+    }
+
+    /// Makes a screen on `image` whose background is drawn from `fill`
+    /// (`A`); a public one can be used by other connections.
+    pub fn alloc_screen(
+        &mut self,
+        image: &Image,
+        fill: &Image,
+        public: bool,
+    ) -> Result<Screen, Error> {
+        self.screens = self.screens.wrapping_add(1);
+        // Screen ids are the device's, not the connection's.
+        let id = self.conn.wrapping_shl(16) | (self.screens & 0xFFFF);
+        let mut m = vec![b'A'];
+        for v in [id, image.id, fill.id] {
+            m.extend(v.to_le_bytes());
+        }
+        m.push(public as u8);
+        self.msg(&m)?;
+        self.write_out()?;
+        Ok(Screen {
+            id,
+            image: image.id,
+            chan: image.chan,
         })
     }
 
-    /// The screen image, id 0.
-    pub fn screen(&self) -> Image {
-        self.screen.clone()
+    /// Frees a screen (`F`).
+    pub fn free_screen(&mut self, s: Screen) -> Result<(), Error> {
+        let mut m = vec![b'F'];
+        m.extend(s.id.to_le_bytes());
+        self.msg(&m)
+    }
+
+    /// Makes a window of `r` on screen `s`, filled with `rgba` (`b` with
+    /// the screen's id).
+    pub fn alloc_window(&mut self, s: &Screen, r: Rect, rgba: u32) -> Result<Image, Error> {
+        let id = self.next;
+        self.next += 1;
+        let mut m = vec![b'b'];
+        m.extend(id.to_le_bytes());
+        m.extend(s.id.to_le_bytes());
+        m.push(0);
+        m.extend(s.chan.0.to_le_bytes());
+        m.push(0);
+        put_rect(&mut m, r);
+        put_rect(&mut m, r);
+        m.extend(rgba.to_le_bytes());
+        self.msg(&m)?;
+        self.write_out()?;
+        Ok(Image {
+            id,
+            chan: s.chan,
+            repl: false,
+            r,
+            clipr: r,
+        })
+    }
+
+    /// Moves windows to the top of their screen, the first on top, or
+    /// with `top` false to the bottom (`t`).
+    pub fn top_windows(&mut self, ws: &[&Image], top: bool) -> Result<(), Error> {
+        let mut m = vec![b't', top as u8];
+        m.extend((ws.len() as u16).to_le_bytes());
+        for w in ws {
+            m.extend(w.id.to_le_bytes());
+        }
+        self.msg(&m)
+    }
+
+    /// Puts window `w` at `screen` on its screen, keeping its
+    /// coordinates (`o`).
+    pub fn origin_window(&mut self, w: &Image, screen: Point) -> Result<(), Error> {
+        let mut m = vec![b'o'];
+        m.extend(w.id.to_le_bytes());
+        put_point(&mut m, w.r.min);
+        put_point(&mut m, screen);
+        self.msg(&m)
     }
 
     /// Asks the device about image `id` through `ctl`.
@@ -173,6 +403,16 @@ impl Display {
     /// updates [`Display::screen`] and returns true.
     pub fn check_resize(&mut self) -> Result<bool, Error> {
         self.write_out()?;
+        if let Some(w) = self.window.as_mut() {
+            let name = Display::winname(&mut w.winname)?;
+            if name == w.name {
+                return Ok(false);
+            }
+            let f = w.winname.try_clone()?;
+            self.detach()?;
+            self.attach(f)?;
+            return Ok(true);
+        }
         let s = self.info(0)?;
         if s.r == self.screen.r {
             return Ok(false);
@@ -589,8 +829,10 @@ impl Mouse {
         let mut b = [0u8; 49];
         let n = self.f.read(&mut b)?;
         let s = std::str::from_utf8(&b[..n]).map_err(|_| Error::from("bad pointer data"))?;
+        // `r` is Plan 9's mark of an event a window system sends when the
+        // window has been resized or moved.
         let mut f = s
-            .strip_prefix('m')
+            .strip_prefix(['m', 'r'])
             .ok_or_else(|| Error::from("bad pointer data"))?
             .split_ascii_whitespace()
             .map(|v| v.parse::<i64>().unwrap_or(0));
