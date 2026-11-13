@@ -809,6 +809,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-ip-bootpd"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-ndb",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ip-dhcp"
 version = "0.1.0"
 dependencies = [

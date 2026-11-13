@@ -1,0 +1,15 @@
+op=2 xid=12345678 ether=00a0c9e1b2c3 yiaddr=10.0.0.2 siaddr=127.0.0.1 file=/kern/fs vend=p9  255.255.255.0 10.0.0.2 10.0.1.5 10.0.0.1
+op=2 xid=12345678 ether=00a0c9000007 yiaddr=10.0.0.7 siaddr=127.0.0.1 file= vend=p9  255.255.255.0 10.0.0.2 10.0.1.5 10.0.0.1
+op=2 xid=12345678 ether=00a0c9000007 yiaddr=10.0.0.7 siaddr=127.0.0.1 file= type=offer server=127.0.0.1 lease=3600 mask=255.255.255.0 router=10.0.0.1 dns=10.0.0.1 host=term dom=example.org
+op=2 xid=12345678 ether=00a0c9000007 yiaddr=10.0.0.7 siaddr=127.0.0.1 file= type=ack server=127.0.0.1 lease=3600 mask=255.255.255.0 router=10.0.0.1 dns=10.0.0.1 host=term dom=example.org
+op=2 xid=12345678 ether=00a0c9000007 yiaddr=0.0.0.0 siaddr=0.0.0.0 file= type=nak server=127.0.0.1
+op=2 xid=12345678 ether=00a0c9e1b2c3 yiaddr=0.0.0.0 siaddr=127.0.0.1 file=/kern/fs type=ack server=127.0.0.1 mask=255.255.255.0 router=10.0.0.1 dns=10.0.0.1 host=fs dom=example.org
+no answer
+bootpd: 00a0c9e1b2c3 -> fs 10.0.0.2
+bootpd: 00a0c9000007 -> term 10.0.0.7
+bootpd: 00a0c9000007 -> term 10.0.0.7 (offer)
+bootpd: 00a0c9000007 -> term 10.0.0.7 (ack)
+bootpd: 00a0c9000007 -> term 10.0.0.7 (nak)
+bootpd: 00a0c9e1b2c3 -> fs 10.0.0.2 (ack)
+bootpd: cannot open /tmp/sh-bootpd/nosuch: file does not exist
+fail:error
