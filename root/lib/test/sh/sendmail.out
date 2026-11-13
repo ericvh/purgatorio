@@ -1,0 +1,24 @@
+RSET
+HELO example.org
+MAIL FROM:<alice@example.org>
+RCPT TO:<bob@example.org>
+RCPT TO:<carol@example.net>
+RCPT TO:<dave@example.com>
+DATA
+| From: Alice <alice@example.org>
+| To: bob@example.org, Carol <carol@example.net>
+| Cc: dave@example.com
+| Subject: test
+| 
+| Hello.
+| ..a line with a dot
+| To: not@a.header
+| 
+| .
+MAIL FROM:<user@example.org>
+RCPT TO:<eve@example.org>
+sendmail: send failed :  RCPT receive failed ( no such user)
+fail:error
+sendmail: recipients specified on To: line and as args - aborted
+sendmail: send failed : no 'to' name
+sendmail: smtp open failed: dialup failed
