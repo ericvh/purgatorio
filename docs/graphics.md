@@ -1393,9 +1393,14 @@ Delete key and `echo hello`, and checks the window's body (`; cat
 ;
 echo hello
 hello
-; `). After `Del` typed in win's tag and clicked, no
-`win` prog is left, only two `sh`s (the emu's and the one running the
-guest), and no window; `Exit` still ends acme. The compared output is
+; `). After `Del` typed at the end of win's tag and
+clicked, no `win` prog is left, only two `sh`s (the emu's and the one
+running the guest), and no window; `Exit` still ends acme. Each step
+runs the guest again until it sees the step done, within the test's
+time limit, so a loaded host only makes it slower. The tag holds the
+host's name, so the test lays it out with the font's widths to find its
+end: a long name wraps it, which is why the first version of the test,
+clicking at the right edge of the tag's first line, failed on macOS. The compared output is
 the 35 lines in the test.
 
 Nothing here was seen on a real display: all of it ran on the

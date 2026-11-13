@@ -3834,6 +3834,7 @@ dependencies = [
  "purg-auth",
  "purg-core",
  "purg-lethe",
+ "purg-memdraw",
  "purg-platform",
  "purg-styx",
  "purg-vm",
