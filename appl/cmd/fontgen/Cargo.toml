@@ -1,0 +1,19 @@
+[package]
+name = "appl-cmd-fontgen"
+description = "fontgen: makes Inferno subfonts and font files from TrueType fonts and Unifont bitmaps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "fontgen"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+# Without `simd`: its x86-only paths are why fontgen runs as a guest.
+fontdue = { version = "0.9.5", default-features = false, features = ["hashbrown"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,33 @@
+Font sources for root/fonts
+===========================
+
+`cargo xtask fonts` runs fontgen (appl/cmd/fontgen) on these files, as
+`recipe` says, and writes root/fonts. The output is committed; CI runs
+`cargo xtask fonts --check` on every host to make sure it still comes out
+byte for byte the same. See docs/graphics.md, Section 9.
+
+go/: the Go fonts, by Bigelow & Holmes for the Go project.
+  Go-Regular.ttf, Go-Mono.ttf from https://github.com/golang/image,
+  font/gofont/ttfs, commit 41969df76e82aeec85fa3821b1e24955ea993001
+  (2022-06-17, the last change to that directory as of 2026-11-12).
+    sha256 197d9f3703b4c00af609178876a8d73e396f64fe438b2c871778566632374be3  Go-Regular.ttf
+    sha256 8bc66a0154bbf69cd24e5bde41a12ec9495c8a242c5def2255e4a164900f1ed7  Go-Mono.ttf
+  Licence: BSD-3-Clause. `README` is the fonts' own notice from that
+  directory (copyright Bigelow & Holmes Inc., and the licence);
+  `LICENSE-golang-image` is the repository's licence. The subfonts made
+  from them carry `README` as root/fonts/go/LICENSE.
+
+unifont/: GNU Unifont 18.0.01 (2026-09-16), by Roman Czyborra, Paul
+  Hardy and contributors.
+  unifont-18.0.01.hex and unifont-combining-18.0.01.txt are
+  font/precompiled/ from https://ftp.gnu.org/gnu/unifont/unifont-18.0.01/unifont-18.0.01.tar.gz
+    sha256 eab60847aac34c8768765cecc7821faf50de2636187b452b9b5fa50a12b00bc3  unifont-18.0.01.tar.gz
+    sha256 2ab7801c809b76541a10b25858c1a962bdb650eee56b4c7df1f325b56e3955ee  unifont-18.0.01.hex
+    sha256 d2372351ad05b050b7ceb41ee894961a33e6fdd6cf0201c4896aef2e55cf1bd0  unifont-combining-18.0.01.txt
+  Licence: the font files are under the SIL Open Font License 1.1, and
+  also GPLv2+ with the GNU font embedding exception (`COPYING`, from the
+  same tarball; dual licensing started with Unifont 13.0.04 on
+  2020-11-21, per its NEWS and ChangeLog). We use them under the OFL
+  (`OFL-1.1.txt`). No Reserved Font Name is declared. The subfonts made
+  from them are a Modified Version under the OFL and are released under
+  it; `OFL-1.1.txt` and `COPYING` go with them into root/fonts/unifont.
