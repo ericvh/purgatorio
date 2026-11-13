@@ -56,7 +56,9 @@ pub(crate) mod portable {
         let mut c = XChaCha20::new(key.into(), nonce.into());
         let mut block0 = [0u8; 64];
         c.apply_keystream(&mut block0);
-        let mac = Poly1305::new(poly1305::Key::from_slice(&block0[..32]));
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&block0[..32]);
+        let mac = Poly1305::new(&k.into());
         (c, mac)
     }
 
@@ -181,7 +183,7 @@ mod tests {
 
     fn reference(key: &[u8; 32], nonce: &[u8; NONCE], aad: &[u8], msg: &[u8]) -> Vec<u8> {
         XChaCha20Poly1305::new(key.into())
-            .encrypt(XNonce::from_slice(nonce), Payload { msg, aad })
+            .encrypt(&XNonce::from(*nonce), Payload { msg, aad })
             .unwrap()
     }
 
@@ -214,7 +216,7 @@ mod tests {
                 // also checks the reference against itself).
                 let back = XChaCha20Poly1305::new((&key).into())
                     .decrypt(
-                        XNonce::from_slice(&nonce),
+                        &XNonce::from(nonce),
                         Payload {
                             msg: &want,
                             aad: &aad,
