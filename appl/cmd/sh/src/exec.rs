@@ -829,6 +829,8 @@ impl Shell {
             Module::Mpexpr => crate::num::expr(argv, true),
             Module::String => Ok(crate::string::subst(argv)?),
             Module::Regex => Ok(crate::regex::re(argv)?),
+            // An empty list stays empty, as in Inferno.
+            Module::Csv if argv.len() == 1 => Ok(Vec::new()),
             Module::Csv => Ok(vec![crate::csv::join(&argv[1..])]),
             Module::File2chan => self.rget(argv),
             Module::Sexprs => crate::sexp::subst(argv),
