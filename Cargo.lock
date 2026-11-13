@@ -854,6 +854,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-install-mergelog"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-wrap",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-install-mkproto"
 version = "0.1.0"
 dependencies = [
@@ -871,6 +879,24 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-updatelog"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "appl-lib-wrap",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-wdiff"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-proto",
+ "appl-lib-wrap",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-install-wfind"
 version = "0.1.0"
 dependencies = [
  "appl-lib-proto",

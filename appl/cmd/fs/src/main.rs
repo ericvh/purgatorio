@@ -39,7 +39,11 @@
 //! files; `write dir tree` makes the tree under `dir`, with modes and
 //! modification times; `bundle tree` writes an archive of it on standard
 //! output; `exec [-n n] command entries` runs `command` under `sh` with
-//! `$file` set to the paths, `n` at a time (default 1).
+//! `$file` set to the paths, `n` at a time (default 1); `log [-u uid]
+//! [-g gid] entries` writes an `a` entry of a replica log (applylog(8))
+//! for each, the time now and a sequence number from 0, with the owner
+//! and group given. Inferno's log module puts an extra `-` field in each
+//! line, which its own log reader does not take; this one does not.
 //!
 //! A command is an `@{...}` block or a quoted string, run by `sh`.
 //! `exec [-pP] [-t command] [-n n] command entries` runs the command for
@@ -158,6 +162,14 @@ fn getopts(verb: &str, mut args: Vec<Value>, flags: &str, with: &str) -> Res<(Op
 /// `s` quoted for sh.
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+/// `s` quoted as Inferno's `%q` does: only when it must be.
+fn qtext(s: &str) -> String {
+    if !s.is_empty() && !s.contains(|c: char| c.is_whitespace() || c == '\'') {
+        return String::from(s);
+    }
+    quote(s)
 }
 
 /// Assignments of the stat variables `exec -p` and `-P` set.
@@ -896,6 +908,43 @@ impl Fs {
                         d.length,
                         daytime::filet(now, i64::from(t)),
                         e.path
+                    ));
+                }
+                put(out.as_bytes())?;
+                Ok(Value::Void)
+            }
+            "log" => {
+                let use_ = "log [-u uid] [-g gid] entries";
+                let mut uid = None;
+                let mut gid = None;
+                let mut i = 0;
+                while let Some(Value::Str(o)) = args.get(i) {
+                    let slot = match o.as_str() {
+                        "-u" => &mut uid,
+                        "-g" => &mut gid,
+                        _ => break,
+                    };
+                    let Some(Value::Str(v)) = args.get(i + 1) else {
+                        return usage(use_);
+                    };
+                    *slot = Some(v.clone());
+                    i += 2;
+                }
+                let Ok([v]) = <[Value; 1]>::try_from(args.split_off(i)) else {
+                    return usage(use_);
+                };
+                let now = daytime::now();
+                let mut out = String::new();
+                for (seq, e) in self.entries(verb, v)?.iter().enumerate() {
+                    let d = &e.dir;
+                    out.push_str(&format!(
+                        "{now} {seq} a {} - {:o} {} {} {} {}\n",
+                        qtext(&e.path),
+                        d.mode,
+                        qtext(uid.as_deref().unwrap_or(&d.uid)),
+                        qtext(gid.as_deref().unwrap_or(&d.gid)),
+                        d.mtime,
+                        d.length
                     ));
                 }
                 put(out.as_bytes())?;
