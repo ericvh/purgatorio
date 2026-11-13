@@ -33,6 +33,8 @@ const ROUNDS: u32 = 4;
 /// The samples `hot` waits for: enough that `burn`, where nearly all of
 /// its time goes, is the function with the most.
 const SAMPLES: u64 = 8;
+/// How long `hot` computes between reads of its sample count.
+const BURN: Duration = Duration::from_millis(50);
 /// How long `hot` waits for them.
 const LIMIT: Duration = Duration::from_secs(120);
 
@@ -105,15 +107,19 @@ fn inner(mode: Mode) -> u64 {
         Mode::Hot => {
             let start = Instant::now();
             let mut x = black_box(0x9e37_79b9_7f4a_7c15u64);
-            // The count is read every 16 rounds: a tick that falls in the
-            // read is taken at the next check point, which is in `inner`,
-            // so reading often would put samples there.
+            // The count is read after at least 50 ms in `burn`: a tick
+            // that falls in the read is taken at the next check point,
+            // which is in `inner`, so reading often would put samples
+            // there. A fixed number of rounds is too short under a fast
+            // VM on a loaded machine, where the read itself can take
+            // milliseconds.
             while samples() < SAMPLES {
                 if start.elapsed() > LIMIT {
                     eprintln!("debug: fewer than {SAMPLES} samples after {LIMIT:?}");
                     purgatorio::exits("fail:no samples");
                 }
-                for _ in 0..16 {
+                let round = Instant::now();
+                while round.elapsed() < BURN {
                     x = burn(black_box(100_000), x);
                 }
             }
