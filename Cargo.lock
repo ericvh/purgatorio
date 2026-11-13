@@ -831,6 +831,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-ip-rip"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-ip-sntp"
 version = "0.1.0"
 dependencies = [
