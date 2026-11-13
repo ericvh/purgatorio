@@ -1414,8 +1414,8 @@ Inferno's versions are Tk programs; these draw on `/dev/draw` with the
 SDK alone (no Tk, as the owner decided), and every picture is drawn here
 with draw(2)'s primitives: no Inferno or Plan 9 code, images or art was
 used. Each fills the screen it is given: the emu's (`-g`, `-w` or in
-memory) or a window manager's window, which has a `/dev/draw` of its
-own. They use `screen.r` as given, which need not start at 0,0, and
+memory) or a window in rio, which `Display::open` finds through
+`/dev/winname` on the shared draw device (Section 12). They use `screen.r` as given, which need not start at 0,0, and
 follow a resize by calling `Display::check_resize` on each pointer
 event and from time to time (a window manager may resize without a
 pointer event). Each waits in `purgatorio::ready` with a timeout, so an
