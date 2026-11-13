@@ -513,13 +513,15 @@ fn echo(argv: &[String], io: &Io) -> String {
     if newline {
         s.push('\n');
     }
-    match io.try_write(1, s.as_bytes()) {
-        Ok(()) => String::new(),
-        Err(e) => {
-            io.write(2, &format!("echo: write error: {}\n", Error::from(e)));
-            String::from("write error")
-        }
-    }
+    // One write, as Inferno's echo: a file that takes fewer bytes than
+    // were written (a file2chan's rwrite with a count) is an error.
+    let err = match io.write_once(1, s.as_bytes()) {
+        Ok(n) if n == s.len() => return String::new(),
+        Ok(_) => String::from("short write"),
+        Err(e) => Error::from(e).0,
+    };
+    io.write(2, &format!("echo: write error: {err}\n"));
+    String::from("write error")
 }
 
 #[cfg(test)]
