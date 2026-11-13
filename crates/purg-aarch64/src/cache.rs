@@ -30,3 +30,9 @@ pub fn dma_align() -> usize {
     let granule = if cwg == 0 { 128 } else { 4 << cwg };
     granule.max(dline()).max(64)
 }
+
+/// The smallest instruction cache line in bytes (`CTR_EL0.IminLine`):
+/// the step for `ic ivau` loops.
+pub fn iline() -> usize {
+    4 << (ctr() & 0xf)
+}
