@@ -335,4 +335,25 @@ impl Dev for DevCons {
             _ => Err(Error::new(error::EPERM)),
         }
     }
+
+    /// A read of `keyboard` waits for a key; `purgatorio.wait` sees it
+    /// ready when one is queued. The other files keep the default.
+    fn ready(&self, c: &Chan, write: bool) -> bool {
+        match (&self.screen, c.qid.path) {
+            (Some(s), QKEYBOARD) if !write => s.input().has_keys(),
+            _ => true,
+        }
+    }
+
+    fn watch(&self, c: &Chan, write: bool, w: &purg_platform::sync::Rendez) {
+        if let (Some(s), QKEYBOARD, false) = (&self.screen, c.qid.path, write) {
+            s.input().watch(w);
+        }
+    }
+
+    fn unwatch(&self, c: &Chan, w: &purg_platform::sync::Rendez) {
+        if let (Some(s), QKEYBOARD) = (&self.screen, c.qid.path) {
+            s.input().unwatch(w);
+        }
+    }
 }

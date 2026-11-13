@@ -434,6 +434,40 @@ pub fn wait() -> Result<Waitmsg, Error> {
     }
 }
 
+/// One file descriptor for [`ready`] to watch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ready {
+    /// A read of the fd would not block.
+    Read(i32),
+    /// A write of the fd would not block.
+    Write(i32),
+}
+
+/// Waits until one of `fds` is ready (`purgatorio.wait`, Limbo's `alt`
+/// over files) and returns its index, or `None` once `timeout_ms` has
+/// passed (a negative timeout waits for ever). Pipes, `/prog/n/wait`,
+/// `/dev/pointer` and `/dev/keyboard` say when they are ready; a file
+/// whose device cannot tell is always ready. With a timeout, a failure
+/// also reads as `None`.
+pub fn ready(fds: &[Ready], timeout_ms: i32) -> Result<Option<usize>, Error> {
+    let ops: Vec<i32> = fds
+        .iter()
+        .flat_map(|f| match *f {
+            Ready::Read(fd) => [0, fd],
+            Ready::Write(fd) => [1, fd],
+        })
+        .collect();
+    let n = unsafe { sys::wait(ops.as_ptr(), fds.len(), timeout_ms) };
+    if n < 0 {
+        return if timeout_ms >= 0 {
+            Ok(None)
+        } else {
+            Err(Error::last())
+        };
+    }
+    Ok(Some(n as usize))
+}
+
 /// Splits `s` at white space, honouring Inferno's `%q` quoting: a field in
 /// `'` quotes may hold white space, and `''` inside quotes is one `'`.
 pub fn unquote_fields(s: &str) -> Vec<String> {

@@ -451,7 +451,9 @@ wstat. The `export` command sets it with `-r`. This is how `mcpd` shows
 `/bin` and `/lib` to a session without letting it change them.
 
 `purgatorio.wait` accepts a fd open on `/prog/<pid>/wait` as a read
-operation: it is ready when an exit message is queued.
+operation: it is ready when an exit message is queued. `/dev/pointer` and
+`/dev/keyboard` are ready when an event or a key is queued. The SDK's
+`purgatorio::ready` wraps the call for fds.
 
 ### `fauth` (v0.5)
 
