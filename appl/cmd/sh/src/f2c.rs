@@ -7,7 +7,7 @@
 //! request. The sub-shell gets the shell's modules and functions, and its
 //! variables through `/env`; like Inferno's thread, it keeps its own
 //! variables from then on. When a client closes the file, the close
-//! command runs (with no `$tag`: a close takes no reply).
+//! command runs with a `$tag` that only `${rget fid}` accepts.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -107,11 +107,27 @@ impl Shell {
         drop(ready);
         while let Some(req) = fio.recv_with_close()? {
             if req.is_close() {
-                if let Some(ccmd) = args.get(3) {
-                    let res = self.run_block(ccmd);
-                    if let Err(Stop::Exit(_)) = res {
-                        break;
-                    }
+                let Some(ccmd) = args.get(3) else {
+                    continue;
+                };
+                // The close gets a tag too, for ${rget fid}; it takes no
+                // reply.
+                let id = self.tags.next;
+                self.tags.next += 1;
+                self.tags.tags.insert(
+                    id,
+                    Tag {
+                        req,
+                        blocked: false,
+                    },
+                );
+                let saved = self.save_vars(&["tag"]);
+                self.set_var("tag", vec![id.to_string()], true);
+                let res = self.run_block(ccmd);
+                self.restore_vars(saved);
+                self.tags.tags.remove(&id);
+                if let Err(Stop::Exit(_)) = res {
+                    break;
                 }
                 continue;
             }
@@ -147,6 +163,11 @@ impl Shell {
             }
         }
         Ok(())
+    }
+
+    /// Whether this shell holds requests for a file it serves.
+    pub(crate) fn serving(&self) -> bool {
+        !self.tags.tags.is_empty()
     }
 
     /// The tag a reply command names: its argument if `explicit`, else
@@ -188,7 +209,7 @@ impl Shell {
 
     fn peek_tag(&self, cmd: &str, id: u64, read: bool) -> Result<&Request, Fail> {
         match self.tags.tags.get(&id) {
-            Some(t) if t.req.is_read() == read => Ok(&t.req),
+            Some(t) if !t.req.is_close() && t.req.is_read() == read => Ok(&t.req),
             _ => Err(Fail::raise(
                 "bad tag",
                 &format!("{cmd}: inappropriate tag id"),
@@ -285,14 +306,14 @@ impl Shell {
                 String::from_utf8_lossy(self.peek_tag("rget", id, false)?.data()).into_owned()
             }
             "count" => self.peek_tag("rget", id, true)?.count().to_string(),
-            "offset" | "fid" => {
-                let req = &self.tags.tags[&id].req;
-                if argv[1] == "offset" {
-                    req.offset.to_string()
-                } else {
-                    req.fid.to_string()
+            "fid" => self.tags.tags[&id].req.fid.to_string(),
+            // A close has only a fid.
+            "offset" => match &self.tags.tags[&id].req {
+                r if r.is_close() => {
+                    return Err(Fail::raise("bad tag", "rget: inappropriate tag id"));
                 }
-            }
+                r => r.offset.to_string(),
+            },
             _ => return Err(Fail::raise("usage", FORM)),
         };
         Ok(vec![s])

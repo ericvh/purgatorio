@@ -40,7 +40,7 @@ a `; ` prompt.
 | `sh` subset: `-e`, pipelines, `&`, `&&`, `\|\|`, `!`, blocks, redirections, `'quotes'`, `^`, list variables exported through `/env`, `` `{} ``, `<>` (read and write), builtins `cd exit run wait load` and `@{}` sub-shells (own variables, environment, fds and namespace); `load std` has `pctl` and `${pid}`; file-name patterns (`*`, `?`, `[class]`) | done |
 | `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`, `${hd}` `${tl}` `${index}` `${quote}` `${unquote}`. `load expr`: postfix `${expr}` | done |
 | `load string`: the sh-string(1) builtins (`prefix`, `in`, `${splitl}`, `${slice}`, `${fields}`, `${padl}`, ...). `load regex`: `match` and `${re g\|v\|s\|sg\|m\|mg\|M}` | done |
-| The rest of the sh modules: `load arg`, `csv`, `echo`, `file2chan`, `mload`, `mpexpr` (arbitrary precision), `sexprs`, `test` | done |
+| The rest of the sh modules: `load arg`, `csv`, `echo`, `file2chan` (its reply commands also work as pipeline stages), `mload`, `mpexpr` (arbitrary precision), `sexprs`, `test` | done |
 | `mash`, Inferno's other shell, with its built-in make (`load make`), history and `serve` | done |
 | Plan 9 regular expressions (regexp(6)) in one shared crate, `appl/lib/regexp`, used by `grep`, `sed` and `load regex` | done |
 | `load` and `call` of reactor modules from `/bin/lib` (the shell's `load add` gives `${add 20 22}`) | done |
