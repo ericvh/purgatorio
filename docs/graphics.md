@@ -5,7 +5,8 @@ memdraw (G1), fonts and the draw SDK (G2), Tk (G3) and `wm` (G4). It
 looks at display backends for the emu and the kernel, rasterization,
 fonts and toolkits, and ends with a plan and questions for the owner.
 Section 8 describes the first piece built from it: a minimal draw device
-on the emu (G1).
+on the emu (G1). Section 9 describes the second: fonts, the font cache
+and text (G2), with window resizing and pixel doubling in the emu.
 
 Facts were checked on 2026-11-12 against crates.io, docs.rs, the
 crates' repositories, the virtio specification, QEMU's sources and its
@@ -353,7 +354,11 @@ fonts across the three runners, as it does for modules. Source TTFs
 are committed under a fonts directory with their licences, so builds do
 not fetch anything.
 
-Size (**unverified estimates**): a Go Regular subfont at 12 pixels for
+G2 built this, with one change: fontgen needs the emu to run, so its
+output is committed and CI checks that it still comes out the same
+(Section 9.1).
+
+Size (**unverified estimates**, measured in Section 9.1): a Go Regular subfont at 12 pixels for
 Latin-1 is some tens of KiB as `k8` before compression. Unifont as
 subfonts for the whole BMP is a megabyte or more at 1 bit, so it should stay out of the kernel's
 compiled-in root unless asked for.
@@ -537,8 +542,9 @@ it.
 
 - The wheel's button bits in `/dev/pointer` (taken from how Inferno's
   wm behaves, not from the man page).
-- Since which release Unifont's fonts are OFL 1.1.
-- Unifont's size as 1-bit subfonts.
+- Since which release Unifont's fonts are OFL 1.1 (since 13.0.04:
+  Section 9.1).
+- Unifont's size as 1-bit subfonts (1.48 MB compressed: Section 9.1).
 - Whether Ubuntu's QEMU package on the CI runners includes virtio-gpu.
 - The arm64 KVM cache issue with non-cacheable framebuffers.
 - Whether inferno-os runs on 64-bit Linux today.
@@ -676,7 +682,8 @@ pub trait Screen: Send + Sync {
 
 It is in `purg-platform` (`screen.rs`), with `Input` (the pointer and
 keyboard queues, woken through a `Rendez`) and `Headless`;
-`Platform::screen` returns one or `None`. The device owns the pixels:
+`Platform::screen` returns one or `None`. G2 lets the size change
+(Section 9.4). The device owns the pixels:
 memdraw draws into the device's screen image, and on `v` the backend
 gets the damaged rectangle's rows in the screen's channel format. A
 backend only shows pixels and feeds input, so it needs no part of
@@ -847,19 +854,261 @@ module 640.
 
 - Screens and windows (`A`, `F`, `S`, `t`, `o` on a window, refresh
   messages, libmemlayer), named images (`n`, `N`), the font cache and
-  strings (`i`, `l`, `s`, `x`: G2), and `m8` with colour-map writes.
+  strings (`i`, `l`, `s`, `x`: done in G2, Section 9), and `m8` with
+  colour-map writes.
 - Cursor images on `/dev/cursor`, the snarf buffer `#^`.
 - The device in the kernel and the probe (ramfb, virtio-input), and a
   kernel feature for it; graphics is off in `kernel-small` by not being
   built at all.
-- HiDPI scaling, window resizing (the screen keeps its size, in the
-  window and in the browser), and pointer events outside the window.
+- HiDPI scaling and window resizing in the window (done in G2, Section
+  9.4; the browser screen keeps its size), and pointer events outside
+  the window.
 - Goldens rendered by real Inferno; the pixels follow our reading of
   draw(2), listed above.
 - A screen image drawn onto itself, or any image drawn through itself,
   is copied first: correct, but a full-screen copy for a scroll.
 
-## 9. Sources
+## 9. G2 as built: fonts and text
+
+The owner's decisions for G2: the Go fonts as the default, Unifont for
+the rest of the Basic Multilingual Plane, Noto when someone asks for a
+script; our own path names (Lucida is a trademark); the emu first.
+
+### 9.1 The fonts
+
+**Sources.** `fonts/` holds pinned copies of Go Regular and Go Mono
+(golang.org/x/image, BSD-3-Clause) and GNU Unifont 18.0.01's
+`unifont-18.0.01.hex` and `unifont-combining-18.0.01.txt`, with their
+licences and checksums in `fonts/README`. Unifont's font files are under
+the SIL OFL 1.1 and also GPLv2+ with the font embedding exception;
+the dual licence started with Unifont 13.0.04 (2020-11-21, its NEWS and
+ChangeLog), and the 18.0.01 tarball's `COPYING` says it covers the
+`.hex` font files, not only the compiled fonts. It declares no Reserved
+Font Name, so the subfonts made from it can keep the name. We use it
+under the OFL. Unifont is read from its `.hex` bitmaps rather than
+rasterized from its OpenType file: the bitmaps are the font's source,
+1-bit and exact, and the `.otf` is 5.3 MB to the `.hex`'s 3.7 MB
+(0.9 MB compressed, about what it adds to the repository).
+
+**`fontgen`** (`appl/cmd/fontgen`, `/bin/fontgen.wasm`) follows a recipe
+(`fonts/recipe`):
+
+- `ttf src px name` rasterizes every glyph of a TrueType or OpenType
+  font in the BMP (not the C0 and C1 controls) with fontdue 0.9.5
+  (`default-features = false`, so no SIMD) at `px` pixels, plus glyph 0
+  (the missing-glyph box) as rune 0. Each block of 256 runes that has
+  glyphs becomes a `k8` subfont `name/XXXX` (the block's first rune in
+  hex): glyphs side by side, each as wide as its ink, `left` from the
+  glyph's offset, `width` its advance rounded. The ascent is the largest
+  of the font's ascender and every glyph's top, the descent likewise, so
+  nothing is cut. `name.font` lists one range per run of runes the font
+  has, with an offset into the block's subfont, so a font(6) reader that
+  only looks at the first matching range (Inferno's libdraw) still never
+  lands on a missing glyph.
+- `hex src [combining] name` does the same from Unifont's bitmaps:
+  `k1`, height 16, ascent 14. A combining mark gets the `left` that
+  `unifont-combining.txt` gives (−8 for most) and an advance of the
+  glyph's width plus that, usually 0, so it lands on the rune before it.
+- `merge name font...` writes a font file with the ranges of each font
+  in turn, file names made relative to the new font's directory, the
+  largest ascent and the largest descent.
+- `copy src dest` copies a licence beside the fonts.
+
+Subfont images are written compressed (image(6)): `purg-memdraw` gained
+`file::write_image` with a greedy coder whose copies stay within a row's
+end and within a block of at most 6000 bytes (or two rows, as Inferno's
+writer), and `read_image`, plus `Subfont`, `FontFile` and `Fontchar`
+for the font files.
+
+**Why fontgen runs as a guest, and why its output is committed.**
+fontdue rasterizes in `f32` and has x86-only SIMD paths; compiled for a
+host, the bytes could differ between x86-64 and aarch64. As a wasm guest
+the arithmetic is IEEE-754 with no fused operations on every host and
+both VMs. Running it needs the emu (or a wasm runtime), which
+`build-root` does not build, so it is `cargo xtask fonts`, run by hand
+when the recipe, a source or fontgen changes, and `root/fonts` is
+committed. `cargo xtask fonts --check` makes everything again in
+`target/fonts-out` and fails if any file differs, is missing or is
+extra; CI runs it on Linux x86-64, Linux aarch64 and macOS arm64, which
+is the fonts' counterpart of the guest-hash comparison. The acceptance
+test `fontgen_is_deterministic` makes Go Mono 13 on wasmtime and on
+wasmi and compares both with the committed files. Making all of
+`root/fonts` takes 0.8 s on wasmtime and 15 to 21 s on wasmi here (a
+debug emu on a loaded machine); `cargo xtask fonts` from cold takes
+minutes because it builds the guests and the emu.
+
+**What is in `root/fonts`:**
+
+| Font file | Faces |
+|---|---|
+| `sans/unicode.13.font`, `sans/unicode.20.font` | Go Regular at 13 or 20 pixels, then Unifont |
+| `mono/unicode.13.font`, `mono/unicode.20.font` | Go Mono, then Unifont |
+| `default.font` | the same as `sans/unicode.13.font` |
+| `go/{regular,mono}.{13,20}.font` | a Go face alone (its missing-glyph box as rune 0) |
+| `unifont/unifont.16.font` | Unifont alone: 57,086 glyphs in 223 subfonts |
+
+`go/LICENSE` (the Go fonts' notice), `unifont/OFL-1.1.txt`,
+`unifont/COPYING` and a `README` go with them. Sizes, compressed as
+written:
+
+| What | Files | Bytes |
+|---|---|---|
+| Go Regular 13 / 20 | 15 subfonts each | 52,871 / 84,943 |
+| Go Mono 13 / 20 | 15 each | 52,392 / 84,909 |
+| Unifont 16 | 223 | 1,481,011 |
+| All of `root/fonts`, with font files and licences | 297 | 1,893,517 |
+
+The fonts are not in the kernel's or the probe's image (only `bin` and
+`lib` go in, and `fontgen.wasm` is left out with the other graphics
+files).
+
+### 9.2 The font cache in `#i`
+
+`i id[4] n[4] ascent[1]` makes image `id` a font cache of `n` glyphs;
+`l id[4] srcid[4] index[2] R[16] P[8] left[1] width[1]` draws `R` of the
+cache from `srcid` at `P` (`SoverD`, opaque mask) and records the glyph;
+`s dst[4] src[4] font[4] P[8] clipR[16] sp[8] n[2] index[2n]` draws `n`
+glyphs from the baseline point `P`, with the destination's clip
+replaced by `clipR` for the message; `x` adds `bg[4] bgp[8]` after `n`
+and first fills, from `bg`, the rectangle from `(P.x, P.y − ascent)` as
+wide as the advances and as high as the cache image. Each glyph is
+devdraw's `drawchar`, now `purg_memdraw::draw_char`. Freeing the image
+drops its cache. The checks and errors are devdraw's: `cannot use
+display as font`, `bad font size (4096 chars max)`, `image not a font`,
+`character index out of range`, `unknown id for draw image`, `short draw
+message`. Two differences: `s` checks every index before drawing
+anything (devdraw draws the glyphs before a bad one), and `l` reads the
+index as unsigned, so it has no negative case.
+
+**Named images (`n`, `N`) are not implemented.** Neither libdraw's font
+code nor ours needs them; they exist to share images between clients
+(`wm` and its windows), and images here belong to one connection, so
+they wait for G4.
+
+### 9.3 Text in the SDK
+
+`purgatorio::draw::Font::open(path)` reads a font file;
+`Font::default_font()` opens `$font` or `/fonts/default.font`. A
+subfont file is read the first time one of its runes is drawn or
+measured, and its image goes to the device with its first glyph that
+gets cached. `Display::string(dst, p, src, sp, font, s)` (draw(2)'s
+`string`: `p` is the top left of the line, and it returns the point
+after the text), `Display::string_bg(..., bg, bgp)` (`stringbg`) and
+`Font::string_width(s)` (`stringwidth`) work rune by rune.
+
+The cache is a `k8` image of 512 slots (`NCACHE`), each as wide as the
+widest glyph seen (it starts at the font's height and is made again,
+empty, for a wider glyph) and as high as the font. A glyph is copied
+into a slot with `l`, its rows moved down by the font's ascent less the
+subfont's and cut to the cache's height; the least recently used slot
+is reused, and a slot used by the message being built is never the
+oldest. Strings go as `s` or `x` messages of at most 100 glyphs, as
+libdraw sends them.
+
+Lookup differs from libdraw on purpose: a rune whose range's subfont
+lacks it, or whose subfont cannot be read, goes on to the next range
+that holds it, so `sans/unicode.13.font` can list Go first and Unifont
+after. When no range has the rune, rune 0 is drawn (libdraw's rule),
+and when that is missing too, the rune is skipped.
+
+`draw/demo` now draws a title in `sans/unicode.20`, a line of code on a
+background in `mono/unicode.13`, and Greek, Cyrillic, CJK and Hangul in
+the default font, and draws its scene again when the window is resized.
+
+### 9.4 Resizing and HiDPI in the emu
+
+**Resizing.** draw(3) says nothing about a screen that changes size,
+and Inferno's emu does not resize: its X11 window asks for a fixed size
+and ignores configure events. We take the smallest step that keeps
+draw(3)'s shape. `emu -g`'s window is resizable. On a resize the window
+makes its frame the new size (in screen pixels), then calls
+`Input::resized()`. The device notices before its next request (a write
+to `data`, a read of `ctl` or `refresh`) and makes a new screen image of
+the new size, keeping the old pixels that fit and white elsewhere, all
+of it damaged. Clients learn it in two ways:
+
+- `/dev/draw/n/refresh`, which before blocked forever, now returns a
+  20-byte record after each resize: id 0 and the new rectangle, four
+  little-endian 4-byte integers, as devdraw's refresh records are laid
+  out. `Display::wait_resize()` reads it.
+- The window also queues a pointer event with the current state, so a
+  program that only reads `/dev/pointer` (like `draw/demo`) wakes up and
+  can call `Display::check_resize()`, which reads `ctl` for the screen
+  and updates `Display::screen()` if the rectangle changed.
+
+**The screen trait change.** `Screen` itself is unchanged; the contract
+is: `size()` may change, and a backend whose size changes updates what
+`size()` returns and then calls `input().resized()`; `flush` may still
+get a rectangle in the old size just after, which the backend clips.
+`Input` gained `resized()` and `resizes()` (a count). `Headless` gained
+`resize(w, h)` for tests. The web backend follows by doing the same when
+its canvas changes size.
+
+**HiDPI.** The screen stays in its own pixels, so bitmap fonts and
+draw(2)'s integer geometry are never resampled. `emu -g -2` shows each
+screen pixel as 2×2 window pixels; `-1` never doubles; by default the
+emu doubles when the display's scale factor (winit's, at the time the
+window opens and when it changes) is 1.5 or more. Pointer positions are
+divided by the factor, `/dev/pointer` writes multiplied, and a resized
+window gives a screen of its size divided by the factor. `-g WxH` is
+the screen's size, so `-g 800x600 -2` is a 1600×1200 window.
+
+### 9.5 Tests
+
+- `purg-memdraw`: image files round-trip plain and compressed in four
+  formats, blocks keep within their size, old log-depth headers read;
+  font files parse and print; subfonts round-trip. A golden image
+  (`tests/golden/text.bit`) draws four lines in the four `unicode` fonts
+  from `root/fonts`, Latin, Greek, Cyrillic, CJK, Hangul and symbols,
+  through `draw_char`.
+- `purg-core`: the device draws glyphs loaded with `l` through `s` at
+  the right pixels (`left` negative), and a resize keeps the old pixels
+  that fit.
+- `/bin/test/draw.wasm`, on both VMs: `text` draws a string through the
+  SDK and the device's cache and compares it with the same string drawn
+  in the guest straight from the subfont files, with the end point and
+  `string_width`; again with a background; `cache` draws more distinct
+  CJK runes than the cache has slots and compares; `fonterrors` checks
+  devdraw's errors for `i`, `l` and `s`.
+- `fontgen_is_deterministic` on both VMs, and `cargo xtask fonts
+  --check` in CI on three hosts.
+- `fontgen`'s own unit tests: relative paths, 1-bit packing, Unifont
+  lines and combining offsets.
+
+### 9.6 Sizes
+
+Measured on Linux aarch64 with Rust 1.99.1, the same way as Section 8.3.
+
+| What | G1 | G2 |
+|---|---|---|
+| `purg-memdraw`, `aarch64-unknown-none`, opt-level `z`, `.text` + `.rodata` of the rlib | 24,522 bytes | 35,149 bytes (image files, the compressor, font files, `draw_char`) |
+| The devices in `purg-core` (`tls,lethe,draw` less `tls,lethe`, same measure) | 26,823 bytes | 42,651 bytes |
+| The emu, release, stripped | 14,164,608 bytes | 14,230,168 bytes (+65,560; `next` also moved between the two) |
+| `draw/demo.wasm` | 80,063 bytes | 124,393 bytes (the font code) |
+| `test/draw.wasm` | 133,832 bytes | 181,021 bytes |
+| `fontgen.wasm` (fontdue and ttf-parser) | | 226,565 bytes |
+| `root/fonts` | | 1,893,517 bytes in 297 files (Section 9.1) |
+| `fonts/` (sources and licences) | | 4,167,541 bytes; Unifont's `.hex` is 3,762,132 of it, 936,573 gzipped |
+
+The G1 memdraw figure in this table was measured again with the same
+command as the G2 one; Section 8.3's 24,330 used a slightly different
+count. The Rust added is about 2,400 lines with tests: memdraw 650,
+fontgen 450, the device 300, the SDK 420, the window and the emu's
+options 150, the screen trait 40, the test guest and goldens 290, xtask
+140.
+
+### 9.7 Not done in G2
+
+- Named images (`n`, `N`), screens and windows: G4.
+- Noto, and bold or italic Go faces: one recipe line each when wanted.
+- Unifont's planes above the BMP, and its CSUR private-use glyphs.
+- Shaping (Arabic joining, Indic reordering, ligatures): Inferno does
+  not shape; a later SDK extra.
+- `Font.build` from a string, `/dev/cursor` images, `m8`.
+- The font cache in the kernel (the device is still emu-only).
+- Real Inferno goldens; the text goldens are ours.
+
+## 10. Sources
 
 All accessed 2026-11-12.
 
@@ -897,7 +1146,19 @@ All accessed 2026-11-12.
   `libmemlayer`: https://github.com/inferno-os/inferno-os
 - Go fonts: https://go.dev/blog/go-fonts (2016-11-16);
   https://github.com/golang/image (`font/gofont/ttfs`, BSD-3-Clause)
-- GNU Unifont licence: https://unifoundry.com/LICENSE.txt
+- GNU Unifont licence: https://unifoundry.com/LICENSE.txt (last
+  modified 2022-03-19)
+- GNU Unifont 18.0.01:
+  https://ftp.gnu.org/gnu/unifont/unifont-18.0.01/unifont-18.0.01.tar.gz
+  (`COPYING`, `OFL-1.1.txt`, `NEWS`, `ChangeLog`, `font/precompiled/`)
+- Go font files: https://github.com/golang/image, `font/gofont/ttfs`
+  at commit 41969df76e82aeec85fa3821b1e24955ea993001 (its `README`)
+- fontdue 0.9.5's sources (`Cargo.toml` features, `src/platform`), from
+  crates.io
+- Inferno's `man/3/draw`, `man/3/pointer`, `man/6/font`,
+  `emu/port/devdraw.c` (the font cache messages and `drawchar`),
+  `emu/port/devpointer.c`, `libdraw/font.c`, `libdraw/string.c` and
+  `emu/port/win-x11a.c` (no resizing), for G2
 - OFL FAQ: https://openfontlicense.org/ofl-faq/
 - Noto: https://github.com/notofonts/latin-greek-cyrillic (`OFL.txt`);
   Fira: https://github.com/mozilla/Fira (`LICENSE`); DejaVu:
