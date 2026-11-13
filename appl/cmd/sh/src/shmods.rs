@@ -255,6 +255,8 @@ impl Shell {
         let Some(ns) = argv.get(1) else {
             return Err(usage(&format!("{cmd} name [module...]")));
         };
+        // munload's status when a namespace or module is missing.
+        let mut status = "";
         for name in &argv[2..] {
             if crate::shmods::is_block(name) {
                 return Err(usage(&format!("{cmd} namespace [module...]")));
@@ -282,6 +284,7 @@ impl Shell {
                     2,
                     &format!("munload: no such namespace {}\n", crate::exec::quote(ns)),
                 );
+                status = "fail";
                 continue;
             };
             let mods = &mut self.namespaces[i].1;
@@ -290,6 +293,7 @@ impl Shell {
                     2,
                     &format!("munload: no such module {}\n", crate::exec::quote(name)),
                 );
+                status = "fail";
                 continue;
             };
             mods.remove(j);
@@ -297,7 +301,7 @@ impl Shell {
                 self.namespaces.remove(i);
             }
         }
-        Ok(String::new())
+        Ok(String::from(status))
     }
 
     /// `arg [opts {command}]... - args`, after sh-arg(1).
