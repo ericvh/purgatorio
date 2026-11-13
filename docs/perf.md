@@ -689,7 +689,10 @@ The record layer's allocations, the first suspect, were under 2%.
   `chacha20poly1305` 0.11, whose ChaCha20 (0.10) uses NEON on aarch64.
   0.9 needs `--cfg chacha20_force_neon`, which CI's `RUSTFLAGS` would
   drop. The records are the same bytes (the fixed vectors pass); the
-  login protocol and Lethe stay on 0.10 for now.
+  login protocol and Lethe have since moved to 0.11 too, so one
+  version of the ChaCha crates is left (`chacha20` 0.10, `poly1305`
+  0.9). The other `aead`, `cipher` and `universal-hash` versions in
+  `Cargo.lock` come from `embedded-tls` through `aes-gcm` 0.10.
 - **Records without a copy or an allocation each**: `Sealer::seal_buf`
   builds each record in a buffer the sealer reuses, and
   `Opener::open_body` opens a record read without its header in place,

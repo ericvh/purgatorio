@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use hkdf::Hkdf;
 use rand_core::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
@@ -273,8 +273,8 @@ impl Session {
             .map_err(|_| String::from(EPROTO))?;
         hk.expand(b"pglogin1 s2c", &mut s2c)
             .map_err(|_| String::from(EPROTO))?;
-        let c2s = ChaCha20Poly1305::new(Key::from_slice(&c2s));
-        let s2c = ChaCha20Poly1305::new(Key::from_slice(&s2c));
+        let c2s = ChaCha20Poly1305::new(&c2s.into());
+        let s2c = ChaCha20Poly1305::new(&s2c.into());
         let (send, recv) = if client { (c2s, s2c) } else { (s2c, c2s) };
         Ok(Session {
             send,
@@ -463,10 +463,10 @@ pub mod seal {
         let mut n = [0u8; 12];
         rng.fill_bytes(&mut n);
         out.extend_from_slice(&n);
-        let c = ChaCha20Poly1305::new(Key::from_slice(key));
+        let c = ChaCha20Poly1305::new(key.into());
         let ct = c
             .encrypt(
-                Nonce::from_slice(&n),
+                &Nonce::from(n),
                 Payload {
                     msg: data,
                     aad: &out,
@@ -496,9 +496,9 @@ pub mod seal {
     pub fn open_with(key: &[u8; 32], blob: &[u8]) -> Result<Vec<u8>, &'static str> {
         kdf(blob)?;
         let (head, ct) = blob.split_at(HEADER);
-        let c = ChaCha20Poly1305::new(Key::from_slice(key));
+        let c = ChaCha20Poly1305::new(key.into());
         c.decrypt(
-            Nonce::from_slice(&head[HEADER - 12..]),
+            &Nonce::try_from(&head[HEADER - 12..]).map_err(|_| EBAD)?,
             Payload { msg: ct, aad: head },
         )
         .map_err(|_| EWRONG)
@@ -565,7 +565,7 @@ pub mod stream {
 
         fn with(key: &[u8; 32], prefix: [u8; 7]) -> Cipher {
             Cipher {
-                aead: ChaCha20Poly1305::new(Key::from_slice(key)),
+                aead: ChaCha20Poly1305::new(key.into()),
                 prefix,
                 next: 0,
             }

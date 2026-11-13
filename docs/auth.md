@@ -996,7 +996,7 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   without `login`. It builds for `aarch64-unknown-none` and
   `wasm32-wasip1`.
 - Version 3 needs no new crate: X25519 is `curve25519-dalek` 4.1 (already
-  under `ed25519-dalek`, BSD-3-Clause), and `chacha20poly1305` 0.10 and
+  under `ed25519-dalek`, BSD-3-Clause), and `chacha20poly1305` (now 0.11) and
   `hkdf` 0.12 are no longer behind `login`. All are pure Rust and
   `no_std`.
 - New dependencies, all MIT OR Apache-2.0, pure Rust, `no_std`, used with
