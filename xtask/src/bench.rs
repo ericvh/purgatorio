@@ -310,7 +310,7 @@ fn aot_images(ws: &Path, kind: &str) -> Result<PathBuf> {
         "build",
         "--release",
         "-p",
-        "purg-vm-wasmtime",
+        "purg-cwasm",
         "--bin",
         "cwasm",
     ]))?;

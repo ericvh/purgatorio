@@ -173,3 +173,29 @@ fn main() -> ExitCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tool compiles for targets that are not the build host's: CI
+    /// builds the kernel's aarch64 images on x86_64 too. Each target here
+    /// is foreign to some build host.
+    #[test]
+    fn every_backend() {
+        for t in [
+            "aarch64-unknown-none",
+            "x86_64-unknown-linux-gnu",
+            "pulley64",
+        ] {
+            let mut c = wasmtime::Config::new();
+            c.target(t).unwrap();
+            let e = Engine::new(&c).unwrap_or_else(|e| panic!("{t}: {e}"));
+            e.precompile_module(b"\0asm\x01\0\0\0")
+                .unwrap_or_else(|e| panic!("{t}: {e}"));
+        }
+        for kind in [Kind::Native, Kind::Pulley] {
+            Engine::new(&config(kind).unwrap()).unwrap();
+        }
+    }
+}

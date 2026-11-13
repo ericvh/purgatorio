@@ -3837,6 +3837,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "purg-cwasm"
+version = "0.1.0"
+dependencies = [
+ "purg-auth",
+ "purg-vm-aot",
+ "wasmtime",
+]
+
+[[package]]
 name = "purg-emu"
 version = "0.1.0"
 dependencies = [
@@ -3985,7 +3994,6 @@ name = "purg-vm-wasmtime"
 version = "0.1.0"
 dependencies = [
  "purg-abi",
- "purg-auth",
  "purg-core",
  "purg-vm",
  "purg-vm-aot",
@@ -5000,6 +5008,7 @@ dependencies = [
  "wasmtime-internal-jit-icache-coherence",
  "wasmtime-internal-unwinder",
  "wasmtime-internal-versioned-export-macros",
+ "wasmtime-internal-winch",
  "windows-sys 0.61.2",
 ]
 
@@ -5132,6 +5141,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "wasmtime-internal-winch"
+version = "50.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7da31778dc3b2ad856fe62e563196278cb01139ca93c4dad0154169a7d2adff"
+dependencies = [
+ "cranelift-codegen",
+ "gimli",
+ "log",
+ "object",
+ "target-lexicon",
+ "wasmparser 0.261.0",
+ "wasmtime-environ",
+ "wasmtime-internal-cranelift",
+ "winch-codegen",
 ]
 
 [[package]]
@@ -5270,6 +5296,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "winch-codegen"
+version = "50.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92cb941fbc1f9a2435620e9bd65830bdba8b21bdcadef701b9e6366981bea0ac"
+dependencies = [
+ "cranelift-assembler-x64",
+ "cranelift-codegen",
+ "gimli",
+ "regalloc2",
+ "smallvec",
+ "target-lexicon",
+ "thiserror 2.0.21",
+ "wasmparser 0.261.0",
+ "wasmtime-environ",
+ "wasmtime-internal-core",
+ "wasmtime-internal-cranelift",
 ]
 
 [[package]]
