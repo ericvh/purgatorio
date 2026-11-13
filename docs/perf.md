@@ -8,7 +8,8 @@ wasmtime's interpreter. It ends with a recommendation. Section 9 is the
 follow-up that adopted the first part of it: the kernel built without
 strict alignment, and wasmi's modules compiled lazily and shared.
 Section 10 is the data path, and Section 11 the kernel heap on several
-CPUs (#193).
+CPUs (#193). Section 12 makes the AOT engine a real option: images
+loaded at run time and signed, and the whole test mode passing on it.
 
 All numbers are from 2026-11-11 on one Apple Silicon host (8 cores,
 Asahi Linux 6.14, QEMU with KVM and TCG), on `next` at `746aa49` with
@@ -65,6 +66,10 @@ one after it adds the data path changes of Section 10.
   alignment outside the code that runs with the MMU off, and wasmi
   compiles modules lazily and shares engines between progs in
   generations. wasmi now meets every target, and a spawn takes 0.26 ms.
+- **AOT is now a real option (Section 12):** signed image files beside
+  the modules, loaded at run time into a W^X code region; the whole
+  test mode passes with every module compiled; CI runs it and checks the
+  images are the same on every host. It stays off by default.
 - **Then the data path (Section 10):** a kernel profiler (`#T`) showed
   the encrypted mount's cipher built for size, `cat` searching every
   block for a newline in std's line-buffered stdout, byte-at-a-time pipe
@@ -379,7 +384,7 @@ stack runs out before `mash`'s own nesting limit, where the emu's
 wasmtime has 512 KiB. The leak check also failed, by design of the
 prototype: it keeps every deserialized module (2.4 MB of metadata for
 the 162). Running AOT progs on larger thread stacks, and freeing
-modules, are follow-ups.
+modules, are follow-ups, done in Section 12.
 
 ### 5.3 Pulley
 
@@ -464,9 +469,7 @@ Found and not fixed:
 
 - The `-smp 4` stress test and per-prog memory limits of #27 (other
   work).
-- AOT: run-time image loading with signatures, TLS in the scheduler,
-  merging `purg-vm-aot` with `purg-vm-wasmtime`'s host functions (the
-  prototype copies them), and CI running the test mode with it.
+- AOT: done in Section 12, which lists what is left of it.
 - The hot spots in Section 6, and what Section 10.4 leaves.
 - The SHA-256 digest is most of a spawn now (Section 9.2): the CPU's
   SHA-256 instructions, detected at boot.
@@ -946,3 +949,181 @@ would keep the 23 MiB it never touched.
 - What limits four CPUs under KVM now is outside the heap; `kprof`
   samples only the CPU that starts it, so finding it needs a profiler
   for every CPU.
+
+## 12. Follow-up: AOT as a real option
+
+Measured on 2026-11-12, same host, on `next` at `9292ad9` with these
+changes. Other agents were building at times: the load average was 1.4
+to 3.2 during the benchmark runs.
+
+### 12.1 What changed
+
+The prototype of Section 5.2 had seven follow-ups. All are done:
+
+- **The whole test mode passes with every module compiled.** `cargo
+  xtask kernel --aot` builds the kernel with the `aot` feature and boots
+  it on an initrd with a signed image beside every module (191 modules,
+  20.5 MB of wasm, 101.5 MB of images). Under KVM and TCG, on one and on
+  four CPUs, every check passes, the leak check and `mash`'s deepest
+  recursion included. A run under KVM ran 4,630 progs compiled and 37 on
+  wasmi: traced progs, and modules the corpus makes at run time, which
+  have no image.
+- **Stacks.** Guest code now runs on a stack of its own
+  (`purg_aarch64::sched::on_stack`), 576 KiB from the heap for each
+  running compiled prog: wasmtime's default 512 KiB of wasm stack, as on
+  the emu, and 64 KiB under it for the host calls (the deepest a prog's
+  thread went is 22 KiB). The thread's own 256 KiB stack no longer
+  bounds recursion. The heap block has no guard page, but wasmtime
+  checks the stack in each function's prologue against its 512 KiB.
+- **Freeing modules.** Loaded images are shared in generations, as
+  wasmi's modules are (Section 9.2): a generation keeps each image its
+  progs load, up to 8 MiB of images, and goes with the last prog that
+  started in it. At the end of the test mode the code region is empty.
+  Reactors are forgotten when their prog exits, on the emu's wasmtime
+  too, which kept them for ever.
+- **Thread-local storage** is a word in the scheduler's thread
+  (`purg_aarch64::sched::tls`), found through `TPIDR_EL1`, which follows
+  the thread from CPU to CPU, so nothing is locked or switched to reach
+  it. The prototype looked up a map by pid under a lock on every entry
+  to wasm.
+- **One set of host functions.** `purg_vm_aot::host` has the imports,
+  `load` and `call`, and the memory limits, for both wasmtime backends:
+  the emu's and the kernel's link the same `wasmtime` crate. A backend
+  supplies how a reactor's module is made and what runs before a host
+  call (the emu's debugger). The prototype's copy had no memory limits.
+- **Images at run time.** Beside the linked set (unchanged), the engine
+  reads `<path>.cwasm` beside a module, checks its signature against
+  `/lib/keys/aot` in a copy of the boot namespace, and copies it into
+  the kernel's code region (`docs/signing.md` has the format and the
+  rules). Nothing unverified runs: an image that is missing, does not
+  verify or does not load leaves the module on wasmi.
+- **Determinism and CI.** `cargo xtask aot` writes the signed images
+  and their digests; the test matrix's three runners each do it and the
+  `reproducible` job compares the lists, as for the modules. A new job,
+  `kernel-aot`, runs `cargo xtask kernel --aot` under TCG; here it takes
+  146 s, against 127 s for the same machine on wasmi. Two builds here
+  gave identical images.
+- **Selection.** `engine=wasmi|aot|auto` at boot: `auto`, the default
+  in a kernel with the feature, runs a module compiled where it has a
+  verified image; `aot` refuses a module without one (a traced prog
+  still runs on wasmi); `wasmi` never uses an image.
+
+### 12.2 The code region
+
+The kernel's maps were W^X with nothing written at run time executable.
+Images loaded at run time need memory that is written and then run, so
+`purg_aarch64::code` makes it without ever having one mapping both
+writable and executable:
+
+- Pages come from 2 MiB chunks of the heap. While the region owns a
+  chunk, its block in the linear map is read-only, so the code cannot be
+  changed through the linear map either. The runtime page tables no
+  longer use 1 GiB blocks, so that one 2 MiB block can change alone,
+  and the chunk is the region's, so no other access sees the change.
+- Each image gets a range of a 1 GiB window of the high half that only
+  the region maps. Its pages are mapped there read-write and never
+  executable, filled, cleaned to the point of unification (`dc cvau`),
+  remapped read-only and executable with `tlbi vaae1is` for every CPU,
+  and the instruction cache is invalidated over the range (`ic ivau`,
+  broadcast) before an `isb`. A context switch now ends with an `isb`,
+  so a thread that moves to another CPU fetches nothing stale.
+- Dropping the image unmaps its pages, invalidates their TLB entries and
+  returns them; a chunk with no page in use goes back to the heap,
+  writable again. The window's page tables stay (a few pages).
+
+wasmtime's `CustomCodeMemory` accepts code only in the linked set or in
+the window.
+
+### 12.3 Results
+
+Seconds under KVM, three rounds in each of two boots, median and
+fastest in brackets. `wasmi` is the kernel without the feature;
+`files` is `bench --aot-files native` (every module of the root has an
+image file, loaded at run time); `linked` is `bench --aot native` (the
+nine modules of the suite linked into the kernel, as in Section 5.2).
+
+| benchmark | Target | wasmi | AOT, image files | AOT, linked |
+|---|---|---|---|---|
+| cat-root | 0.5 | 0.011 (0.011) | 0.010 (0.010) | 0.010 (0.010) |
+| cat-styx | 1 | 0.098 (0.096) | 0.096 (0.096) | 0.103 (0.100) |
+| cat-styx-sealed | 2 | 0.550 (0.548) | 0.541 (0.540) | 0.555 (0.552) |
+| cat-disk | 2 | 0.153 (0.115) | 0.167 (0.116) | 0.157 (0.077) |
+| sha1-pipe-16m | 1 | 0.753 (0.751) | 0.102 (0.102) | 0.102 (0.102) |
+| sha1-file-16m | 1 | 0.725 (0.725) | 0.092 (0.092) | 0.092 (0.092) |
+| sh-builtin-10k | 0.5 | 0.352 (0.349) | 0.090 (0.084) | 0.089 (0.082) |
+| sh-spawn-1k | | 0.327 (0.326) | 0.266 (0.266) | 0.268 (0.265) |
+| spawn-1k-total | 1 | 0.263 (0.261) | 0.250 (0.248) | 0.252 (0.249) |
+| fs-root-1k-create | 0.1 | 0.030 (0.029) | 0.031 (0.030) | 0.031 (0.030) |
+| fs-root-1k-read | 0.1 | 0.013 (0.013) | 0.016 (0.015) | 0.016 (0.016) |
+| fs-root-1k-stat | 0.1 | 0.018 (0.018) | 0.019 (0.018) | 0.020 (0.019) |
+| fs-root-1k-remove | 0.1 | 0.013 (0.013) | 0.015 (0.015) | 0.012 (0.012) |
+| fs-memfs-1k-create | 0.1 | 0.049 (0.049) | 0.035 (0.034) | 0.031 (0.030) |
+| fs-memfs-1k-read | 0.1 | 0.032 (0.031) | 0.022 (0.021) | 0.020 (0.019) |
+| fs-memfs-1k-stat | 0.1 | 0.037 (0.037) | 0.022 (0.021) | 0.020 (0.019) |
+| fs-memfs-1k-remove | 0.1 | 0.024 (0.024) | 0.016 (0.015) | 0.014 (0.014) |
+| fs-disk-1k-create | 1 | 0.495 (0.333) | 0.461 (0.367) | 0.509 (0.241) |
+| fs-disk-1k-read | 0.1 | 0.063 (0.045) | 0.064 (0.051) | 0.064 (0.042) |
+| fs-disk-1k-stat | 0.1 | 0.019 (0.019) | 0.018 (0.018) | 0.017 (0.017) |
+| fs-disk-1k-remove | 1 | 0.327 (0.257) | 0.380 (0.204) | 0.322 (0.281) |
+
+- Code that computes is 7 to 8 times faster than on wasmi (the 16 MiB
+  hash 0.092 s against 0.725 s) and `sh`'s loop 4 times, from image
+  files as from the linked set. The I/O rows are the kernel's, not the
+  guest's, and do not change. The disk rows vary by up to 80% between
+  runs, as before.
+- A spawn costs the same as on wasmi, 0.25 ms: both now keep modules in
+  generations, so a command run again is neither read for its image nor
+  verified again. The first spawn of a command in a generation reads its
+  image file, hashes it (SHA-256 over 0.5 MiB for a typical command),
+  checks one Ed25519 signature and copies it; that cost was not timed
+  on its own.
+- The first run of the benchmark found that `bench.sh` binds over
+  `/lib/keys` in the boot namespace itself, which hid `/lib/keys/aot`
+  from every later load: the engine now keeps its own copy of the boot
+  namespace, as a module policy does.
+
+Sizes and memory:
+
+- Kernel text: 1,524 KiB without the feature, 1,955 KiB with it and no
+  linked images (+430 KiB: wasmtime's runtime, Pulley's interpreter,
+  `purg-vm-aot`, and the code region).
+- Images: 101.5 MB for the 191 modules of the root (20.5 MB of wasm),
+  5 times the modules; the initrd with them is 123 MB, against 21 MB,
+  so `xtask kernel --aot` boots with 1 GiB of RAM.
+- The test mode under KVM with `memstat`: the heap at the end 2.20 MB on
+  wasmi and 2.58 MB with AOT (the difference is in the RAM tree and the
+  window's tables); the largest peak of a single test 52 MB against 67
+  MB, the 64 MiB block of the heap self-test aside, from the images held
+  by a generation and the 576 KiB stacks; 4.0 M allocations against 2.4
+  M.
+
+### 12.4 Recommendation
+
+AOT is now a working option, and a system that needs speed for code
+that computes should use it: build with `--features aot`, ship signed
+images beside the modules that matter, and list the signer in
+`/lib/keys/aot`. It should not be the default yet:
+
+- It costs 430 KiB of text and five times the modules in images, which
+  a small system does not want (`docs/footprint.md`).
+- The trust model is new: one more key list, whose keys can run native
+  code in the kernel, and a compiler (Cranelift) inside the trusted
+  base. Signing images in a release process and auditing that list
+  should come first.
+- It has had one day of testing. It passes every check here, under
+  KVM and TCG, on one and four CPUs, but not yet the one-hour stress, a
+  real Mac, or real hardware with a different cache line or page size.
+
+What remains:
+
+- The one-hour `-smp 4` stress under `--aot`, and an sh corpus test
+  that a tampered or unsigned image beside a module is refused in the
+  kernel (the unit tests in `purg_vm_aot::image` cover the check
+  itself).
+- Images for reactors are not cached: each `load` reads and verifies
+  its image again.
+- The cost of the first spawn of a command, as above, and the SHA-256
+  instructions of Section 9.3, which would cut it.
+- A boot-time way to name the image signer other than a file in the
+  root (a key compiled in, or a boot argument), for systems whose root
+  is not trusted like the kernel.

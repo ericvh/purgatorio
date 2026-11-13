@@ -45,7 +45,7 @@
 //!   comparison skips. `--aot` builds the kernel with the `aot` feature
 //!   and boots only the runs with an initrd, on [`aot_initrd`]'s: every
 //!   module with a signed image beside it, so the test mode runs them as
-//!   native code (`docs/perf.md` Section 11); `--mem` is then 1G by
+//!   native code (`docs/perf.md` Section 12); `--mem` is then 1G by
 //!   default.
 //! - `aot [--kind native|pulley]`: `build-root`, then a signed image of
 //!   every module in `target/aot/<kind>/` (signed with the public test
