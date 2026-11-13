@@ -78,7 +78,8 @@ a `; ` prompt.
 | `cprof` (call counts and coverage by function) and `mprof` (memory grown, by function and its callees), exact and the same on both backends, through `/prog/<pid>/{cprof,mprof}` | done; line coverage needs DWARF |
 | `mdb pid`: stop a traced prog (`stop`/`start`/`step` on `ctl`), breakpoints on function entry (`bpt set`, `bpt del`), its stack, and its memory through `/prog/<pid>/heap`, on both backends | done; locals need DWARF |
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
-| Graphics (G1, emu only): `purg-memdraw` (images in any `k`/`r`/`g`/`b`/`a`/`x` channel format and conversions, the twelve Porter-Duff operators with masks, replication and clipping, lines with square, disc and arrow ends, polylines, filled polygons with both winding rules, ellipses and arcs, all integer); `#i` (`/dev/draw/new`, `n/ctl`, `n/data`, `n/colormap`, `n/refresh`; messages `b f c d D e E L p P r y Y o O v` with devdraw's errors); `#m` (`/dev/pointer`, `/dev/cursor`) and `/dev/keyboard`; an in-memory screen by default, a window with `emu -g` (winit and softbuffer), and a browser canvas with `emu -w` (HTTP and a WebSocket on loopback, a token in the URL, zlib-compressed rectangles); the SDK's `draw` module; `draw/demo`. See [docs/graphics.md](docs/graphics.md) | first cut; no screens or windows, fonts, named images or `m8`; not in the kernel |
+| Graphics (G1, emu only): `purg-memdraw` (images in any `k`/`r`/`g`/`b`/`a`/`x` channel format and conversions, the twelve Porter-Duff operators with masks, replication and clipping, lines with square, disc and arrow ends, polylines, filled polygons with both winding rules, ellipses and arcs, all integer); `#i` (`/dev/draw/new`, `n/ctl`, `n/data`, `n/colormap`, `n/refresh`; messages `b f c d D e E L p P r y Y o O v` with devdraw's errors); `#m` (`/dev/pointer`, `/dev/cursor`) and `/dev/keyboard`; an in-memory screen by default, a window with `emu -g` (winit and softbuffer), and a browser canvas with `emu -w` (HTTP and a WebSocket on loopback, a token in the URL, zlib-compressed rectangles); the SDK's `draw` module; `draw/demo`. See [docs/graphics.md](docs/graphics.md) | first cut; no screens or windows, named images or `m8`; not in the kernel |
+| Fonts and text (G2): `fontgen` makes font(6) subfonts from TrueType fonts and Unifont's bitmaps; `/fonts` has Go Regular and Go Mono at 13 and 20 pixels with GNU Unifont for the rest of the BMP (`sans/unicode.13.font`, `mono/...`, `default.font`), made by `cargo xtask fonts` and checked byte for byte in CI; the draw device's font cache (`i l s x`); `Font`, `string`, `string_bg` and `string_width` in the SDK; a resizable `emu -g` window (clients see it on `refresh`) and pixel doubling (`-2`, or automatic on a HiDPI display). See [docs/graphics.md](docs/graphics.md) Section 9 | done; no named images, Noto or shaping |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
 | `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi, on the kernel's `purg-aarch64` boot path, interrupts and preemptive kernel threads: a writable RAM root, the `sh` corpus, `load`/`call`, the WASI test program, and `/net` over virtio-net and smoltcp, exported to and mounted from the host | done |
@@ -92,7 +93,8 @@ crates/
   purg-auth/         no_std  certificates, mount proofs, session keys and records, password login (SPAKE2), sealing
   purg-lethe/        no_std  Lethe: frames, tickets, the server engine and the client (docs/lethe.md)
   purg-platform/     no_std  Platform trait and lock facade (the kernel/emu seam); the Screen trait
-  purg-memdraw/      no_std  memdraw: images, channels, compositing, integer geometry (docs/graphics.md)
+  purg-memdraw/      no_std  memdraw: images, channels, compositing, integer geometry, image(6) and
+                             font(6) files (docs/graphics.md)
   purg-core/         no_std  Chan, Dev, devtab, namespaces, Fgrp, Prog, qio, RAM tree, Styx mount/export;
                              #/ #c #e #| #p #s #d #% #M #I #C #D #¤ #λ, and #i #m with a screen
   purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, spawn
@@ -115,7 +117,9 @@ appl/lib/<name>/             loadable reactor modules, built to root/bin/lib/<na
 appl/archive/                ustar and gzip library shared by the archive commands
 appl/lib/regexp/             Plan 9 regular expressions, a library linked into grep, sed and sh
 appl/test/{abi,procs,m3,net,wasi,draw}/  conformance guests, built to root/bin/test/<name>.wasm
+fonts/                       font sources and licences, and the recipe `cargo xtask fonts` follows
 root/                        the file tree emu serves as #U (build-root adds root/tmp)
+  fonts/                     font(6) fonts made by fontgen (committed)
   lib/sh/profile             run by sh -l at boot
   lib/test/sh/               sh scripts and their expected output
 xtask/                       build tasks
@@ -300,8 +304,10 @@ cargo xtask run-emu -- sh -c 'mkdir -p /tmp/l; lethe -A tcp!127.0.0.1!5640 /tmp/
 ```
 
 Graphics: `-g` opens a window (800x600, or `-g 1024x768`) showing the draw
-device's screen; without it the screen is in memory only. The demo draws
-shapes and follows the pointer; button 1 paints and button 3 quits:
+device's screen; without it the screen is in memory only. The window can
+be resized. `-2` shows each screen pixel as 2x2 window pixels, `-1` never
+does, and by default the emu doubles on a HiDPI display. The demo draws
+shapes and text and follows the pointer; button 1 paints and button 3 quits:
 
 ```sh
 cargo xtask run-emu -- -g draw/demo
@@ -321,7 +327,11 @@ screen and type into it, with only the token to stop them and no
 encryption; do that only on a network you trust. `-s WxH` sets the
 screen's size (800x600 with `-g` or `-w`, 640x480 in memory).
 
-You can also run the binary directly: `target/debug/emu [-r root] [-g[WxH]] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi] [cmd [args...]]`.
+The fonts in `root/fonts` are made from `fonts/` by `cargo xtask fonts`
+(which builds the emu and runs `fontgen` in it) and committed;
+`cargo xtask fonts --check` checks that they still come out the same.
+
+You can also run the binary directly: `target/debug/emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi] [cmd [args...]]`.
 A command name `cmd` runs `/bin/cmd.wasm`. The exit code is 0 when the prog's
 Inferno exit status is empty and 1 otherwise.
 
