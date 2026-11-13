@@ -1,0 +1,320 @@
+29 23
+0x0000 0x0000 ../go/regular.20/0000
+0x0020 0x007E 32 ../go/regular.20/0000
+0x00A0 0x00FF 160 ../go/regular.20/0000
+0x0100 0x017F ../go/regular.20/0100
+0x0192 0x0192 146 ../go/regular.20/0100
+0x01CD 0x01DC 205 ../go/regular.20/0100
+0x01FA 0x01FF 250 ../go/regular.20/0100
+0x0218 0x021B 24 ../go/regular.20/0200
+0x02C6 0x02C7 198 ../go/regular.20/0200
+0x02C9 0x02C9 201 ../go/regular.20/0200
+0x02D8 0x02DD 216 ../go/regular.20/0200
+0x037E 0x037E 126 ../go/regular.20/0300
+0x0384 0x038A 132 ../go/regular.20/0300
+0x038C 0x038C 140 ../go/regular.20/0300
+0x038E 0x03A1 142 ../go/regular.20/0300
+0x03A3 0x03CE 163 ../go/regular.20/0300
+0x0400 0x045F ../go/regular.20/0400
+0x0490 0x0491 144 ../go/regular.20/0400
+0x1E80 0x1E85 128 ../go/regular.20/1E00
+0x1EF2 0x1EF3 242 ../go/regular.20/1E00
+0x2013 0x2015 19 ../go/regular.20/2000
+0x2017 0x201E 23 ../go/regular.20/2000
+0x2020 0x2022 32 ../go/regular.20/2000
+0x2026 0x2026 38 ../go/regular.20/2000
+0x2030 0x2030 48 ../go/regular.20/2000
+0x2032 0x2033 50 ../go/regular.20/2000
+0x2039 0x203A 57 ../go/regular.20/2000
+0x203C 0x203C 60 ../go/regular.20/2000
+0x203E 0x203E 62 ../go/regular.20/2000
+0x2044 0x2044 68 ../go/regular.20/2000
+0x2070 0x2070 112 ../go/regular.20/2000
+0x2074 0x208E 116 ../go/regular.20/2000
+0x2099 0x2099 153 ../go/regular.20/2000
+0x20A3 0x20A4 163 ../go/regular.20/2000
+0x20A7 0x20A7 167 ../go/regular.20/2000
+0x20AC 0x20AC 172 ../go/regular.20/2000
+0x2105 0x2105 5 ../go/regular.20/2100
+0x2113 0x2113 19 ../go/regular.20/2100
+0x2116 0x2116 22 ../go/regular.20/2100
+0x2122 0x2122 34 ../go/regular.20/2100
+0x2126 0x2126 38 ../go/regular.20/2100
+0x212E 0x212E 46 ../go/regular.20/2100
+0x215B 0x215E 91 ../go/regular.20/2100
+0x2190 0x2195 144 ../go/regular.20/2100
+0x21A8 0x21A8 168 ../go/regular.20/2100
+0x2202 0x2202 2 ../go/regular.20/2200
+0x2206 0x2206 6 ../go/regular.20/2200
+0x220F 0x220F 15 ../go/regular.20/2200
+0x2211 0x2212 17 ../go/regular.20/2200
+0x2215 0x2215 21 ../go/regular.20/2200
+0x2219 0x221A 25 ../go/regular.20/2200
+0x221E 0x221F 30 ../go/regular.20/2200
+0x2229 0x222B 41 ../go/regular.20/2200
+0x2248 0x2248 72 ../go/regular.20/2200
+0x2260 0x2261 96 ../go/regular.20/2200
+0x2264 0x2265 100 ../go/regular.20/2200
+0x2302 0x2302 2 ../go/regular.20/2300
+0x2310 0x2310 16 ../go/regular.20/2300
+0x2320 0x2321 32 ../go/regular.20/2300
+0x2500 0x2500 ../go/regular.20/2500
+0x2502 0x2502 2 ../go/regular.20/2500
+0x250C 0x250C 12 ../go/regular.20/2500
+0x2510 0x2510 16 ../go/regular.20/2500
+0x2514 0x2514 20 ../go/regular.20/2500
+0x2518 0x2518 24 ../go/regular.20/2500
+0x251C 0x251C 28 ../go/regular.20/2500
+0x2524 0x2524 36 ../go/regular.20/2500
+0x252C 0x252C 44 ../go/regular.20/2500
+0x2534 0x2534 52 ../go/regular.20/2500
+0x253C 0x253C 60 ../go/regular.20/2500
+0x2550 0x256C 80 ../go/regular.20/2500
+0x2580 0x2580 128 ../go/regular.20/2500
+0x2584 0x2584 132 ../go/regular.20/2500
+0x2588 0x2588 136 ../go/regular.20/2500
+0x258C 0x258C 140 ../go/regular.20/2500
+0x2590 0x2593 144 ../go/regular.20/2500
+0x25A0 0x25A1 160 ../go/regular.20/2500
+0x25AA 0x25AC 170 ../go/regular.20/2500
+0x25B2 0x25B2 178 ../go/regular.20/2500
+0x25BA 0x25BA 186 ../go/regular.20/2500
+0x25BC 0x25BC 188 ../go/regular.20/2500
+0x25C4 0x25C4 196 ../go/regular.20/2500
+0x25CA 0x25CB 202 ../go/regular.20/2500
+0x25CF 0x25CF 207 ../go/regular.20/2500
+0x25D8 0x25D9 216 ../go/regular.20/2500
+0x25E6 0x25E6 230 ../go/regular.20/2500
+0x263A 0x263C 58 ../go/regular.20/2600
+0x2640 0x2640 64 ../go/regular.20/2600
+0x2642 0x2642 66 ../go/regular.20/2600
+0x2660 0x2660 96 ../go/regular.20/2600
+0x2663 0x2663 99 ../go/regular.20/2600
+0x2665 0x2666 101 ../go/regular.20/2600
+0x266A 0x266B 106 ../go/regular.20/2600
+0xF800 0xF800 ../go/regular.20/F800
+0xFB01 0xFB02 1 ../go/regular.20/FB00
+0xFFFD 0xFFFD 253 ../go/regular.20/FF00
+0x0000 0x00FF ../unifont/unifont.16/0000
+0x0100 0x01FF ../unifont/unifont.16/0100
+0x0200 0x02FF ../unifont/unifont.16/0200
+0x0300 0x03FF ../unifont/unifont.16/0300
+0x0400 0x04FF ../unifont/unifont.16/0400
+0x0500 0x05FF ../unifont/unifont.16/0500
+0x0600 0x06FF ../unifont/unifont.16/0600
+0x0700 0x07FF ../unifont/unifont.16/0700
+0x0800 0x08FF ../unifont/unifont.16/0800
+0x0900 0x09FF ../unifont/unifont.16/0900
+0x0A00 0x0AFF ../unifont/unifont.16/0A00
+0x0B00 0x0BFF ../unifont/unifont.16/0B00
+0x0C00 0x0CFF ../unifont/unifont.16/0C00
+0x0D00 0x0DFF ../unifont/unifont.16/0D00
+0x0E00 0x0EFF ../unifont/unifont.16/0E00
+0x0F00 0x0FFF ../unifont/unifont.16/0F00
+0x1000 0x10FF ../unifont/unifont.16/1000
+0x1100 0x11FF ../unifont/unifont.16/1100
+0x1200 0x12FF ../unifont/unifont.16/1200
+0x1300 0x13FF ../unifont/unifont.16/1300
+0x1400 0x14FF ../unifont/unifont.16/1400
+0x1500 0x15FF ../unifont/unifont.16/1500
+0x1600 0x16FF ../unifont/unifont.16/1600
+0x1700 0x17FF ../unifont/unifont.16/1700
+0x1800 0x18FF ../unifont/unifont.16/1800
+0x1900 0x19FF ../unifont/unifont.16/1900
+0x1A00 0x1AFF ../unifont/unifont.16/1A00
+0x1B00 0x1BFF ../unifont/unifont.16/1B00
+0x1C00 0x1CFF ../unifont/unifont.16/1C00
+0x1D00 0x1DFF ../unifont/unifont.16/1D00
+0x1E00 0x1EFF ../unifont/unifont.16/1E00
+0x1F00 0x1FFF ../unifont/unifont.16/1F00
+0x2000 0x20FF ../unifont/unifont.16/2000
+0x2100 0x21FF ../unifont/unifont.16/2100
+0x2200 0x22FF ../unifont/unifont.16/2200
+0x2300 0x23FF ../unifont/unifont.16/2300
+0x2400 0x24FF ../unifont/unifont.16/2400
+0x2500 0x25FF ../unifont/unifont.16/2500
+0x2600 0x26FF ../unifont/unifont.16/2600
+0x2700 0x27FF ../unifont/unifont.16/2700
+0x2800 0x28FF ../unifont/unifont.16/2800
+0x2900 0x29FF ../unifont/unifont.16/2900
+0x2A00 0x2AFF ../unifont/unifont.16/2A00
+0x2B00 0x2BFF ../unifont/unifont.16/2B00
+0x2C00 0x2CFF ../unifont/unifont.16/2C00
+0x2D00 0x2DFF ../unifont/unifont.16/2D00
+0x2E00 0x2EFF ../unifont/unifont.16/2E00
+0x2F00 0x2FFF ../unifont/unifont.16/2F00
+0x3000 0x30FF ../unifont/unifont.16/3000
+0x3100 0x31FF ../unifont/unifont.16/3100
+0x3200 0x32FF ../unifont/unifont.16/3200
+0x3300 0x33FF ../unifont/unifont.16/3300
+0x3400 0x34FF ../unifont/unifont.16/3400
+0x3500 0x35FF ../unifont/unifont.16/3500
+0x3600 0x36FF ../unifont/unifont.16/3600
+0x3700 0x37FF ../unifont/unifont.16/3700
+0x3800 0x38FF ../unifont/unifont.16/3800
+0x3900 0x39FF ../unifont/unifont.16/3900
+0x3A00 0x3AFF ../unifont/unifont.16/3A00
+0x3B00 0x3BFF ../unifont/unifont.16/3B00
+0x3C00 0x3CFF ../unifont/unifont.16/3C00
+0x3D00 0x3DFF ../unifont/unifont.16/3D00
+0x3E00 0x3EFF ../unifont/unifont.16/3E00
+0x3F00 0x3FFF ../unifont/unifont.16/3F00
+0x4000 0x40FF ../unifont/unifont.16/4000
+0x4100 0x41FF ../unifont/unifont.16/4100
+0x4200 0x42FF ../unifont/unifont.16/4200
+0x4300 0x43FF ../unifont/unifont.16/4300
+0x4400 0x44FF ../unifont/unifont.16/4400
+0x4500 0x45FF ../unifont/unifont.16/4500
+0x4600 0x46FF ../unifont/unifont.16/4600
+0x4700 0x47FF ../unifont/unifont.16/4700
+0x4800 0x48FF ../unifont/unifont.16/4800
+0x4900 0x49FF ../unifont/unifont.16/4900
+0x4A00 0x4AFF ../unifont/unifont.16/4A00
+0x4B00 0x4BFF ../unifont/unifont.16/4B00
+0x4C00 0x4CFF ../unifont/unifont.16/4C00
+0x4D00 0x4DFF ../unifont/unifont.16/4D00
+0x4E00 0x4EFF ../unifont/unifont.16/4E00
+0x4F00 0x4FFF ../unifont/unifont.16/4F00
+0x5000 0x50FF ../unifont/unifont.16/5000
+0x5100 0x51FF ../unifont/unifont.16/5100
+0x5200 0x52FF ../unifont/unifont.16/5200
+0x5300 0x53FF ../unifont/unifont.16/5300
+0x5400 0x54FF ../unifont/unifont.16/5400
+0x5500 0x55FF ../unifont/unifont.16/5500
+0x5600 0x56FF ../unifont/unifont.16/5600
+0x5700 0x57FF ../unifont/unifont.16/5700
+0x5800 0x58FF ../unifont/unifont.16/5800
+0x5900 0x59FF ../unifont/unifont.16/5900
+0x5A00 0x5AFF ../unifont/unifont.16/5A00
+0x5B00 0x5BFF ../unifont/unifont.16/5B00
+0x5C00 0x5CFF ../unifont/unifont.16/5C00
+0x5D00 0x5DFF ../unifont/unifont.16/5D00
+0x5E00 0x5EFF ../unifont/unifont.16/5E00
+0x5F00 0x5FFF ../unifont/unifont.16/5F00
+0x6000 0x60FF ../unifont/unifont.16/6000
+0x6100 0x61FF ../unifont/unifont.16/6100
+0x6200 0x62FF ../unifont/unifont.16/6200
+0x6300 0x63FF ../unifont/unifont.16/6300
+0x6400 0x64FF ../unifont/unifont.16/6400
+0x6500 0x65FF ../unifont/unifont.16/6500
+0x6600 0x66FF ../unifont/unifont.16/6600
+0x6700 0x67FF ../unifont/unifont.16/6700
+0x6800 0x68FF ../unifont/unifont.16/6800
+0x6900 0x69FF ../unifont/unifont.16/6900
+0x6A00 0x6AFF ../unifont/unifont.16/6A00
+0x6B00 0x6BFF ../unifont/unifont.16/6B00
+0x6C00 0x6CFF ../unifont/unifont.16/6C00
+0x6D00 0x6DFF ../unifont/unifont.16/6D00
+0x6E00 0x6EFF ../unifont/unifont.16/6E00
+0x6F00 0x6FFF ../unifont/unifont.16/6F00
+0x7000 0x70FF ../unifont/unifont.16/7000
+0x7100 0x71FF ../unifont/unifont.16/7100
+0x7200 0x72FF ../unifont/unifont.16/7200
+0x7300 0x73FF ../unifont/unifont.16/7300
+0x7400 0x74FF ../unifont/unifont.16/7400
+0x7500 0x75FF ../unifont/unifont.16/7500
+0x7600 0x76FF ../unifont/unifont.16/7600
+0x7700 0x77FF ../unifont/unifont.16/7700
+0x7800 0x78FF ../unifont/unifont.16/7800
+0x7900 0x79FF ../unifont/unifont.16/7900
+0x7A00 0x7AFF ../unifont/unifont.16/7A00
+0x7B00 0x7BFF ../unifont/unifont.16/7B00
+0x7C00 0x7CFF ../unifont/unifont.16/7C00
+0x7D00 0x7DFF ../unifont/unifont.16/7D00
+0x7E00 0x7EFF ../unifont/unifont.16/7E00
+0x7F00 0x7FFF ../unifont/unifont.16/7F00
+0x8000 0x80FF ../unifont/unifont.16/8000
+0x8100 0x81FF ../unifont/unifont.16/8100
+0x8200 0x82FF ../unifont/unifont.16/8200
+0x8300 0x83FF ../unifont/unifont.16/8300
+0x8400 0x84FF ../unifont/unifont.16/8400
+0x8500 0x85FF ../unifont/unifont.16/8500
+0x8600 0x86FF ../unifont/unifont.16/8600
+0x8700 0x87FF ../unifont/unifont.16/8700
+0x8800 0x88FF ../unifont/unifont.16/8800
+0x8900 0x89FF ../unifont/unifont.16/8900
+0x8A00 0x8AFF ../unifont/unifont.16/8A00
+0x8B00 0x8BFF ../unifont/unifont.16/8B00
+0x8C00 0x8CFF ../unifont/unifont.16/8C00
+0x8D00 0x8DFF ../unifont/unifont.16/8D00
+0x8E00 0x8EFF ../unifont/unifont.16/8E00
+0x8F00 0x8FFF ../unifont/unifont.16/8F00
+0x9000 0x90FF ../unifont/unifont.16/9000
+0x9100 0x91FF ../unifont/unifont.16/9100
+0x9200 0x92FF ../unifont/unifont.16/9200
+0x9300 0x93FF ../unifont/unifont.16/9300
+0x9400 0x94FF ../unifont/unifont.16/9400
+0x9500 0x95FF ../unifont/unifont.16/9500
+0x9600 0x96FF ../unifont/unifont.16/9600
+0x9700 0x97FF ../unifont/unifont.16/9700
+0x9800 0x98FF ../unifont/unifont.16/9800
+0x9900 0x99FF ../unifont/unifont.16/9900
+0x9A00 0x9AFF ../unifont/unifont.16/9A00
+0x9B00 0x9BFF ../unifont/unifont.16/9B00
+0x9C00 0x9CFF ../unifont/unifont.16/9C00
+0x9D00 0x9DFF ../unifont/unifont.16/9D00
+0x9E00 0x9EFF ../unifont/unifont.16/9E00
+0x9F00 0x9FFF ../unifont/unifont.16/9F00
+0xA000 0xA0FF ../unifont/unifont.16/A000
+0xA100 0xA1FF ../unifont/unifont.16/A100
+0xA200 0xA2FF ../unifont/unifont.16/A200
+0xA300 0xA3FF ../unifont/unifont.16/A300
+0xA400 0xA4FF ../unifont/unifont.16/A400
+0xA500 0xA5FF ../unifont/unifont.16/A500
+0xA600 0xA6FF ../unifont/unifont.16/A600
+0xA700 0xA7FF ../unifont/unifont.16/A700
+0xA800 0xA8FF ../unifont/unifont.16/A800
+0xA900 0xA9FF ../unifont/unifont.16/A900
+0xAA00 0xAAFF ../unifont/unifont.16/AA00
+0xAB00 0xABFF ../unifont/unifont.16/AB00
+0xAC00 0xACFF ../unifont/unifont.16/AC00
+0xAD00 0xADFF ../unifont/unifont.16/AD00
+0xAE00 0xAEFF ../unifont/unifont.16/AE00
+0xAF00 0xAFFF ../unifont/unifont.16/AF00
+0xB000 0xB0FF ../unifont/unifont.16/B000
+0xB100 0xB1FF ../unifont/unifont.16/B100
+0xB200 0xB2FF ../unifont/unifont.16/B200
+0xB300 0xB3FF ../unifont/unifont.16/B300
+0xB400 0xB4FF ../unifont/unifont.16/B400
+0xB500 0xB5FF ../unifont/unifont.16/B500
+0xB600 0xB6FF ../unifont/unifont.16/B600
+0xB700 0xB7FF ../unifont/unifont.16/B700
+0xB800 0xB8FF ../unifont/unifont.16/B800
+0xB900 0xB9FF ../unifont/unifont.16/B900
+0xBA00 0xBAFF ../unifont/unifont.16/BA00
+0xBB00 0xBBFF ../unifont/unifont.16/BB00
+0xBC00 0xBCFF ../unifont/unifont.16/BC00
+0xBD00 0xBDFF ../unifont/unifont.16/BD00
+0xBE00 0xBEFF ../unifont/unifont.16/BE00
+0xBF00 0xBFFF ../unifont/unifont.16/BF00
+0xC000 0xC0FF ../unifont/unifont.16/C000
+0xC100 0xC1FF ../unifont/unifont.16/C100
+0xC200 0xC2FF ../unifont/unifont.16/C200
+0xC300 0xC3FF ../unifont/unifont.16/C300
+0xC400 0xC4FF ../unifont/unifont.16/C400
+0xC500 0xC5FF ../unifont/unifont.16/C500
+0xC600 0xC6FF ../unifont/unifont.16/C600
+0xC700 0xC7FF ../unifont/unifont.16/C700
+0xC800 0xC8FF ../unifont/unifont.16/C800
+0xC900 0xC9FF ../unifont/unifont.16/C900
+0xCA00 0xCAFF ../unifont/unifont.16/CA00
+0xCB00 0xCBFF ../unifont/unifont.16/CB00
+0xCC00 0xCCFF ../unifont/unifont.16/CC00
+0xCD00 0xCDFF ../unifont/unifont.16/CD00
+0xCE00 0xCEFF ../unifont/unifont.16/CE00
+0xCF00 0xCFFF ../unifont/unifont.16/CF00
+0xD000 0xD0FF ../unifont/unifont.16/D000
+0xD100 0xD1FF ../unifont/unifont.16/D100
+0xD200 0xD2FF ../unifont/unifont.16/D200
+0xD300 0xD3FF ../unifont/unifont.16/D300
+0xD400 0xD4FF ../unifont/unifont.16/D400
+0xD500 0xD5FF ../unifont/unifont.16/D500
+0xD600 0xD6FF ../unifont/unifont.16/D600
+0xD700 0xD7FF ../unifont/unifont.16/D700
+0xF900 0xF9FF ../unifont/unifont.16/F900
+0xFA00 0xFAFF ../unifont/unifont.16/FA00
+0xFB00 0xFBFF ../unifont/unifont.16/FB00
+0xFC00 0xFCFF ../unifont/unifont.16/FC00
+0xFD00 0xFDFF ../unifont/unifont.16/FD00
+0xFE00 0xFEFF ../unifont/unifont.16/FE00
+0xFF00 0xFFFD ../unifont/unifont.16/FF00

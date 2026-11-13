@@ -168,6 +168,39 @@ on_each_vm! {
         assert!(o.status.success(), "{vm}: {o:?}");
     }
 
+    /// fontgen makes the same bytes on both VMs as the subfonts committed
+    /// in root/fonts (which `cargo xtask fonts --check` compares on every
+    /// host): Go Mono at 13 pixels, rasterized with floating point.
+    fn fontgen_is_deterministic(vm) {
+        let root = Root::new();
+        let ws = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let src = std::fs::canonicalize(ws.join("fonts")).unwrap();
+        std::os::unix::fs::symlink(&src, root.0.join("fontsrc")).unwrap();
+        std::fs::write(root.0.join("tmp/recipe"), "ttf go/Go-Mono.ttf 13 go/mono.13\n").unwrap();
+        let o = common::output(
+            Command::new(env!("CARGO_BIN_EXE_emu"))
+                .arg("-r")
+                .arg(&root.0)
+                .arg(format!("--vm={vm}"))
+                .args(["fontgen", "-i", "/fontsrc", "-o", "/tmp/out", "/tmp/recipe"]),
+            b"",
+        );
+        assert!(o.status.success(), "{vm}: {o:?}");
+        let made = root.0.join("tmp/out/go");
+        let want = ws.join("root/fonts/go");
+        let font = std::fs::read(made.join("mono.13.font")).unwrap();
+        assert_eq!(font, std::fs::read(want.join("mono.13.font")).unwrap(), "{vm}");
+        let mut n = 0;
+        for e in std::fs::read_dir(want.join("mono.13")).unwrap() {
+            let name = e.unwrap().file_name();
+            let got = std::fs::read(made.join("mono.13").join(&name)).unwrap();
+            let committed = std::fs::read(want.join("mono.13").join(&name)).unwrap();
+            assert!(got == committed, "{vm}: mono.13/{name:?} differs");
+            n += 1;
+        }
+        assert_eq!(n, std::fs::read_dir(made.join("mono.13")).unwrap().count(), "{vm}");
+    }
+
     /// Inferno names are byte-exact even on macOS's case-insensitive volumes.
     fn names_are_case_exact(vm) {
         let ok = emu(vm, &["cat", "/lib/probe/hello.txt"], b"");
