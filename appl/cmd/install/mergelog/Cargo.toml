@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-install-mergelog"
+description = "install/mergelog: combine replica log sections"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mergelog"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+wrap = { package = "appl-lib-wrap", path = "../../../lib/wrap" }
+
+[lints]
+workspace = true
