@@ -91,7 +91,7 @@ pub fn boot(
     })?;
     let engine: Arc<dyn purg_vm::Engine> = Arc::new(Wasmi::new()?);
     #[cfg(feature = "aot")]
-    let engine = crate::aot::engine(engine)?;
+    let engine = crate::aot::engine(engine, &ns.1)?;
     memstat::report("booted");
     Ok(System(
         purg_system::System::new(engine, ns, threads)
@@ -237,6 +237,8 @@ impl System {
             Ok(String::from("the tests left no threads or memory behind"))
         };
         self.verdict(&mut failed, v);
+        #[cfg(feature = "aot")]
+        crate::aot::report();
         failed
     }
 
