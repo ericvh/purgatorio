@@ -467,6 +467,10 @@ impl Big {
         if radix == 64 {
             return Big::from_be_bytes(&b64_dec(s));
         }
+        // Radix 1 has no digits but 0 (and to_digit refuses it).
+        if radix < 2 {
+            return Big::zero();
+        }
         let r = Big::from_i64(radix as i64);
         let mut n = Big::zero();
         for c in s.chars() {
@@ -681,7 +685,8 @@ pub fn expr(argv: &[String], mp: bool) -> Result<Vec<String>, Fail> {
         let n: i64 = r.bytes().take_while(u8::is_ascii_digit).fold(0i64, |n, d| {
             n.saturating_mul(10).saturating_add((d - b'0') as i64)
         });
-        if n <= 0 || (n > 36 && !(mp && n == 64)) {
+        // Radix 1 would never finish printing; Inferno's mpexpr refuses it too.
+        if n < 2 || (n > 36 && !(mp && n == 64)) {
             return Err(Fail::raise("usage", &format!("expr: invalid radix {n}")));
         }
         radix = n as u32;
@@ -799,5 +804,16 @@ mod tests {
         assert!(run(false, "2 100 xx").is_err());
         assert!(run(false, "1 0 /").is_err());
         assert!(run(false, "+").is_err());
+    }
+
+    #[test]
+    fn radix_one() {
+        // A number in radix 1 is 0; printing in radix 1 is refused.
+        assert_eq!(run(false, "1r0 1r5").unwrap(), ["0", "0"]);
+        assert_eq!(run(true, "1r0").unwrap(), ["0"]);
+        for mp in [false, true] {
+            let e = run(mp, "-r 1 5").err().unwrap();
+            assert_eq!(e.msg, "expr: invalid radix 1");
+        }
     }
 }
