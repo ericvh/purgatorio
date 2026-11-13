@@ -1,6 +1,6 @@
 //! `emu`: Purgatorio hosted on Linux or macOS.
 //!
-//! Usage: `emu [-r root] [-g[WxH]] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi]
+//! Usage: `emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi]
 //! [--modules=none|warn|require] [cmd [args...]]`
 //!
 //! Boots a namespace like Inferno's emu (`#/` with the host root `#U` unioned
@@ -19,13 +19,15 @@
 //! `-g` opens a window of `W` by `H` pixels (800x600 by default) and
 //! shows the draw device's screen in it (docs/graphics.md); the main
 //! thread then runs the window's event loop, and closing the window ends
-//! the emu. `-w` serves the screen to a web browser instead
-//! (docs/graphics.md, Section 8.2): the emu listens on `addr`
-//! (`127.0.0.1` and a free port unless given; only loopback by default)
-//! and prints the URL to open, which carries a random token. Without
-//! `-g` or `-w` the screen is in memory only. `-s WxH` sets the screen's
-//! size in any of the three; it is 800x600 with `-g` or `-w` and 640x480
-//! in memory.
+//! the emu. Resizing the window resizes the screen. `-2` shows each
+//! screen pixel as 2×2 window pixels and `-1` never does; by default the
+//! emu doubles on a display whose scale factor is 1.5 or more. `-w`
+//! serves the screen to a web browser instead (docs/graphics.md,
+//! Section 8.2): the emu listens on `addr` (`127.0.0.1` and a free port
+//! unless given; only loopback by default) and prints the URL to open,
+//! which carries a random token. Without `-g` or `-w` the screen is in
+//! memory only. `-s WxH` sets the screen's size in any of the three; it
+//! is 800x600 with `-g` or `-w` and 640x480 in memory.
 //!
 //! `--modules` sets the system's module policy (`docs/signing.md`) before
 //! the first prog is loaded, with the trust lists read in the boot
@@ -51,6 +53,8 @@ struct Options {
     modules: Level,
     /// `-g`: show the screen in a window.
     graphics: bool,
+    /// Window pixels per screen pixel (`-1`, `-2`); automatic if `None`.
+    scale: Option<u32>,
     /// `-w`: serve the screen to a browser on this address.
     web: Option<String>,
     /// The screen's size, from `-s` or `-g WxH`.
@@ -70,7 +74,7 @@ fn geometry(s: &str) -> Option<(u32, u32)> {
 
 fn usage() -> u8 {
     eprintln!(
-        "usage: emu [-r root] [-g[WxH]] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
+        "usage: emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
     );
     2
 }
@@ -84,6 +88,7 @@ fn parse_args() -> Option<Options> {
         vm: String::from("wasmtime"),
         modules: Level::None,
         graphics: false,
+        scale: None,
         web: None,
         size: None,
         argv: Vec::new(),
@@ -102,6 +107,8 @@ fn parse_args() -> Option<Options> {
             }
             opts.graphics = true;
             opts.size = g.or(opts.size);
+        } else if a == "-1" || a == "-2" {
+            opts.scale = Some(if a == "-2" { 2 } else { 1 });
         } else if let Some(g) = a.strip_prefix("-g") {
             opts.graphics = true;
             opts.size = Some(geometry(g)?);
@@ -225,7 +232,12 @@ fn run() -> u8 {
     let window = if opts.graphics {
         match window::event_loop() {
             Ok(el) => {
-                let screen = Arc::new(window::WindowScreen::new(w, h, el.create_proxy()));
+                let screen = Arc::new(window::WindowScreen::new(
+                    w,
+                    h,
+                    opts.scale,
+                    el.create_proxy(),
+                ));
                 Some((el, screen))
             }
             Err(e) => {

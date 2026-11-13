@@ -9,8 +9,18 @@
 //! window's buffer and presents that damage. Pointer and keyboard events
 //! go into the screen's [`Input`], which `#m` and `#c/keyboard` read.
 //!
-//! The window has the screen's size in physical pixels; it is not scaled
-//! on a high-density display.
+//! The user may resize the window. The screen then takes the window's
+//! new size (in screen pixels) and the draw device is told through
+//! [`Input::resized`]; a pointer event with the pointer's current state
+//! follows, so that a client waiting on `/dev/pointer` wakes up and can
+//! look at the screen's size again (`refresh` is the draw(3) way).
+//!
+//! On a high-density display each screen pixel can be shown as 2×2 window
+//! pixels: `emu -g -2` asks for that, `-1` asks for none, and by default
+//! the emu doubles when the display's scale factor is 1.5 or more.
+//! Pointer positions are divided by the same factor. The screen stays in
+//! its own pixels, so bitmap fonts and draw(2)'s integer geometry are not
+//! resampled.
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -38,30 +48,71 @@ pub enum Event {
 
 /// The screen as last flushed, and what changed since it was shown.
 struct Frame {
+    width: u32,
+    height: u32,
     pixels: Vec<u32>,
     damage: Option<Rect>,
 }
 
+impl Frame {
+    fn new(width: u32, height: u32) -> Frame {
+        Frame {
+            width,
+            height,
+            pixels: vec![0x00FF_FFFF; width as usize * height as usize],
+            damage: Some([0, 0, width as i32, height as i32]),
+        }
+    }
+
+    /// Changes the size, keeping the pixels that fit; the rest is white.
+    fn resize(&mut self, width: u32, height: u32) {
+        let mut f = Frame::new(width, height);
+        let (w, h) = (
+            width.min(self.width) as usize,
+            height.min(self.height) as usize,
+        );
+        for y in 0..h {
+            let from = &self.pixels[y * self.width as usize..][..w];
+            f.pixels[y * width as usize..][..w].copy_from_slice(from);
+        }
+        *self = f;
+    }
+}
+
 pub struct WindowScreen {
-    width: u32,
-    height: u32,
     frame: Mutex<Frame>,
     proxy: Mutex<EventLoopProxy<Event>>,
     input: Input,
+    /// Window pixels per screen pixel, when given (`-1`, `-2`); `None`
+    /// follows the display's scale factor.
+    scale: Option<u32>,
 }
 
 impl WindowScreen {
-    pub fn new(width: u32, height: u32, proxy: EventLoopProxy<Event>) -> WindowScreen {
+    pub fn new(
+        width: u32,
+        height: u32,
+        scale: Option<u32>,
+        proxy: EventLoopProxy<Event>,
+    ) -> WindowScreen {
         WindowScreen {
-            width,
-            height,
-            frame: Mutex::new(Frame {
-                pixels: vec![0x00FF_FFFF; width as usize * height as usize],
-                damage: Some([0, 0, width as i32, height as i32]),
-            }),
+            frame: Mutex::new(Frame::new(width, height)),
             proxy: Mutex::new(proxy),
             input: Input::new(),
+            scale,
         }
+    }
+
+    /// Takes a new size from the window, unless it is the same.
+    fn resize(&self, width: u32, height: u32) {
+        {
+            let mut f = self.frame.lock().unwrap();
+            if (f.width, f.height) == (width, height) {
+                return;
+            }
+            f.resize(width, height);
+        }
+        self.input.resized();
     }
 
     fn send(&self, e: Event) {
@@ -84,20 +135,26 @@ fn union(a: Option<Rect>, b: Rect) -> Rect {
 
 impl Screen for WindowScreen {
     fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
+        let f = self.frame.lock().unwrap();
+        (f.width, f.height)
     }
 
     fn flush(&self, r: Rect, pixels: &[u8], stride: usize) {
-        let w = self.width as usize;
         let mut f = self.frame.lock().unwrap();
-        for (i, y) in (r[1]..r[3]).enumerate() {
+        let w = f.width as usize;
+        // A flush from before a resize may not fit the new size.
+        let (x1, y1) = (r[2].min(f.width as i32), r[3].min(f.height as i32));
+        if r[0] < 0 || r[1] < 0 || x1 <= r[0] || y1 <= r[1] {
+            return;
+        }
+        for (i, y) in (r[1]..y1).enumerate() {
             let row = &pixels[i * stride..];
-            let out = &mut f.pixels[y as usize * w + r[0] as usize..][..(r[2] - r[0]) as usize];
+            let out = &mut f.pixels[y as usize * w + r[0] as usize..][..(x1 - r[0]) as usize];
             for (o, px) in out.iter_mut().zip(row.as_chunks::<4>().0) {
                 *o = u32::from_le_bytes(*px) & 0x00FF_FFFF;
             }
         }
-        f.damage = Some(union(f.damage, r));
+        f.damage = Some(union(f.damage, [r[0], r[1], x1, y1]));
         drop(f);
         self.send(Event::Redraw);
     }
@@ -122,6 +179,7 @@ pub fn event_loop() -> Result<EventLoop<Event>, String> {
 /// window is closed; returns the emu's exit status.
 pub fn run(event_loop: EventLoop<Event>, screen: Arc<WindowScreen>) -> u8 {
     let mut app = App {
+        scale: screen.scale.unwrap_or(1),
         screen,
         window: None,
         start: Instant::now(),
@@ -146,6 +204,8 @@ struct Shown {
 
 struct App {
     screen: Arc<WindowScreen>,
+    /// Window pixels per screen pixel.
+    scale: u32,
     window: Option<Shown>,
     start: Instant,
     buttons: u32,
@@ -165,11 +225,16 @@ impl App {
     }
 
     fn open(&mut self, el: &ActiveEventLoop) -> Result<(), String> {
-        let (w, h) = (self.screen.width, self.screen.height);
+        if self.screen.scale.is_none()
+            && let Some(m) = el.primary_monitor()
+        {
+            self.scale = auto_scale(m.scale_factor());
+        }
+        let (w, h) = self.screen.size();
         let attrs = Window::default_attributes()
             .with_title("Purgatorio")
-            .with_inner_size(PhysicalSize::new(w, h))
-            .with_resizable(false);
+            .with_inner_size(PhysicalSize::new(w * self.scale, h * self.scale))
+            .with_resizable(true);
         let window = Rc::new(el.create_window(attrs).map_err(|e| e.to_string())?);
         let context = softbuffer::Context::new(window.clone()).map_err(|e| e.to_string())?;
         let surface =
@@ -194,9 +259,18 @@ impl App {
         };
         s.surface.resize(bw, bh).map_err(|e| e.to_string())?;
         let mut f = self.screen.frame.lock().unwrap();
-        let damage = f.damage.take();
+        let k = self.scale as i32;
+        // The damage in window pixels.
+        let damage = f.damage.take().map(|d| {
+            [
+                d[0].saturating_mul(k),
+                d[1].saturating_mul(k),
+                d[2].saturating_mul(k),
+                d[3].saturating_mul(k),
+            ]
+        });
         let mut buf = s.surface.buffer_mut().map_err(|e| e.to_string())?;
-        let (fw, fh) = (self.screen.width as i32, self.screen.height as i32);
+        let (fw, fh) = (f.width as i32, f.height as i32);
         let (w, h) = (bw.get() as i32, bh.get() as i32);
         let full = [0, 0, w, h];
         // A new buffer needs everything; one shown two frames ago also
@@ -215,10 +289,12 @@ impl App {
             copy[3].min(h),
         ];
         for y in r[1]..r[3] {
+            let sy = y / k;
             for x in r[0]..r[2] {
+                let sx = x / k;
                 let o = (y * w + x) as usize;
-                buf[o] = if x < fw && y < fh {
-                    f.pixels[(y * fw + x) as usize]
+                buf[o] = if sx < fw && sy < fh {
+                    f.pixels[(sy * fw + sx) as usize]
                 } else {
                     0
                 };
@@ -267,6 +343,11 @@ impl App {
             }
         }
     }
+}
+
+/// The pixel doubling for a display's scale factor: 2 from 1.5 up.
+fn auto_scale(factor: f64) -> u32 {
+    if factor >= 1.5 { 2 } else { 1 }
 }
 
 /// keyboard(6)'s codes for keys that are not characters.
@@ -327,8 +408,10 @@ impl ApplicationHandler<Event> for App {
             }
             Event::Warp(x, y) => {
                 self.at = PhysicalPosition::new(x, y);
+                let k = self.scale as i32;
                 if let Some(s) = &self.window {
-                    let _ = s.window.set_cursor_position(PhysicalPosition::new(x, y));
+                    let p = PhysicalPosition::new(x.saturating_mul(k), y.saturating_mul(k));
+                    let _ = s.window.set_cursor_position(p);
                 }
             }
             Event::Exit(status) => {
@@ -341,17 +424,29 @@ impl ApplicationHandler<Event> for App {
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if self.screen.scale.is_none() {
+                    self.scale = auto_scale(scale_factor);
+                }
+            }
             WindowEvent::RedrawRequested | WindowEvent::Resized(_) => {
-                if matches!(event, WindowEvent::Resized(_)) {
+                if let WindowEvent::Resized(size) = event {
+                    let k = self.scale;
+                    let (w, h) = ((size.width / k).max(1), (size.height / k).max(1));
+                    self.screen.resize(w, h);
                     let mut f = self.screen.frame.lock().unwrap();
-                    f.damage = Some([0, 0, i32::MAX, i32::MAX]);
+                    f.damage = Some([0, 0, i32::MAX / 2, i32::MAX / 2]);
+                    drop(f);
+                    // Wakes a client reading the pointer, to look again.
+                    self.pointer();
                 }
                 if let Err(e) = self.present() {
                     eprintln!("emu: window: {e}");
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.at = PhysicalPosition::new(position.x as i32, position.y as i32);
+                let k = f64::from(self.scale);
+                self.at = PhysicalPosition::new((position.x / k) as i32, (position.y / k) as i32);
                 self.pointer();
             }
             WindowEvent::MouseInput { state, button, .. } => {
