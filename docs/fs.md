@@ -317,10 +317,8 @@ maker, so the new commands have new names.
 - Where kfs differs from Inferno's: an exclusive-use file stays locked
   while it is open rather than for five minutes; the console takes
   commands from whoever can open it; walks do not set access times;
-  `check w` does nothing, since every change is written at once; and a
-  walk from an open fid to a new fid is allowed, because the kernel's
-  mount driver opens a mount's root fid itself (on `ls` of the mount
-  point) and walks from it later.
+  and `check w` does nothing, since every change is written at once.
+  As in Inferno's, a walk from an open fid is refused.
 - `disk/format [-dfvx] [-b bootblock] [-c csize] [-l label] [-r nresrv]
   [-t type] disk [file ...]` (prep(8)) makes a FAT12 or FAT16 file
   system with `-d`, sized for a floppy type (`3½HD` by default for a

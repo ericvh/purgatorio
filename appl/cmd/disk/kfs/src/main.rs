@@ -359,11 +359,8 @@ impl StyxFs for Kfs {
 
     fn walk(&mut self, fid: u32, newfid: u32, names: &[&str]) -> Result<Vec<Qid>, String> {
         let f = self.fid(fid)?.clone();
-        // Inferno's kfs refuses to walk any open fid. The kernel's mount
-        // driver here opens a mount's root fid itself (`ls` of the mount
-        // point) and later clones it, so only walking an open fid in
-        // place is refused.
-        if f.open != 0 && newfid == fid {
+        // As Inferno's kfs, refuse to walk any open fid.
+        if f.open != 0 {
             return Err(err(EMODE));
         }
         if newfid != fid && self.fids.contains_key(&newfid) {
