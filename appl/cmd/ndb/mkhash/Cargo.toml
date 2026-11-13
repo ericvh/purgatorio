@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-ndb-mkhash"
+description = "ndb/mkhash: hash tables for an attrdb file"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mkhash"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+ndb.workspace = true
+
+[lints]
+workspace = true
