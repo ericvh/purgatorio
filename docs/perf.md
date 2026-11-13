@@ -879,7 +879,12 @@ unwinding their memory through the heap) are gone: none in any run
 after. The failed runs before were `mcpjobs.sh`, `rawdbfs.sh` and
 `mcpd.sh` (twice), whose output differed under the load (the flakes #193
 mentions). None failed in the runs of the final build; one profiling
-run of the first-fit step had `styxtools.sh` differ.
+run of the first-fit step had `styxtools.sh` differ. A 30-minute run on
+four CPUs (`--kvm --smp 4 --stress 1800`) completed 36,099 runs at a
+steady 1,200 a minute and left nothing behind; 8 failed, every one shown
+`styxtools.sh` printing `unmount: n: not mounted`, a race in the script
+(`styxchat -s {mount ...}` can exit before its `mount` is done) that the
+old heap was too slow to reach.
 
 Time in the heap (120 s runs, the profiling build):
 
