@@ -524,9 +524,11 @@ pub mod rt {
             // match). In Inferno `sys->print` returns -1 there and the
             // program carries on to its normal end, printing nothing about
             // it; here the program has no way to carry on from inside the
-            // macro, so it ends quietly, as it would have.
+            // macro, so it ends quietly, as it would have. It does not
+            // flush stdout first: what is buffered there was refused once
+            // already, and the file would see the same data a second time.
             if msg.starts_with("failed printing to std") {
-                exits("");
+                unsafe { sys::exits("".as_ptr(), 0) }
             }
             eprintln!("panic: {msg}");
             werrstr(&msg);

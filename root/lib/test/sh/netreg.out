@@ -16,7 +16,7 @@ clock
 printer proto lpd addr tcp!gate!515 colour no
 clock proto daytime addr tcp!gate!13 persist 1
 > > 
-echo: service clock already registered
+echo: write error: service clock already registered
 proto daytime addr tcp!fs!13 persist 1
 rm: /tmp/netreg/reg/fs: permission denied
 /tmp/netreg/reg/find

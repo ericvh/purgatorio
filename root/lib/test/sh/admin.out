@@ -25,8 +25,8 @@ ghijklm
 ef
 ghijklm
 nopq
-echo: write too long for buffer
-fail:write too long for buffer
+echo: write error: write too long for buffer
+fail:write error
 every day at 10:15
 five minutes on Monday
 nov 9
