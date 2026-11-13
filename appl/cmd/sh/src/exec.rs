@@ -75,6 +75,17 @@ impl Io {
         let f = ManuallyDrop::new(unsafe { File::from_raw_fd(fd) });
         (&*f).write_all(b)
     }
+
+    /// One write of `b` to `fd`, as Limbo's `sys->write`: a short count
+    /// is the caller's to judge.
+    pub fn write_once(&self, fd: i32, b: &[u8]) -> std::io::Result<usize> {
+        let Some(fd) = self.get(fd) else {
+            return Err(std::io::Error::other("bad fd number"));
+        };
+        // SAFETY: as in try_write.
+        let f = ManuallyDrop::new(unsafe { File::from_raw_fd(fd) });
+        (&*f).write(b)
+    }
 }
 
 /// Quotes a word for a sub-shell or `/env` when it needs it.
