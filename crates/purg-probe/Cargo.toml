@@ -16,6 +16,7 @@ bench = false
 [target.'cfg(target_os = "none")'.dependencies]
 purg-aarch64 = { workspace = true, features = ["net"] }
 purg-abi.workspace = true
+purg-auth.workspace = true
 purg-core = { workspace = true, features = ["tls", "lethe"] }
 purg-platform.workspace = true
 purg-system.workspace = true

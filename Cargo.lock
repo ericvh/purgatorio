@@ -3846,6 +3846,7 @@ version = "0.1.0"
 dependencies = [
  "purg-aarch64",
  "purg-abi",
+ "purg-auth",
  "purg-core",
  "purg-fs",
  "purg-platform",
@@ -3890,6 +3891,7 @@ version = "0.1.0"
 dependencies = [
  "purg-aarch64",
  "purg-abi",
+ "purg-auth",
  "purg-core",
  "purg-platform",
  "purg-system",

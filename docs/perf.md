@@ -471,8 +471,9 @@ Found and not fixed:
   work).
 - AOT: done in Section 12, which lists what is left of it.
 - The hot spots in Section 6, and what Section 10.4 leaves.
-- The SHA-256 digest is most of a spawn now (Section 9.2): the CPU's
-  SHA-256 instructions, detected at boot.
+- Spawns after the SHA-256 digest moved to the CPU's instructions
+  (Section 9.4): `Module::new`, the linker and translation are what is
+  left.
 
 ## 9. Follow-up: strict alignment and the module cache
 
@@ -626,11 +627,46 @@ two runs after; `sh-spawn-1k` 2.74 s (2.57) before, 0.41 s (0.37) and 0.43
 s (0.42) after. Its Styx and memfs rows moved by up to 30% either way
 between runs, with or without the change.
 
-What remains for spawns: the SHA-256 digest of each module is now most
-of a spawn (190 µs of 260 µs for `echo`, by the timing above). The
-kernel's `sha2` is the portable code; the CPU's SHA-256 instructions
-(FEAT_SHA256, which this host has) would need detection at boot, since
-not every aarch64 CPU has them.
+What remained for spawns: the SHA-256 digest of each module was then
+most of a spawn (190 µs of 260 µs for `echo`, by the timing above), in
+the portable code. Section 9.4 moves it to the CPU's instructions.
+
+### 9.4 SHA-256 in hardware
+
+The module digest (`purg_auth::modsig::inspect`) now goes through
+`purg_auth::sha256`, which uses the SHA-256 instructions of FEAT_SHA256
+(`SHA256H`, `SHA256H2`, `SHA256SU0`, `SHA256SU1`) once the platform has
+called `sha256::use_hardware`, and the `sha2` crate's portable code
+until then and on every other target. The kernel and the probe read
+`ID_AA64ISAR0_EL1.SHA2` at boot (`purg_aarch64::cpu::has_sha256`); the
+hosted emu asks std (`is_aarch64_feature_detected!("sha2")`). The kernel
+assumes the secondary CPUs match the boot CPU.
+
+`sha2` has an aarch64 backend, but it is behind its `asm` feature, which
+also pulls in `sha2-asm` and its C build, and its detection
+(`cpufeatures` 0.2) answers "no" on `target_os = "none"` unless the
+feature is on at compile time, which would leave no fallback. So the
+wrapper is our own: the buffering and padding of FIPS 180-4 and the
+compression function in the `core::arch::aarch64` intrinsics, about 150
+lines. Its tests check the FIPS 180-4 vectors (including a million
+`a`s) on both paths, and the hardware path against `sha2` for every
+length up to 200 bytes and some larger, fed whole and in pieces of 1 to
+200 bytes. On wasm32 the wrapper compiles to the code it replaces: every
+guest's `.wasm`, `sign`, `verify` and `factotum` included, is
+byte-identical with and without it.
+
+Three rounds under KVM, median (fastest), on `next` at `877af06` and
+with the change; load average 9.2 before and 6.7 to 5.9 after (other
+agents were building):
+
+| benchmark | before | after |
+|---|---|---|
+| spawn-1k-total | 0.273 (0.264) | 0.119 (0.119) |
+| sh-spawn-1k | 0.358 (0.337) | 0.184 (0.184) |
+
+A spawn of `echo` is now 120 µs, down from 270. The probe's QEMU CPUs
+(Cortex-A72 and `max`) have FEAT_SHA256 as well, so the portable path
+runs in the kernel only on a CPU without it; the hosted tests cover it.
 
 ## 10. The data path
 

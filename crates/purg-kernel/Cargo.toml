@@ -38,6 +38,7 @@ purg-aarch64.workspace = true
 [target.'cfg(target_os = "none")'.dependencies]
 purg-platform.workspace = true
 purg-abi.workspace = true
+purg-auth.workspace = true
 purg-core.workspace = true
 purg-styx.workspace = true
 purg-system.workspace = true
