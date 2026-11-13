@@ -1,10 +1,14 @@
-//! The global allocator for an image: linked-list heaps over the free RAM
-//! after the image, with every operation run with IRQs masked.
+//! The global allocator for an image: [`kalloc`]'s size classes and
+//! per-CPU caches over the free RAM after the image, with every operation
+//! run with IRQs masked on the CPU it started on.
 //!
 //! Interrupt handlers allocate and free too (preempting, the scheduler
 //! grows its run queue and frees exited threads), so an interrupt must
-//! never find the heap locked, and no thread may be preempted holding it.
-//! Heap operations are short, so masking costs little interrupt latency.
+//! never find a heap lock held on its own CPU, and no thread may be
+//! preempted holding one. Masking also pins the thread to its CPU, which
+//! is what lets each CPU use its own cache. Every critical section is
+//! short and bounded (`kalloc`'s module docs), so masking costs little
+//! interrupt latency.
 //!
 //! The free RAM is rarely one piece: the loader puts the DTB and an
 //! initrd in the middle of it. The heap takes up to [`REGIONS`] stretches
@@ -17,27 +21,17 @@
 //! ```
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::NonNull;
 
-use spin::Mutex;
-
+use crate::cpu::{self, MAX_CPUS};
 use crate::exception::IrqGuard;
+use crate::kalloc::{self, Alloc};
 use crate::mmu::{self, Region};
 
-/// The most stretches of RAM a heap is made of.
-pub const REGIONS: usize = 4;
+pub use crate::kalloc::REGIONS;
 
-/// The heaps and their accounting. Everything changes only with IRQs
-/// masked, on one CPU.
-struct State {
-    regions: [linked_list_allocator::Heap; REGIONS],
-    used: usize,
-    peak: usize,
-    live: usize,
-    allocs: u64,
-}
+const _: () = assert!(MAX_CPUS <= kalloc::MAX_CPUS);
 
-pub struct Heap(Mutex<State>);
+pub struct Heap(Alloc);
 
 /// What the heap holds now, for `#c/memory`, `#%` and the kernel's
 /// `memstat` boot argument.
@@ -45,11 +39,12 @@ pub struct Heap(Mutex<State>);
 pub struct HeapStats {
     /// Bytes the heap was given.
     pub size: usize,
-    /// Bytes allocated now, as requested (the allocator rounds each block
-    /// up to 16 bytes on top of this).
+    /// Bytes allocated now, as requested (a size class rounds a small
+    /// block up by at most a quarter, the large heaps to 16 bytes).
     pub used: usize,
     /// The most `used` has been, or has been since
-    /// [`Heap::reset_peak`].
+    /// [`Heap::reset_peak`]. Sampled: it can miss up to
+    /// [`kalloc::PEAK_STEP`] a CPU.
     pub peak: usize,
     /// The largest block that can be allocated now: less than
     /// `size - used` when the free space is fragmented.
@@ -58,17 +53,15 @@ pub struct HeapStats {
     pub live: usize,
     /// Allocations made since boot.
     pub allocs: u64,
+    /// Bytes of free small blocks cached by the CPUs.
+    pub cached: usize,
+    /// Bytes of slabs the size classes hold, in use or not.
+    pub slabs: usize,
 }
 
 impl Heap {
     pub const fn empty() -> Heap {
-        Heap(Mutex::new(State {
-            regions: [const { linked_list_allocator::Heap::empty() }; REGIONS],
-            used: 0,
-            peak: 0,
-            live: 0,
-            allocs: 0,
-        }))
+        Heap(Alloc::new())
     }
 
     /// Gives the heap the physical RAM `regions`, through the linear map.
@@ -76,15 +69,18 @@ impl Heap {
     ///
     /// # Safety
     /// Each region must be unused RAM, linear-mapped read-write, and this
-    /// must be called once, before the first allocation.
+    /// must be called once, on the boot CPU, before the first allocation
+    /// and before another CPU starts.
     pub unsafe fn init(&self, regions: &[Region]) {
-        let _g = IrqGuard::new();
-        let mut s = self.0.lock();
-        let usable = regions.iter().filter(|r| r.size > 0);
-        for (heap, r) in s.regions.iter_mut().zip(usable) {
-            // SAFETY: the caller guarantees the memory is ours.
-            unsafe { heap.init(mmu::phys_to_virt(r.base) as *mut u8, r.size) };
+        // The boot CPU is CPU 0 from the first allocation on.
+        cpu::set_id(0);
+        let mut virt = [(core::ptr::null_mut(), 0); REGIONS];
+        for (v, r) in virt.iter_mut().zip(regions.iter().filter(|r| r.size > 0)) {
+            *v = (mmu::phys_to_virt(r.base) as *mut u8, r.size);
         }
+        let _g = IrqGuard::new();
+        // SAFETY: the caller guarantees the memory is ours.
+        unsafe { self.0.regions().init(&virt) };
     }
 
     /// Adds the `by` bytes of RAM directly after the region that ends at
@@ -94,129 +90,102 @@ impl Heap {
     /// Those bytes must be unused RAM, linear-mapped read-write.
     pub unsafe fn extend(&self, end: usize, by: usize) -> bool {
         let _g = IrqGuard::new();
-        let mut s = self.0.lock();
-        let top = mmu::phys_to_virt(end) as *mut u8;
-        match s
-            .regions
-            .iter_mut()
-            .find(|r| r.size() > 0 && r.top() == top)
-        {
-            Some(r) => {
-                // SAFETY: the caller guarantees the memory is ours.
-                unsafe { r.extend(by) };
-                true
-            }
-            None => false,
+        // SAFETY: the caller guarantees the memory is ours.
+        unsafe {
+            self.0
+                .regions()
+                .extend(mmu::phys_to_virt(end) as *mut u8, by)
         }
     }
 
-    /// The counters, and the largest free block, found by trying sizes:
-    /// about thirty allocations per region that are freed at once, with
-    /// IRQs masked throughout. For reports, not for hot paths.
+    /// The counters, and the largest free block, found by trying sizes
+    /// (each try a short critical section of its own). For reports, not
+    /// for hot paths.
     pub fn stats(&self) -> HeapStats {
-        let _g = IrqGuard::new();
-        let mut s = self.0.lock();
-        let mut largest_free = 0;
-        for heap in s.regions.iter_mut().filter(|r| r.size() > 0) {
-            let size = heap.size();
-            let mut fits = |size: usize| {
-                let Ok(layout) = Layout::from_size_align(size, 16) else {
-                    return false;
-                };
-                match heap.allocate_first_fit(layout) {
-                    Ok(p) => {
-                        // SAFETY: `p` was just allocated with `layout` and
-                        // is not used.
-                        unsafe { heap.deallocate(p, layout) };
-                        true
-                    }
-                    Err(()) => false,
-                }
-            };
-            // Invariant: `lo` fits (or is 0) and `hi` does not.
-            let (mut lo, mut hi) = (0, size + 1);
-            while hi - lo > 16 {
-                let mid = lo + (hi - lo) / 2;
-                if fits(mid) {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-            largest_free = largest_free.max(lo);
-        }
+        let s = {
+            let _g = IrqGuard::new();
+            self.0.stats()
+        };
+        let largest_free = self.0.regions().largest_free_with(IrqGuard::new);
         HeapStats {
-            size: s.regions.iter().map(|r| r.size()).sum(),
+            size: s.size,
             used: s.used,
             peak: s.peak,
             largest_free,
             live: s.live,
             allocs: s.allocs,
+            cached: s.cached,
+            slabs: s.slabs,
         }
     }
 
     /// Bytes in use and the heap's size, for `Platform::memory`.
     pub fn memory(&self) -> (u64, u64) {
         let _g = IrqGuard::new();
-        let s = self.0.lock();
         (
-            s.used as u64,
-            s.regions.iter().map(|r| r.size() as u64).sum(),
+            self.0.used_and_peak().0 as u64,
+            self.0.regions().size() as u64,
         )
     }
 
     /// Bytes in use and their peak, without [`Heap::stats`]'s search.
     pub fn used_and_peak(&self) -> (usize, usize) {
-        let _g = IrqGuard::new();
-        let s = self.0.lock();
-        (s.used, s.peak)
+        self.0.used_and_peak()
     }
 
     /// Restarts the peak from what is in use now, so a caller can measure
     /// the peak of one phase.
     pub fn reset_peak(&self) {
-        let _g = IrqGuard::new();
-        let mut s = self.0.lock();
-        s.peak = s.used;
+        self.0.reset_peak();
+    }
+
+    /// Gives back what the CPUs cache and the empty slabs, so that
+    /// `largest_free` and the RAM in use are what callers hold. Takes each
+    /// lock briefly, in turn, with IRQs masked for each step.
+    pub fn reclaim(&self) {
+        self.0.reclaim_with(IrqGuard::new);
     }
 }
 
-// SAFETY: each block comes from one of the linked-list heaps and goes back
-// to the one whose range holds it; IRQs are masked around every call.
+// SAFETY: `kalloc::Alloc` is a correct allocator when each CPU index is
+// used by one caller at a time: IRQs are masked around every call, so the
+// thread stays on the CPU whose index it passes and nothing else runs
+// there until it returns.
 unsafe impl GlobalAlloc for Heap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _g = IrqGuard::new();
-        let mut s = self.0.lock();
-        let Some(p) = s
-            .regions
-            .iter_mut()
-            .find_map(|r| r.allocate_first_fit(layout).ok())
-        else {
-            return core::ptr::null_mut();
-        };
-        s.used += layout.size();
-        s.peak = s.peak.max(s.used);
-        s.live += 1;
-        s.allocs += 1;
-        p.as_ptr()
+        // SAFETY: as above; a `GlobalAlloc` layout has a nonzero size.
+        unsafe { self.0.alloc(cpu::id(), layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let _g = IrqGuard::new();
-        let mut s = self.0.lock();
-        let Some(p) = NonNull::new(ptr) else {
-            return;
-        };
-        if let Some(r) = s
-            .regions
-            .iter_mut()
-            .find(|r| r.bottom() <= ptr && ptr < r.top())
+        // SAFETY: as above, and the caller's contract.
+        unsafe { self.0.dealloc(cpu::id(), ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         {
-            // SAFETY: the caller upholds `GlobalAlloc::dealloc`'s contract,
-            // and the block is in this region, so it came from it.
-            unsafe { r.deallocate(p, layout) };
-            s.used -= layout.size();
-            s.live -= 1;
+            let _g = IrqGuard::new();
+            if self.0.resize_in_place(cpu::id(), layout, new_size) {
+                return ptr;
+            }
         }
+        // Moving a block copies it with IRQs enabled: a large one can take
+        // milliseconds.
+        let Ok(new) = Layout::from_size_align(new_size, layout.align()) else {
+            return core::ptr::null_mut();
+        };
+        // SAFETY: the caller's contract gives a nonzero `new_size`.
+        let q = unsafe { self.alloc(new) };
+        if !q.is_null() {
+            // SAFETY: both blocks hold at least this many bytes, and are
+            // distinct; `ptr` came from this heap with `layout`.
+            unsafe {
+                core::ptr::copy_nonoverlapping(ptr, q, layout.size().min(new_size));
+                self.dealloc(ptr, layout);
+            }
+        }
+        q
     }
 }

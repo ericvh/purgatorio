@@ -41,12 +41,14 @@ jobs:
               *.md|docs/*|LICENSE) ;;
               *) code=true ;;
             esac
-            # What the loom models in crates/purg-core/tests/loom.rs use.
+            # What the loom models in crates/purg-core/tests/loom.rs and
+            # crates/purg-aarch64/tests/loom.rs use.
             case "$f" in
               crates/purg-platform/src/*|crates/purg-core/tests/loom.rs|\
               crates/purg-core/src/qio.rs|crates/purg-core/src/mux.rs|\
               crates/purg-core/src/kchan.rs|crates/purg-core/src/block.rs|\
               crates/purg-core/src/chan.rs|crates/purg-core/src/error.rs|\
+              crates/purg-aarch64/src/kalloc.rs|crates/purg-aarch64/tests/loom.rs|\
               Cargo.lock|rust-toolchain.toml|.github/*) loom=true ;;
             esac
           done < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
@@ -310,6 +312,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then export LOOM_MAX_PREEMPTIONS=5; fi
           cargo test -p purg-core --features std --test loom --release
+          cargo test -p purg-aarch64 --test loom --release
 
   no-std:
     needs: changes
