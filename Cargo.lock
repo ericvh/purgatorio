@@ -1238,6 +1238,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-rio"
+version = "0.1.0"
+dependencies = [
+ "purg-styx",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-rm"
 version = "0.1.0"
 dependencies = [

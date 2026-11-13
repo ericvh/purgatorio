@@ -32,7 +32,13 @@ pub fn names_wanted() -> bool {
 /// Files for the draw device (docs/graphics.md), which only the emu has:
 /// its programs, and `fontgen`, which makes fonts for it at build time. The fonts in
 /// `root/fonts` stay out by not being under `bin` or `lib`.
-const GRAPHICS: &[&str] = &["bin/draw/", "bin/test/draw.", "bin/fontgen.", "bin/acme."];
+const GRAPHICS: &[&str] = &[
+    "bin/draw/",
+    "bin/test/draw.",
+    "bin/fontgen.",
+    "bin/acme.",
+    "bin/rio.",
+];
 
 /// Whether the file at `path` (relative to the root, `/`-separated) goes
 /// into an image; `names` is [`names_wanted`].
