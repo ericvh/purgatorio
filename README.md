@@ -203,7 +203,9 @@ boots once in a stress mode that runs the sh corpus and the conformance
 guests in many progs at once for that long, with a watchdog and a leak
 check. A prog that will not die after a kill is reported with where it
 sleeps or where the timer last stopped it, and a run that xtask kills is
-reported with each CPU's PC. A prog's wasm memory, and a `#pdomain` domain's memory and number
+reported with each CPU's PC. The kernel heap has size classes with a
+cache per CPU in front of a TLSF heap, so four CPUs complete more stress
+runs than one ([docs/perf.md](docs/perf.md), Section 11). A prog's wasm memory, and a `#pdomain` domain's memory and number
 of progs, can be limited with `memlimit` messages on `/prog/<pid>/ctl`
 ([docs/abi.md](docs/abi.md)); past a limit `memory.grow` fails, on the
 emu as on the kernel.
