@@ -82,6 +82,7 @@ a `; ` prompt.
 | Fonts and text (G2): `fontgen` makes font(6) subfonts from TrueType fonts and Unifont's bitmaps; `/fonts` has Go Regular and Go Mono at 13 and 20 pixels with GNU Unifont for the rest of the BMP (`sans/unicode.13.font`, `mono/...`, `default.font`), made by `cargo xtask fonts` and checked byte for byte in CI; the draw device's font cache (`i l s x`); `Font`, `string`, `string_bg` and `string_width` in the SDK; a resizable `emu -g` window (clients see it on `refresh`) and pixel doubling (`-2`, or automatic on a HiDPI display). See [docs/graphics.md](docs/graphics.md) Section 9 | done; no named images, Noto or shaping |
 | `acme`, the first graphical application: columns and windows with tags and bodies, files opened from the command line and with button 3, typing, selection, cut and paste, `Undo`/`Redo`, scroll bars and the wheel, built-in commands (`Get`, `Put`, `Putall`, `Del`, `New`, `Newcol`, `Delcol`, `Snarf`, `Cut`, `Paste`, `Look`, `Exit`) and other commands run with `sh` into `+Errors`. One prog waiting on the pointer, keyboard, command pipes and its file server's pipe with `purgatorio::ready`. See [docs/graphics.md](docs/graphics.md) Section 10 | first slice; no `Edit`, no moving windows with the mouse |
 | acme(4) on `/mnt/acme`, served by acme itself in its own namespace: `cons`, `consctl`, `index`, `label`, `new`, and per window `addr` (sam addresses with regular expressions), `body`, `ctl` (`name`, `clean`, `dirty`, `show`, `del`, `delete`, `get`, `put`, `dump`, `dumpdir`, `addr=dot`, `dot=addr`, `mark`, `nomark`, `cleartag`), `data`, `xdata`, `tag` and `event` (button 2 and 3 actions, inserts and deletes; written back, acme acts). `win`, a shell in an acme window, in every column's tag. See [docs/graphics.md](docs/graphics.md) Section 10.6 | done; no `limit=`, `font`, `menu`; `win` has no `Send` or `Noscroll` |
+| Draw demos, `/dev/draw` only: `draw/clock [-d] [-t seconds]` (an analog face, or seven segments with `-d`; GMT), `draw/coffee` (a cup with animated steam, about 25 frames a second), `draw/faces [-i seconds]` (a generated face for each command in `/prog`, new ones highlighted, button 1 for its progs), `draw/sh [-f font] [-c command]` (a shell window like Inferno's `wm/sh`: `sh -i` on pipes, typing, `^U`, `^W`, `^D`, Delete interrupts, scroll bar and wheel, a button 2 menu with `cut`, `paste`, `snarf`, `send`). See [docs/graphics.md](docs/graphics.md) Section 11 | done; no timezones, no `/dev/snarf` yet (`draw/sh` keeps its own) |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
 | The kernel's AOT engine (`--features aot`): modules compiled ahead of time on the host (`cwasm`, `cargo xtask aot`) run as native code on wasmtime without `std`, from a set linked into the kernel or from signed image files beside the modules (`/bin/<cmd>.cwasm`, trusted by `/lib/keys/aot` in the boot namespace) copied into a W^X code region; the rest on wasmi. `engine=wasmi\|aot\|auto` at boot. The whole test mode passes with every module compiled (`cargo xtask kernel --aot`); see [docs/perf.md](docs/perf.md) Section 12 and [docs/signing.md](docs/signing.md) | done; not the default |
@@ -343,6 +344,16 @@ see its windows as files on `/mnt/acme` (acme(4)):
 
 ```sh
 cargo xtask run-emu -- -g acme /fonts/README
+```
+
+The draw demos run full screen, or in a window manager's window: a
+clock (`-d` for a digital one), a steaming cup of coffee, a face for each
+command running, and a shell window. `q` or Delete ends the first three;
+`exit` ends the shell window:
+
+```sh
+cargo xtask run-emu -- -g draw/clock
+cargo xtask run-emu -- -g draw/sh
 ```
 
 The fonts in `root/fonts` are made from `fonts/` by `cargo xtask fonts`

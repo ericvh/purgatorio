@@ -1406,7 +1406,113 @@ the 35 lines in the test.
 Nothing here was seen on a real display: all of it ran on the
 in-memory screen through the browser backend's input path.
 
-## 11. Sources
+## 11. The draw demos
+
+Four small programs in the spirit of Inferno's and Plan 9's demos, each
+a crate under `appl/cmd/draw/` installed as `/bin/draw/<name>.wasm`.
+Inferno's versions are Tk programs; these draw on `/dev/draw` with the
+SDK alone (no Tk, as the owner decided), and every picture is drawn here
+with draw(2)'s primitives: no Inferno or Plan 9 code, images or art was
+used. Each fills the screen it is given: the emu's (`-g`, `-w` or in
+memory) or a window manager's window, which has a `/dev/draw` of its
+own. They use `screen.r` as given, which need not start at 0,0, and
+follow a resize by calling `Display::check_resize` on each pointer
+event and from time to time (a window manager may resize without a
+pointer event). Each waits in `purgatorio::ready` with a timeout, so an
+idle program sleeps. `q` or Delete ends the first three.
+
+- `draw/clock [-d] [-t seconds]`, after `wm/clock`: an analog face with
+  sixty ticks, numerals when the face is large enough, hour, minute and
+  second hands, `GMT` and the date; `-d` shows seven-segment digits
+  (filled polygons, so they scale with the screen) and the date. It
+  wakes at each second. The time is GMT: there is no timezone database
+  yet (the SDK's `daytime` says the same). `-t` stops the clock at a
+  time, for tests and screenshots. Each second's face is drawn off
+  screen and copied, so a half-drawn face is never shown.
+- `draw/coffee`, after `wm/coffee`, which shows a sequence of pictures:
+  this one draws a wall, a table, a saucer and a cup once, into an image
+  of the screen's size, and animates the steam: three ribbons that sway
+  and fade as they rise. Each ribbon is one filled polygon per band of
+  opacity (premultiplied white over the wall), so no pixel is drawn
+  twice and the bands do not bead. A frame copies back only the steam's
+  rectangle and draws the ribbons over it: about 25 frames a second,
+  each damaging a small part of the screen.
+- `draw/faces [-i seconds]`, after `faces`, which shows the senders of
+  new mail. Purgatorio has no mail; what comes and goes here is progs,
+  so it shows the commands in `/prog`, one tile per command name, read
+  every `-i` seconds (2 by default). The face comes from a hash of the
+  name (FNV-1a with murmur3's final mix): the head's hue and shape,
+  eyes, mouth, cheeks, and hair, a hat or an antenna. A count shows when
+  several progs run the command. A command that starts gets a
+  highlighted tile for five seconds, as new mail does; one that ends
+  loses its tile. Button 1 on a face shows its progs (pid, user, state)
+  on the bottom line.
+- `draw/sh [-f font] [-c command]`, after `wm/sh` and rio's text
+  windows. The name follows `wm/sh`; it installs beside `/bin/sh.wasm`,
+  not over it. It runs `sh -i` in a process group of its own with its
+  standard input, output and error on pipes. Output goes in at the
+  output point, before anything typed; typing is at the end, and Enter
+  sends the typed line. Backspace, `^U`, `^W`, `^D` (the input without a
+  newline, or the end of input when nothing is typed), Delete
+  (`interruptgrp` to the shell's group), the arrows, Page Up and Down,
+  Home and End. Button 1 selects; button 2 is a menu of `cut`, `paste`,
+  `snarf` and `send`; the wheel scrolls; the scroll bar works as acme's.
+  The snarf buffer is `/dev/snarf` when there is one; there is none in
+  the emu yet, so the window keeps its own. The window keeps the last
+  256 Ki characters. When the shell exits the window kills its group and
+  exits. When the window is killed, a watcher (`draw/sh -W pid`, a
+  second copy holding the read end of a pipe only the window writes)
+  sees the pipe close and kills the shell's group. The window takes its
+  own copy of its fds first (`FORKFD`), since a prog started by sh
+  shares its parent's, and the pipe would otherwise stay open.
+
+### 11.1 Tests
+
+Unit tests in the crates cover the clock's geometry and dates, the
+coffee's colours and layout, and the faces' status parsing, grouping,
+looks and colours. `crates/purg-emu/tests/drawdemos.rs`, on wasmtime
+and wasmi, runs an emu with `-w` and `sh -i` on pipes; the test is the
+browser and keeps a copy of the screen from the frames the emu sends.
+Each step waits for a condition, never a fixed time:
+
+- the clock at a fixed time (`-t`, 2026-11-13 12:34:56) on a 320x240
+  screen, then `-d`: each waits for its colours and for the screen to
+  stay unchanged, and is compared with a golden (`clock.ppm.z`,
+  `clock-d.ppm.z`);
+- coffee: pixels of the cup, its band, the coffee and the table, then
+  ten more frames as the steam moves;
+- faces: two tiles (the emu's `sh` and `faces`), a third, highlighted,
+  after `sleep 1000 &`, the details line after a click, and two again
+  after `sleep` is killed;
+- `draw/sh`: the prompt; `junk`, `^U`, `echo hellp`, Backspace, `o`,
+  Enter, compared with a golden (`drawsh.ppm.z`); `cat`, then Delete,
+  and `ps` shows `cat` gone; `exit` leaves no prog behind; a second
+  window running `cat` is killed, and `ps` shows nothing left.
+
+After each program is killed, `ps` must show only the emu's shell. Both
+VMs give the same pixels. Nothing here was seen on a real display, in
+`-g`'s window or a window manager: the tests run on the in-memory screen
+through the browser backend's input path, and the screens were checked
+by eye from dumped images. Resizing was not tested.
+
+### 11.2 Sizes
+
+`clock.wasm` is 142,510 bytes, `coffee.wasm` 101,861, `faces.wasm`
+177,482 and `sh.wasm` 145,887. The source is about 2,200 lines with
+unit tests (`sh` 770, `faces` 600, `coffee` 440, `clock` 380) and the
+acceptance test 530.
+
+### 11.3 Not done
+
+- Timezones: the clock shows GMT.
+- `/dev/snarf`: `draw/sh` keeps its own snarf buffer until a window
+  manager or the emu serves one.
+- `draw/sh` has no `plumb` or `look` items, no hold mode, and types only
+  at the end of the text; `-c` sends one line rather than running sh's
+  `-c`.
+- `draw/faces` does not plumb; button 1 only shows details.
+
+## 12. Sources
 
 All accessed 2026-11-12.
 
