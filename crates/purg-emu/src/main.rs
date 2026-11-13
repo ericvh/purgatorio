@@ -197,6 +197,13 @@ fn report_panics() {
 fn main() {
     report_panics();
     host::report_aborts();
+    // The module loader's SHA-256 with the CPU's instructions.
+    #[cfg(target_arch = "aarch64")]
+    if std::arch::is_aarch64_feature_detected!("sha2") {
+        // SAFETY: std says this CPU has them; hosts do not mix CPUs that
+        // differ in them.
+        unsafe { purg_auth::sha256::use_hardware() };
+    }
     host::exit(run());
 }
 

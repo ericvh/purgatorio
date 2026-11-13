@@ -32,6 +32,7 @@ pub mod proof;
 pub mod record;
 pub mod server;
 pub mod session;
+pub mod sha256;
 
 pub use purg_abi::auth::{PUBLIC, SEED, SIGNATURE};
 

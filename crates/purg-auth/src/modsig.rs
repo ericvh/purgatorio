@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 use core::ops::Range;
 
-use sha2::{Digest as _, Sha256};
+use crate::sha256::Sha256;
 
 use crate::cert::Cert;
 use crate::{PUBLIC, SEED, SIGNATURE};
@@ -146,7 +146,7 @@ pub fn inspect(wasm: &[u8]) -> Result<Info<'_>, Malformed> {
         hash.update(&wasm[s.range]);
     }
     Ok(Info {
-        digest: hash.finalize().into(),
+        digest: hash.finalize(),
         abi: abi.unwrap_or(&[]),
         sigs,
     })
@@ -604,7 +604,7 @@ mod tests {
     fn the_digest_ignores_signature_sections_wherever_they_sit() {
         let plain = module();
         let want = digest(&plain).unwrap();
-        let direct: [u8; DIGEST] = Sha256::digest(&plain).into();
+        let direct: [u8; DIGEST] = <sha2::Sha256 as sha2::Digest>::digest(&plain).into();
         assert_eq!(want, direct);
         let sig = custom(SECTION, b"anything at all");
         let p = parts();
@@ -644,7 +644,7 @@ mod tests {
     fn redundant_leb128_is_hashed_as_written() {
         let mut m = HEADER.to_vec();
         m.extend_from_slice(&[11, 0x82, 0x00, b'h', b'i']);
-        let direct: [u8; DIGEST] = Sha256::digest(&m).into();
+        let direct: [u8; DIGEST] = <sha2::Sha256 as sha2::Digest>::digest(&m).into();
         assert_eq!(digest(&m).unwrap(), direct);
         let mut short = HEADER.to_vec();
         short.extend_from_slice(&[11, 0x02, b'h', b'i']);

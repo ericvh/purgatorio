@@ -213,6 +213,10 @@ extern "C" fn purg_main(dtb_phys: usize) -> ! {
         Err(e) => finish(1, format_args!("probe: DTB: {e:?}")),
     };
     exit::set_method(exit_method(&fdt, &info));
+    if purg_aarch64::cpu::has_sha256() {
+        // SAFETY: the probe runs on the boot CPU only, which has them.
+        unsafe { purg_auth::sha256::use_hardware() };
+    }
     if info.uart.base as usize != board().uart {
         finish(1, format_args!("probe: the DTB's PL011 is not the board's"));
     }

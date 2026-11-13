@@ -320,6 +320,13 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
         Err(e) => fail(format_args!("DTB: {e:?}")),
     };
     exit::set_method(exit_method(&fdt, &info));
+    // The module loader's SHA-256 (`docs/perf.md` Section 9.2) with the
+    // CPU's instructions when it has them.
+    if purg_aarch64::cpu::has_sha256() {
+        // SAFETY: the boot CPU has them, and the secondaries are taken to
+        // match it (`cpu::has_sha256`).
+        unsafe { purg_auth::sha256::use_hardware() };
+    }
 
     println!("Purgatorio kernel {} (aarch64)", env!("CARGO_PKG_VERSION"));
     println!("kernel: booted at EL{}", boot::boot_el());

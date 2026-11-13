@@ -55,3 +55,15 @@ pub fn mpidr() -> u64 {
     unsafe { asm!("mrs {}, mpidr_el1", out(reg) v, options(nomem, nostack, preserves_flags)) };
     v & 0xff_00ff_ffff
 }
+
+/// Whether this CPU has the SHA-256 instructions (FEAT_SHA256):
+/// `ID_AA64ISAR0_EL1.SHA2`, bits 15:12, is 1 (SHA-256) or 2 (SHA-512
+/// too). The kernel assumes every CPU answers as the boot CPU does.
+pub fn has_sha256() -> bool {
+    let v: u64;
+    // SAFETY: reading ID_AA64ISAR0_EL1 has no side effects.
+    unsafe {
+        asm!("mrs {}, id_aa64isar0_el1", out(reg) v, options(nomem, nostack, preserves_flags))
+    };
+    (v >> 12) & 0xf >= 1
+}
