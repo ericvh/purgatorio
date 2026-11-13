@@ -1,0 +1,19 @@
+-v
+args a b
+star a b
+csv items 0
+csv items 1
+munload: no such namespace nons
+status fail
+munload: no such module string
+status fail
+status 
+2
+expr: invalid radix 1
+released
+rget: inappropriate tag id
+echo: write error: short write
+status write error
+closed the read fid
+hello
+SHOUT

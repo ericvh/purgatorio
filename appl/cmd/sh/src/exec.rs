@@ -275,11 +275,34 @@ impl Shell {
             self.here(cmd, io)?
         } else {
             match self.start_pipeline(&p.cmds, io) {
-                Ok(pids) => {
-                    let statuses = self.wait_for(&pids);
+                Ok((pids, deferred)) => {
+                    // The stages that answer a file2chan request run in
+                    // this shell, which holds the request.
+                    let mut here = Vec::new();
+                    let mut stop = None;
+                    for d in deferred {
+                        if stop.is_none() {
+                            match self.here(d.cmd, &d.io) {
+                                Ok(s) => here.push((d.index, s)),
+                                Err(s) => stop = Some(s),
+                            }
+                        }
+                        drop(d.fds);
+                    }
+                    let waited: Vec<u32> = pids.iter().map(|(_, p)| *p).collect();
+                    let mut statuses: Vec<(usize, String)> = pids
+                        .iter()
+                        .map(|(i, _)| *i)
+                        .zip(self.wait_for(&waited))
+                        .collect();
+                    if let Some(s) = stop {
+                        return Err(s);
+                    }
+                    statuses.extend(here);
+                    statuses.sort_by_key(|(i, _)| *i);
                     let failed: Vec<&str> = statuses
                         .iter()
-                        .map(String::as_str)
+                        .map(|(_, s)| s.as_str())
                         .filter(|s| !s.is_empty())
                         .collect();
                     failed.join("|")
@@ -301,6 +324,7 @@ impl Shell {
             && a.first.cmds.iter().all(|c| !self.runs_here(c))
         {
             self.start_pipeline(&a.first.cmds, io)
+                .map(|(pids, _)| pids.into_iter().map(|(_, p)| p).collect())
         } else {
             self.sub_shell(&item.src, io).map(|pid| vec![pid])
         };
@@ -320,9 +344,12 @@ impl Shell {
     }
 
     /// Starts every stage of a pipeline, each with its output piped to the
-    /// next stage's input, and returns their pids.
-    fn start_pipeline(&mut self, cmds: &[Cmd], io: &Io) -> Result<Vec<u32>, Error> {
-        let mut pids = Vec::new();
+    /// next stage's input, and returns their pids with each one's index.
+    /// A stage that replies to a file2chan request is not started but
+    /// returned, with the pipe ends it needs, for this shell to run.
+    fn start_pipeline<'c>(&mut self, cmds: &'c [Cmd], io: &Io) -> Result<Stages<'c>, Error> {
+        let mut pids: Vec<(usize, u32)> = Vec::new();
+        let mut deferred = Vec::new();
         let mut input: Option<OwnedFd> = None;
         for (i, cmd) in cmds.iter().enumerate() {
             let mut stage = io.clone();
@@ -336,6 +363,20 @@ impl Shell {
             } else {
                 None
             };
+            if cmds.len() > 1 && self.f2c_reply(cmd) {
+                let mut fds: Vec<OwnedFd> = input.take().into_iter().collect();
+                input = pipe.map(|(r, w)| {
+                    fds.push(w);
+                    r
+                });
+                deferred.push(Deferred {
+                    index: i,
+                    cmd,
+                    io: stage,
+                    fds,
+                });
+                continue;
+            }
             let started = if self.runs_here(cmd) {
                 self.sub_shell(&cmd.src, &stage)
             } else {
@@ -345,14 +386,28 @@ impl Shell {
             // readers see end of file when the writers exit.
             input = pipe.map(|(r, _w)| r);
             match started {
-                Ok(pid) => pids.push(pid),
+                Ok(pid) => pids.push((i, pid)),
                 Err(e) => {
-                    self.wait_for(&pids);
+                    let started: Vec<u32> = pids.iter().map(|(_, p)| *p).collect();
+                    self.wait_for(&started);
                     return Err(e);
                 }
             }
         }
-        Ok(pids)
+        Ok((pids, deferred))
+    }
+
+    /// Whether `cmd` is one of file2chan's reply commands, such as
+    /// `putrdata` or `fetchwdata`, while this shell serves a file. In
+    /// Inferno every stage of a pipeline sees the module's requests; here
+    /// only this shell holds them.
+    fn f2c_reply(&self, cmd: &Cmd) -> bool {
+        let CmdKind::Simple(words) = &cmd.kind else {
+            return false;
+        };
+        words.first().and_then(head_name).is_some_and(|n| {
+            n != "file2chan" && self.cmd_module(n) == Some(Module::File2chan) && self.serving()
+        })
     }
 
     /// Starts a sub-shell for a pipeline stage, a background job or a
@@ -1119,6 +1174,19 @@ fn fields(s: &str) -> Vec<String> {
 
 /// The command name a word gives before expansion: its text if it is
 /// plain, or the first word of a list such as `(arg ...)`.
+/// The started stages of a pipeline, by index and pid, and the ones this
+/// shell runs itself.
+type Stages<'c> = (Vec<(usize, u32)>, Vec<Deferred<'c>>);
+
+/// A pipeline stage this shell runs itself, after starting the others.
+struct Deferred<'c> {
+    index: usize,
+    cmd: &'c Cmd,
+    io: Io,
+    /// The pipe ends the stage reads and writes, closed once it is done.
+    fds: Vec<OwnedFd>,
+}
+
 fn head_name(w: &Word) -> Option<&str> {
     match w.parts.as_slice() {
         [Part::List(words)] => words.first().and_then(head_name),
