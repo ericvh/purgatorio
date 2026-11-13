@@ -64,6 +64,7 @@ a `; ` prompt.
 | `dbfs` and `rawdbfs`: the records of a text file, or of an append-only binary log, as files (dbfs(4)) | done; rawdbfs's file format is its own |
 | `fs`: trees as values, with all of fs(1)'s modules (`walk filter select merge write bundle unbundle exec pipe proto run setroot chstat compose mergewrite void` and the gates), `@{...}` command blocks | done; `mergewrite` takes its selector as `-c` |
 | Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd ip/ping ip/dhcp ip/virgild`. `ip/dhcp` is for the kernel (QEMU's DHCP server) and does not renew its lease | done |
+| More network commands: `ip/bootpd` (BOOTP and DHCP answers from ndb(6), for its static addresses), `ip/rip` (RIP 1 and 2; `#I` keeps only the default route, so learned routes are refused and `-n` shows them), `sendmail` (SMTP to `$smtp`, or `-s server`) | done; `ppp` and `nppp` are left out (serial lines) |
 | `9660srv`: ISO 9660 images read-only, with Rock Ridge names and modes and Joliet names (9660srv(4)) | done; no High Sierra, Plan 9 extensions or multi-extent files |
 | `dossrv`: FAT12, FAT16 and FAT32 read and write, with long names (dossrv(4)) | done; times are UTC, `-v -F -c -S` do nothing |
 | `ftpfs`: an FTP server's files, passive or active, read and write, with renames (ftpfs(4)) | tested against /bin/test/ftpd only; no symbolic links |
