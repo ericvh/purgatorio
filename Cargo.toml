@@ -61,7 +61,11 @@ members = [
     "appl/cmd/dbm/keys",
     "appl/cmd/dbm/list",
     "appl/cmd/dbm/store",
+    "appl/cmd/draw/clock",
+    "appl/cmd/draw/coffee",
     "appl/cmd/draw/demo",
+    "appl/cmd/draw/faces",
+    "appl/cmd/draw/sh",
     # Libraries shared by commands, outside the globbed directories.
     "appl/archive",
     "appl/authlib",

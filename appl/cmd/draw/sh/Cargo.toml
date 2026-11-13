@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-draw-sh"
+description = "draw/sh: a shell window, sh -i on pipes, drawn on /dev/draw"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "draw-sh"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

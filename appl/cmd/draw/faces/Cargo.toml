@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-draw-faces"
+description = "draw/faces: a face for each command running, from /prog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "draw-faces"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

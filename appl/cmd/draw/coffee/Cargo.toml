@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-draw-coffee"
+description = "draw/coffee: a steaming cup of coffee, animated"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "draw-coffee"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

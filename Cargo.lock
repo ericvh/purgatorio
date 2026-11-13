@@ -569,7 +569,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-draw-clock"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-draw-coffee"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-draw-demo"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-draw-faces"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-draw-sh"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
