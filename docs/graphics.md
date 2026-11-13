@@ -616,12 +616,14 @@ rewrites them.
 **`#i`** (`purg-core/src/devdraw.rs`, feature `draw`, served when the
 platform has a screen): `#i/draw/new`, which makes connection `n` and
 becomes its `ctl`; `n/ctl` (144 bytes about the image last written as a
-4-byte id, 0 the screen), `n/data`, `n/colormap` (the `rgbv` map) and
+4-byte id, 0 the screen; as in devdraw, a read answers one request, and
+a second read with no write between fails with `unknown id for draw
+image`), `n/data`, `n/colormap` (the `rgbv` map) and
 `n/refresh` (blocks: there are no windows to refresh). Messages: `b f c
 d D e E L p P r y Y o O v`, with devdraw's packed polygon coordinates,
 the arc bit in `e`'s alpha, the operator reset after each drawing
 message, and devdraw's errors (`unknown id for draw image`, `short draw
-message`, `image id in use`, `image memory allocation failed`,
+message`, `image id in use`, `out of memory: image`,
 `readimage outside image`, `writeimage outside image`, `bad draw
 command`, `draw read too short`, `no draw data`, ...). A connection ends
 when its last file closes. The screen image belongs to the device and is
@@ -976,9 +978,12 @@ devdraw's `drawchar`, now `purg_memdraw::draw_char`. Freeing the image
 drops its cache. The checks and errors are devdraw's: `cannot use
 display as font`, `bad font size (4096 chars max)`, `image not a font`,
 `character index out of range`, `unknown id for draw image`, `short draw
-message`. Two differences: `s` checks every index before drawing
-anything (devdraw draws the glyphs before a bad one), and `l` reads the
-index as unsigned, so it has no negative case.
+message`. As in devdraw, `s` draws the glyphs before a bad index and
+then fails, while `x` checks every index before it paints the
+background, so it draws nothing. Indices are unsigned 16-bit numbers in
+both: devdraw reads them with `BGSHORT`, which cannot be negative, so its
+`ci < 0` test never fires, and `l` and `s` here have no negative case
+either. No client can tell the two apart there.
 
 **Named images (`n`, `N`) are not implemented.** Neither libdraw's font
 code nor ours needs them; they exist to share images between clients
