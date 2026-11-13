@@ -103,6 +103,8 @@ jobs:
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
       - name: unit and acceptance tests (wasmtime and wasmi)
         run: cargo test --workspace
+      - name: root/fonts is what fontgen makes, on every host (docs/graphics.md 9.1)
+        run: cargo xtask fonts --check
       - name: experimental no_std and multi-call guests (docs/footprint.md)
         if: runner.os == 'Linux'
         run: cargo xtask small

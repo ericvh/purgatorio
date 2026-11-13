@@ -1,0 +1,14 @@
+Fonts for /dev/draw programs, in Inferno's font(6) format.
+
+sans/unicode.13.font, sans/unicode.20.font    Go Regular, then Unifont
+mono/unicode.13.font, mono/unicode.20.font    Go Mono, then Unifont
+default.font                                  the same as sans/unicode.13.font
+go/{regular,mono}.{13,20}.font                the Go fonts alone
+unifont/unifont.16.font                       GNU Unifont alone (the BMP)
+
+The Go fonts are Bigelow & Holmes's, under the BSD licence in
+go/LICENSE. The Unifont subfonts are made from GNU Unifont 18.0.01 and
+are under the SIL Open Font License 1.1 (unifont/OFL-1.1.txt; Unifont is
+also GPLv2+ with the font embedding exception, unifont/COPYING).
+
+These files are made by fontgen; see fonts/README in the source tree.

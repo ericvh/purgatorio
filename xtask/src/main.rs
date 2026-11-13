@@ -74,6 +74,9 @@
 //! Both images are built without strict alignment, except for the crates
 //! whose code runs with the MMU off, and each build checks that boot path
 //! (`align.rs`).
+//! - `fonts [--check] [--vm=wasmtime|wasmi]`: make `root/fonts` from
+//!   `fonts/` with the `fontgen` guest in the emu (`fonts.rs`); `--check`
+//!   compares instead of writing.
 //! - `check-wasm <file.wasm>...`: check modules without building.
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
 //!   `wasm32-wasip1`, and on the experimental guests in `appl/small`,
@@ -82,6 +85,7 @@
 mod align;
 mod bench;
 mod disk;
+mod fonts;
 mod kprof;
 mod letheperf;
 mod phases;
@@ -2511,12 +2515,13 @@ fn main() -> ExitCode {
                 "usage: cargo xtask kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N]",
             )),
         },
+        Some("fonts") => fonts::cmd(&rest).map(|()| ExitCode::SUCCESS),
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         Some("bench") => bench::cmd(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | fonts [--check] [--vm=...] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
         )),
     };
     match res {
