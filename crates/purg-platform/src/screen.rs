@@ -9,6 +9,12 @@
 //! or virtio-gpu could copy or transfer them. Input goes the other way,
 //! into the [`Input`] the backend was given, which `#m` and `#c/keyboard`
 //! read.
+//!
+//! A backend whose size changes (a window the user resizes) makes
+//! [`Screen::size`] return the new size and then calls [`Input::resized`].
+//! The draw device makes a new screen image of that size before its next
+//! request, keeping what fits of the old one, and tells its clients
+//! through their `refresh` files (draw(3)).
 
 use alloc::collections::VecDeque;
 
@@ -24,7 +30,7 @@ pub type Rect = [i32; 4];
 /// What the draw device asks of a display.
 pub trait Screen: Send + Sync {
     /// The screen's width and height in pixels. The screen image is
-    /// `(0, 0)-(width, height)`.
+    /// `(0, 0)-(width, height)`. It may change; see [`Input::resized`].
     fn size(&self) -> (u32, u32);
     /// The channel descriptor of the screen image and of the pixels
     /// [`Screen::flush`] receives.
@@ -33,7 +39,8 @@ pub trait Screen: Send + Sync {
     }
     /// Shows rectangle `r` of the screen image. `pixels` holds its rows,
     /// top to bottom, each `stride` bytes, starting with the byte that
-    /// holds pixel `r[0]`, as image(6) lays out rows.
+    /// holds pixel `r[0]`, as image(6) lays out rows. Just after a resize
+    /// `r` may still be in the old size: a backend clips it to its own.
     fn flush(&self, r: Rect, pixels: &[u8], stride: usize);
     /// Where the backend delivers pointer and keyboard events.
     fn input(&self) -> &Input;
@@ -60,6 +67,8 @@ struct Queues {
     pointer: VecDeque<Pointer>,
     last: Pointer,
     keys: VecDeque<u8>,
+    /// How many times the screen has changed size.
+    resizes: u64,
 }
 
 /// The most pointer events kept unread; older ones are dropped.
@@ -135,6 +144,19 @@ impl Input {
         self.rendez.wakeup();
     }
 
+    /// Says that the screen has changed size: [`Screen::size`] already
+    /// returns the new one.
+    pub fn resized(&self) {
+        self.q.lock().resizes += 1;
+        self.rendez.wakeup();
+    }
+
+    /// How many times the screen has changed size, so that a reader can
+    /// tell whether it has since it last looked.
+    pub fn resizes(&self) -> u64 {
+        self.q.lock().resizes
+    }
+
     pub fn has_keys(&self) -> bool {
         !self.q.lock().keys.is_empty()
     }
@@ -172,24 +194,28 @@ impl Input {
 /// when there is no window, so that programs and tests can draw and read
 /// back what they drew.
 pub struct Headless {
-    width: u32,
-    height: u32,
+    size: Mutex<(u32, u32)>,
     input: Input,
 }
 
 impl Headless {
     pub fn new(width: u32, height: u32) -> Headless {
         Headless {
-            width,
-            height,
+            size: Mutex::new((width, height)),
             input: Input::new(),
         }
+    }
+
+    /// Changes the size, as a window the user resized would.
+    pub fn resize(&self, width: u32, height: u32) {
+        *self.size.lock() = (width, height);
+        self.input.resized();
     }
 }
 
 impl Screen for Headless {
     fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
+        *self.size.lock()
     }
 
     fn flush(&self, _r: Rect, _pixels: &[u8], _stride: usize) {}

@@ -24,13 +24,28 @@
 //! | `o id[4] rmin[8] screenrmin[8]` | set a window's origin; nothing for other images |
 //! | `O op[1]` | the compositing operator for the next drawing message |
 //! | `v` | flush damage to the display |
+//! | `i id[4] n[4] ascent[1]` | make image `id` a font cache of `n` glyphs (at most 4096) |
+//! | `l id[4] srcid[4] index[2] R[16] P[8] left[1] width[1]` | load glyph `index` of cache `id`: copy `R` from `srcid` at `P`, and record `R`, `left` and `width` |
+//! | `s dst[4] src[4] font[4] P[8] clipR[16] sp[8] n[2] index[2n]` | draw glyphs of cache `font` from baseline point `P` |
+//! | `x` (as `s`, with `bg[4] bgp[8]` after `n`) | the same over a background drawn from `bg` |
 //!
 //! Polygon points are coded as devdraw codes them: each coordinate a byte
 //! that is a 7-bit signed difference from the previous one, or, with the
-//! top bit set, a 23-bit absolute value in three bytes. Screens and
-//! windows (`A`, `F`, `S`, `t`), named images (`n`, `N`) and the font
-//! cache (`i`, `l`, `s`, `x`) are not implemented yet and fail with
-//! `bad draw command`. Errors are devdraw's strings.
+//! top bit set, a 23-bit absolute value in three bytes. A glyph drawn by
+//! `s` is devdraw's `drawchar`: the cache rectangle recorded by `l`,
+//! placed `left` pixels right of the point with its top `ascent - miny`
+//! above the baseline, used as the mask for the source, which moves on
+//! with the point by `width`. Screens and windows (`A`, `F`, `S`, `t`)
+//! and named images (`n`, `N`) are not implemented and fail with `bad
+//! draw command`. Errors are devdraw's strings.
+//!
+//! When the display changes size ([`Screen::size`] and
+//! [`purg_platform::screen::Input::resized`]) the device makes a new
+//! screen image before its next request, keeping what fits of the old
+//! one. A read of `refresh` blocks until that happens and then returns a
+//! 20-byte record, as devdraw's refresh records are: the image id (0, the
+//! screen) and its new rectangle, four little-endian 4-byte integers. The
+//! client then reads `ctl` for the screen and redraws.
 //!
 //! The screen image is the device's own; `v` gives the screen's damaged
 //! rectangle to [`Screen::flush`]. A connection ends, and its images go,
@@ -45,7 +60,7 @@ use alloc::vec::Vec;
 use purg_abi::{error, mode};
 use purg_memdraw::{self as md, Chan, Image, Op, Point, Rect};
 use purg_platform::screen::Screen;
-use purg_platform::sync::{Mutex, Rendez};
+use purg_platform::sync::Mutex;
 use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 
 use crate::chan::Chan as KChan;
@@ -63,6 +78,10 @@ const EWRITEOUTSIDE: &str = "writeimage outside image";
 const EBADCMD: &str = "bad draw command";
 const ENODATA: &str = "no draw data";
 const ECTL: &str = "unknown draw control request";
+const ENOTFONT: &str = "image not a font";
+const EINDEX: &str = "character index out of range";
+const EDISPLAYFONT: &str = "cannot use display as font";
+const EFONTSIZE: &str = "bad font size (4096 chars max)";
 
 const QTOP: u64 = 0;
 const QDRAW: u64 = 1;
@@ -99,18 +118,50 @@ struct Conn {
     op: Op,
     /// Pixels waiting for a read of `data`, after `r`.
     readdata: Option<Vec<u8>>,
+    /// Font caches, by image id (`i`).
+    fonts: BTreeMap<u32, FontCache>,
+    /// The screen resizes `refresh` has reported.
+    resizes: u64,
+}
+
+/// A font cache on an image: its ascent and its glyphs.
+struct FontCache {
+    ascent: i32,
+    chars: Vec<md::CacheChar>,
+}
+
+impl Conn {
+    fn new(resizes: u64) -> Conn {
+        Conn {
+            images: BTreeMap::new(),
+            screen: true,
+            info: 0,
+            op: Op::SOVER_D,
+            readdata: None,
+            fonts: BTreeMap::new(),
+            resizes,
+        }
+    }
+
+    /// The font cache on image `id`.
+    fn font(&self, id: u32) -> Result<&FontCache> {
+        if !self.images.contains_key(&id) {
+            return Err(Error::new(ENODRAWIMAGE));
+        }
+        self.fonts.get(&id).ok_or(Error::new(ENOTFONT))
+    }
 }
 
 struct Client {
     opens: Mutex<u32>,
     conn: Mutex<Conn>,
-    /// `refresh` readers sleep here; with no windows nothing wakes them.
-    refresh: Rendez,
 }
 
 struct ScreenImage {
     image: Image,
     damage: Option<Rect>,
+    /// The display's resize count this image was made for.
+    resizes: u64,
 }
 
 pub struct DevDraw {
@@ -125,20 +176,49 @@ impl DevDraw {
     /// A draw device showing its screen on `display`. Fails if the
     /// display's size or channels make no image memdraw can draw on.
     pub fn new(display: Arc<dyn Screen>, user: String) -> Option<DevDraw> {
-        let (w, h) = display.size();
-        let r = Rect::new(0, 0, i32::try_from(w).ok()?, i32::try_from(h).ok()?);
-        let mut image = Image::new(r, Chan(display.chan()))?;
-        image.fill(md::rgba(0xFFFF_FFFF));
+        let resizes = display.input().resizes();
+        let image = DevDraw::screen_image(&*display)?;
+        let r = image.r;
         Some(DevDraw {
             display,
             user,
             screen: Mutex::new(ScreenImage {
                 image,
                 damage: Some(r),
+                resizes,
             }),
             clients: Mutex::new(BTreeMap::new()),
             next: Mutex::new(1),
         })
+    }
+
+    /// A white screen image of the display's size.
+    fn screen_image(display: &dyn Screen) -> Option<Image> {
+        let (w, h) = display.size();
+        let r = Rect::new(0, 0, i32::try_from(w).ok()?, i32::try_from(h).ok()?);
+        let mut image = Image::new(r, Chan(display.chan()))?;
+        image.fill(md::rgba(0xFFFF_FFFF));
+        Some(image)
+    }
+
+    /// Makes a new screen image if the display has changed size since the
+    /// last one, with the old one's pixels where they fit.
+    fn sync_size(&self) {
+        let resizes = self.display.input().resizes();
+        let mut s = self.screen.lock();
+        if s.resizes == resizes {
+            return;
+        }
+        s.resizes = resizes;
+        let Some(mut image) = DevDraw::screen_image(&*self.display) else {
+            return;
+        };
+        if image.r != s.image.r {
+            let old = &s.image;
+            md::draw(&mut image, old.r, old, old.r.min, None, old.r.min, Op::S);
+            s.damage = Some(image.r);
+            s.image = image;
+        }
     }
 
     fn qid(path: u64) -> Qid {
@@ -334,6 +414,7 @@ impl DevDraw {
                 } else if conn.images.remove(&id).is_none() {
                     return Err(Error::new(ENODRAWIMAGE));
                 }
+                conn.fonts.remove(&id);
                 Ok(m)
             }
             b'c' => {
@@ -471,6 +552,107 @@ impl DevDraw {
             b'v' => {
                 self.flush();
                 Ok(1)
+            }
+            b'i' => {
+                let m = need(10)?;
+                let id = u32le(a, 1);
+                if id == 0 && conn.screen {
+                    return Err(Error::new(EDISPLAYFONT));
+                }
+                if !conn.images.contains_key(&id) {
+                    return Err(Error::new(ENODRAWIMAGE));
+                }
+                let n = i32le(a, 5);
+                if n <= 0 || n > 4096 {
+                    return Err(Error::new(EFONTSIZE));
+                }
+                conn.fonts.insert(
+                    id,
+                    FontCache {
+                        ascent: i32::from(a[9]),
+                        chars: alloc::vec![md::CacheChar::default(); n as usize],
+                    },
+                );
+                Ok(m)
+            }
+            b'l' => {
+                let m = need(37)?;
+                let id = u32le(a, 1);
+                let n = conn.font(id)?.chars.len();
+                let src = u32le(a, 5);
+                let ci = usize::from(u16::from_le_bytes([a[9], a[10]]));
+                if ci >= n {
+                    return Err(Error::new(EINDEX));
+                }
+                let (r, p) = (rect(a, 11), point(a, 27));
+                self.with(conn, id, &[src], |d, s| {
+                    ((), md::draw(d, r, s[0], p, None, p, Op::SOVER_D))
+                })?;
+                if let Some(f) = conn.fonts.get_mut(&id) {
+                    f.chars[ci] = md::CacheChar {
+                        minx: r.min.x,
+                        maxx: r.max.x,
+                        miny: r.min.y as u8,
+                        maxy: r.max.y as u8,
+                        left: a[35] as i8,
+                        width: a[36],
+                    };
+                }
+                Ok(m)
+            }
+            b's' | b'x' => {
+                let bg = a[0] == b'x';
+                let head = if bg { 59 } else { 47 };
+                need(head)?;
+                let n = usize::from(u16::from_le_bytes([a[45], a[46]]));
+                let m = need(head + 2 * n)?;
+                let (dst, src, fid) = (u32le(a, 1), u32le(a, 5), u32le(a, 9));
+                let (p, clipr, sp) = (point(a, 13), rect(a, 21), point(a, 37));
+                let exists = |id: u32| (id == 0 && conn.screen) || conn.images.contains_key(&id);
+                if !exists(dst) || !exists(src) {
+                    return Err(Error::new(ENODRAWIMAGE));
+                }
+                let font = conn.font(fid)?;
+                let mut glyphs = Vec::with_capacity(n);
+                for i in 0..n {
+                    let o = head + 2 * i;
+                    let ci = usize::from(u16::from_le_bytes([a[o], a[o + 1]]));
+                    glyphs.push(*font.chars.get(ci).ok_or(Error::new(EINDEX))?);
+                }
+                let ascent = font.ascent;
+                let mut srcs = alloc::vec![src, fid];
+                let bgp = if bg {
+                    srcs.push(u32le(a, 47));
+                    point(a, 51)
+                } else {
+                    Point::new(0, 0)
+                };
+                let op = take_op(conn);
+                self.with(conn, dst, &srcs, |d, s| {
+                    let saved = d.clipr;
+                    d.clipr = clipr;
+                    let mut damage: Option<Rect> = None;
+                    let mut add = |r: Option<Rect>| {
+                        if let Some(r) = r {
+                            damage = Some(damage.map_or(r, |d| d.union(&r)));
+                        }
+                    };
+                    if bg {
+                        let w: i32 = glyphs.iter().map(|g| i32::from(g.width)).sum();
+                        let y = p.y - ascent;
+                        let r = Rect::new(p.x, y, p.x + w, y + s[1].r.dy());
+                        add(md::draw(d, r, s[2], bgp, None, Point::new(0, 0), op));
+                    }
+                    let (mut q, mut sp) = (p, sp);
+                    for g in &glyphs {
+                        let (next, r) = md::draw_char(d, q, s[0], &mut sp, s[1], ascent, g, op);
+                        add(r);
+                        q = next;
+                    }
+                    d.clipr = saved;
+                    ((), damage)
+                })?;
+                Ok(m)
             }
             _ => Err(Error::new(EBADCMD)),
         }
@@ -620,14 +802,7 @@ impl Dev for DevDraw {
                 };
                 let client = Arc::new(Client {
                     opens: Mutex::new(1),
-                    conn: Mutex::new(Conn {
-                        images: BTreeMap::new(),
-                        screen: true,
-                        info: 0,
-                        op: Op::SOVER_D,
-                        readdata: None,
-                    }),
-                    refresh: Rendez::new(),
+                    conn: Mutex::new(Conn::new(self.display.input().resizes())),
                 });
                 self.clients.lock().insert(id, client);
                 c.qid = DevDraw::qid(u64::from(id) << 8 | KCTL);
@@ -656,7 +831,7 @@ impl Dev for DevDraw {
         };
         if last {
             self.clients.lock().remove(&id);
-            cl.refresh.wakeup();
+            self.display.input().rendez.wakeup();
         }
     }
 
@@ -665,6 +840,7 @@ impl Dev for DevDraw {
         match kind_of(path) {
             QTOP | QDRAW | KDIR => Err(Error::new(error::EISDIR)),
             KCTL => {
+                self.sync_size();
                 let cl = self.client(conn_of(path))?;
                 let conn = cl.conn.lock();
                 let s = self.info(conn_of(path), &conn, conn.info)?;
@@ -690,12 +866,30 @@ impl Dev for DevDraw {
             }
             KCOLORMAP => Ok(read_str(colormap().as_bytes(), buf, offset)),
             KREFRESH => {
+                if buf.len() < 20 {
+                    return Err(Error::new(error::EBADARG));
+                }
                 let cl = self.client(conn_of(path))?;
                 let id = conn_of(path);
-                // No windows, so nothing needs refreshing: wait until the
-                // connection goes or the reader is interrupted.
-                crate::block::park(&cl.refresh, || !self.clients.lock().contains_key(&id))?;
-                Ok(0)
+                let input = self.display.input();
+                // Only the screen changes size; there are no windows to
+                // refresh. Wait for a resize, the connection's end or an
+                // interrupt.
+                let seen = cl.conn.lock().resizes;
+                crate::block::park(&input.rendez, || {
+                    input.resizes() != seen || !self.clients.lock().contains_key(&id)
+                })?;
+                if input.resizes() == seen {
+                    return Ok(0);
+                }
+                self.sync_size();
+                cl.conn.lock().resizes = input.resizes();
+                let r = self.screen.lock().image.r;
+                buf[..4].copy_from_slice(&0u32.to_le_bytes());
+                for (i, v) in [r.min.x, r.min.y, r.max.x, r.max.y].into_iter().enumerate() {
+                    buf[4 + 4 * i..8 + 4 * i].copy_from_slice(&v.to_le_bytes());
+                }
+                Ok(20)
             }
             _ => Err(Error::new(error::ENONEXIST)),
         }
@@ -740,6 +934,7 @@ impl Dev for DevDraw {
                 Ok(4)
             }
             KDATA => {
+                self.sync_size();
                 let cl = self.client(conn_of(path))?;
                 let mut conn = cl.conn.lock();
                 self.messages(&mut conn, buf)?;
@@ -758,14 +953,7 @@ mod tests {
 
     fn conn() -> (DevDraw, Conn) {
         let d = DevDraw::new(Arc::new(Headless::new(16, 8)), String::from("me")).unwrap();
-        let c = Conn {
-            images: BTreeMap::new(),
-            screen: true,
-            info: 0,
-            op: Op::SOVER_D,
-            readdata: None,
-        };
-        (d, c)
+        (d, Conn::new(0))
     }
 
     fn alloc(id: u32, chan: Chan, repl: bool, r: Rect, colour: u32) -> Vec<u8> {
@@ -831,6 +1019,74 @@ mod tests {
             m.extend(v.to_le_bytes());
         }
         assert_eq!(e(&mut c, &m), EREADOUTSIDE);
+    }
+
+    #[test]
+    fn a_resize_makes_a_new_screen_image() {
+        let screen = Arc::new(Headless::new(16, 8));
+        let d = DevDraw::new(screen.clone(), String::from("me")).unwrap();
+        let mut c = Conn::new(0);
+        let mut m = alloc(1, md::RGB24, true, Rect::new(0, 0, 1, 1), 0xFF0000FF);
+        m.extend(alloc(2, md::GREY1, true, Rect::new(0, 0, 1, 1), 0xFFFFFFFF));
+        m.push(b'd');
+        for v in [0u32, 1, 2] {
+            m.extend(v.to_le_bytes());
+        }
+        for v in [0i32, 0, 16, 8, 0, 0, 0, 0] {
+            m.extend(v.to_le_bytes());
+        }
+        d.messages(&mut c, &m).unwrap();
+        screen.resize(20, 4);
+        d.sync_size();
+        let s = d.screen.lock();
+        assert_eq!(s.image.r, Rect::new(0, 0, 20, 4));
+        assert_eq!(s.damage, Some(Rect::new(0, 0, 20, 4)));
+        // The old pixels that fit are kept; the new ones are white.
+        assert_eq!(s.image.rgba(Point::new(15, 3)), [255, 0, 0, 255]);
+        assert_eq!(s.image.rgba(Point::new(16, 0)), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn glyphs_from_the_cache() {
+        let (d, mut c) = conn();
+        // A 4x3 font image with one 2x2 glyph at (1, 0), ascent 2.
+        let mut m = alloc(1, md::GREY8, false, Rect::new(0, 0, 4, 3), 0);
+        m.extend(alloc(
+            2,
+            md::GREY1,
+            false,
+            Rect::new(0, 0, 8, 2),
+            0xFFFFFFFF,
+        ));
+        m.extend(alloc(3, md::RGB24, true, Rect::new(0, 0, 1, 1), 0x0000FFFF));
+        m.extend([b'i', 1, 0, 0, 0, 2, 0, 0, 0, 2]);
+        m.extend([b'l', 1, 0, 0, 0, 2, 0, 0, 0, 1, 0]);
+        for v in [1i32, 0, 3, 2, 0, 0] {
+            m.extend(v.to_le_bytes());
+        }
+        m.extend([0xFF, 3]);
+        // Two of glyph 1 from baseline (4, 6), then read the screen back.
+        m.push(b's');
+        for v in [0u32, 3, 1] {
+            m.extend(v.to_le_bytes());
+        }
+        for v in [4i32, 6, 0, 0, 16, 8, 0, 0] {
+            m.extend(v.to_le_bytes());
+        }
+        m.extend(2u16.to_le_bytes());
+        m.extend([1, 0, 1, 0]);
+        m.push(b'r');
+        m.extend(0u32.to_le_bytes());
+        for v in [0i32, 4, 16, 6] {
+            m.extend(v.to_le_bytes());
+        }
+        d.messages(&mut c, &m).unwrap();
+        let px = c.readdata.take().unwrap();
+        let blue =
+            |x: usize, y: usize| px[(y * 16 + x) * 4] == 0xFF && px[(y * 16 + x) * 4 + 2] == 0;
+        // left -1: glyphs at x 3..5 and 6..8, rows 4 and 5.
+        let got: Vec<usize> = (0..16).filter(|&x| blue(x, 0) && blue(x, 1)).collect();
+        assert_eq!(got, [3, 4, 6, 7]);
     }
 
     #[test]

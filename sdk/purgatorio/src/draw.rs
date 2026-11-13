@@ -1,7 +1,8 @@
 //! A small draw library over `/dev/draw` (draw(3)), in the spirit of
 //! Inferno's Draw module: open the display, allocate images, draw
-//! rectangles, lines, polygons and ellipses, load and read pixels, and
-//! read the pointer and the keyboard.
+//! rectangles, lines, polygons and ellipses, draw text in font(6) fonts
+//! ([`Font`], [`Display::string`]), load and read pixels, and read the
+//! pointer and the keyboard.
 //!
 //! Drawing calls are buffered, as libdraw buffers them, and reach the
 //! device on [`Display::flush`] (or when the buffer fills). An error in a
@@ -24,6 +25,9 @@ pub use purg_memdraw::{
 };
 
 use crate::Error;
+
+mod font;
+pub use font::{DEFAULT_FONT, Font, NCACHE};
 
 /// memdraw itself, for programs that draw into an image of their own
 /// and send it with [`Display::load`].
@@ -161,6 +165,35 @@ impl Display {
         let mut info = [0u8; 144];
         let n = self.ctl.read(&mut info)?;
         Ok(parse_info(&info[..n])?.1)
+    }
+
+    /// Whether the screen has changed size since this connection last
+    /// looked: asks `ctl` about the screen and, if its rectangle is new,
+    /// updates [`Display::screen`] and returns true.
+    pub fn check_resize(&mut self) -> Result<bool, Error> {
+        self.write_out()?;
+        let s = self.info(0)?;
+        if s.r == self.screen.r {
+            return Ok(false);
+        }
+        self.screen = s;
+        Ok(true)
+    }
+
+    /// Waits for the screen to change size (reading the connection's
+    /// `refresh` file, draw(3)) and returns its new rectangle. The screen
+    /// image is updated too.
+    pub fn wait_resize(&mut self) -> Result<Rect, Error> {
+        let mut f = File::open(format!("/dev/draw/{}/refresh", self.conn))?;
+        let mut b = [0u8; 20];
+        let n = f.read(&mut b)?;
+        if n < 20 {
+            return Err(Error::from("draw connection closed"));
+        }
+        let v = |i: usize| i32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        let r = Rect::new(v(4), v(8), v(12), v(16));
+        self.check_resize()?;
+        Ok(r)
     }
 
     /// Adds a message, writing out what is buffered first if it would not

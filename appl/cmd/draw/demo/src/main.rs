@@ -1,12 +1,13 @@
-//! draw/demo: draws rectangles, lines, polygons, ellipses and arcs on the
-//! screen, then follows the pointer. Holding button 1 paints; button 3
-//! ends the demo.
+//! draw/demo: draws rectangles, lines, polygons, ellipses, arcs and text
+//! on the screen, then follows the pointer. Holding button 1 paints;
+//! button 3 ends the demo. When the window is resized the scene is drawn
+//! again at the new size.
 //!
 //! `draw/demo -n` draws the scene once and exits, which works without a
 //! window too (the emu's screen is then in memory).
 
 use purgatorio::draw::{
-    Display, ENDARROW, ENDDISC, ENDSQUARE, Image, Mouse, Op, Point, Rect, WHITE,
+    Display, ENDARROW, ENDDISC, ENDSQUARE, Font, Image, Mouse, Op, Point, Rect, WHITE,
 };
 use purgatorio::{Context, Error};
 
@@ -23,7 +24,14 @@ struct Colours {
     veil: Image,
 }
 
-fn scene(d: &mut Display, dst: &Image, c: &Colours) -> Result<(), Error> {
+/// The fonts the scene's text is in.
+struct Fonts {
+    sans: Font,
+    mono: Font,
+    big: Font,
+}
+
+fn scene(d: &mut Display, dst: &Image, c: &Colours, f: &mut Fonts) -> Result<(), Error> {
     let r = dst.r;
     let (w, h) = (r.dx(), r.dy());
     let at = |x: i32, y: i32| Point::new(r.min.x + x * w / 100, r.min.y + y * h / 100);
@@ -69,7 +77,39 @@ fn scene(d: &mut Display, dst: &Image, c: &Colours) -> Result<(), Error> {
     let mut closed = star.clone();
     closed.push(star[0]);
     d.poly(dst, &closed, ENDSQUARE, ENDSQUARE, 0, &c.black, zero)?;
+    // Text: a title, a line of code over a background, and runes from
+    // Go's coverage and from Unifont's.
+    let title = "Purgatorio draw/demo";
+    let tw = f.big.string_width(title);
+    let tp = Point::new(r.max.x - tw - 8, at(0, 13).y);
+    d.string(dst, tp, &c.black, zero, &mut f.big, title)?;
+    let code = "fn main() { draw(\"hello\"); }";
+    let cp = at(5, 15);
+    d.string_bg(dst, cp, &c.black, zero, &mut f.mono, code, &c.yellow, zero)?;
+    let mut p = at(5, 56);
+    for s in ["Ελληνικά, Кириллица, ", "中文, 日本語, 한국어 ⌘"] {
+        p = d.string(dst, p, &c.blue, zero, &mut f.sans, s)?;
+    }
     Ok(())
+}
+
+/// Draws the scene into a new image of the screen's size and copies it
+/// to the screen.
+fn redraw(d: &mut Display, c: &Colours, f: &mut Fonts) -> Result<Image, Error> {
+    let screen = d.screen();
+    let back = d.alloc(screen.r, screen.chan, false, WHITE)?;
+    scene(d, &back, c, f)?;
+    d.gendraw_op(
+        &screen,
+        screen.r,
+        &back,
+        screen.r.min,
+        None,
+        Point::new(0, 0),
+        Op::S,
+    )?;
+    d.flush()?;
+    Ok(back)
 }
 
 #[purgatorio::main]
@@ -87,29 +127,31 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         // Premultiplied: half-transparent orange.
         veil: d.color(0x7F400080)?,
     };
+    let mut fonts = Fonts {
+        sans: Font::default_font()?,
+        mono: Font::open("/fonts/mono/unicode.13.font")?,
+        big: Font::open("/fonts/sans/unicode.20.font")?,
+    };
     // The scene is drawn into an image of the screen's size, so that the
     // pointer's marker can be erased by copying it back.
-    let back = d.alloc(screen.r, screen.chan, false, WHITE)?;
-    scene(&mut d, &back, &colours)?;
-    d.gendraw_op(
-        &screen,
-        screen.r,
-        &back,
-        screen.r.min,
-        None,
-        Point::new(0, 0),
-        Op::S,
-    )?;
-    d.flush()?;
+    let mut back = redraw(&mut d, &colours, &mut fonts)?;
     if once {
         return Ok(());
     }
+    let mut screen = screen;
     let mut mouse = Mouse::open()?;
     let mut last: Option<Rect> = None;
     loop {
         let m = mouse.read()?;
         if m.buttons & 4 != 0 {
             return Ok(());
+        }
+        // The window sends a pointer event when it is resized.
+        if d.check_resize()? {
+            d.free(back)?;
+            back = redraw(&mut d, &colours, &mut fonts)?;
+            screen = d.screen();
+            last = None;
         }
         if m.buttons & 1 != 0 {
             d.fill_ellipse(&back, m.xy, 3, 3, &colours.red, Point::new(0, 0))?;
