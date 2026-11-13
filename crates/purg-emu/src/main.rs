@@ -1,6 +1,6 @@
 //! `emu`: Purgatorio hosted on Linux or macOS.
 //!
-//! Usage: `emu [-r root] [-g[WxH]] [--vm=wasmtime|wasmi]
+//! Usage: `emu [-r root] [-g[WxH]] [-1|-2] [--vm=wasmtime|wasmi]
 //! [--modules=none|warn|require] [cmd [args...]]`
 //!
 //! Boots a namespace like Inferno's emu (`#/` with the host root `#U` unioned
@@ -19,7 +19,10 @@
 //! `-g` opens a window of `W` by `H` pixels (800x600 by default) and
 //! shows the draw device's screen in it (docs/graphics.md); the main
 //! thread then runs the window's event loop, and closing the window ends
-//! the emu. Without `-g` the screen is in memory only.
+//! the emu. Resizing the window resizes the screen. `-2` shows each
+//! screen pixel as 2×2 window pixels and `-1` never does; by default the
+//! emu doubles on a display whose scale factor is 1.5 or more. Without
+//! `-g` the screen is in memory only.
 //!
 //! `--modules` sets the system's module policy (`docs/signing.md`) before
 //! the first prog is loaded, with the trust lists read in the boot
@@ -44,6 +47,8 @@ struct Options {
     modules: Level,
     /// The window's size, with `-g`.
     graphics: Option<(u32, u32)>,
+    /// Window pixels per screen pixel (`-1`, `-2`); automatic if `None`.
+    scale: Option<u32>,
     argv: Vec<String>,
 }
 
@@ -59,7 +64,7 @@ fn geometry(s: &str) -> Option<(u32, u32)> {
 
 fn usage() -> u8 {
     eprintln!(
-        "usage: emu [-r root] [-g[WxH]] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
+        "usage: emu [-r root] [-g[WxH]] [-1|-2] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
     );
     2
 }
@@ -73,6 +78,7 @@ fn parse_args() -> Option<Options> {
         vm: String::from("wasmtime"),
         modules: Level::None,
         graphics: None,
+        scale: None,
         argv: Vec::new(),
     };
     let mut args = args.peekable();
@@ -88,6 +94,8 @@ fn parse_args() -> Option<Options> {
                 args.next();
             }
             opts.graphics = Some(g.unwrap_or(WINDOW));
+        } else if a == "-1" || a == "-2" {
+            opts.scale = Some(if a == "-2" { 2 } else { 1 });
         } else if let Some(g) = a.strip_prefix("-g") {
             opts.graphics = Some(geometry(g)?);
         } else if let Some(vm) = a.strip_prefix("--vm=") {
@@ -191,7 +199,12 @@ fn run() -> u8 {
     let window = match opts.graphics {
         Some((w, h)) => match window::event_loop() {
             Ok(el) => {
-                let screen = Arc::new(window::WindowScreen::new(w, h, el.create_proxy()));
+                let screen = Arc::new(window::WindowScreen::new(
+                    w,
+                    h,
+                    opts.scale,
+                    el.create_proxy(),
+                ));
                 Some((el, screen))
             }
             Err(e) => {
