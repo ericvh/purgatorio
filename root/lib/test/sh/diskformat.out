@@ -1,0 +1,22 @@
+floppy
+1474560
+PURG       
+FAT12   
+m/9load
+m/fs.sh
+same
+-lrw-rw-rw-
+hard
+00000000  02 02 00 02                                      ....
+FAT12   
+same
+boot
+BOO
+the FA
+m/fs.out
+errors
+disk/format: 9fat: a 9fat partition needs -r 2 or more for its partition table
+disk/format: unknown disk type 8inch
+FAT16   
+disk/format: can't open nosuch: file does not exist
+disk/format: usage: disk/format [-dfvx] [-b bootblock] [-c csize] [-l label] [-r nresrv] [-t type] disk [file ...]

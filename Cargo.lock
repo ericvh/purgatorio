@@ -519,6 +519,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-disk-format"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-fat",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-disk-kfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-kfs",
+ "appl-lib-styxserv",
+ "purg-styx",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-disk-kfscmd"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-disk-mbr"
 version = "0.1.0"
 dependencies = [
@@ -1544,6 +1569,10 @@ dependencies = [
 
 [[package]]
 name = "appl-lib-iso9660"
+version = "0.1.0"
+
+[[package]]
+name = "appl-lib-kfs"
 version = "0.1.0"
 
 [[package]]

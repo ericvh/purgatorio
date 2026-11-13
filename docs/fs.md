@@ -292,6 +292,49 @@ is one read per `exec`, not resident memory.
 `disk/mkfs` is Inferno's prototype-driven archiver, not a file system
 maker, so the new commands have new names.
 
+### kfs, format and the other disk tools
+
+- `disk/kfs [-r [-b bsize]] [-cADPRW] [-n name] file` serves Plan 9's
+  and Inferno's kfs (kfs(4)) from an image or a partition, read and
+  write, on standard input: `mount -c {disk/kfs file} dir`. It is a
+  guest Styx server, as in Inferno, not a device: kfs is for moving
+  files to and from Plan 9 and Inferno, and purgfs remains the native
+  file system. The format code is `appl/lib/kfs`; its module comment
+  describes the layout (block 0's `kfs wren device` text, 8-byte block
+  tags, the superblock and its chained free list, 88-byte entries with
+  six direct, one indirect and one double indirect block). `-r` makes an
+  empty one; a file system that was not shut down cleanly is checked and
+  its free list rebuilt when it is served, unless `-c` is given. Users
+  come from the file system's `adm/users`; a name not in it is `none`.
+  Errors are kfs's own (`create -- file exists`). With `-n name` it
+  serves a console, `/chan/kfs.<name>.cmd`.
+- `disk/kfscmd [-n name] cmd ...` sends commands to that console:
+  `allow`, `allowoff` (`disallow`), `users`, `sync`, and `check
+  [cdfpPqrtw]`, which walks the tree and the free list and prints kfs's
+  report (files, used and free blocks, duplicated and missing blocks,
+  bad tags and qids). `f` rebuilds the free list, `d` drops second and
+  out-of-range block references, `t` and `c` fix bad tags.
+- Where kfs differs from Inferno's: an exclusive-use file stays locked
+  while it is open rather than for five minutes; the console takes
+  commands from whoever can open it; walks do not set access times;
+  `check w` does nothing, since every change is written at once; and a
+  walk from an open fid to a new fid is allowed, because the kernel's
+  mount driver opens a mount's root fid itself (on `ls` of the mount
+  point) and walks from it later.
+- `disk/format [-dfvx] [-b bootblock] [-c csize] [-l label] [-r nresrv]
+  [-t type] disk [file ...]` (prep(8)) makes a FAT12 or FAT16 file
+  system with `-d`, sized for a floppy type (`3½HD` by default for a
+  plain file) or the whole partition (`hard`), and copies `file`s into
+  its root; `9load` gets the system attribute. `-b` installs boot code,
+  keeping the parameter block. The layout is `appl/lib/fat`'s, which
+  `dossrv` reads. There are no floppy drives, so nothing is formatted
+  physically (`-f` changes nothing).
+- prep(8)'s interactive editor, `pedit` in Inferno, is
+  `appl/lib/disk`'s `Edit`, shared by `disk/prep` and `disk/fdisk`.
+- `disk/ftl` is out of scope: it is a flash translation layer for raw
+  NOR flash, and the disks here are virtio-blk and image files, which
+  need none.
+
 ## Checking
 
 `Fs::check` (and `disk/chkdisk`) walks the tree from the root and checks

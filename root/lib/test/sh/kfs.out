@@ -1,0 +1,48 @@
+ream
+kfs: reaming the file system using 512 byte blocks
+kfs: initializing minimal user table
+same
+n/adm
+n/dir
+n/ls
+n/dir/hello
+hello
+more
+n/dir/greeting
+rm: n/dir: remove -- directory not empty
+n/adm
+n/ls
+sh: n/a-name-much-longer-than-27-bytes: name too long
+mkdir: n/adm: file already exists
+checking file system: main
+check free list
+lo = 6; hi = 399
+       4 files
+     399 blocks in the file system
+     186 used blocks
+     213 free blocks
+      15 maximum qid path
+/adm/users
+/ls
+check free list
+lo = 6; hi = 399
+disk/kfscmd: bogus: unknown kfs request
+disk/kfscmd: 'check z': illegal check flag: z
+again
+same
+d-rwxrwxrwx 0 n/adm
+--rw-r--r-- 89385 n/ls
+check free list
+lo = 6; hi = 399
+read only
+      5 n/adm/users
+sh: n/new: file system read only
+unclean
+kfs needs check
+n/adm
+errors
+disk/kfs: can't open nosuch: file does not exist
+disk/kfs: kfs magic in trouble
+disk/kfs: invalid block size 1000
+disk/kfs: usage: disk/kfs [-r [-b bufsize]] [-cADPRW] [-n name] kfsfile
+disk/kfscmd: can't open /chan/kfs.no.such.kfs.cmd: file does not exist
