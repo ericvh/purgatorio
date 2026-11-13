@@ -135,6 +135,11 @@ impl Watched {
         Watched { child, stderr }
     }
 
+    /// What the emu has written to its standard error so far.
+    pub fn stderr_so_far(&self) -> Vec<u8> {
+        self.stderr.bytes(Duration::ZERO)
+    }
+
     /// See [`post_mortem`].
     pub fn post_mortem(&mut self) -> String {
         post_mortem(&mut self.child, &self.stderr)

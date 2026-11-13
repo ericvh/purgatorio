@@ -3790,6 +3790,7 @@ name = "purg-emu"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "miniz_oxide",
  "purg-abi",
  "purg-auth",
  "purg-core",
@@ -3800,6 +3801,7 @@ dependencies = [
  "purg-vm-wasmi",
  "purg-vm-wasmtime",
  "rcgen",
+ "ring",
  "rustls",
  "softbuffer",
  "winit",

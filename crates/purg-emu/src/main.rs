@@ -1,6 +1,6 @@
 //! `emu`: Purgatorio hosted on Linux or macOS.
 //!
-//! Usage: `emu [-r root] [-g[WxH]] [--vm=wasmtime|wasmi]
+//! Usage: `emu [-r root] [-g[WxH]] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi]
 //! [--modules=none|warn|require] [cmd [args...]]`
 //!
 //! Boots a namespace like Inferno's emu (`#/` with the host root `#U` unioned
@@ -19,7 +19,13 @@
 //! `-g` opens a window of `W` by `H` pixels (800x600 by default) and
 //! shows the draw device's screen in it (docs/graphics.md); the main
 //! thread then runs the window's event loop, and closing the window ends
-//! the emu. Without `-g` the screen is in memory only.
+//! the emu. `-w` serves the screen to a web browser instead
+//! (docs/graphics.md, Section 8.2): the emu listens on `addr`
+//! (`127.0.0.1` and a free port unless given; only loopback by default)
+//! and prints the URL to open, which carries a random token. Without
+//! `-g` or `-w` the screen is in memory only. `-s WxH` sets the screen's
+//! size in any of the three; it is 800x600 with `-g` or `-w` and 640x480
+//! in memory.
 //!
 //! `--modules` sets the system's module policy (`docs/signing.md`) before
 //! the first prog is loaded, with the trust lists read in the boot
@@ -27,6 +33,7 @@
 
 use std::backtrace::Backtrace;
 use std::io::Write;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -34,20 +41,24 @@ use purg_abi::mount::{MAFTER, MBEFORE, MCREATE, MREPL};
 use purg_core::devroot::StaticTree;
 use purg_core::modsig::Level;
 use purg_core::{Dev, DevTab, Error, Kernel, Pgrp, Platform, Procs, Prog};
-use purg_emu::{devfs, host, platform, window};
-use purg_platform::screen::Screen;
+use purg_emu::{devfs, host, platform, web, window};
+use purg_platform::screen::{Headless, Screen};
 use purg_vm::{Ctx, Engine};
 
 struct Options {
     root: PathBuf,
     vm: String,
     modules: Level,
-    /// The window's size, with `-g`.
-    graphics: Option<(u32, u32)>,
+    /// `-g`: show the screen in a window.
+    graphics: bool,
+    /// `-w`: serve the screen to a browser on this address.
+    web: Option<String>,
+    /// The screen's size, from `-s` or `-g WxH`.
+    size: Option<(u32, u32)>,
     argv: Vec<String>,
 }
 
-/// The window's size when `-g` gives none.
+/// The screen's size with `-g` or `-w` when none is given.
 const WINDOW: (u32, u32) = (800, 600);
 
 /// Parses `WxH`.
@@ -59,7 +70,7 @@ fn geometry(s: &str) -> Option<(u32, u32)> {
 
 fn usage() -> u8 {
     eprintln!(
-        "usage: emu [-r root] [-g[WxH]] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
+        "usage: emu [-r root] [-g[WxH]] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
     );
     2
 }
@@ -72,7 +83,9 @@ fn parse_args() -> Option<Options> {
             .unwrap_or_else(|| PathBuf::from("root")),
         vm: String::from("wasmtime"),
         modules: Level::None,
-        graphics: None,
+        graphics: false,
+        web: None,
+        size: None,
         argv: Vec::new(),
     };
     let mut args = args.peekable();
@@ -87,9 +100,25 @@ fn parse_args() -> Option<Options> {
             if g.is_some() {
                 args.next();
             }
-            opts.graphics = Some(g.unwrap_or(WINDOW));
+            opts.graphics = true;
+            opts.size = g.or(opts.size);
         } else if let Some(g) = a.strip_prefix("-g") {
-            opts.graphics = Some(geometry(g)?);
+            opts.graphics = true;
+            opts.size = Some(geometry(g)?);
+        } else if a == "-w" {
+            // An optional address as the next argument.
+            let addr = args.peek().filter(|n| n.parse::<SocketAddr>().is_ok());
+            opts.web = Some(addr.cloned().unwrap_or_else(|| web::DEFAULT_ADDR.into()));
+            if addr.is_some() {
+                args.next();
+            }
+        } else if let Some(addr) = a.strip_prefix("-w") {
+            addr.parse::<SocketAddr>().ok()?;
+            opts.web = Some(String::from(addr));
+        } else if a == "-s" {
+            opts.size = Some(geometry(&args.next()?)?);
+        } else if let Some(g) = a.strip_prefix("-s") {
+            opts.size = Some(geometry(g)?);
         } else if let Some(vm) = a.strip_prefix("--vm=") {
             opts.vm = String::from(vm);
         } else if let Some(level) = a.strip_prefix("--modules=") {
@@ -107,11 +136,8 @@ fn parse_args() -> Option<Options> {
 }
 
 /// Builds the boot namespace and the first prog.
-fn boot(root: PathBuf, modules: Level, screen: Option<Arc<dyn Screen>>) -> Result<Prog, Error> {
-    let platform: Arc<dyn Platform> = Arc::new(match screen {
-        Some(s) => platform::Emu::with_screen(s),
-        None => platform::Emu::new(),
-    });
+fn boot(root: PathBuf, modules: Level, screen: Arc<dyn Screen>) -> Result<Prog, Error> {
+    let platform: Arc<dyn Platform> = Arc::new(platform::Emu::with_screen(screen));
     let procs = Procs::new(platform.clone());
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
     let portable = purg_core::portable_devices(&platform, &procs);
@@ -188,8 +214,16 @@ fn run() -> u8 {
     };
     // With a window the main thread runs its event loop, so the loop is
     // made here, before anything else starts.
-    let window = match opts.graphics {
-        Some((w, h)) => match window::event_loop() {
+    if opts.graphics && opts.web.is_some() {
+        return usage();
+    }
+    let (w, h) = opts.size.unwrap_or(if opts.graphics || opts.web.is_some() {
+        WINDOW
+    } else {
+        platform::HEADLESS
+    });
+    let window = if opts.graphics {
+        match window::event_loop() {
             Ok(el) => {
                 let screen = Arc::new(window::WindowScreen::new(w, h, el.create_proxy()));
                 Some((el, screen))
@@ -198,10 +232,28 @@ fn run() -> u8 {
                 eprintln!("emu: {e}");
                 return 1;
             }
+        }
+    } else {
+        None
+    };
+    let web = match &opts.web {
+        Some(addr) => match web::WebScreen::listen(addr, w, h) {
+            Ok((screen, url)) => {
+                eprintln!("emu: screen at {url}");
+                Some(screen)
+            }
+            Err(e) => {
+                eprintln!("emu: -w {addr}: {e}");
+                return 1;
+            }
         },
         None => None,
     };
-    let screen = window.as_ref().map(|(_, s)| s.clone() as Arc<dyn Screen>);
+    let screen: Arc<dyn Screen> = match (&window, &web) {
+        (Some((_, s)), _) => s.clone(),
+        (None, Some(s)) => s.clone(),
+        (None, None) => Arc::new(Headless::new(w, h)),
+    };
     let setup =
         engine(&opts.vm).and_then(|e| Ok((e, boot(opts.root.clone(), opts.modules, screen)?)));
     let (engine, prog) = match setup {
@@ -233,9 +285,13 @@ fn run() -> u8 {
     if let Some((el, screen)) = window {
         return window::run(el, screen);
     }
-    runner
+    let status = runner
         .join()
-        .unwrap_or_else(|_| status(Err(Error::new("prog thread panicked"))))
+        .unwrap_or_else(|_| status(Err(Error::new("prog thread panicked"))));
+    if let Some(web) = web {
+        web.shutdown();
+    }
+    status
 }
 
 /// The emu's exit status for the first prog's result: 0 when its exit
