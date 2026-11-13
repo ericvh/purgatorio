@@ -855,9 +855,9 @@ module 640.
 ### 8.4 Not done in G1
 
 - Screens and windows (`A`, `F`, `S`, `t`, `o` on a window, refresh
-  messages, libmemlayer), named images (`n`, `N`), the font cache and
-  strings (`i`, `l`, `s`, `x`: done in G2, Section 9), and `m8` with
-  colour-map writes.
+  messages, libmemlayer) and named images (`n`, `N`): done in G4,
+  Section 12.2. The font cache and strings (`i`, `l`, `s`, `x`: done
+  in G2, Section 9), and `m8` with colour-map writes.
 - Cursor images on `/dev/cursor`, the snarf buffer `#^`.
 - The device in the kernel and the probe (ramfb, virtio-input), and a
   kernel feature for it; graphics is off in `kernel-small` by not being
@@ -1104,7 +1104,7 @@ options 150, the screen trait 40, the test guest and goldens 290, xtask
 
 ### 9.7 Not done in G2
 
-- Named images (`n`, `N`), screens and windows: G4.
+- Named images (`n`, `N`), screens and windows: done in G4, Section 12.2.
 - Noto, and bold or italic Go faces: one recipe line each when wanted.
 - Unifont's planes above the BMP, and its CSUR private-use glyphs.
 - Shaping (Arabic joining, Indic reordering, ligatures): Inferno does
@@ -1512,7 +1512,241 @@ acceptance test 530.
   `-c`.
 - `draw/faces` does not plumb; button 1 only shows details.
 
-## 12. Sources
+## 12. G4: rio, the base window system
+
+`rio` (`appl/cmd/rio`, `/bin/rio.wasm`) is a window system after Plan
+9's rio(1) and rio(4), on `/dev/draw` with no toolkit (the owner
+decided no Tk). The man pages are the spec for what it does and for its
+files; no Plan 9 or Inferno code was used, and the look is its own.
+
+### 12.1 What it does
+
+`rio [-f font] [-i cmd]` fills its screen with a grey background.
+`emu -g rio` (or `-w rio`) runs it on the emu's screen. `-i cmd` runs
+`cmd` in a first window.
+
+- **The menu.** Button 3 on the background, on a window's border, or in
+  a window no program draws in brings up `New`, `Resize`, `Move`,
+  `Delete`, `Hide`, `Exit`, then the labels of hidden windows. The last
+  item chosen comes up under the pointer, as in rio. `New` asks for a
+  rectangle swept with button 3 (smaller than 50 pixels each way
+  cancels); `Resize` asks for a window (a button 3 click) and then a
+  rectangle; `Move` drags a window with button 3; `Delete` and `Hide`
+  ask for a window; a hidden window's label shows it again; `Exit` kills
+  every window's processes and ends rio. While sweeping or dragging, an
+  outline shows the rectangle.
+- **Focus.** Button 1 on a window that is not current makes it current
+  and raises it; the click goes no further. The current window has a
+  dark border, the others a light one. Keys go to the current window.
+- **Text windows.** A window runs `sh -i` on its `/dev/cons`. Without a
+  program drawing in it, rio shows its text: what is written to `cons`
+  goes in at the output point, before any typing not yet read, and
+  typing goes at the end. A newline makes the line readable; `^D` makes
+  what is typed readable without one, or alone gives an end of file.
+  Backspace, `^U` and `^W` erase typing that has not been sent.
+  Delete throws away unread typing and sends `interruptgrp` to the
+  window's processes. The view follows the end; the wheel scrolls three
+  lines. Text beyond 256K runes is dropped from the front.
+- **Graphical programs.** A program that opens `/dev/draw` in a window
+  draws in the window (Section 12.2). While it has `/dev/pointer` open,
+  pointer events in the current window, and every event while a button
+  pressed in it is held, go to it, and rio does not draw the text; when
+  it closes the file, the text comes back. Button 3 in such a window is
+  the program's; rio's menu is on the background and the borders.
+
+### 12.2 Sharing the draw device
+
+A window system has to give each program something that behaves like
+the screen. There were two ways to do it.
+
+1. **rio multiplexes `/dev/draw`.** rio serves a `draw` directory in
+   each window, parses every message the program writes, renumbers its
+   image ids into rio's own connection, turns the screen (id 0) into the
+   window's image, answers `ctl` and `refresh` itself, and composites
+   window images onto the screen. Nothing changes in the kernel, but
+   every drawing message goes through rio's one thread and is parsed
+   twice, rio must know the length of every message (`Y` needs the
+   compressed data decoded to find its end), and a program's drawing
+   stops whenever rio is busy.
+2. **The device gets Plan 9's screens and windows.** draw(3) already
+   has them: `A` makes a screen on an image, `b` with a screen id makes
+   a window on it, `t` restacks windows, `o` moves one, `N` names an
+   image and `n` looks a name up, and `S` uses another connection's
+   public screen. A window manager makes a public screen, a window per
+   client and names it; the client looks the name up (`/dev/winname`)
+   and makes a screen and window of its own on it (libdraw's
+   `getwindow`). Programs talk to the device directly.
+
+We took the second. It is what Plan 9 and Inferno do (Inferno's `wm`
+uses the same messages under Tk), it keeps rio out of the drawing path,
+it lets rio run inside a rio window with no special case, and later
+window managers get it for free. It cost the device about 600 lines.
+
+**In the device** (`purg-core/src/devdraw.rs`). Images now belong to the
+device, under one lock: a connection's ids refer to them, and an image
+goes when no id, screen or name lookup refers to it. Screen ids are the
+device's. A window is an image with its own pixels: every window has a
+backing store, whatever refresh method `b` asks for (Plan 9's
+`Refbackup`), so nothing ever needs a refresh message. After anything
+is drawn on a window, the part drawn is copied onto its screen's image
+and the windows above it are copied over that, bottom to top, which is
+the painter's algorithm in place of libmemlayer's obscured-region lists.
+When the screen's image is itself a window, that change passes on in
+the same way, up to the display. Freeing, restacking (`t`) or moving
+(`o`) a window paints the area again from the screen's fill and its
+windows. A window freed by the connection that made it leaves its
+screen at once even if another connection still has its image by name;
+the other connection then draws on an image that shows nowhere, until
+it looks up the new name. Drawing straight on an image under windows
+draws over them until they are painted again, as in Plan 9. New errors
+follow devdraw: `screen id in use`, `unknown id for draw screen`,
+`image name in use`, `no image with that name`, `wrong name for image`,
+`inconsistent chan`, `images are not windows`, `images are not on the
+same screen`. When the display is resized, the screens on it are
+painted again.
+
+The cost: a window's pixels are kept twice (its store and the screen),
+and each drawing message on a window copies its damaged rectangle once
+per level. For a text window that is a few small rectangles per
+keystroke.
+
+**In the SDK** (`purgatorio::draw`). `Display::open` reads
+`/dev/winname` when it exists, looks the image up with `n`, makes a
+screen on it filled white and a window on that screen inside a border
+of `BORDER` (4) pixels, and `Display::screen` returns that window. So
+`draw/demo` and `acme`, which draw on `d.screen()`, run in a rio window
+unchanged. When rio gives a window a new image (on a resize or a move)
+it renames it and sends the program a pointer event marked `r`, as
+Plan 9's mouse file does; `Display::check_resize`, which both programs
+call on each pointer event, sees the new name, frees the old window and
+screen, attaches to the new image and returns true, and they redraw.
+`Display::open_display` ignores `/dev/winname` (`test/draw -d` uses it
+to dump the whole screen). New calls: `alloc_screen`, `free_screen`,
+`alloc_window`, `top_windows`, `origin_window`, `name_image`, `named`,
+`display_image`; `Mouse::read` takes `r` events.
+
+### 12.3 The window's files
+
+rio serves rio(4)'s files itself, from its event loop, the way acme
+serves acme(4) (Section 10). Each window has a pipe of its own. A new
+window is a prog, `rio -W [cmd]`, spawned with a copy of rio's
+namespace, a new fd table and a new process group. It mounts the pipe's
+far end before `/dev`, opens `/dev/cons` as its fds 0, 1 and 2, runs
+`sh -i` (or `sh -c cmd`), and waits for it, catching interrupts meant
+for the shell. When it exits, rio sees it on `/prog/<pid>/wait` and the
+window goes. `Delete` writes `killgrp` to its `ctl`.
+
+So each window's process group sees, before the rest of `/dev`:
+
+| File | |
+|---|---|
+| `cons` | reads take lines typed in the window (or keys as typed in raw mode); writes are shown |
+| `consctl` | `rawon`, `rawoff`; `holdon` and `holdoff` are taken and do nothing; raw mode ends when it is closed |
+| `keyboard` | while open, keys typed in the window come here as UTF-8 instead |
+| `pointer` | pointer(3)'s 49-byte `m` records for the window, `r` after a resize or move; writing `m x y` moves the pointer |
+| `label` | the window's label, which the menu shows when it is hidden |
+| `text` | everything in the window's text |
+| `wctl` | reads `x0 y0 x1 y1 visible\|hidden current\|notcurrent` in 12-character fields; takes `new [-r x0 y0 x1 y1] [cmd]`, `resize [-r ...] [-dx n] [-dy n]`, `move [-minx n] [-miny n]`, `top`, `bottom`, `current`, `hide`, `unhide`, `delete`, `scroll`, `noscroll` |
+| `winid` | the window's number |
+| `winname` | the name of the window's image, for `n` |
+| `wsys/<id>/` | the same files for every window |
+
+`/dev/draw` is the device's own, not rio's: the window comes through
+`winname` (Section 12.2). Reads of `cons`, `pointer` and `keyboard`
+with nothing to read wait in rio, with their tags, until there is
+something; a `Tflush` or a clunk takes them away.
+
+**Keys and the pointer.** When the last opener of a window's
+`keyboard` closes it, keys it had not read become typing in the text.
+And `#m` used to let a motion replace an unread release (both have the
+same buttons), so a slow reader such as rio in its menu could see a
+release at the wrong place; `Input` in `purg-platform` now replaces only
+an unread motion, a state with the buttons of the one before it.
+
+**Waiting on served files.** acme waits on `/dev/pointer` and
+`/dev/keyboard` with `purgatorio::ready`. In a window those files are
+rio's, through the mount driver, which could not tell when a read would
+block and so said they were always ready: acme would then block reading
+the pointer while keys waited. The mount driver now sends a read ahead
+when `purgatorio.wait` watches a file it serves, says the file is ready
+once the reply has come, and gives the reply to the next read at that
+offset (and the rest of it to the read after, if that read asked for
+less). A read at another offset, or closing the file, flushes it. The
+mux wakes the watchers with each reply. This is a change to `purg-core`
+(`devmnt.rs`, `mux.rs`) that any served file benefits from;
+`crates/purg-core/tests/mntready.rs` checks it.
+
+### 12.4 Differences from Plan 9's rio
+
+- No snarf buffer (`/dev/snarf`), no button 2 menu (cut, paste, snarf,
+  plumb, send, scroll), and no selection with button 1 in text windows:
+  typing goes at the end only.
+- No hold mode (`holdon` is accepted and ignored), no `/dev/screen`,
+  `/dev/window` or `/dev/kbdin`, and no `/srv/rio` or `window(1)`
+  command: `echo new ... > /dev/wctl` in a window makes one.
+- No sweeping with buttons other than 3, no resizing by dragging a
+  border or corner, and no minimum-size window made from a click.
+- Hidden windows are moved off the screen with `o`; their programs keep
+  drawing into them.
+- Resizing rio's own screen (the emu's window) repaints it but does not
+  rearrange the windows; rio in a rio window does not follow a resize of
+  its own window.
+- The pointer's cursor does not change while sweeping or dragging (the
+  emu does not show cursors yet).
+
+### 12.5 Tests
+
+- `purg-core`: windows show in stacking order and keep their pixels
+  under others, `t` raises and lowers them, freeing one shows the fill
+  and the window below, `o` moves one without moving its coordinates;
+  a named window looked up by a second connection, which puts a screen
+  and a window of its own on it, draws through both levels, the owner's
+  free takes it off the screen at once, and closing the second
+  connection frees what it held. The screens' errors.
+- `mntready.rs`: a served file is not ready until the read sent ahead is
+  answered, a second wait sends no second read, a short read leaves the
+  rest, and a close flushes an outstanding read.
+- `/bin/test/draw.wasm`, on both VMs (`windows`): the same through the
+  SDK, with pixels read back from the screen.
+- `appl/cmd/rio`: the text window's output point, erasing and end of
+  file; wctl parsing.
+- `crates/purg-emu/tests/rio.rs`, on wasmtime and wasmi: the emu runs
+  `rio` with `-w` on an 800×600 screen and the test is the browser,
+  keeping a copy of the screen from the frames. It sweeps a window with
+  `New`, types `echo hello` and reads `/dev/text` back (written to a
+  file on the host by `cat`), checks `winid` and `wctl`, runs
+  `draw/demo` in the window and checks that its first bar is in the
+  window and that none of its red is outside, makes a second window,
+  resizes the first and moves it (the demo draws again inside each new
+  rectangle, and the old place shows the background), deletes it and
+  checks with `ps` in the second window that the demo, its shell and its
+  `rio -W` are gone, starts `acme` in the second window and checks that
+  its colours are inside the window only, ends it with a button 2 click
+  on `Exit` in its row's tag (the shell's text comes back and the shell
+  still runs commands), and ends rio with `Exit`. Each step waits for a
+  pixel or a file, with a bound. Keys and pointer events reach rio on
+  separate queues, so the test waits to see a window current before it
+  types into it.
+
+Nothing here was seen on a real display: the tests run on the in-memory
+screen through the browser backend's input path, and the screen was
+checked by eye from dumped images. Checked that way by hand, not in a
+test: `wctl` `new`, `hide`, `unhide`, `move` and its errors, `acme`
+showing a file in a window, and rio running in a rio window with a
+window of its own.
+
+### 12.6 Not done
+
+- The items listed in Section 12.4.
+- Typing into acme in a rio window is not in the acceptance test (only
+  starting it and its pointer); keys and pointer events reach rio on
+  separate queues, so a test cannot tell when acme has seen where the
+  pointer went before the keys.
+- `wm/wm` with Inferno's `/chan/wm` protocol, `wm/sh`, `wm/edit` and the
+  Tk commands of issue #32 are out (no Tk).
+- The draw device and rio in the kernel.
+
+## 13. Sources
 
 All accessed 2026-11-12.
 

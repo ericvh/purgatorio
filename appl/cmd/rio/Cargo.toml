@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-rio"
+description = "rio: a window system on /dev/draw, after Plan 9's rio(1) and rio(4)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rio"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+purg-styx.workspace = true
+
+[lints]
+workspace = true
