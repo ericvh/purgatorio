@@ -4,7 +4,8 @@
 //! change, then returns 49 bytes: `m` and four 12-byte decimal fields, x,
 //! y, buttons and milliseconds. Writing `m x y` (the `m` may be left
 //! out) moves the pointer there. `cursor` takes a cursor image, which is
-//! accepted and not shown yet.
+//! accepted and not shown yet. `purgatorio.wait` (and `poll_oneoff`) see
+//! `pointer` ready to read when an event is queued.
 
 use alloc::format;
 use alloc::string::String;
@@ -173,6 +174,23 @@ impl Dev for DevPointer {
             _ => Err(Error::new(error::EISDIR)),
         }
     }
+
+    /// A read of `pointer` waits for an event; everything else is ready.
+    fn ready(&self, c: &Chan, write: bool) -> bool {
+        write || c.qid.path != QPOINTER || self.screen.input().has_pointer()
+    }
+
+    fn watch(&self, c: &Chan, write: bool, w: &purg_platform::sync::Rendez) {
+        if !write && c.qid.path == QPOINTER {
+            self.screen.input().watch(w);
+        }
+    }
+
+    fn unwatch(&self, c: &Chan, w: &purg_platform::sync::Rendez) {
+        if c.qid.path == QPOINTER {
+            self.screen.input().unwatch(w);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,5 +211,48 @@ mod tests {
         assert_eq!(parse_move(b"m 3 4").unwrap(), (3, 4));
         assert_eq!(parse_move(b"30 40\n").unwrap(), (30, 40));
         assert!(parse_move(b"m 3").is_err());
+    }
+
+    /// `pointer` is ready to read only with an event queued, and a
+    /// watcher is woken by the event.
+    #[test]
+    fn ready_and_watch() {
+        extern crate std;
+        use purg_platform::screen::Headless;
+        use purg_platform::sync::Rendez;
+        let screen = Arc::new(Headless::new(8, 8));
+        let d = Arc::new(DevPointer::new(
+            screen.clone(),
+            String::from("me"),
+            Arc::new(|| 0),
+        ));
+        let qid = |path| Qid {
+            path,
+            vers: 0,
+            qtype: QTFILE,
+        };
+        let p = Chan::new(d.clone(), 0, qid(QPOINTER), String::from("pointer"), None);
+        let c = Chan::new(d.clone(), 0, qid(QCURSOR), String::from("cursor"), None);
+        assert!(!d.ready(&p, false));
+        assert!(d.ready(&p, true));
+        assert!(d.ready(&c, false));
+        let w = Rendez::new();
+        d.watch(&p, false, &w);
+        let woken = Arc::new(core::sync::atomic::AtomicBool::new(false));
+        let (w2, woken2, s2) = (w.clone(), woken.clone(), screen.clone());
+        let t = std::thread::spawn(move || {
+            w2.sleep(|| s2.input().has_pointer());
+            woken2.store(true, core::sync::atomic::Ordering::Release);
+        });
+        screen.input().pointer(Pointer {
+            x: 1,
+            y: 2,
+            buttons: 0,
+            msec: 3,
+        });
+        t.join().unwrap();
+        assert!(woken.load(core::sync::atomic::Ordering::Acquire));
+        assert!(d.ready(&p, false));
+        d.unwatch(&p, &w);
     }
 }

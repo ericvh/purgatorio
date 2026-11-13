@@ -18,6 +18,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 
 pub use purg_memdraw::{
     ARGB32, Chan, ENDARROW, ENDDISC, ENDSQUARE, GREY1, GREY8, Op, Point, RGB24, RGBA32, Rect,
@@ -601,6 +602,11 @@ impl Mouse {
         })
     }
 
+    /// The file descriptor, for [`crate::ready`].
+    pub fn fd(&self) -> i32 {
+        self.f.as_raw_fd()
+    }
+
     /// Moves the pointer.
     pub fn set(&mut self, p: Point) -> Result<(), Error> {
         self.f.write_all(format!("m{} {}", p.x, p.y).as_bytes())?;
@@ -622,12 +628,36 @@ impl Keyboard {
         })
     }
 
+    /// The file descriptor, for [`crate::ready`]. Check
+    /// [`Keyboard::pending`] first: characters already read from it
+    /// may be waiting here.
+    pub fn fd(&self) -> i32 {
+        self.f.as_raw_fd()
+    }
+
+    /// Whether a whole character has been read from the device and not
+    /// yet returned, so that [`Keyboard::read`] would not block.
+    pub fn pending(&self) -> bool {
+        match std::str::from_utf8(&self.pending) {
+            Ok(s) => !s.is_empty(),
+            Err(e) => e.valid_up_to() > 0 || e.error_len().is_some(),
+        }
+    }
+
     /// Waits for a character.
     pub fn read(&mut self) -> Result<char, Error> {
         loop {
-            if let Ok(s) = std::str::from_utf8(&self.pending)
-                && let Some(c) = s.chars().next()
-            {
+            let valid = match std::str::from_utf8(&self.pending) {
+                Ok(s) => s,
+                // The device never splits a character, so only a bad
+                // byte stops here; it reads as U+FFFD.
+                Err(e) if e.valid_up_to() == 0 && e.error_len().is_some() => {
+                    self.pending.drain(..e.error_len().unwrap_or(1));
+                    return Ok(char::REPLACEMENT_CHARACTER);
+                }
+                Err(e) => std::str::from_utf8(&self.pending[..e.valid_up_to()]).unwrap_or(""),
+            };
+            if let Some(c) = valid.chars().next() {
                 self.pending.drain(..c.len_utf8());
                 return Ok(c);
             }

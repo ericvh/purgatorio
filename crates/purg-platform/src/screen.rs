@@ -83,6 +83,9 @@ pub struct Input {
     q: Mutex<Queues>,
     /// Woken whenever an event arrives.
     pub rendez: Rendez,
+    /// Rendezvous of progs waiting in `purgatorio.wait` for input, woken
+    /// with [`Input::rendez`].
+    watchers: Mutex<alloc::vec::Vec<Rendez>>,
 }
 
 impl Default for Input {
@@ -96,7 +99,25 @@ impl Input {
         Input {
             q: Mutex::new(Queues::default()),
             rendez: Rendez::new(),
+            watchers: Mutex::new(alloc::vec::Vec::new()),
         }
+    }
+
+    /// Wakes the readers and the watchers.
+    fn wakeup(&self) {
+        self.rendez.wakeup();
+        for w in self.watchers.lock().iter() {
+            w.wakeup();
+        }
+    }
+
+    /// Wakes `w` too whenever an event arrives, until [`Input::unwatch`].
+    pub fn watch(&self, w: &Rendez) {
+        self.watchers.lock().push(w.clone());
+    }
+
+    pub fn unwatch(&self, w: &Rendez) {
+        self.watchers.lock().retain(|x| !x.same(w));
     }
 
     /// Records a pointer state.
@@ -113,7 +134,7 @@ impl Input {
             q.pointer.push_back(p);
             q.last = p;
         }
-        self.rendez.wakeup();
+        self.wakeup();
     }
 
     /// The last pointer state recorded.
@@ -141,14 +162,14 @@ impl Input {
                 q.keys.extend(s.bytes());
             }
         }
-        self.rendez.wakeup();
+        self.wakeup();
     }
 
     /// Says that the screen has changed size: [`Screen::size`] already
     /// returns the new one.
     pub fn resized(&self) {
         self.q.lock().resizes += 1;
-        self.rendez.wakeup();
+        self.wakeup();
     }
 
     /// How many times the screen has changed size, so that a reader can
