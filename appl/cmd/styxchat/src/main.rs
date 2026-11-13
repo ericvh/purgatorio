@@ -575,13 +575,12 @@ fn kill(pid: u32) {
 }
 
 /// The conversation's fd, and what keeps it open.
-fn connect(
-    dest: Option<&str>,
-    net: bool,
-    server: bool,
-) -> Result<(i32, Vec<OwnedFd>, Option<dial::Connection>), Error> {
+/// The connection's fd, what keeps it open, and the pid of a `{command}`.
+type Connected = (i32, Vec<OwnedFd>, Option<dial::Connection>, Option<u32>);
+
+fn connect(dest: Option<&str>, net: bool, server: bool) -> Result<Connected, Error> {
     let Some(dest) = dest else {
-        return Ok((0, Vec::new(), None));
+        return Ok((0, Vec::new(), None, None));
     };
     if net {
         // A bare host gets the styx port, as Inferno's netmkaddr does.
@@ -602,11 +601,11 @@ fn connect(
             .as_ref()
             .map(|d| d.as_raw_fd())
             .ok_or_else(|| Error(format!("can't open {addr}/data")))?;
-        return Ok((fd, Vec::new(), Some(conn)));
+        return Ok((fd, Vec::new(), Some(conn), None));
     }
     if let Some(cmd) = dest.strip_prefix('{').and_then(|c| c.strip_suffix('}')) {
         let [a, b] = purgatorio::pipe()?;
-        purgatorio::spawn(
+        let pid = purgatorio::spawn(
             "/bin/sh.wasm",
             &[String::from("sh"), String::from("-c"), String::from(cmd)],
             pctl::NEWFD,
@@ -614,11 +613,11 @@ fn connect(
         )
         .map_err(|e| Error(format!("can't open {dest}: {e}")))?;
         drop(a);
-        return Ok((b.as_raw_fd(), vec![b], None));
+        return Ok((b.as_raw_fd(), vec![b], None, Some(pid)));
     }
     let f = purgatorio::open(dest, mode::ORDWR)
         .map_err(|e| Error(format!("can't open {dest}: {e}")))?;
-    Ok((f.as_raw_fd(), vec![f], None))
+    Ok((f.as_raw_fd(), vec![f], None, None))
 }
 
 #[purgatorio::main]
@@ -660,7 +659,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     } else {
         Box::new(io::stdin())
     };
-    let (conn, _keep, _netconn) = connect(dest, net, server)?;
+    let (conn, _keep, _netconn, command) = connect(dest, net, server)?;
     let [evr, evw] = purgatorio::pipe()?;
     let flags = format!(
         "-{}{}",
@@ -781,6 +780,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     kill(tpid);
     kill(rpid);
+    // As a server for a `{command}`, the command is the client: let it
+    // finish with what it was answered (a mount completing its attach)
+    // before the script goes on, for at most the usual ten seconds.
+    if server && let Some(pid) = command {
+        let start = Instant::now();
+        while std::fs::metadata(format!("/prog/{pid}/status")).is_ok()
+            && start.elapsed() < Duration::from_secs(10)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
     Ok(())
 }
 
