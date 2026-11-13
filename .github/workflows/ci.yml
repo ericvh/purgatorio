@@ -145,7 +145,7 @@ jobs:
           # target and signed with the test key, so the same on every host.
           cargo xtask aot
           cp target/aot/native.sha256 "$RUNNER_TEMP/wasm/aot-sha256.txt"
-          cd root && find bin -name '*.wasm' | sort | xargs shasum -a 256 > "$RUNNER_TEMP/wasm/wasm-sha256.txt"
+          cd root && find bin -name '*.wasm' | LC_ALL=C sort | xargs shasum -a 256 > "$RUNNER_TEMP/wasm/wasm-sha256.txt"
           (cd "$RUNNER_TEMP/wasm" && shasum -a 256 signed-echo.wasm) >> "$RUNNER_TEMP/wasm/wasm-sha256.txt"
           cat "$RUNNER_TEMP/wasm/wasm-sha256.txt"
       - uses: actions/upload-artifact@v4
