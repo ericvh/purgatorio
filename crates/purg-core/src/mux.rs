@@ -32,6 +32,9 @@ pub struct Mux {
     /// Why, when it was not a hangup ([`Mux::fail_because`]).
     why: Mutex<Option<&'static str>>,
     wake: Rendez,
+    /// Rendezvous points of `purgatorio.wait` calls to wake with each
+    /// reply ([`Mux::watch`]).
+    watchers: Mutex<Vec<Rendez>>,
 }
 
 impl Mux {
@@ -42,6 +45,7 @@ impl Mux {
             closed: core::sync::atomic::AtomicBool::new(false),
             why: Mutex::new(None),
             wake: Rendez::new(),
+            watchers: Mutex::new(Vec::new()),
         }
     }
 
@@ -121,12 +125,12 @@ impl Mux {
                 slots.remove(&old);
             }
             drop(slots);
-            self.wake.wakeup();
+            self.notify();
             return false;
         }
         slot.msg = Some(msg);
         drop(slots);
-        self.wake.wakeup();
+        self.notify();
         true
     }
 
@@ -140,7 +144,7 @@ impl Mux {
             slot.flushed = true;
         }
         drop(slots);
-        self.wake.wakeup();
+        self.notify();
     }
 
     /// Frees `tag`: its request is over and nobody will [`Mux::wait`] for
@@ -190,6 +194,53 @@ impl Mux {
         })
     }
 
+    /// Wakes the waiters and the watchers.
+    fn notify(&self) {
+        self.wake.wakeup();
+        for w in self.watchers.lock().iter() {
+            w.wakeup();
+        }
+    }
+
+    /// Wakes `w` whenever a reply arrives, a tag is flushed or the
+    /// connection closes, until [`Mux::unwatch`].
+    pub fn watch(&self, w: &Rendez) {
+        self.watchers.lock().push(w.clone());
+    }
+
+    pub fn unwatch(&self, w: &Rendez) {
+        self.watchers.lock().retain(|x| !x.same(w));
+    }
+
+    /// Whether [`Mux::wait`] for `tag` would return at once.
+    pub fn arrived(&self, tag: u16) -> bool {
+        if self.closed.load(core::sync::atomic::Ordering::Acquire) {
+            return true;
+        }
+        self.slots
+            .lock()
+            .get(&tag)
+            .is_none_or(|s| s.msg.is_some() || s.flushed)
+    }
+
+    /// Nobody will wait for `tag` any more. When its reply has come it
+    /// is dropped and the tag freed, and the result is false; otherwise
+    /// the late reply will be dropped, and the result is true: the
+    /// caller sends a `Tflush` and hands both tags to [`Mux::abandon`].
+    pub fn drop_tag(&self, tag: u16) -> bool {
+        let mut slots = self.slots.lock();
+        match slots.get_mut(&tag) {
+            Some(slot) if slot.msg.is_none() && !slot.flushed => {
+                slot.flushed = true;
+                true
+            }
+            _ => {
+                slots.remove(&tag);
+                false
+            }
+        }
+    }
+
     /// Tags in use.
     pub fn outstanding(&self) -> usize {
         self.slots.lock().len()
@@ -214,7 +265,7 @@ impl Mux {
             }
         }
         drop(slots);
-        self.wake.wakeup();
+        self.notify();
     }
 }
 

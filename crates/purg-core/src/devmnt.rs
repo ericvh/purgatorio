@@ -192,6 +192,21 @@ struct MntFile {
     /// The fid was opened in a way whose clunk a later request may depend
     /// on, so dropping it waits for `Rclunk` ([`MntFile::settles`]).
     settle: AtomicBool,
+    /// A read sent ahead for `purgatorio.wait` ([`Ahead`]).
+    ahead: Mutex<Option<Ahead>>,
+}
+
+/// A `Tread` sent before the prog reads, so that `purgatorio.wait` can
+/// tell when a read of a served file would not block: the file is ready
+/// once the reply has come. The next read at the same offset takes the
+/// reply; a read elsewhere flushes it and reads as usual.
+struct Ahead {
+    offset: u64,
+    /// The request's tag, until its reply has been taken.
+    tag: Option<u16>,
+    /// Data from the reply not yet read: what was left over when the read
+    /// that took it asked for less.
+    data: Option<Vec<u8>>,
 }
 
 impl MntFile {
@@ -203,6 +218,7 @@ impl MntFile {
             spec: String::from(spec),
             fresh: AtomicBool::new(false),
             settle: AtomicBool::new(false),
+            ahead: Mutex::new(None),
         }
     }
 
@@ -224,6 +240,9 @@ impl MntFile {
 
 impl Drop for MntFile {
     fn drop(&mut self) {
+        if let Some(tag) = self.ahead.lock().take().and_then(|a| a.tag) {
+            self.session.abandon_tag(tag);
+        }
         if self.live.swap(false, Ordering::AcqRel) {
             let wait = self.settle.load(Ordering::Acquire);
             let _ = self.session.clunk(self.fid, wait);
@@ -435,6 +454,72 @@ impl Session {
             Err(e) if e.as_str() == error::EINTR => self.mux.abandon(ftag, tag),
             Err(_) => {}
         }
+    }
+
+    /// Gives up on the request on `tag` without waiting: a reply that
+    /// has come is dropped, and one that has not is flushed, the reader
+    /// freeing both tags when the `Rflush` comes.
+    fn abandon_tag(&self, tag: u16) {
+        if !self.mux.drop_tag(tag) {
+            return;
+        }
+        let Ok(ftag) = self.mux.begin() else {
+            return;
+        };
+        let sent = Msg {
+            tag: ftag,
+            fcall: Fcall::Tflush { oldtag: tag },
+        }
+        .encode()
+        .map_err(|_| Error::new(error::EIO))
+        .and_then(|b| self.send(&b));
+        if sent.is_err() {
+            self.mux.forget(ftag);
+            self.mux.forget(tag);
+        } else {
+            self.mux.abandon(ftag, tag);
+        }
+    }
+
+    /// Sends a `Tread` of a whole iounit for `fid` at `offset` and does
+    /// not wait for the reply.
+    fn read_ahead(&self, fid: u32, offset: u64) -> Result<u16> {
+        let tag = self.mux.begin()?;
+        let sent = Msg {
+            tag,
+            fcall: Fcall::Tread {
+                fid,
+                offset,
+                count: self.iounit().max(1),
+            },
+        }
+        .encode()
+        .map_err(|_| Error::new(error::EIO))
+        .and_then(|b| self.send(&b));
+        if let Err(e) = sent {
+            self.mux.forget(tag);
+            return Err(e);
+        }
+        Ok(tag)
+    }
+
+    /// Waits for the reply to a read on `tag`: its data.
+    fn read_reply(&self, tag: u16) -> Result<Vec<u8>> {
+        let reply = match self.mux.wait(tag) {
+            Ok(r) => r,
+            Err(e) if e.as_str() == error::EINTR => {
+                self.flush_tag(tag);
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        };
+        let got = match self.decode(&reply) {
+            Ok(Fcall::Rread { data }) => Ok(data.to_vec()),
+            Ok(_) => Err(Error::new(error::EIO)),
+            Err(e) => Err(e),
+        };
+        self.bufs.put(reply);
+        got
     }
 
     fn decode<'a>(&self, buf: &'a [u8]) -> Result<Fcall<'a>> {
@@ -1100,6 +1185,30 @@ impl Dev for DevMnt {
             buf[..n].copy_from_slice(&data[..n]);
             return Ok(n);
         }
+        let ahead = f.ahead.lock().take();
+        if let Some(a) = ahead {
+            if a.offset == offset {
+                let mut data = match (a.data, a.tag) {
+                    (Some(d), _) => d,
+                    (None, Some(tag)) => f.session.read_reply(tag)?,
+                    (None, None) => Vec::new(),
+                };
+                let n = data.len().min(buf.len());
+                buf[..n].copy_from_slice(&data[..n]);
+                if n < data.len() {
+                    data.drain(..n);
+                    *f.ahead.lock() = Some(Ahead {
+                        offset: offset + n as u64,
+                        tag: None,
+                        data: Some(data),
+                    });
+                }
+                return Ok(n);
+            }
+            if let Some(tag) = a.tag {
+                f.session.abandon_tag(tag);
+            }
+        }
         let count = (buf.len() as u32).min(f.session.iounit().max(1));
         let reply = f.session.rpc(Fcall::Tread {
             fid: f.fid,
@@ -1117,6 +1226,56 @@ impl Dev for DevMnt {
         };
         f.session.bufs.put(reply);
         got
+    }
+
+    /// A read is ready once a read sent ahead by [`Dev::watch`] has its
+    /// reply. Without one (nothing has watched) it is taken to be ready,
+    /// as the device cannot tell. Writes are always ready.
+    fn ready(&self, c: &Chan, write: bool) -> bool {
+        let Ok(f) = file(c) else {
+            return true;
+        };
+        if write {
+            return true;
+        }
+        match f.ahead.lock().as_ref() {
+            Some(Ahead { data: Some(_), .. }) | None => true,
+            Some(Ahead { tag: Some(tag), .. }) => f.session.mux.arrived(*tag),
+            Some(_) => true,
+        }
+    }
+
+    fn watch(&self, c: &Chan, write: bool, w: &Rendez) {
+        let Ok(f) = file(c) else {
+            return;
+        };
+        f.session.mux.watch(w);
+        if write || !c.open || f.fid == AUTH_FID || c.qid.qtype & QTDIR != 0 {
+            return;
+        }
+        let mut a = f.ahead.lock();
+        if a.is_none() {
+            let offset = *c.offset.lock();
+            *a = Some(match f.session.read_ahead(f.fid, offset) {
+                Ok(tag) => Ahead {
+                    offset,
+                    tag: Some(tag),
+                    data: None,
+                },
+                // Ready: the read itself will fail.
+                Err(_) => Ahead {
+                    offset: u64::MAX,
+                    tag: None,
+                    data: Some(Vec::new()),
+                },
+            });
+        }
+    }
+
+    fn unwatch(&self, c: &Chan, w: &Rendez) {
+        if let Ok(f) = file(c) {
+            f.session.mux.unwatch(w);
+        }
     }
 
     fn dirread(&self, c: &Chan) -> Result<Vec<Dir>> {
