@@ -1125,7 +1125,7 @@ allowed (issue #29). No Inferno code was used.
 
 `acme [-f font] [file ...]` fills the screen with a row: a tag along the
 top (`Newcol Putall Exit`) and two columns, each with a tag (`New
-Delcol`) and windows stacked in it. The files given open in the first
+Delcol win`) and windows stacked in it. The files given open in the first
 column. A window is a tag line and a body. The tag starts with the file
 name, then the commands that apply now (`Del Snarf`, with `Undo`,
 `Redo` and `Put` added when they mean something), a bar, and whatever
@@ -1144,8 +1144,13 @@ The mouse:
   `Get [file]`, `Look [text]`, `New`, `Newcol`, `Paste`, `Put [file]`,
   `Putall`, `Redo`, `Snarf`, `Undo`. Anything else is a command line
   for `sh -c`, run in the window's directory with its standard output
-  and error on a pipe; the output is appended to the directory's
-  `+Errors` window, which is made in the last column when needed.
+  and error on a pipe, a copy of acme's namespace (so it sees
+  `/mnt/acme`), a process group of its own and `$winid` set when it was
+  run from a window; the output is appended to the directory's
+  `+Errors` window, which is made in the last column when needed. A
+  name that is not a command gives sh's message there, as in Inferno
+  (`sh: win: file does not exist`, which is what the owner saw before
+  `/bin/win.wasm` existed).
 - Button 3 sweeps in green. When the text (or the file name under the
   pointer, made of letters, digits and `./-+:~,#@$%`) names a file or
   directory relative to the window's directory, it is opened in a new
@@ -1228,7 +1233,7 @@ before a partial one. Nothing in the ABI changed.
   modified file. Each step waits for the screen to change and then stay
   unchanged for 0.7 s. Then `test/draw -d` dumps the screen, which is
   compared with `tests/golden/acme.ppm.z` (the screen as a PPM,
-  compressed with zlib, 11,761 bytes); both VMs give the same pixels.
+  compressed with zlib, 11,907 bytes); both VMs give the same pixels.
   `PURG_GOLDEN_UPDATE=1` rewrites it and `PURG_GOLDEN_SHOW=1` writes
   the screen out as a PPM to look at.
 
@@ -1240,17 +1245,17 @@ test).
 
 ### 10.4 Sizes
 
-`acme.wasm` is 200,997 bytes. The source is about 2,800 lines with its
-unit tests (`main.rs` 1,740, `ui.rs` 530, `text.rs` 350, `frame.rs`
-210), plus the acceptance test (330), the device and SDK changes (about
+`acme.wasm` is 273,872 bytes (200,997 before acme(4), which brought in
+the Styx codec and regexp) and `win.wasm` 87,609. The source is about
+4,500 lines with its unit tests (`main.rs` 1,930, `fs.rs` 990, `ui.rs`
+580, `text.rs` 430, `addr.rs` 350, `frame.rs` 210), plus `win` (460),
+the `acmefs` test guest (290), the acceptance test (500), the device and
+SDK changes for the first slice (about
 130). acme is a graphics program, so it stays out of the kernel's and
 the probe's images, as `draw/demo` does.
 
 ### 10.5 Not done
 
-- acme(4), the file system on `/mnt/acme` (`cons`, `index`, `new`, and
-  each window's `addr`, `body`, `ctl`, `data`, `event`, `tag`): the next
-  step, and what `win`, `Mail` and external commands need.
 - `Edit` (sam's command language), `Zerox`, `Sort`, `Kill`, `Dump` and
   `Load`, `Font`, `Tab`, `Indent`, `ID`, `Incl`, `Local`, `Send`.
 - Commands that start with `<`, `|` or `>` (piping the selection), the
@@ -1267,6 +1272,134 @@ the probe's images, as `draw/demo` does.
   `:n,m`).
 - Drawing only what changed in a frame (a change draws its text again
   whole) and a full-screen copy for scrolling.
+
+### 10.6 acme(4) and win
+
+acme serves acme(4) on `/mnt/acme`, and `win` (`appl/cmd/win`,
+`/bin/win.wasm`) runs a shell in a window through it. acme(4) and
+Inferno's `win` are the spec; nothing was copied.
+
+**The files.** At the top: `cons` (what is written goes to the
+`+Errors` window of acme's directory; reads give nothing), `consctl`
+(empty, read only), `index` (a line per window: id, tag length, body
+length, directory and modified flags, each in 11 characters and a
+blank, then the tag), `label` (holds what was last written) and `new`.
+`new` holds a window's files; opening one makes a window in the last
+column and the file is that window's, so opening `new/ctl` makes one
+and reads its id first, as in acme(4). (Plan 9's acme makes the window
+on the walk to `new`; here an open walks twice, once to stat the file,
+so that would make two.) Each window `n` has:
+
+- `addr`: written, an address in the body, evaluated from the current
+  one; read, the address as two numbers. The first open sets it to
+  `0,0`. Addresses (`addr.rs`) are sam's: `#n`, a line number, `0`,
+  `$`, `.` (the current address), `/re/` and `?re?` (regexp(6) through
+  `appl/lib/regexp`, wrapping round), `+` and `-` with a line count,
+  `#n` or a regexp after them, and `,` and `;` between two of them,
+  either side left out. Errors are `bad address syntax` and `address
+  out of range` (also for a regexp that matches nothing).
+- `body` and `tag`: read, the text; written, appended.
+- `ctl`: read, the id, tag and body lengths in runes, the directory and
+  modified flags, the body's width in pixels, the font's file and the
+  tab width in pixels. Written, one message a line: `name n`, `clean`,
+  `dirty`, `show`, `del` (fails with `file dirty`, after the usual
+  warning, when the file is modified), `delete`, `get`, `put`, `dump
+  cmd` and `dumpdir dir` (kept, though nothing reads them yet),
+  `addr=dot`, `dot=addr`, `mark`, `nomark` and `cleartag`. Anything
+  else is `ill-formed control message`.
+- `data` and `xdata`: a read returns the runes from the address on (to
+  the end of the body for `data`, to the end of the address for
+  `xdata`) that fit, and moves the address past them; a write replaces
+  the address with the text and leaves the address after it.
+- `event`: while it is open, button 2 and 3 in the window's tag or body
+  are not acted on but reported, and every insert and delete in them is
+  too, each as acme(4)'s `origin type q0 q1 flag count text` line:
+  origin `K` (typing), `M` (the mouse), `E` (writes to `body` or `tag`)
+  or `F` (the other files); type `X`, `L`, `I` or `D`, lower case for
+  the tag. `X` has flag 1 for a built-in command; `L` has 4 for a file
+  name (and 1 too when a window has it), else 1; flag 2 says the click
+  was in a null selection and a second event with the expansion
+  follows. Text of 256 runes or more is left out with a count of 0.
+  Writing an `X` or `L` event back makes acme do what it would have
+  done. A read waits for an event. With `event` open, the Delete key
+  and ^C are typed into the body too, for `win`.
+
+A file of a deleted window answers `deleted window`. acme will not open
+or write a file under `/mnt/acme` itself (`acme's own file`): it would
+wait for its own answer.
+
+**How it is served.** acme forks its namespace at start, makes a pipe,
+and starts `acme --mount`, a copy of itself sharing that namespace,
+which mounts the far end of the pipe on `/mnt/acme` (made if missing)
+and exits. acme answers the mount's version and attach before drawing,
+then adds the pipe to the fds its loop waits on. When the pipe is
+readable acme reads what is there and answers each whole message
+(`fs.rs` decodes and encodes with `purg-styx`); the SDK's
+`styx::serve` does not fit, as it answers every request at once and
+owns its loop. A read of `event` with nothing queued is kept with its
+tag, and after each thing the loop does, waiting reads get the events
+that came, or `deleted window` when their window went. `Tflush` forgets
+a waiting read: that is what devmnt sends when a reader is killed, and
+the clunk after it closes the file. Once the last `event` fid of a
+window is clunked, the window acts on its own mouse actions again.
+
+Changes are found by the buffers: while `event` is open, `text.rs`
+records each insert and delete (undo and redo included), and acme turns
+them into events after each key, mouse action or file request, with
+that origin. acme's own rewrites of a tag (the `Undo` and `Put` words)
+are not reported.
+
+**win.** `win` opens `new/ctl`, names the window `dir/-sysname`, and
+starts `sh -i` in a new process group with its standard input, output
+and error on pipes. It keeps an output point: shell output is written
+at it with `addr` and `data`, and it moves past. A typed newline at or
+after the point sends everything from the point to the last newline to
+the shell. Inserts and deletes before the point move it; win's own
+writes come back as `E` and `F` events, which it skips. Button 2 on
+text that is not a built-in command sends the text to the shell as a
+line; built-ins and button 3 are written back. `Del` kills the group
+(`killgrp` on `/prog/<pid>/ctl`) and deletes the window; when the shell
+exits the window goes; when the window goes the group is killed. The
+Delete key or ^C typed in the body is taken out again and sends
+`interruptgrp`. win marks the window clean after each write, so `Del`
+does not warn. As `event` cannot say when it is ready, a second `win
+-E` copies it into a pipe and win waits on
+that and the shell's output.
+
+**Differences from Inferno.** No `limit=`, `font`, `menu` or `nomenu`
+in `ctl`; `dump` and `dumpdir` are kept but there is no `Dump`; no
+chorded argument (flag 8) since there is no 2-1 chord; `label` is a
+plain file. With `event` open, acme still shows `Undo` and `Put` in the
+tag, where Inferno hides them. win's tag gets no `Send` or `Noscroll`;
+^C interrupts as well as Delete; output always goes at the output
+point, and a cursor at that point follows it.
+
+**Tests.** Unit tests for addresses (`addr.rs`), event formatting and
+parsing (`fs.rs`), the buffer's change list (`text.rs`), win's event
+parser and output point. `crates/purg-emu/tests/acme.rs`
+(`fs_and_win`, on both VMs) runs acme with no files and types
+`test/acmefs` in the row's tag; that guest (`appl/test/acmefs`) reads a
+mode from `/tmp/acme/mode`. In `fs` mode it makes a window through
+`new/ctl`, checks `ctl`, `body`, `addr` (eleven addresses), `xdata`,
+`dot=addr`, `addr=dot`, `data`, `clean`, a bad `ctl` message, `name`,
+`index`, `tag` and `cleartag`, opens `event` and waits for the test to
+click button 2 on `New` in the window; it checks the two events (flag 3
+and the expansion), writes the second back (acme makes a window),
+checks the insert event of a `body` write, starts a reader of another
+window's `event`, kills it, and checks that the next reader gets
+events; then it deletes every window and checks `deleted window`. Then
+the test clicks `win` in the right column's tag, types `cat`, the
+Delete key and `echo hello`, and checks the window's body (`; cat
+;
+echo hello
+hello
+; `). After `Del` typed in win's tag and clicked, no
+`win` prog is left, only two `sh`s (the emu's and the one running the
+guest), and no window; `Exit` still ends acme. The compared output is
+the 35 lines in the test.
+
+Nothing here was seen on a real display: all of it ran on the
+in-memory screen through the browser backend's input path.
 
 ## 11. Sources
 

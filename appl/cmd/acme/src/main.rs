@@ -46,7 +46,7 @@ use ui::{BORDER, Colours, Column, Fnt, Kind, SCROLLWID, Sweep, Text, Window};
 
 /// The tags of the row and of a new column.
 const ROW_TAG: &str = "Newcol Putall Exit ";
-const COL_TAG: &str = "New Delcol ";
+const COL_TAG: &str = "New Delcol win ";
 
 /// The commands acme runs itself; others go to `sh`.
 const BUILTINS: &[&str] = &[
