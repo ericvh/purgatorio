@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-draw-clock"
+description = "draw/clock: an analog clock, or a seven-segment one with -d"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "draw-clock"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
