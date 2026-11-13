@@ -9,7 +9,8 @@
 //!
 //! `test/draw -d` checks nothing: it writes the screen's width and
 //! height as a line of text and then its pixels, rows of `x8r8g8b8`, to
-//! standard output, for the tests that compare screens.
+//! standard output, for the tests that compare screens. It writes the
+//! whole display even when run in a window.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -476,10 +477,78 @@ fn pointer() -> Result<(), String> {
     Ok(())
 }
 
+/// The pixel at `p` of what `d` reads of `i`, as `0xRRGGBB`.
+fn pixel(d: &mut Display, i: &purgatorio::draw::Image, p: Point) -> Result<u32, String> {
+    let px = d
+        .unload(i, Rect::new(p.x, p.y, p.x + 1, p.y + 1))
+        .map_err(e)?;
+    Ok(u32::from_le_bytes([px[0], px[1], px[2], 0]))
+}
+
+/// Screens, windows and named images: one connection puts a public
+/// screen on the display and a named window on it, as a window system
+/// does; another looks the window up by name and draws in a window of
+/// its own on it, as a program in that window does.
+fn windows() -> Result<(), String> {
+    let mut wm = Display::open().map_err(e)?;
+    let screen = wm.screen();
+    let grey = wm.color(0x777777FF).map_err(e)?;
+    let s = wm.alloc_screen(&screen, &grey, true).map_err(e)?;
+    let r = Rect::new(300, 200, 400, 260);
+    let w = wm.alloc_window(&s, r, 0x55AAAAFF).map_err(e)?;
+    wm.name_image(&w, "test.draw.window", true).map_err(e)?;
+    let mut client = Display::open().map_err(e)?;
+    let named = client.named("test.draw.window").map_err(e)?;
+    if named.r != r {
+        return Err(format!("the named window is {named:?}"));
+    }
+    let white = client.color(0xFFFFFFFF).map_err(e)?;
+    let red = client.color(0xFF0000FF).map_err(e)?;
+    let cs = client.alloc_screen(&named, &white, false).map_err(e)?;
+    let inner = purgatorio::draw::inset(r, purgatorio::draw::BORDER);
+    let cw = client.alloc_window(&cs, inner, 0xFFFFFFFF).map_err(e)?;
+    client
+        .draw(&cw, cw.r, &red, None, Point::new(0, 0))
+        .map_err(e)?;
+    client.flush().map_err(e)?;
+    let at = |d: &mut Display, x, y| pixel(d, &screen, Point::new(x, y));
+    let got = [at(&mut wm, 301, 201)?, at(&mut wm, 350, 230)?];
+    if got != [0x55AAAA, 0xFF0000] {
+        return Err(format!("border and inside are {got:06x?}"));
+    }
+    // A window on top covers it; drawing below shows only where it is
+    // not covered.
+    let over = wm
+        .alloc_window(&s, Rect::new(350, 150, 450, 250), 0x0000FFFF)
+        .map_err(e)?;
+    client
+        .draw(&cw, cw.r, &white, None, Point::new(0, 0))
+        .map_err(e)?;
+    client.flush().map_err(e)?;
+    let got = [at(&mut wm, 320, 230)?, at(&mut wm, 380, 230)?];
+    if got != [0xFFFFFF, 0x0000FF] {
+        return Err(format!("under a window: {got:06x?}"));
+    }
+    wm.top_windows(&[&w], true).map_err(e)?;
+    wm.flush().map_err(e)?;
+    if at(&mut wm, 380, 230)? != 0xFFFFFF {
+        return Err(String::from("the raised window lost its pixels"));
+    }
+    // Freed by the window system, the window leaves the screen, and the
+    // screen's fill shows.
+    wm.free(w).map_err(e)?;
+    wm.free(over).map_err(e)?;
+    wm.flush().map_err(e)?;
+    if at(&mut wm, 350, 230)? != 0x777777 {
+        return Err(String::from("the freed window stayed"));
+    }
+    Ok(())
+}
+
 /// Writes the screen to standard output (`-d`).
 fn dump() -> Result<(), Error> {
     let mut d = Display::open()?;
-    let screen = d.screen();
+    let screen = d.display_image()?;
     let px = d.unload(&screen, screen.r)?;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{} {}", screen.r.dx(), screen.r.dy())?;
@@ -504,6 +573,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         ("cache", cache_reuse),
         ("fonterrors", font_errors),
         ("pointer", pointer),
+        ("windows", windows),
     ];
     let mut failed = false;
     for (name, check) in checks {
