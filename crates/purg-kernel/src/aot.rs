@@ -89,7 +89,9 @@ pub fn engine(
     let sources = Sources {
         kind,
         linked,
-        trust: Some(boot.clone()),
+        // A copy: progs that run in the boot namespace itself, such as
+        // the first sh, bind over /lib/keys there.
+        trust: Some(Arc::new(boot.fork())),
     };
     let aot = Arc::new(Aot::new(sources, mode, Arc::new(Kernel), fallback)?);
     let ticker = aot.clone();
