@@ -177,8 +177,19 @@ fn put_coord(m: &mut Vec<u8>, x: i32, old: i32) {
 }
 
 impl Display {
-    /// Opens a new connection to `/dev/draw`.
+    /// Opens a new connection to `/dev/draw`; in a window system, its
+    /// [`Display::screen`] is the window.
     pub fn open() -> Result<Display, Error> {
+        Display::open_with(true)
+    }
+
+    /// Opens a new connection to `/dev/draw` whose [`Display::screen`] is
+    /// the whole display, even in a window system.
+    pub fn open_display() -> Result<Display, Error> {
+        Display::open_with(false)
+    }
+
+    fn open_with(window: bool) -> Result<Display, Error> {
         let mut ctl = OpenOptions::new()
             .read(true)
             .write(true)
@@ -201,7 +212,7 @@ impl Display {
             screens: 0,
             window: None,
         };
-        if let Ok(f) = File::open("/dev/winname") {
+        if window && let Ok(f) = File::open("/dev/winname") {
             d.attach(f)?;
         }
         Ok(d)
@@ -270,16 +281,18 @@ impl Display {
         }
     }
 
-    /// Lets go of the window and what it was made on.
-    fn detach(&mut self) -> Result<(), Error> {
-        if let Some(w) = self.window.take() {
-            let screen = self.screen.clone();
-            self.free(screen)?;
-            self.free_screen(w.screen)?;
-            self.free(w.named)?;
-            self.free(w.fill)?;
-        }
-        Ok(())
+    /// Lets go of the window and what it was made on; returns
+    /// `/dev/winname`.
+    fn detach(&mut self) -> Result<Option<File>, Error> {
+        let Some(w) = self.window.take() else {
+            return Ok(None);
+        };
+        let screen = self.screen.clone();
+        self.free(screen)?;
+        self.free_screen(w.screen)?;
+        self.free(w.named)?;
+        self.free(w.fill)?;
+        Ok(Some(w.winname))
     }
 
     /// The image named `name` (`n`), as a new id of this connection.
@@ -408,9 +421,9 @@ impl Display {
             if name == w.name {
                 return Ok(false);
             }
-            let f = w.winname.try_clone()?;
-            self.detach()?;
-            self.attach(f)?;
+            if let Some(f) = self.detach()? {
+                self.attach(f)?;
+            }
             return Ok(true);
         }
         let s = self.info(0)?;
