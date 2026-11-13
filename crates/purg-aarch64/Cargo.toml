@@ -20,10 +20,13 @@ blk = []
 purg-abi.workspace = true
 purg-platform.workspace = true
 spin.workspace = true
+rlsf = { version = "0.2", default-features = false }
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
 
 # Only the bare-metal modules use these.
 [target.aarch64-unknown-none.dependencies]
-linked_list_allocator = { version = "0.10", default-features = false, features = ["use_spin"] }
 smoltcp = { version = "0.14", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-raw", "socket-tcp", "socket-udp", "proto-ipv4-fragmentation", "fragmentation-buffer-size-8192", "reassembly-buffer-size-8192", "reassembly-buffer-count-2"], optional = true }
 
 [lints]

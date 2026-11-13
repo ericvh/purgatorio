@@ -134,10 +134,13 @@ impl System {
     /// then the names and pids of the threads that have names. `run_peak`
     /// is the most the heap held since the line before; `peak` since boot.
     pub(crate) fn memstat(&self) {
+        // What the CPUs cache goes back first, so `slabs` and `largest`
+        // are what the tests left.
+        HEAP.reclaim();
         let h = HEAP.stats();
         let (run_peak, peak) = memstat::run_peak();
         self.say(&format!(
-            "kernel: mem used={} run_peak={} peak={} largest={} size={} blocks={} allocs={} threads={}",
+            "kernel: mem used={} run_peak={} peak={} largest={} size={} blocks={} allocs={} slabs={} cached={} threads={}",
             h.used,
             run_peak,
             peak,
@@ -145,6 +148,8 @@ impl System {
             h.size,
             h.live,
             h.allocs,
+            h.slabs,
+            h.cached,
             SCHED.live()
         ));
         let threads: Vec<String> = SCHED
