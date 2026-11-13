@@ -18,6 +18,9 @@ use crate::prog::Prog;
 pub const MODULES: &str = "/lib/keys/modules";
 /// Revoked keys and module digests, shared with mount authentication.
 pub const REVOKED: &str = "/lib/keys/revoked";
+/// Keys trusted to sign the kernel's ahead-of-time images, which are
+/// native code (`purg-vm-aot`, `docs/signing.md`).
+pub const AOT_KEYS: &str = "/lib/keys/aot";
 /// The longest key list read.
 const MAX_LIST: usize = 64 * 1024;
 
@@ -82,19 +85,7 @@ impl ModPolicy {
         now: u64,
     ) -> core::result::Result<Vec<[u8; PUBLIC]>, &'static str> {
         let (anchors, revoked) = match &self.trust {
-            Some(pgrp) => {
-                let anchors = read_file(pgrp, MODULES, MAX_LIST)
-                    .map(|t| purg_auth::keys::parse_list_lenient(&t))
-                    .unwrap_or_default();
-                // A missing list revokes nothing. One that is there but
-                // cannot be read or parsed fails closed.
-                let revoked = match read_file(pgrp, REVOKED, MAX_LIST) {
-                    Some(t) => purg_auth::keys::parse_list(&t),
-                    None if pgrp.namec(REVOKED, "/").is_ok() => None,
-                    None => Some(Vec::new()),
-                };
-                (anchors, revoked)
-            }
+            Some(pgrp) => trust_lists(pgrp, MODULES),
             None => (Vec::new(), Some(Vec::new())),
         };
         modsig::check(
@@ -106,6 +97,22 @@ impl ModPolicy {
             },
         )
     }
+}
+
+/// Reads the key list `anchors` (such as [`MODULES`] or [`AOT_KEYS`]) and
+/// the revocation list in `pgrp`. A missing anchor list trusts nobody. A
+/// missing revocation list revokes nothing; one that is there but cannot
+/// be read or parsed is `None`, which fails closed.
+pub fn trust_lists(pgrp: &Pgrp, anchors: &str) -> (Vec<[u8; PUBLIC]>, Option<Vec<[u8; PUBLIC]>>) {
+    let keys = read_file(pgrp, anchors, MAX_LIST)
+        .map(|t| purg_auth::keys::parse_list_lenient(&t))
+        .unwrap_or_default();
+    let revoked = match read_file(pgrp, REVOKED, MAX_LIST) {
+        Some(t) => purg_auth::keys::parse_list(&t),
+        None if pgrp.namec(REVOKED, "/").is_ok() => None,
+        None => Some(Vec::new()),
+    };
+    (keys, revoked)
 }
 
 impl Prog {

@@ -3909,9 +3909,11 @@ name = "purg-vm-aot"
 version = "0.1.0"
 dependencies = [
  "purg-abi",
+ "purg-auth",
  "purg-core",
  "purg-platform",
  "purg-vm",
+ "sha2",
  "wasmtime",
 ]
 
@@ -5491,6 +5493,7 @@ dependencies = [
  "purg-fs",
  "purg-vm",
  "rustc-demangle",
+ "sha2",
 ]
 
 [[package]]

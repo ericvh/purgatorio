@@ -315,6 +315,107 @@ host and compares the hashes with the rest.
 - **The pinned namespace** holds whatever was mounted when the policy was
   set, for as long as a prog under the policy lives.
 
+## Ahead-of-time images
+
+The kernel can run a module as native code compiled on the build host
+(`purg-vm-aot`, `docs/perf.md` Section 11). Native code is outside the
+WebAssembly sandbox: it can do anything the kernel can. So an image is
+trusted as the kernel is, never as a module is, and the module policy
+alone never lets one run.
+
+An image comes from one of two places:
+
+- **Linked into the kernel** at build time (`PURG_AOT_IMAGES`, the
+  `.text.aot` section). It is part of the kernel's image and needs no
+  signature.
+- **A signed image file** beside the module: `/bin/<cmd>.cwasm` next to
+  `/bin/<cmd>.wasm`, read at run time.
+
+### The signed image file
+
+```
+magic   "PURGIMG1"
+kind    u8          0 native aarch64, 1 Pulley
+zero    3 bytes
+module  [32]        the module's digest, as above
+len     u64 LE
+image   len bytes   wasmtime's precompiled module
+sig     ...         to the end: the contents of a purgatorio.sig section
+```
+
+The signature part is a `purgatorio.sig` body (version, count, entries)
+with the same entry kinds, a bare key or a certificate chain. Each entry
+signs
+
+```
+"pgaotimg1" 0x00 || kind u8 || module digest[32] || SHA-256(image)[32]
+```
+
+so a signature says "this code is a compilation of that module for this
+target". The context string differs from `pgmodsig1`, `pgcert1` and
+`pgauth2`, so a module signature never verifies as an image signature
+or the other way round. `cwasm -s` writes these files, and `cargo xtask
+aot` writes one for every module of the root, signed with the public
+test key.
+
+### Verification
+
+When a prog that is not traced runs a module, the engine takes the digest
+the loader computed for it (the bytes the policy checked), and looks for
+an image: first in the linked set, then in the file `<path>.cwasm`, where
+`<path>` is the name the module was loaded by, less `.wasm`. The file is
+read through the prog's namespace, so a prog can bind any file there, and
+the check does not depend on where it came from. It runs only if all of
+these hold:
+
+1. it parses strictly, its kind is the engine's, and its module digest
+   is the digest of the module the prog loaded;
+2. neither that digest nor the SHA-256 of the image is in
+   `/lib/keys/revoked`, and the list is readable (a damaged list refuses
+   everything);
+3. one of its entries is **trusted** under the rules above, with
+   **`/lib/keys/aot`** as the anchors instead of `/lib/keys/modules`.
+
+Both lists are read in the **boot namespace**, at each image load: a
+copy pinned when the engine starts, which no prog can bind over. Only an
+image that passes is copied into executable memory (`purg_aarch64::code`:
+mapped writable, filled, then remapped executable and read-only, with
+the linear map's alias read-only too, and the caches made coherent). The
+image is checked once per load, and the bytes checked are the bytes
+copied. A verified image is shared by the progs of one generation and
+freed with it (`docs/perf.md`).
+
+An image that is missing or refused is not an error: the module runs on
+wasmi, as it would without the engine, unless the kernel was booted with
+`engine=aot`, which refuses it. A reactor loaded by a prog running native
+code must have a verified image; one loaded by a prog on wasmi runs on
+wasmi.
+
+### Why a separate list
+
+A key in `/lib/keys/modules` vouches for WebAssembly, which the sandbox
+still confines. A key in `/lib/keys/aot` vouches for native code, which
+nothing confines. Keeping the anchors apart means that trusting someone
+to sign modules does not let them run code in the kernel. The
+revocation list is shared.
+
+The test initrd that `cargo xtask kernel --aot` builds trusts the public
+test key in `/lib/keys/aot`; `root/` has no such file, so a system built
+from it runs no image file until its operator lists a key.
+
+### What it does not protect
+
+- **The module policy still applies** to the module, before the image is
+  looked for: under `require`, an unsigned module is refused whatever
+  image it has. An image does not stand in for the module's own
+  signature.
+- **The compiler is trusted.** The signature says who vouches for the
+  translation, not that it is correct. A bug in Cranelift, or a signer
+  who signs code that is not wasmtime's output, can break the sandbox.
+- **wasmtime's version.** An image for another wasmtime, or for other
+  settings, verifies but does not load (wasmtime checks); the module then
+  runs on wasmi.
+
 ## Implementation and tests
 
 - `purg-auth::modsig` (`no_std` + `alloc`): the section walk, the digest,
@@ -328,6 +429,13 @@ host and compares the hashes with the rest.
   a module through, calls `check_module` after the ABI check. That covers
   `spawn_prog`, `load` and the first prog on the emu, the probe and the
   kernel.
+- `purg-vm-aot::image`: the signed image format, its parser and its
+  check, with unit tests for each refusal (another signer, module or
+  kind, each revocation, a damaged list, a changed byte, every
+  truncation) and for determinism. `purg_core::modsig::trust_lists`
+  reads `/lib/keys/aot` and the revocation list as the policy reads its
+  own. The kernel's test mode under `cargo xtask kernel --aot` runs every
+  module of the root from a signed image file.
 - Tests: unit tests in `purg-auth` (digest with the section first, in the
   middle and last, several entries, chains, every truncation of a signed
   module and of a section, a fixed test vector); loader tests in
