@@ -450,17 +450,28 @@ end
 /// button 2 click on `New` in the window it made, for the events), then,
 /// after `win` is run from the right column's tag and given `cat`, an
 /// interrupt and `echo hello`, the win window's text, and after `Del` in
-/// its tag, the progs left.
+/// its tag, the progs left. Last, `B` sends a file to acme through the
+/// plumber, which runs beside acme with a rule for the `edit` port.
 fn fs_and_win(vm: &str) {
     let root = Root::new(vm);
     let tmp = root.0.join("tmp/acme");
+    std::fs::write(
+        tmp.join("rules"),
+        "kind is text\ndata matches '.*'\nplumb to edit\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.join("plumbed"), "first\nsecond\nthird\n").unwrap();
     let mut w = common::Watched::spawn(
         Command::new(env!("CARGO_BIN_EXE_emu"))
             .arg("-r")
             .arg(&root.0)
             .arg(format!("--vm={vm}"))
             .args(["-s", &format!("{}x{}", SIZE.0, SIZE.1), "-w"])
-            .args(["sh", "-c", "acme; echo acme: $status"])
+            .args([
+                "sh",
+                "-c",
+                "plumber /tmp/acme/rules; acme; echo acme: $status; kill plumber >/dev/null",
+            ])
             .stdin(Stdio::null())
             .stdout(Stdio::piped()),
     );
@@ -584,6 +595,15 @@ fn fs_and_win(vm: &str) {
         results(&tmp, "after Del", &out),
         "end\n",
         "{vm}: the window stayed"
+    );
+
+    // B: acme opens the file with its second line selected.
+    std::fs::write(tmp.join("mode"), "plumb").unwrap();
+    p.click(row_end.0, row_end.1, 2, "test/acmefs plumb");
+    assert_eq!(
+        results(&tmp, "plumb", &out),
+        "B: \"\"\nwindow: /tmp/acme/plumbed\ndot: 6 13\nend\n",
+        "{vm}: B"
     );
 
     // acme still works: Exit ends it.

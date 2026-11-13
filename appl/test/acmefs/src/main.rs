@@ -12,6 +12,9 @@
 //! - `body`: the tag and body of the window whose name holds `/-`
 //!   (`win`'s).
 //! - `ps`: the modules of the progs running.
+//! - `plumb`: runs `B -2 /tmp/acme/plumbed` and waits for acme to open
+//!   the file from the plumber's `edit` port; reports the window's name
+//!   and the selection (its second line).
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -262,6 +265,39 @@ fn ps(out: &mut Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+/// `B -2 /tmp/acme/plumbed` through the plumber; acme opens the file
+/// with its second line selected.
+fn plumb(out: &mut Vec<String>) -> Result<(), String> {
+    let file = format!("{DIR}/plumbed");
+    let argv = ["B", "-2", file.as_str()].map(String::from);
+    purgatorio::spawn(
+        "/bin/B.wasm",
+        &argv,
+        purgatorio::abi::pctl::NEWFD,
+        &[(0, 0), (1, 1), (2, 2)],
+    )
+    .map_err(|e| format!("B: {e}"))?;
+    let w = purgatorio::wait().map_err(|e| format!("wait: {e}"))?;
+    out.push(format!("B: {:?}", w.status));
+    for _ in 0..600 {
+        for l in read(&format!("{ACME}/index"))?.lines() {
+            let f = nums(l);
+            if f.get(5) == Some(&file) {
+                // The window's address is reset when addr is first
+                // opened, so open it before setting it.
+                let mut a = open(&format!("{ACME}/{}/addr", f[0]))?;
+                put(&format!("{ACME}/{}/ctl", f[0]), "addr=dot")?;
+                let addr = readf(&mut a);
+                out.push(format!("window: {}", f[5]));
+                out.push(format!("dot: {}", nums(&addr).join(" ")));
+                return Ok(());
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(String::from("acme opened no window"))
+}
+
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.get(1).map(String::as_str) == Some("-r") {
@@ -277,6 +313,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         "fs" => fs(&mut out),
         "body" => body(&mut out),
         "ps" => ps(&mut out),
+        "plumb" => plumb(&mut out),
         m => Err(format!("unknown mode {m:?}")),
     };
     if let Err(e) = r {
