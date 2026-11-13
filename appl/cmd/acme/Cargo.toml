@@ -14,6 +14,7 @@ path = "src/main.rs"
 purgatorio.workspace = true
 purg-styx.workspace = true
 regexp.workspace = true
+plumbmsg = { package = "appl-lib-plumbmsg", path = "../../lib/plumbmsg" }
 
 [lints]
 workspace = true
