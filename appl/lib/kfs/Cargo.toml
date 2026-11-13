@@ -1,0 +1,16 @@
+[package]
+name = "appl-lib-kfs"
+description = "kfs: Plan 9's and Inferno's kfs disk format, for disk/kfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into disk/kfs, not a reactor module: xtask
+# installs only the cdylib crates in appl/lib.
+[lib]
+name = "kfs"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

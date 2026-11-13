@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-disk-kfscmd"
+description = "disk/kfscmd: send commands to a kfs console"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kfscmd"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

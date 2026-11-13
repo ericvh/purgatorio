@@ -165,6 +165,43 @@ pub fn recv_any_with_close(files: &[&FileIO]) -> Result<Option<(usize, Request)>
     } else {
         f.write
     };
+    Ok(recv_on(h)?.map(|r| (which / 2, r)))
+}
+
+/// What [`recv_any_or_fds`] found.
+pub enum Event {
+    /// The fd at this index of the list can be read.
+    Fd(usize),
+    /// A request, or a close, on the file at this index; `None` when its
+    /// channels have hung up.
+    File(usize, Option<Request>),
+}
+
+/// Waits for a request (or a close) on any of `files`, or until one of
+/// `fds` can be read: Limbo's `alt` over file2chan channels and a file,
+/// for a server that also speaks 9P on a pipe.
+pub fn recv_any_or_fds(files: &[&FileIO], fds: &[i32]) -> Result<Event, Error> {
+    let ops: Vec<i32> = fds
+        .iter()
+        .flat_map(|&fd| [0, fd])
+        .chain(files.iter().flat_map(|f| [2, f.read, 2, f.write]))
+        .collect();
+    let which = unsafe { sys::wait(ops.as_ptr(), ops.len() / 2, -1) };
+    if which < 0 {
+        return Err(Error::last());
+    }
+    let which = which as usize;
+    if which < fds.len() {
+        return Ok(Event::Fd(which));
+    }
+    let i = which - fds.len();
+    let f = files[i / 2];
+    let h = if i.is_multiple_of(2) { f.read } else { f.write };
+    Ok(Event::File(i / 2, recv_on(h)?))
+}
+
+/// Receives one request on channel `h`; `None` when it has hung up.
+fn recv_on(h: i32) -> Result<Option<Request>, Error> {
     let mut buf = vec![0u8; 64 * 1024];
     let mut handles = [-1i32; 4];
     let n = unsafe { sys::chan_recv(h, buf.as_mut_ptr(), buf.len(), handles.as_mut_ptr(), 0) };
@@ -176,7 +213,7 @@ pub fn recv_any_with_close(files: &[&FileIO]) -> Result<Option<(usize, Request)>
         return Err(err);
     }
     buf.truncate(n as usize);
-    decode(&buf).map(|r| Some((which / 2, r)))
+    decode(&buf).map(Some)
 }
 
 fn decode(buf: &[u8]) -> Result<Request, Error> {

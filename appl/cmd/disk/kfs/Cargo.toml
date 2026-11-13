@@ -1,0 +1,20 @@
+[package]
+name = "appl-cmd-disk-kfs"
+description = "disk/kfs: serve a Plan 9 and Inferno kfs file system from a disk or file"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kfs"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+purg-styx.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../../lib/styxserv" }
+kfs = { package = "appl-lib-kfs", path = "../../../lib/kfs" }
+
+[lints]
+workspace = true

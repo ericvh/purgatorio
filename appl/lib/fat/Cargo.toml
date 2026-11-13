@@ -1,6 +1,6 @@
 [package]
 name = "appl-lib-fat"
-description = "fat: FAT12, FAT16 and FAT32 file systems with long names, for dossrv, and a formatter for tests"
+description = "fat: FAT12, FAT16 and FAT32 file systems with long names, for dossrv, and a formatter for disk/format and tests"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
