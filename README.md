@@ -80,6 +80,7 @@ a `; ` prompt.
 | SDK: `arg`, `bufio`, `env`, `daytime`, the `task` executor with `Chan<T>` | done |
 | Graphics (G1, emu only): `purg-memdraw` (images in any `k`/`r`/`g`/`b`/`a`/`x` channel format and conversions, the twelve Porter-Duff operators with masks, replication and clipping, lines with square, disc and arrow ends, polylines, filled polygons with both winding rules, ellipses and arcs, all integer); `#i` (`/dev/draw/new`, `n/ctl`, `n/data`, `n/colormap`, `n/refresh`; messages `b f c d D e E L p P r y Y o O v` with devdraw's errors); `#m` (`/dev/pointer`, `/dev/cursor`) and `/dev/keyboard`; an in-memory screen by default, a window with `emu -g` (winit and softbuffer), and a browser canvas with `emu -w` (HTTP and a WebSocket on loopback, a token in the URL, zlib-compressed rectangles); the SDK's `draw` module; `draw/demo`. See [docs/graphics.md](docs/graphics.md) | first cut; no screens or windows, named images or `m8`; not in the kernel |
 | Fonts and text (G2): `fontgen` makes font(6) subfonts from TrueType fonts and Unifont's bitmaps; `/fonts` has Go Regular and Go Mono at 13 and 20 pixels with GNU Unifont for the rest of the BMP (`sans/unicode.13.font`, `mono/...`, `default.font`), made by `cargo xtask fonts` and checked byte for byte in CI; the draw device's font cache (`i l s x`); `Font`, `string`, `string_bg` and `string_width` in the SDK; a resizable `emu -g` window (clients see it on `refresh`) and pixel doubling (`-2`, or automatic on a HiDPI display). See [docs/graphics.md](docs/graphics.md) Section 9 | done; no named images, Noto or shaping |
+| `acme`, the first graphical application: columns and windows with tags and bodies, files opened from the command line and with button 3, typing, selection, cut and paste, `Undo`/`Redo`, scroll bars and the wheel, built-in commands (`Get`, `Put`, `Putall`, `Del`, `New`, `Newcol`, `Delcol`, `Snarf`, `Cut`, `Paste`, `Look`, `Exit`) and other commands run with `sh` into `+Errors`. One prog waiting on the pointer, keyboard and command pipes with `purgatorio::ready`. See [docs/graphics.md](docs/graphics.md) Section 10 | first slice; no acme(4) file system on `/mnt/acme`, no `Edit`, no moving windows with the mouse |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
 | `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi, on the kernel's `purg-aarch64` boot path, interrupts and preemptive kernel threads: a writable RAM root, the `sh` corpus, `load`/`call`, the WASI test program, and `/net` over virtio-net and smoltcp, exported to and mounted from the host | done |
@@ -326,6 +327,14 @@ It listens on loopback only, on a free port, unless you give an address
 screen and type into it, with only the token to stop them and no
 encryption; do that only on a network you trust. `-s WxH` sets the
 screen's size (800x600 with `-g` or `-w`, 640x480 in memory).
+
+`acme` is a text editor in the style of Inferno's acme(1). Button 1
+selects, button 2 executes (`Put`, `Get`, `Del`, `Exit`, ... or a
+command for `sh`), button 3 opens a file or searches:
+
+```sh
+cargo xtask run-emu -- -g acme /fonts/README
+```
 
 The fonts in `root/fonts` are made from `fonts/` by `cargo xtask fonts`
 (which builds the emu and runs `fontgen` in it) and committed;

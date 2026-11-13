@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-acme"
+description = "acme: a text editor and command window system on /dev/draw, after Inferno's acme(1)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "acme"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
