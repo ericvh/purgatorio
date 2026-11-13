@@ -2,15 +2,18 @@
 //! the screen the emu has without a window. Each check draws through the
 //! device, reads the pixels back with `r`, and compares them with the
 //! same drawing done here by memdraw, plus a few pixels known by hand.
+//! Text goes through the device's font cache (`i`, `l`, `s`, `x`) and is
+//! compared with glyphs drawn here straight from the subfont files.
 //! Prints `ok <name>` per passing check and `FAIL <name>: <why>`
 //! otherwise; exits with status `fail:draw` if any check failed.
 
 use std::fs::OpenOptions;
 use std::io::Write;
 
-use purgatorio::draw::memdraw::{self, Image as MemImage};
+use purgatorio::draw::memdraw::{self, FontFile, Image as MemImage, Subfont};
 use purgatorio::draw::{
-    Display, ENDARROW, ENDDISC, ENDSQUARE, GREY8, Mouse, Op, Point, RGB24, Rect, XRGB32,
+    Display, ENDARROW, ENDDISC, ENDSQUARE, Font, GREY8, Mouse, NCACHE, Op, Point, RGB24, Rect,
+    XRGB32,
 };
 use purgatorio::{Context, Error};
 
@@ -270,6 +273,187 @@ fn errors() -> Result<(), String> {
     Ok(())
 }
 
+/// Draws `s` in the font file `path` onto `dst` with its line's top left
+/// at `p`, glyph by glyph from the subfonts, without a cache; the rune
+/// lookup is the SDK's (a range lacking the glyph passes it on, then
+/// rune 0). Returns the x after the last glyph.
+fn local_string(dst: &mut MemImage, p: Point, src: &MemImage, path: &str, s: &str) -> i32 {
+    let font = FontFile::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let dir = &path[..path.rfind('/').unwrap() + 1];
+    let sub = |f: &str| Subfont::read(&std::fs::read(format!("{dir}{f}")).unwrap()).unwrap();
+    let find = |c: char| {
+        let r = u32::from(c);
+        font.ranges.iter().find_map(|g| {
+            if r < g.min || r > g.max {
+                return None;
+            }
+            let sf = sub(&g.file);
+            let i = (r - g.min + g.offset) as usize;
+            sf.has(i).then_some((sf, i))
+        })
+    };
+    let mut x = p.x;
+    for c in s.chars() {
+        let Some((sf, i)) = find(c).or_else(|| find('\0')) else {
+            continue;
+        };
+        let (fc, next) = (sf.info[i], sf.info[i + 1]);
+        let shift = font.ascent - sf.ascent;
+        let r = Rect::new(
+            x + i32::from(fc.left),
+            p.y + i32::from(fc.top) + shift,
+            x + i32::from(fc.left) + i32::from(next.x) - i32::from(fc.x),
+            p.y + i32::from(fc.bottom) + shift,
+        );
+        let mp = Point::new(i32::from(fc.x), i32::from(fc.top));
+        memdraw::draw(dst, r, src, r.min, Some(&sf.bits), mp, Op::SOVER_D);
+        x += i32::from(fc.width);
+    }
+    x
+}
+
+const SANS: &str = "/fonts/sans/unicode.13.font";
+
+/// Latin, Greek and Cyrillic from Go Regular; CJK, Hangul and a box
+/// drawing from Unifont; a private-use rune neither has, which falls back
+/// to rune 0.
+const TEXT: &str = "Purgatorio: wörld αβγ Жж 中文 한 ⌘ \u{E000}!";
+
+fn text() -> Result<(), String> {
+    let mut d = Display::open().map_err(e)?;
+    let mut font = Font::open(SANS).map_err(e)?;
+    let r = Rect::new(0, 0, 320, 40);
+    let dst = d.alloc(r, GREY8, false, 0x000000FF).map_err(e)?;
+    let white = d.color(0xFFFFFFFF).map_err(e)?;
+    let p = Point::new(3, 4);
+    let end = d
+        .string(&dst, p, &white, Point::new(0, 0), &mut font, TEXT)
+        .map_err(e)?;
+    let got = d.unload(&dst, r).map_err(e)?;
+    let mut want = local(r, GREY8, 0x000000FF);
+    let x = local_string(&mut want, p, &solid(GREY8, 0xFFFFFFFF), SANS, TEXT);
+    if end != Point::new(x, p.y) {
+        return Err(format!("string ends at {end:?}, want ({x}, {})", p.y));
+    }
+    if font.string_width(TEXT) != x - p.x {
+        return Err(format!("string_width is {}", font.string_width(TEXT)));
+    }
+    if got != want.unload(r).unwrap() {
+        return Err(String::from("pixels differ from the subfonts' glyphs"));
+    }
+    if got.iter().filter(|&&b| b != 0).count() < 200 {
+        return Err(String::from("hardly any ink"));
+    }
+    // With a background: the line's height from p to the end, then text.
+    let grey = d.color(0x404040FF).map_err(e)?;
+    let dst2 = d.alloc(r, GREY8, false, 0x000000FF).map_err(e)?;
+    let z = Point::new(0, 0);
+    d.string_bg(&dst2, p, &white, z, &mut font, TEXT, &grey, z)
+        .map_err(e)?;
+    let got = d.unload(&dst2, r).map_err(e)?;
+    let mut want = local(r, GREY8, 0x000000FF);
+    let bg = Rect::new(p.x, p.y, x, p.y + font.height);
+    memdraw::draw(
+        &mut want,
+        bg,
+        &solid(GREY8, 0x404040FF),
+        z,
+        None,
+        z,
+        Op::SOVER_D,
+    );
+    local_string(&mut want, p, &solid(GREY8, 0xFFFFFFFF), SANS, TEXT);
+    if got != want.unload(r).unwrap() {
+        return Err(String::from("stringbg pixels differ"));
+    }
+    font.free(&mut d).map_err(e)?;
+    d.flush().map_err(e)
+}
+
+/// More distinct glyphs than the cache has slots, in a few lines, so that
+/// slots are reused while strings are drawn.
+fn cache_reuse() -> Result<(), String> {
+    let mut d = Display::open().map_err(e)?;
+    let mut font = Font::open("/fonts/mono/unicode.13.font").map_err(e)?;
+    let r = Rect::new(0, 0, 1200, 90);
+    let dst = d.alloc(r, GREY8, false, 0x000000FF).map_err(e)?;
+    let white = d.color(0xFFFFFFFF).map_err(e)?;
+    let mut want = local(r, GREY8, 0x000000FF);
+    let lw = solid(GREY8, 0xFFFFFFFF);
+    let z = Point::new(0, 0);
+    let n = NCACHE + 150;
+    let runes: Vec<char> = (0..n as u32)
+        .filter_map(|i| char::from_u32(0x4E00 + i))
+        .collect();
+    for (row, line) in runes.chunks(70).enumerate() {
+        let line: String = line.iter().collect();
+        // Every other line repeats an early one, from the cache or not.
+        let p = Point::new(2, 2 + (row as i32 % 5) * 17);
+        d.string(&dst, p, &white, z, &mut font, &line).map_err(e)?;
+        local_string(&mut want, p, &lw, "/fonts/mono/unicode.13.font", &line);
+    }
+    let got = d.unload(&dst, r).map_err(e)?;
+    if got != want.unload(r).unwrap() {
+        return Err(String::from("pixels differ after the cache filled"));
+    }
+    font.free(&mut d).map_err(e)
+}
+
+/// devdraw's errors for the font cache messages.
+fn font_errors() -> Result<(), String> {
+    let mut d = Display::open().map_err(e)?;
+    let img = d.alloc(Rect::new(0, 0, 8, 8), GREY8, false, 0).map_err(e)?;
+    d.send().map_err(e)?;
+    let mut data = OpenOptions::new()
+        .write(true)
+        .open(format!("/dev/draw/{}/data", d.conn))
+        .map_err(|x| x.to_string())?;
+    let id = img.id.to_le_bytes();
+    let init = |id: [u8; 4], n: u32| {
+        let mut m = vec![b'i'];
+        m.extend(id);
+        m.extend(n.to_le_bytes());
+        m.push(6);
+        m
+    };
+    let mut load = vec![b'l'];
+    load.extend(id);
+    load.extend(id);
+    load.extend(9u16.to_le_bytes());
+    load.extend([0u8; 26]);
+    let mut string = vec![b's'];
+    string.extend([0u8; 4]);
+    string.extend(id);
+    string.extend(id);
+    string.extend([0u8; 32]);
+    string.extend(1u16.to_le_bytes());
+    string.extend(9u16.to_le_bytes());
+    for (msg, want) in [
+        (init([0; 4], 4), "cannot use display as font"),
+        (init(id, 0), "bad font size (4096 chars max)"),
+        (init(id, 4097), "bad font size (4096 chars max)"),
+        (init(77u32.to_le_bytes(), 4), "unknown id for draw image"),
+        (load.clone(), "image not a font"),
+        (string.clone(), "image not a font"),
+        (init(id, 4), ""),
+        (load, "character index out of range"),
+        (string, "character index out of range"),
+        (b"i\x01".to_vec(), "short draw message"),
+    ] {
+        match (data.write_all(&msg), want) {
+            (Ok(_), "") => {}
+            (Ok(_), _) => return Err(format!("{:?} was accepted", msg[0] as char)),
+            (Err(x), _) => {
+                let got = Error::from(x).0;
+                if got != want {
+                    return Err(format!("{:?}: got {got:?}, want {want:?}", msg[0] as char));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn pointer() -> Result<(), String> {
     let mut m = Mouse::open().map_err(e)?;
     m.set(Point::new(5, 6)).map_err(e)?;
@@ -289,6 +473,9 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
         ("shapes", shapes),
         ("load", load_and_screen),
         ("errors", errors),
+        ("text", text),
+        ("cache", cache_reuse),
+        ("fonterrors", font_errors),
         ("pointer", pointer),
     ];
     let mut failed = false;

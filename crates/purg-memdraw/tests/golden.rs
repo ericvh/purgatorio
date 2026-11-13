@@ -412,3 +412,70 @@ fn source_alignment() {
     assert_eq!(dst.raw(Point::new(11, 4)), 0);
     check("align", &dst);
 }
+
+/// Draws `s` with the font file at `root/<path>` from its subfonts, each
+/// glyph through [`draw_char`] with the subfont's image as the cache.
+/// The lookup passes a rune on to the next range when a subfont lacks it.
+fn text_line(dst: &mut Image, top: Point, src: &Image, path: &str, s: &str) -> i32 {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../root/fonts");
+    let path = root.join(path);
+    let font = FontFile::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let dir = path.parent().unwrap();
+    let mut sp = Point::new(0, 0);
+    let mut p = Point::new(top.x, top.y + font.ascent);
+    for c in s.chars() {
+        let r = u32::from(c);
+        let found = font.ranges.iter().find_map(|g| {
+            if r < g.min || r > g.max {
+                return None;
+            }
+            let sf = Subfont::read(&std::fs::read(dir.join(&g.file)).unwrap()).unwrap();
+            let i = (r - g.min + g.offset) as usize;
+            sf.has(i).then_some((sf, i))
+        });
+        let Some((sf, i)) = found else { continue };
+        let (fc, next) = (sf.info[i], sf.info[i + 1]);
+        let cc = CacheChar {
+            minx: i32::from(fc.x),
+            maxx: i32::from(next.x),
+            miny: fc.top,
+            maxy: fc.bottom,
+            left: fc.left,
+            width: fc.width,
+        };
+        let shifted = Point::new(p.x, p.y - (font.ascent - sf.ascent));
+        let (q, _) = draw_char(
+            dst,
+            shifted,
+            src,
+            &mut sp,
+            &sf.bits,
+            sf.ascent,
+            &cc,
+            Op::SOVER_D,
+        );
+        p.x = q.x;
+    }
+    p.x
+}
+
+#[test]
+fn text() {
+    // Go Regular and Go Mono at both sizes, and Unifont's fallback for
+    // the runes they lack, from the fonts in root/fonts.
+    let mut dst = canvas(300, 92);
+    let w = solid(GREY8, WHITE);
+    let lines = [
+        ("sans/unicode.13.font", "Hamburgefonstiv 0123 ÆØÅ αβγ Жж"),
+        ("mono/unicode.13.font", "fn main() { 中文 한글 ⌘ }"),
+        ("sans/unicode.20.font", "Purgatorio àé"),
+        ("mono/unicode.20.font", "{ x: 42 } 日本"),
+    ];
+    let mut y = 0;
+    for (path, s) in lines {
+        let x = text_line(&mut dst, Point::new(2, y), &w, path, s);
+        assert!(x > 60, "{path}: {x}");
+        y += if path.contains(".13") { 18 } else { 26 };
+    }
+    check("text", &dst);
+}
