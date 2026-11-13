@@ -1,0 +1,80 @@
+a - one
+a - two
+ar: creating lib.a
+one
+two
+rw-r--r--   0/0       4 Jan 12 13:46 1970  one
+rw-r--r--   0/0      14 Jan 12 13:46 1970  two
+a - three.txt
+one
+two
+three.txt
+00000000  21 3c 61 72 63 68 3e 0a 6f 6e 65 20 20 20 20 20  !<arch>.one     
+00000010  20 20 20 20 20 20 20 20 31 30 30 30 30 30 30 20          1000000 
+00000020  20 20 20 20 30 20 20 20 20 20 30 20 20 20 20 20      0     0     
+00000030  36 34 34 20 20 20 20 20 34 20 20 20 20 20 20 20  644     4       
+a longer file
+
+<one>
+
+one
+
+<three.txt>
+
+three
+r - one
+m - three.txt
+three.txt
+one
+two
+a - /dev/null
+three.txt
+one
+null
+two
+three.txt
+one
+null
+two
+two
+d - null
+d - two
+three.txt
+one
+two
+ONE
+three
+--rw-r--r-- 4 one
+--rw-r--r-- 6 three.txt
+ar: cannot open nosuch.a: file does not exist
+fail:error
+ar: one not in archive format
+ar: bad option `z'
+usage: ar [uvnbailo][mrxtdpq] archive files ...
+ar: missing not found
+fail: file not found
+usage: ar [uvnbailo][mrxtdpq] archive files ...
+ar: abi not allowed with q
+ar: creating new.a
+one
+00000000  e8 03 00 00 09 00 00 00 1b 00 80 01 00 80 01 00  ................
+00000010  80 22 00 00 01 00 80 01 00 80 22 00 00 01 00 80  ."........".....
+00000020  01 00 80 00 00 00 42 00 00                       ......B..
+mkhash: usage: mkhash file attr
+mkhash: can't open nosuch: file does not exist
+B
+edit
+/tmp/sh-arc
+text
+
+15
+/tmp/sh-arc/one
+B
+edit
+/tmp/sh-arc
+text
+
+26
+/tmp/sh-arc/x/three.txt:12
+Usage: B [-line] file ...
+B: can't open /chan/plumb.input: file does not exist
