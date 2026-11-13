@@ -337,7 +337,7 @@ kernel's `aot` feature. What it needs from the kernel:
   prog running native code must have an image; one loaded from wasmi
   runs on wasmi as before.
 
-**Producing and checking images.** `cargo run -p purg-vm-wasmtime --bin
+**Producing and checking images.** `cargo run -p purg-cwasm --bin
 cwasm -- -k native -o set.bin a.wasm ...` compiles modules with the same
 `purg_vm_aot::config` the kernel runs them with (wasmtime refuses an
 image built with other settings) and writes one set: a header, then per

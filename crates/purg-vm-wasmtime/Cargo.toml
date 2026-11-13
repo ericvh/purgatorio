@@ -10,9 +10,8 @@ license.workspace = true
 purg-abi.workspace = true
 purg-core.workspace = true
 purg-vm.workspace = true
-# The kernel's AOT configuration and image sets, for the `cwasm` tool.
+# The host functions, shared with the kernel's AOT engine.
 purg-vm-aot.workspace = true
-purg-auth.workspace = true
 wasmtime.workspace = true
 
 [lints]

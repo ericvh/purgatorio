@@ -1,0 +1,23 @@
+[package]
+name = "purg-cwasm"
+description = "cwasm: compiles modules ahead of time for the kernel's AOT engine (purg-vm-aot), on any build host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "cwasm"
+path = "src/main.rs"
+
+[dependencies]
+purg-auth.workspace = true
+purg-vm-aot.workspace = true
+# The images are for aarch64 (or Pulley) whatever the build host is, so
+# Cranelift needs every backend, not only the host's. Only this tool
+# asks for that; the emu's wasmtime compiles for its own host.
+wasmtime = { workspace = true, features = ["all-arch"] }
+
+[lints]
+workspace = true

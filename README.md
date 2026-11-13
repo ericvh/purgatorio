@@ -100,7 +100,8 @@ crates/
                              #/ #c #e #| #p #s #d #% #M #I #C #D #¤ #λ, and #i #m with a screen
   purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, spawn
   purg-vm-wasmi/     no_std  wasmi interpreter backend
-  purg-vm-wasmtime/  std     wasmtime (Cranelift) backend; the cwasm tool
+  purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
+  purg-cwasm/        std     cwasm: compiles modules for the kernel's AOT engine on any build host
   purg-vm-aot/       no_std  wasmtime without std for the kernel: images compiled ahead of time, signed
                              image files, the host functions both wasmtime backends share
   purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/,

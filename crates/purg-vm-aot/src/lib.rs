@@ -4,7 +4,7 @@
 //! D6).
 //!
 //! There is no compiler on the device. The build host compiles modules
-//! with [`config`] (`purg-vm-wasmtime`'s `cwasm` tool) into images. An
+//! with [`config`] (`purg-cwasm`'s `cwasm` tool) into images. An
 //! image is found by the SHA-256 digest of its module, the digest the
 //! loader already takes for the module policy (`docs/signing.md`), in
 //! one of two places:

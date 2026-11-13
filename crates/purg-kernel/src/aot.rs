@@ -1,5 +1,5 @@
 //! The AOT engine (`--features aot`, `docs/perf.md`): modules compiled on
-//! the build host by `purg-vm-wasmtime`'s `cwasm` tool run on wasmtime's
+//! the build host by `purg-cwasm`'s `cwasm` tool run on wasmtime's
 //! `no_std` runtime (`purg_vm_aot`), the rest on wasmi.
 //!
 //! Images come from two places. A set linked into the kernel's text
