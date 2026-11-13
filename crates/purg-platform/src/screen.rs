@@ -66,6 +66,8 @@ pub struct Pointer {
 struct Queues {
     pointer: VecDeque<Pointer>,
     last: Pointer,
+    /// The buttons of the last state taken.
+    taken: u32,
     keys: VecDeque<u8>,
     /// How many times the screen has changed size.
     resizes: u64,
@@ -77,8 +79,9 @@ const MAX_POINTER: usize = 64;
 const MAX_KEYS: usize = 4096;
 
 /// Input from a display, waiting to be read. Pointer motion with the
-/// buttons unchanged replaces an unread motion, so a slow reader sees the
-/// latest position without losing a press or a release.
+/// buttons unchanged replaces an unread motion (a state whose buttons are
+/// those of the state before it), so a slow reader sees the latest
+/// position without losing a press or a release, or where either was.
 pub struct Input {
     q: Mutex<Queues>,
     /// Woken whenever an event arrives.
@@ -124,7 +127,16 @@ impl Input {
     pub fn pointer(&self, p: Pointer) {
         {
             let mut q = self.q.lock();
-            let replace = q.pointer.back().is_some_and(|b| b.buttons == p.buttons);
+            let n = q.pointer.len();
+            let before = if n >= 2 {
+                q.pointer[n - 2].buttons
+            } else {
+                q.taken
+            };
+            let replace = q
+                .pointer
+                .back()
+                .is_some_and(|b| b.buttons == p.buttons && b.buttons == before);
             if replace {
                 q.pointer.pop_back();
             }
@@ -144,7 +156,12 @@ impl Input {
 
     /// Takes the oldest unread pointer state.
     pub fn take_pointer(&self) -> Option<Pointer> {
-        self.q.lock().pointer.pop_front()
+        let mut q = self.q.lock();
+        let p = q.pointer.pop_front();
+        if let Some(p) = p {
+            q.taken = p.buttons;
+        }
+        p
     }
 
     pub fn has_pointer(&self) -> bool {
@@ -243,5 +260,39 @@ impl Screen for Headless {
 
     fn input(&self) -> &Input {
         &self.input
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_release_is_not_replaced_by_motion() {
+        let input = Input::new();
+        let at = |x, buttons| Pointer {
+            x,
+            y: 0,
+            buttons,
+            msec: 0,
+        };
+        for p in [
+            at(1, 0),
+            at(2, 0),
+            at(3, 4),
+            at(4, 4),
+            at(5, 4),
+            at(6, 0),
+            at(7, 0),
+            at(8, 0),
+        ] {
+            input.pointer(p);
+        }
+        let got: alloc::vec::Vec<i32> = core::iter::from_fn(|| input.take_pointer())
+            .map(|p| p.x)
+            .collect();
+        // The first state, the press, the last motion with it held, the
+        // release, and the last motion after it.
+        assert_eq!(got, [2, 3, 5, 6, 8]);
     }
 }
