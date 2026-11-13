@@ -1,0 +1,13 @@
+echo: write error: no writes
+status fail:write error
+echo: write error: no writes
+status fail:write error
+echo: write error: short write
+status fail:write error
+status 
+status 
+write hello
+
+write hello
+write at 0
+write hello there

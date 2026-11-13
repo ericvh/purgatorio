@@ -26,7 +26,7 @@ changed
 third
 
 a new one
-echo: empty line in record
+echo: write error: empty line in record
 third
 cat: n/nosuch: file does not exist
 rm: n/new: permission denied

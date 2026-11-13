@@ -205,11 +205,11 @@ kernel: ok
 kernel: run sh -c echo part p1 8 16 > /dev/sdV1/ctl
 kernel: ok
 kernel: run sh -c echo part p1 8 24 > /dev/sdV1/ctl
-echo: bad process or channel control request
-kernel: failed as expected: fail:bad process or channel control request
+echo: write error: bad process or channel control request
+kernel: failed as expected: fail:write error
 kernel: run sh -c echo part p2 0 4097 > /dev/sdV1/ctl
-echo: i/o error
-kernel: failed as expected: fail:i/o error
+echo: write error: i/o error
+kernel: failed as expected: fail:write error
 kernel: run sh -c echo part tail 4095 4096 > /dev/sdV1/ctl
 kernel: ok
 kernel: run ls -l /dev/sdV1
@@ -226,8 +226,8 @@ kernel: ok
 kernel: run sh -c echo delpart p1 > /dev/sdV1/ctl
 kernel: ok
 kernel: run sh -c echo delpart p1 > /dev/sdV1/ctl
-echo: bad process or channel control request
-kernel: failed as expected: fail:bad process or channel control request
+echo: write error: bad process or channel control request
+kernel: failed as expected: fail:write error
 kernel: run cat /dev/sdV1/ctl
 inquiry virtio-blk disk
 geometry 4096 512
