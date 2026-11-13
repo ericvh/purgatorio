@@ -248,7 +248,10 @@ separately.
 ## 3. Kernel RAM
 
 `next`'s allocator counts the bytes in use, their peak, the live blocks
-and the allocations, and finds the largest free block (#79). This branch
+and the allocations, and finds the largest free block (#79). (The
+allocator itself is now size classes and per-CPU caches over TLSF,
+`docs/perf.md` Section 11; the counts are kept, and `memstat` adds the
+bytes in slabs and in the CPUs' caches.) This branch
 keeps that accounting and its `memstat` boot argument, and adds to them.
 
 `/dev/memory` now reports the heap in Inferno's format, one line per
@@ -501,6 +504,12 @@ and the kernel then insisted on finding exactly 512 MiB. Now:
 |---|---|---|
 | Boots to `sh` and runs `ls /bin \| wc -l` and a four-stage pipeline | 25M | At 24M the two-stage pipeline runs, then a command fails to get its memory and the kernel panics on an allocation; at 23M it panics on one while booting |
 | The full test mode passes (KVM, root from an initrd) | 52M | At 48M the run hangs until `xtask` gives up; at 40M the kernel panics on an allocation |
+
+Since then the root has grown, and on `next` at `7fd13aa` the full test
+mode needs 76M. The heap of `docs/perf.md` Section 11 (size classes, a
+cache per CPU and TLSF) raised that to 80M: slabs held by a few
+long-lived objects, and TLSF rounding a request up to its list, leave a
+small heap a little more fragmented than first fit did.
 
 The image is 15.5 MiB of that (the root is in RAM, and with an initrd it
 is there twice: about 29 MiB of the 52), and QEMU loads the image 2 MiB above

@@ -7,6 +7,8 @@ running modules compiled ahead of time on the host, and Pulley,
 wasmtime's interpreter. It ends with a recommendation. Section 9 is the
 follow-up that adopted the first part of it: the kernel built without
 strict alignment, and wasmi's modules compiled lazily and shared.
+Section 10 is the data path, and Section 11 the kernel heap on several
+CPUs (#193).
 
 All numbers are from 2026-11-11 on one Apple Silicon host (8 cores,
 Asahi Linux 6.14, QEMU with KVM and TCG), on `next` at `746aa49` with
@@ -751,3 +753,191 @@ Where the time goes now:
   would help further.
 - `fs-disk-1k`: still the commit's flushes and journal write in a row,
   which the crash rules require.
+
+## 11. The kernel heap on several CPUs
+
+The kernel's heap was one `linked_list_allocator` heap per stretch of
+RAM: first fit, under one spin lock, with IRQs masked. Under the stress
+mode its free list grows to thousands of holes, and every allocation and
+free walks it under the lock. On four CPUs most of the time went to
+walking it or waiting for it, and four CPUs completed fewer stress runs
+than one (#193). This section replaces it, in
+`crates/purg-aarch64/src/kalloc.rs` (the allocator, plain code tested on
+the host) and `heap.rs` (the bare-metal wrapper).
+
+### 11.1 Setup
+
+All runs are from 2026-11-12 on the host of Section 1, on `next` at
+`7fd13aa` with #192's stress-mode reporting (`stress-hangs`) on top, so
+that a run also counts progs slow to die. The stress mode ran all 83
+jobs (the default: 8 workers, every corpus script that does not share
+global state, and the guests) for 300 s, with `-m 512M`, from saved
+images, one boot at a time. The QEMU process was pinned to the four fast
+cores (`taskset -c 4-7`), and everything else this work built or ran
+(builds, the benchmarks) to the four slow ones. Other agents were
+building on the host at the same time: the load average was 2 to 8.
+
+Time in the heap came from a throwaway build (not committed) that read
+the virtual counter (24 MHz under KVM) around every `alloc` and
+`dealloc`, inside the IRQ mask, and kept per-CPU totals, the longest
+call, and how many calls took more than 10 µs, 100 µs and 1 ms; those
+runs were 120 s. The longest calls under KVM include the host
+descheduling a vCPU in the middle of one, so the counts of slow calls are
+the better measure; they varied by up to ten times between identical
+runs.
+
+### 11.2 Design
+
+Three layers; every critical section is short and bounded, and no lock is
+held across a walk of a list.
+
+- **Size classes.** A block of at most 16 KiB, aligned to at most 64, is
+  rounded up to one of 36 classes: 16 to 128 bytes in steps of 16, then
+  four to each doubling, so at most a quarter is wasted. Larger or more
+  aligned blocks go to the large heap.
+- **A cache per CPU.** Each CPU keeps a free list per class, holding up
+  to 32 KiB of the class (at least 4 objects, at most 32). `alloc` and
+  `dealloc` touch only the CPU's own list, under its own lock, which
+  only another CPU's drain contends. An empty list takes half its
+  limit from the class's depot; an overfull one gives half back.
+- **Depots and slabs.** A class's depot is a list of slabs (16 to
+  128 KiB, holding at least seven objects) with free objects, under a
+  ticket lock of its own. A batch moves at most 32 objects under one hold.
+  A slab whose objects are all free goes back to the large heap; each
+  depot keeps one empty slab.
+- **The large heap** is one TLSF heap (`rlsf` 0.2, MIT or Apache-2.0,
+  `no_std`, no allocation of its own) over every stretch of RAM, under one
+  ticket lock: allocation and free take constant time. It serves blocks
+  over 16 KiB and the slabs. A region added at its top later (the
+  kernel's heap grows past the boot map) becomes another TLSF pool.
+- **The slab map.** `dealloc` gets the `Layout`, so the class is known,
+  but not the slab. Slabs are not aligned to their size: TLSF keeps an
+  aligned block's padding, which would waste up to half of each slab.
+  Each stretch of RAM starts instead with a map, four bytes for each
+  16 KiB, naming the slab that holds the last byte of that granule. An
+  object's slab is its granule's entry if that slab starts at or before
+  the object, otherwise the entry before it (a slab is at least a
+  granule long, so it holds the last byte of the granule before the one
+  it ends in). A slab sets at most nine entries when it is made and
+  clears them when it is released.
+
+IRQs stay masked for each operation, as before: an interrupt handler
+allocates too, and masking pins the thread to the CPU whose cache it
+uses (`cpu::id()`). `Heap::init` sets the boot CPU's index to 0, which
+the scheduler used to do only later. Moving a large block in `realloc`
+copies with IRQs enabled; a block that stays in its class stays where it
+is. Reports (`Heap::stats`, `Heap::reclaim`) mask IRQs for one step at a
+time: one class of one CPU, one slab, or one try of the largest-block
+search.
+
+**Accounting.** `used`, `live` and `allocs` count what callers asked for,
+per CPU (a block freed on another CPU than it came from makes that CPU's
+count go negative; the sum is right). Cached objects and slabs are free,
+so the leak checks of the test and stress modes see only what callers
+hold, with nothing to drain first. `HeapStats` gains `cached` (free
+objects in the CPUs' caches) and `slabs` (the slabs' bytes); `memstat`
+prints both and first gives back what the CPUs cache, so that `slabs`
+and `largest` are what the tests left. The peak is sampled: whenever a
+CPU's count has grown by 64 KiB, and on every visit to a depot or the
+large heap, so it can miss at most 64 KiB a CPU. An allocation that finds
+no room drains every CPU's cache and the kept slabs and tries again, so
+the caches never cause an out-of-memory.
+
+**Checks.** Host unit tests run random mixes of sizes and alignments on
+four threads, each a CPU, with blocks freed on other CPUs than they came
+from, and check contents, alignment, the counts, that everything goes
+back, exhaustion (null, after the other CPUs' caches are drained),
+`realloc`, two regions, a region extended at its top, and the worst case
+for slabs below. `crates/purg-aarch64/tests/loom.rs` has three loom
+models (CPUs never share an object; blocks freed on another CPU go home;
+a drain racing a CPU's frees loses nothing), which CI's loom job runs.
+
+Other designs considered: `talc` and `linked_list_allocator` are both
+one lock over one heap, so they need the same per-CPU front; first fit
+under the front still walked its list for the large blocks and slabs (the
+middle column of 11.3 spent 78% of its heap time there on four CPUs);
+size-aligned slabs need either a first-fit heap (whose alignment holes
+the slabs then fragment) or waste in TLSF.
+
+### 11.3 Results
+
+Stress runs completed in 300 s (`--stress 300`). `ff + slabs` is the
+same front over the old first-fit heap, the step before TLSF.
+
+| | before | ff + slabs | after |
+|---|---|---|---|
+| KVM, 1 CPU | 326 (1 failed, 1 prog slow to die) | 4,112 | 4,285 |
+| KVM, 4 CPUs | 254 | 6,063 | 6,290 |
+| TCG, 1 CPU | 40 (1 failed, 2 slow to die) | 323 | 325 |
+| TCG, 4 CPUs | 33 (2 failed, 3 slow to die) | 980 | 967 |
+
+Before, a single CPU managed fewer runs each minute as the heap
+fragmented (115 in the first minute, 42 in the fifth); after, the rate
+is steady. Four CPUs now complete 1.5 times the runs of one under KVM
+and 3.0 times under TCG. The progs slow to die (#192: 5 to 30 s to go,
+unwinding their memory through the heap) are gone: none in any run
+after. The failed runs before were `mcpjobs.sh`, `rawdbfs.sh` and
+`mcpd.sh` (twice), whose output differed under the load (the flakes #193
+mentions). None failed in the runs of the final build; one profiling
+run of the first-fit step had `styxtools.sh` differ.
+
+Time in the heap (120 s runs, the profiling build):
+
+| | runs | heap time per CPU | calls over 100 µs | over 1 ms |
+|---|---|---|---|---|
+| before, 1 CPU | 191 | 116 s | 80,072 | 14 |
+| before, 4 CPUs | 126 | 132 s | 1,576,853 | 3,008 |
+| ff + slabs, 4 CPUs | 2,384 | 12.6 s (78% in the first-fit heap) | 5,988 | 5,424 |
+| after, 1 CPU | 1,777 | 5.5 s | 18 | 5 |
+| after, 4 CPUs | 2,390 | 2.8 s | 46 | 18 |
+
+(A heap time over 120 s is the boot and the reap after the run.) Before,
+an average call took 7 µs on one CPU and 38 µs on four, and the heap was
+nearly all of the CPUs' time; after, 41 ns and 57 ns, and 2 to 5% of it. The large heap took
+432 ms of the 11.4 s on four CPUs, for 2.1 million calls. On KVM four
+CPUs are now limited by something other than the heap; under TCG they
+scale further.
+
+The benchmark suite (`cargo xtask bench --kvm --rounds 3 --boots 2`, one
+CPU, on the slow cores, load average 4 to 5) did not change much:
+`fs-root-1k-create` 0.073 to 0.061 s and `cat-styx` 0.252 to 0.240 s
+faster, every other row within 3% of `next` either way (`sha1-pipe-16m`
+1.427 to 1.456 s).
+A fresh boot's heap is not fragmented, so first fit was cheap there.
+
+**Memory.** At the end of the test mode (`KERNEL_MEMSTAT=1 cargo xtask
+kernel --kvm --mem 80M`): in use 2,177,164 bytes before and after; the
+peak 28.5 MB and 28.8 MB; slabs 1.5 MB holding what is left; the largest
+free block 17.8 MB and 16.8 MB (TLSF rounds a request up to its list,
+so up to a sixteenth of a free block cannot be had in one piece). The
+allocator's own data is about 10 KiB of `.bss` and the slab map 0.025%
+of the heap. After 300 s of stress on four CPUs the heap held 0.89 MB in
+use (0.82 MB before) and 3.7 MB of slabs, and its largest free block was
+240 MiB of 467 MiB (373 MiB before; 256 MiB after the one-CPU run). TLSF
+does not keep the free memory together at the top as address-ordered
+first fit does, so a long-lived block can end up in the middle. The smallest
+`-m` for the full test mode under KVM went from 76M (72M fails) to 80M
+(76M fails): the slabs and TLSF fragment a small heap a little more than
+first fit did. (Section 5 of `docs/footprint.md` measured 52M before the
+root grew.)
+
+The worst case for slabs is a unit test: 40,000 blocks of up to 2 KiB,
+keeping every fiftieth. The 800 kept blocks (820 KB) pin 10.8 MB of
+slabs, and the largest free block is 18.9 MB of 64 MiB, where first fit
+would keep the 23 MiB it never touched.
+
+### 11.4 What remains
+
+- Slabs pinned by a few long-lived objects are not reused by other
+  classes. Allocating from the fullest slab first, or moving the
+  long-lived kernel tables to classes of their own, would help a small
+  heap.
+- Linear memories and thread stacks are large blocks in TLSF; pools for
+  them (`docs/footprint.md`, item 12) would cut fragmentation further.
+- TLSF takes the first block of a list, wherever it is, so after a long
+  run the free memory is in a few large pieces rather than one. Keeping
+  each list in address order, or taking long-lived blocks from the low
+  end, would keep it together.
+- What limits four CPUs under KVM now is outside the heap; `kprof`
+  samples only the CPU that starts it, so finding it needs a profiler
+  for every CPU.
