@@ -630,17 +630,22 @@ fn stat_named(c: &Chan) -> Result<Dir> {
     Ok(d)
 }
 
+/// The entries of the directory open as `c`, and of the other members of
+/// its union. The first member is `c` itself, read as it was opened; each
+/// other member is read from an open of its own, as Inferno's unionread
+/// opens a clone of each mount: the mount table's Chan stays unopened, so
+/// a mounted server is never asked to read from, or later to walk from,
+/// a fid that is not its open one.
 fn union_dirents(c: &Chan) -> Result<Vec<Dir>> {
-    match &c.union {
-        Some(members) => {
-            let mut all = Vec::new();
-            for m in members.iter() {
-                all.extend(m.chan.dev.dirread(&m.chan)?);
-            }
-            Ok(all)
-        }
-        None => c.dev.dirread(c),
+    let Some(members) = &c.union else {
+        return c.dev.dirread(c);
+    };
+    let mut all = c.dev.dirread(c)?;
+    for m in members.iter().skip(1) {
+        let opened = open(m.chan.clone_unopened(), mode::OREAD)?;
+        all.extend(opened.dev.dirread(&opened)?);
     }
+    Ok(all)
 }
 
 /// Serves a directory read at byte `offset` from a snapshot taken when the

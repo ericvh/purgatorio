@@ -5,6 +5,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::any::Any;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use purg_abi::error;
@@ -446,6 +447,31 @@ impl Session {
 
     fn alloc_fid(&self) -> u32 {
         self.next_fid.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// A walk of no names from `fid` to a new fid: Inferno's `cclone` of a
+    /// mount Chan. The new fid is unopened whatever `fid` is.
+    fn clone_fid(&self, fid: u32) -> Result<u32> {
+        let newfid = self.alloc_fid();
+        let buf = match self.rpc(Fcall::Twalk {
+            fid,
+            newfid,
+            wnames: Vec::new(),
+        }) {
+            Ok(b) => b,
+            Err(e) => {
+                // Interrupted: the walk may have made `newfid` all the same.
+                let _ = self.clunk(newfid, false);
+                return Err(e);
+            }
+        };
+        match self.decode(&buf)? {
+            Fcall::Rwalk { .. } => Ok(newfid),
+            _ => {
+                let _ = self.clunk(newfid, false);
+                Err(Error::new(error::EIO))
+            }
+        }
     }
 
     /// `Tclunk`. A server clunks the fid whatever it answers, and an error
@@ -995,6 +1021,19 @@ impl Dev for DevMnt {
         if f.fresh.swap(false, Ordering::AcqRel) {
             return Ok(());
         }
+        // A fid other Chans hold (a mount point's root, a Chan copied
+        // with `clone_unopened`) is walked from later, and 9P2000 forbids
+        // walking from an open fid. So, as Inferno's namec makes the Chan
+        // unique with `cclone` before it opens it, the open goes to a
+        // clone of the fid and this Chan keeps the clone. Holding `c`
+        // mutably, a count of one means no one else can copy the fid.
+        let shared = c.aux.as_ref().is_some_and(|a| Arc::strong_count(a) > 1);
+        if shared {
+            let fid = f.session.clone_fid(f.fid)?;
+            let aux: Arc<dyn Any + Send + Sync> = Arc::new(MntFile::new(&f.session, fid, &f.spec));
+            c.aux = Some(aux);
+        }
+        let f = file(c)?;
         // Set before `Topen` goes out: a fid the server opened is clunked
         // as opened, even when this prog is killed waiting for `Ropen`.
         if MntFile::settles(omode, &c.qid) {
@@ -1012,13 +1051,7 @@ impl Dev for DevMnt {
 
     fn create(&self, dir: &Chan, name: &str, perm: u32) -> Result<Walked> {
         let f = file(dir)?;
-        let newfid = f.session.alloc_fid();
-        let cloned = f.session.rpc(Fcall::Twalk {
-            fid: f.fid,
-            newfid,
-            wnames: Vec::new(),
-        })?;
-        f.session.decode(&cloned)?;
+        let newfid = f.session.clone_fid(f.fid)?;
         let mode = if perm & DMDIR != 0 {
             purg_abi::mode::OREAD
         } else {

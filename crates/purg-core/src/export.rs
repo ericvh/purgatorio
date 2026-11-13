@@ -815,6 +815,10 @@ struct Export {
 
 const UNKNOWN_FID: &str = "unknown fid";
 const FID_IN_USE: &str = "fid in use";
+/// Inferno's export answers these to a walk, and to an open or create, of
+/// a fid that is already open.
+const WALK_OPEN: &str = "walk of open fid";
+const OPEN_MODE: &str = "open/create -- unknown mode";
 
 impl Export {
     fn new(pgrp: Arc<Pgrp>, root: &str) -> KResult<Export> {
@@ -957,15 +961,13 @@ impl Export {
             return Err(String::from(FID_IN_USE));
         }
         let base = self.fid(fid)?;
+        // 9P2000 forbids walking from an open fid, a clone included, and
+        // Inferno's export refuses it.
+        if base.chan.open {
+            return Err(String::from(WALK_OPEN));
+        }
         let mut path = base.path.clone();
-        // An open fid's Chan may hold an open file of a server below
-        // (a mount's fid), which cannot be walked: a walk from it starts
-        // from its name.
-        let mut chan = if base.chan.open && !names.is_empty() {
-            self.pgrp.namec(&path, "/").map_err(|e| e.to_string())?
-        } else {
-            base.chan.clone_unopened()
-        };
+        let mut chan = base.chan.clone_unopened();
         let mut qids = Vec::new();
         // The files walked through keep their paths until the walk ends.
         let mut uqids = Vec::new();
@@ -1007,6 +1009,9 @@ impl Export {
             self.writable()?;
         }
         let f = self.fid(fid)?;
+        if f.chan.open {
+            return Err(String::from(OPEN_MODE));
+        }
         let opened = open(f.chan.clone_unopened(), mode).map_err(|e| e.to_string())?;
         let uqid = Uqid::new(&self.uqids, &opened);
         let qid = uqid.qid(opened.qid);
@@ -1025,6 +1030,9 @@ impl Export {
     fn create(&self, fid: u32, name: &str, perm: u32, mode: u8) -> Result<(Qid, u32), String> {
         self.writable()?;
         let f = self.fid(fid)?;
+        if f.chan.open {
+            return Err(String::from(OPEN_MODE));
+        }
         let mut path = f.path.clone();
         if !path.ends_with('/') {
             path.push('/');
