@@ -547,8 +547,8 @@ fn windows() -> Result<(), String> {
 
 /// Writes the screen to standard output (`-d`).
 fn dump() -> Result<(), Error> {
-    let mut d = Display::open()?;
-    let screen = d.display_image()?;
+    let mut d = Display::open_display()?;
+    let screen = d.screen();
     let px = d.unload(&screen, screen.r)?;
     let mut out = std::io::stdout().lock();
     writeln!(out, "{} {}", screen.r.dx(), screen.r.dy())?;
