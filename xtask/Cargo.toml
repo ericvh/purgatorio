@@ -14,6 +14,7 @@ purg-auth.workspace = true
 purg-vm.workspace = true
 wasmobj.workspace = true
 rustc-demangle = "0.1"
+sha2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 purg-core.workspace = true

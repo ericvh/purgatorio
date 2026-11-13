@@ -42,7 +42,15 @@
 //!   with no guests. `KERNEL_MEMSTAT=1` in
 //!   the environment adds `memstat` to the bootargs: the kernel then
 //!   prints `kernel: mem ...` lines about its memory use, which the
-//!   comparison skips.
+//!   comparison skips. `--aot` builds the kernel with the `aot` feature
+//!   and boots only the runs with an initrd, on [`aot_initrd`]'s: every
+//!   module with a signed image beside it, so the test mode runs them as
+//!   native code (`docs/perf.md` Section 11); `--mem` is then 1G by
+//!   default.
+//! - `aot [--kind native|pulley]`: `build-root`, then a signed image of
+//!   every module in `target/aot/<kind>/` (signed with the public test
+//!   key, which `lib/keys/aot` there names), and their SHA-256 digests in
+//!   `target/aot/<kind>.sha256`, which CI compares across hosts.
 //! - `initrd [--names]`: `build-root`, then pack `root/bin` and `root/lib`
 //!   into a deterministic ustar archive at `target/initrd/root.tar`, the
 //!   kernel's root file system.
@@ -60,7 +68,7 @@
 //! - `bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=wasmtime,wasmi]
 //!   [--rounds N] [--boots N] [--features F,...] [--profile P] [--label L]
 //!   [--strict-align] [--rustflags FLAGS] [--config K=V] [--aot native|pulley]
-//!   [--out FILE]`: run the benchmark suite (`root/lib/bench/bench.sh`,
+//!   [--aot-files native|pulley] [--out FILE]`: run the benchmark suite (`root/lib/bench/bench.sh`,
 //!   `docs/perf.md`) on a release emu with each engine and on the kernel
 //!   under KVM (or TCG), print each benchmark's median and spread, and
 //!   write the samples to `target/bench/results.json`.
@@ -93,6 +101,7 @@ mod size;
 mod tar;
 mod wasm;
 
+use sha2::Digest as _;
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
@@ -1012,6 +1021,160 @@ fn initrd() -> Result<PathBuf> {
     Ok(path)
 }
 
+/// The seed AOT images are signed with for tests: the public test key
+/// (`root/lib/test/auth.key`). Only the test initrd trusts it
+/// ([`aot_images`]); `root/` has no `/lib/keys/aot`.
+const AOT_TEST_KEY: &str = "root/lib/test/auth.key";
+
+/// `build-root`, then a signed image (`purg_vm_aot::image`) of every
+/// module of the kernel's root, `target/aot/<kind>/bin/<cmd>.cwasm`, and
+/// `target/aot/<kind>/lib/keys/aot` naming the test key that signed them.
+/// `kind` is `native` or `pulley`. Returns `target/aot/<kind>`. The
+/// images are deterministic: the target is named, not detected, and
+/// Ed25519 signatures are deterministic.
+fn aot_images(ws: &Path, kind: &str) -> Result<PathBuf> {
+    build_root()?;
+    run(cargo().current_dir(ws).args([
+        "build",
+        "--release",
+        "-p",
+        "purg-vm-wasmtime",
+        "--bin",
+        "cwasm",
+    ]))?;
+    let out = ws.join("target/aot").join(kind);
+    if out.exists() {
+        fs::remove_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    }
+    let root = ws.join("root");
+    let mut modules = Vec::new();
+    for f in files_under(&root.join("bin"))? {
+        let rel = f
+            .strip_prefix(&root)
+            .map_err(|e| e.to_string())?
+            .to_str()
+            .ok_or("a module path is not UTF-8")?
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        if rel.ends_with(".wasm") && tar::in_image(&rel, true) {
+            modules.push(rel);
+        }
+    }
+    let mut cmd = Command::new(ws.join("target/release/cwasm"));
+    cmd.args(["-k", kind, "-s"])
+        .arg(ws.join(AOT_TEST_KEY))
+        .arg("-r")
+        .arg(&root)
+        .arg("-d")
+        .arg(&out)
+        .args(&modules);
+    run(&mut cmd)?;
+    let public = fs::read(ws.join(format!("{AOT_TEST_KEY}.pub")))
+        .map_err(|e| format!("{AOT_TEST_KEY}.pub: {e}"))?;
+    let hex: String = public.iter().map(|b| format!("{b:02x}")).collect();
+    let keys = out.join("lib/keys");
+    fs::create_dir_all(&keys).map_err(|e| format!("{}: {e}", keys.display()))?;
+    fs::write(
+        keys.join("aot"),
+        format!("{hex} the public test key: xtask's AOT images\n"),
+    )
+    .map_err(|e| format!("{}: {e}", keys.display()))?;
+    Ok(out)
+}
+
+/// Every file under `dir`, sorted.
+fn files_under(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        for e in fs::read_dir(&d).map_err(|e| format!("{}: {e}", d.display()))? {
+            let p = e.map_err(|e| format!("{}: {e}", d.display()))?.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// The kernel's initrd with [`aot_images`] beside the modules:
+/// `target/aot/<kind>.tar`.
+pub(crate) fn aot_initrd(ws: &Path, kind: &str) -> Result<PathBuf> {
+    let images = aot_images(ws, kind)?;
+    let tree = ws.join("target/aot/tree");
+    if tree.exists() {
+        fs::remove_dir_all(&tree).map_err(|e| format!("{}: {e}", tree.display()))?;
+    }
+    for from in [ws.join("root"), images] {
+        for d in INITRD_DIRS {
+            merge_tree(&from.join(d), &tree.join(d))?;
+        }
+    }
+    let tar = tar::archive(&tree, INITRD_DIRS, tar::names_wanted())?;
+    let path = ws.join("target/aot").join(format!("{kind}.tar"));
+    fs::write(&path, &tar).map_err(|e| format!("{}: {e}", path.display()))?;
+    eprintln!("wrote {} ({} bytes)", path.display(), tar.len());
+    Ok(path)
+}
+
+/// Copies the files under `from` into `to`, hard-linking where it can.
+fn merge_tree(from: &Path, to: &Path) -> Result<()> {
+    if !from.exists() {
+        return Ok(());
+    }
+    fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for e in fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
+        let p = e.map_err(|e| format!("{}: {e}", from.display()))?.path();
+        let dst = to.join(p.file_name().ok_or("a file with no name")?);
+        if p.is_dir() {
+            merge_tree(&p, &dst)?;
+        } else if fs::hard_link(&p, &dst).is_err() {
+            fs::copy(&p, &dst).map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// `aot [--kind native|pulley]`: [`aot_images`], then a list of their
+/// SHA-256 digests in `target/aot/<kind>.sha256`, which CI compares
+/// across hosts.
+fn aot(args: &[String]) -> Result<()> {
+    let kind = match args {
+        [] => "native",
+        [k, v] if k == "--kind" && (v == "native" || v == "pulley") => v.as_str(),
+        _ => {
+            return Err(String::from(
+                "usage: cargo xtask aot [--kind native|pulley]",
+            ));
+        }
+    };
+    let ws = workspace();
+    let dir = aot_images(&ws, kind)?;
+    let mut list = String::new();
+    let mut total = 0;
+    let files = files_under(&dir)?;
+    for f in &files {
+        let data = fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?;
+        total += data.len();
+        let hex: String = sha2::Sha256::digest(&data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let rel = f.strip_prefix(&dir).map_err(|e| e.to_string())?;
+        list.push_str(&format!("{hex}  {}\n", rel.display()));
+    }
+    let out = ws.join("target/aot").join(format!("{kind}.sha256"));
+    fs::write(&out, &list).map_err(|e| format!("{}: {e}", out.display()))?;
+    eprintln!(
+        "aot: {} files, {total} bytes, digests in {}",
+        files.len(),
+        out.display()
+    );
+    Ok(())
+}
+
 /// Builds `purg-probe` over a fresh `root/`, boots it in QEMU and compares
 /// its serial output with `crates/purg-probe/expected.out`. Under TCG it
 /// exits through semihosting with its status; under KVM (`--kvm`, aarch64
@@ -1445,13 +1608,17 @@ struct KernelOpts {
     /// How many times to boot them, to look for a failure that comes and
     /// goes; every round runs, and the last line counts the failed ones.
     repeat: usize,
+    /// `--aot`: the kernel built with the `aot` feature, booted on an
+    /// initrd with a signed image of every module ([`aot_initrd`]).
+    aot: bool,
 }
 
 impl KernelOpts {
     /// `--mem SIZE`, `--smp N`, `--stress SECS`, `--sh LIST`, `--only NAME`,
     /// `--repeat N`, and the flags [`image_flags`] takes.
     fn parse(args: &[String]) -> Option<KernelOpts> {
-        let mut mem = String::from("512M");
+        let mut mem = None;
+        let mut aot = false;
         let mut smp = 1;
         let (mut stress, mut sh) = (None, None);
         let (mut only, mut repeat) = (None, 1);
@@ -1459,7 +1626,8 @@ impl KernelOpts {
         let mut it = args.iter();
         while let Some(a) = it.next() {
             match a.as_str() {
-                "--mem" => mem = it.next()?.clone(),
+                "--mem" => mem = Some(it.next()?.clone()),
+                "--aot" => aot = true,
                 "--smp" => smp = it.next()?.parse().ok().filter(|&n| (1..=8).contains(&n))?,
                 "--stress" => stress = Some(it.next()?.parse().ok()?),
                 "--sh" => sh = Some(it.next()?.clone()),
@@ -1469,8 +1637,11 @@ impl KernelOpts {
             }
         }
         let kvm = image_flags(&rest, true)?;
+        // The images are five times the modules, and the initrd holds both.
+        let mem = mem.unwrap_or_else(|| String::from(if aot { "1G" } else { "512M" }));
         Some(KernelOpts {
             kvm,
+            aot,
             mem,
             smp,
             stress,
@@ -1487,7 +1658,10 @@ impl KernelOpts {
 fn kernel_normalize(serial: &str) -> String {
     let mut out = String::new();
     for l in serial.lines() {
-        if l.starts_with("kernel: mem ") || l.starts_with("kernel: smp: ") {
+        if l.starts_with("kernel: mem ")
+            || l.starts_with("kernel: smp: ")
+            || l.starts_with("kernel: aot: ")
+        {
             continue;
         }
         match (l.strip_prefix("kernel: heap: "), l.find(" MiB block ok")) {
@@ -1510,13 +1684,18 @@ fn kernel_normalize(serial: &str) -> String {
 fn kernel(opts: &KernelOpts) -> Result<()> {
     let kvm = opts.kvm;
     let ws = workspace();
-    let initrd = initrd()?;
+    let initrd = if opts.aot {
+        aot_initrd(&ws, "native")?
+    } else {
+        initrd()?
+    };
     let initrd = initrd
         .to_str()
         .ok_or("initrd path is not UTF-8")?
         .to_owned();
     run(cargo().current_dir(&ws).args(["build", "-p", "purg-emu"]))?;
-    run(align::image_cargo(&ws, false)?.args([
+    let mut build = align::image_cargo(&ws, false)?;
+    build.args([
         "build",
         "-p",
         "purg-kernel",
@@ -1524,11 +1703,18 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         PROBE_TARGET,
         "--profile",
         "kernel",
-    ]))?;
-    let image = ws
-        .join("target")
-        .join(PROBE_TARGET)
-        .join("kernel/purg-kernel");
+    ]);
+    // The AOT kernel builds in a directory of its own, so as not to
+    // rebuild the usual kernel's dependencies over it.
+    let target = if opts.aot {
+        build.args(["--features", "aot"]);
+        ws.join("target/aot/build")
+    } else {
+        ws.join("target")
+    };
+    build.env("CARGO_TARGET_DIR", &target);
+    run(&mut build)?;
+    let image = target.join(PROBE_TARGET).join("kernel/purg-kernel");
     align::check_image(&ws, &image)?;
     let elf = fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let image = image.with_extension("img");
@@ -1547,6 +1733,10 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
     } else {
         KERNEL_TCG_RUNS.iter().collect()
     };
+    // The images are in the initrd.
+    if opts.aot {
+        runs.retain(|k| k.initrd);
+    }
     if let Some(only) = &opts.only {
         runs.retain(|k| k.name.contains(only.as_str()));
         if runs.is_empty() {
@@ -1683,6 +1873,13 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             Err(e) => return KernelOutcome::setup(e),
         };
         phases::report(&ws, "kernel", k.name, &r.lines);
+        if let Some(l) = r
+            .serial
+            .lines()
+            .rfind(|l| l.starts_with("kernel: aot: ") && l.contains(" progs compiled"))
+        {
+            eprintln!("kernel: {}: {}", k.name, &l["kernel: ".len()..]);
+        }
         let el_line = format!("kernel: booted at EL{}", k.el);
         let smp_line = format!("kernel: smp: {} cpus online", opts.smp);
         let root_line = if k.initrd {
@@ -2505,6 +2702,7 @@ fn main() -> ExitCode {
         Some("diskimg") => disk::cmd(&rest).map(|()| ExitCode::SUCCESS),
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
         Some("sign") => sign(&rest).map(|()| ExitCode::SUCCESS),
+        Some("aot") => aot(&rest).map(|()| ExitCode::SUCCESS),
         Some("probe") => match image_flags(&rest, true) {
             Some(kvm) => probe(kvm).map(|()| ExitCode::SUCCESS),
             None => Err(String::from("usage: cargo xtask probe [--kvm] [--names]")),
@@ -2521,7 +2719,7 @@ fn main() -> ExitCode {
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         Some("bench") => bench::cmd(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | fonts [--check] [--vm=...] | clippy-guests | check-wasm file.wasm... | sign module --key seed",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] [--aot] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | fonts [--check] [--vm=...] | clippy-guests | check-wasm file.wasm... | sign module --key seed | aot [--kind native|pulley]",
         )),
     };
     match res {

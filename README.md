@@ -82,6 +82,7 @@ a `; ` prompt.
 | Fonts and text (G2): `fontgen` makes font(6) subfonts from TrueType fonts and Unifont's bitmaps; `/fonts` has Go Regular and Go Mono at 13 and 20 pixels with GNU Unifont for the rest of the BMP (`sans/unicode.13.font`, `mono/...`, `default.font`), made by `cargo xtask fonts` and checked byte for byte in CI; the draw device's font cache (`i l s x`); `Font`, `string`, `string_bg` and `string_width` in the SDK; a resizable `emu -g` window (clients see it on `refresh`) and pixel doubling (`-2`, or automatic on a HiDPI display). See [docs/graphics.md](docs/graphics.md) Section 9 | done; no named images, Noto or shaping |
 | `sh` script corpus (`root/lib/test/sh`), run on both backends | done |
 | Styx 9P2000 codec, tested against captured 9fans.net traffic | done |
+| The kernel's AOT engine (`--features aot`): modules compiled ahead of time on the host (`cwasm`, `cargo xtask aot`) run as native code on wasmtime without `std`, from a set linked into the kernel or from signed image files beside the modules (`/bin/<cmd>.cwasm`, trusted by `/lib/keys/aot` in the boot namespace) copied into a W^X code region; the rest on wasmi. `engine=wasmi\|aot\|auto` at boot. The whole test mode passes with every module compiled (`cargo xtask kernel --aot`); see [docs/perf.md](docs/perf.md) Section 11 and [docs/signing.md](docs/signing.md) | done; not the default |
 | `purg-probe`: bare-metal aarch64 QEMU image running the portable subset on wasmi, on the kernel's `purg-aarch64` boot path, interrupts and preemptive kernel threads: a writable RAM root, the `sh` corpus, `load`/`call`, the WASI test program, and `/net` over virtio-net and smoltcp, exported to and mounted from the host | done |
 
 ## Layout
@@ -99,7 +100,9 @@ crates/
                              #/ #c #e #| #p #s #d #% #M #I #C #D #¤ #λ, and #i #m with a screen
   purg-vm/           no_std  WASI p1 + purgatorio host functions, loader, spawn
   purg-vm-wasmi/     no_std  wasmi interpreter backend
-  purg-vm-wasmtime/  std     wasmtime (Cranelift) backend
+  purg-vm-wasmtime/  std     wasmtime (Cranelift) backend; the cwasm tool
+  purg-vm-aot/       no_std  wasmtime without std for the kernel: images compiled ahead of time, signed
+                             image files, the host functions both wasmtime backends share
   purg-emu/          std     the `emu` binary: #U, console, host sockets and commands, src/host/,
                              the `emu -g` window, the `emu -w` browser screen;
                              the `lethed` binary, the Lethe server
@@ -223,6 +226,8 @@ cargo xtask kernel --smp 4  # the same with four CPUs each, so fewer side by sid
 cargo xtask kernel --kvm    # one run under KVM on an aarch64 Linux host with /dev/kvm
 cargo xtask kernel --kvm --smp 4 --stress 3600   # an hour of the stress mode on four CPUs
 cargo xtask kernel --smp 4 --stress 600 --sh admin,shmods2   # only those corpus scripts, no guests
+cargo xtask kernel --aot    # the AOT kernel on an initrd with a signed image of every module
+cargo xtask aot             # just the images: target/aot/native/, digests in target/aot/native.sha256
 cargo xtask initrd          # target/initrd/root.tar, the same archive the kernel compiles in
 # an interactive shell on the kernel (^C interrupts, ^D at the start of a line ends it):
 qemu-system-aarch64 -accel kvm -cpu host -M virt,gic-version=3 -m 512M -nographic \

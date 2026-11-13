@@ -17,10 +17,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use super::{PROBE_TARGET, Result, align, cargo, elf_to_image, initrd, run, run_qemu, workspace};
+use super::{
+    PROBE_TARGET, Result, align, aot_initrd, cargo, elf_to_image, initrd, run, run_qemu, workspace,
+};
 
 const USAGE: &str = "usage: cargo xtask bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=wasmtime,wasmi] \
-[--rounds N] [--boots N] [--features F,...] [--profile P] [--label L] [--strict-align] [--rustflags FLAGS] [--config K=V] [--aot native|pulley] [--kprof] [--out FILE]";
+[--rounds N] [--boots N] [--features F,...] [--profile P] [--label L] [--strict-align] [--rustflags FLAGS] [--config K=V] [--aot native|pulley] [--aot-files native|pulley] [--kprof] [--out FILE]";
 
 /// The size of the kernel's disk image: room for the 100 MiB file, the
 /// file system's own blocks and the 1,000 small files `bench fs` makes.
@@ -54,6 +56,10 @@ struct Opts {
     /// Build the kernel with the `aot` feature and images of this kind
     /// (`native` or `pulley`) for [`AOT_MODULES`].
     aot: Option<String>,
+    /// Build the kernel with the `aot` feature and no linked images, and
+    /// boot it on an initrd with a signed image file of this kind beside
+    /// every module (`xtask kernel --aot`).
+    aot_files: Option<String>,
     /// Boot the kernel with its profiler and report where the profiled
     /// benchmarks spent their time (`crate::kprof`).
     kprof: bool,
@@ -90,6 +96,7 @@ impl Opts {
             rustflags: None,
             config: Vec::new(),
             aot: None,
+            aot_files: None,
             kprof: false,
             out: None,
         };
@@ -119,6 +126,13 @@ impl Opts {
                         return Err(String::from(USAGE));
                     }
                     o.aot = Some(k.clone());
+                }
+                "--aot-files" => {
+                    let k = it.next().ok_or(USAGE)?;
+                    if k != "native" && k != "pulley" {
+                        return Err(String::from(USAGE));
+                    }
+                    o.aot_files = Some(k.clone());
                 }
                 "--config" => o.config.push(it.next().ok_or(USAGE)?.clone()),
                 "--strict-align" => o.strict_align = true,
@@ -316,6 +330,9 @@ fn build_kernel(ws: &Path, o: &Opts) -> Result<PathBuf> {
     if let Some(kind) = &o.aot {
         features.push(String::from("aot"));
         cmd.env("PURG_AOT_IMAGES", aot_images(ws, kind)?);
+    } else if o.aot_files.is_some() {
+        features.push(String::from("aot"));
+        cmd.env_remove("PURG_AOT_IMAGES");
     }
     cmd.args([
         "build",
@@ -508,7 +525,10 @@ fn json(configs: &[(String, Samples)]) -> String {
 pub fn cmd(args: &[String]) -> Result<()> {
     let o = Opts::parse(args)?;
     let ws = workspace();
-    let initrd = initrd()?;
+    let initrd = match &o.aot_files {
+        Some(kind) => aot_initrd(&ws, kind)?,
+        None => initrd()?,
+    };
     let initrd = initrd
         .to_str()
         .ok_or("initrd path is not UTF-8")?
