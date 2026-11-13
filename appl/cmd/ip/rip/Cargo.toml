@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-ip-rip"
+description = "ip/rip: the RIP routing listener"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rip"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

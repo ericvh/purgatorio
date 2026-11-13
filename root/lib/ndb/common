@@ -27,6 +27,7 @@ tcp=pop3 port=110
 udp=ntp port=123
 tcp=imap port=143
 tcp=https port=443
+udp=rip port=520
 tcp=submission port=587
 tcp=styx port=6666
 tcp=9fs port=564

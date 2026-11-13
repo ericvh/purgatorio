@@ -41,6 +41,7 @@ members = [
     "appl/cmd/ip/tftpd",
     "appl/cmd/ip/virgild",
     "appl/cmd/ip/bootpd",
+    "appl/cmd/ip/rip",
     "appl/cmd/auxi/cpuslave",
     "appl/cmd/auxi/rstyxd",
     "appl/cmd/auth/changelogin",
