@@ -139,6 +139,10 @@ jobs:
           # Signing is a separate step and deterministic: one module signed
           # with the public test key must also hash the same on every host.
           cargo xtask sign root/bin/echo.wasm --key root/lib/test/auth.key -o "$RUNNER_TEMP/wasm/signed-echo.wasm"
+          # The kernel's AOT images (docs/perf.md): compiled for a named
+          # target and signed with the test key, so the same on every host.
+          cargo xtask aot
+          cp target/aot/native.sha256 "$RUNNER_TEMP/wasm/aot-sha256.txt"
           cd root && find bin -name '*.wasm' | sort | xargs shasum -a 256 > "$RUNNER_TEMP/wasm/wasm-sha256.txt"
           (cd "$RUNNER_TEMP/wasm" && shasum -a 256 signed-echo.wasm) >> "$RUNNER_TEMP/wasm/wasm-sha256.txt"
           cat "$RUNNER_TEMP/wasm/wasm-sha256.txt"
@@ -148,7 +152,7 @@ jobs:
           path: ${{ runner.temp }}/wasm
 
   reproducible:
-    name: guest modules are byte-identical across hosts
+    name: guest modules and AOT images are byte-identical across hosts
     needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -162,6 +166,7 @@ jobs:
           first=$(ls -d wasm-sha256-* | head -1)
           for d in wasm-sha256-*; do
             echo "== $d"; diff "$first/wasm-sha256.txt" "$d/wasm-sha256.txt"
+            diff "$first/aot-sha256.txt" "$d/aot-sha256.txt"
           done
 
   probe:
@@ -231,7 +236,7 @@ jobs:
         run: >
           cargo clippy -p purg-kernel -p purg-aarch64
           --target aarch64-unknown-none --profile kernel --no-default-features -- -D warnings
-      - name: clippy (the experimental aot engine, docs/perf.md; built, not run)
+      - name: clippy (the aot engine, docs/perf.md; run by kernel-aot)
         run: >
           cargo clippy -p purg-kernel -p purg-vm-aot
           --target aarch64-unknown-none --profile kernel --features aot -- -D warnings
@@ -286,6 +291,37 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: qemu-times-kernel-smp
+          path: target/qemu-times/
+          if-no-files-found: ignore
+
+  kernel-aot:
+    name: purg-kernel with every module compiled ahead of time (ubuntu-24.04-arm)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - name: install QEMU
+        # Bounded: a mirror outage once left this step hanging for hours.
+        timeout-minutes: 10
+        run: |
+          apt="sudo apt-get -q -o Acquire::Retries=3 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20"
+          $apt update && $apt install -y qemu-system-arm
+      # The kernel built with the aot feature, on an initrd with a signed
+      # image of every module beside it: the whole test mode on the one
+      # TCG machine that boots an initrd.
+      - name: xtask kernel --aot (TCG, GICv2)
+        run: cargo xtask kernel --aot
+      - name: keep the consoles of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-times-kernel-aot
           path: target/qemu-times/
           if-no-files-found: ignore
 
