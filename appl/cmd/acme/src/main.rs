@@ -22,11 +22,14 @@
 //! selection. Backspace, `^U`, `^W`, `^A`, `^E`, Escape and the arrows,
 //! Page Up, Page Down, Home and End work as in acme.
 //!
-//! acme reads `/dev/pointer` and `/dev/keyboard`, and the pipes from the
-//! commands it runs, by waiting for whichever is ready
-//! ([`purgatorio::ready`]), so one prog does it all.
+//! acme reads `/dev/pointer` and `/dev/keyboard`, the pipes from the
+//! commands it runs and the pipe its file system (acme(4), on
+//! `/mnt/acme`, see [`fs`]) is served on, by waiting for whichever is
+//! ready ([`purgatorio::ready`]), so one prog does it all.
 
+mod addr;
 mod frame;
+mod fs;
 mod text;
 mod ui;
 
@@ -34,6 +37,7 @@ use std::fs::File;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 
+use purgatorio::abi::pctl;
 use purgatorio::draw::{Display, Font, Image, Keyboard, Mouse, Point, Pointer};
 use purgatorio::{Context, Error, Ready};
 
@@ -44,6 +48,18 @@ use ui::{BORDER, Colours, Column, Fnt, Kind, SCROLLWID, Sweep, Text, Window};
 const ROW_TAG: &str = "Newcol Putall Exit ";
 const COL_TAG: &str = "New Delcol ";
 
+/// The commands acme runs itself; others go to `sh`.
+const BUILTINS: &[&str] = &[
+    "Cut", "Del", "Delcol", "Delete", "Exit", "Get", "Look", "New", "Newcol", "Paste", "Put",
+    "Putall", "Redo", "Snarf", "Undo",
+];
+
+/// Whether `path` is one of acme's own files, which acme must not open
+/// itself: it would wait for its own answer.
+fn own(path: &str) -> bool {
+    path == fs::MTPT || path.starts_with("/mnt/acme/")
+}
+
 /// keyboard(6)'s codes for the keys acme uses.
 const KHOME: char = '\u{F00D}';
 const KUP: char = '\u{F00E}';
@@ -53,6 +69,9 @@ const KRIGHT: char = '\u{F012}';
 const KPGDOWN: char = '\u{F013}';
 const KEND: char = '\u{F018}';
 const KDOWN: char = '\u{F800}';
+
+/// Why acme will not open a file under `/mnt/acme`.
+const EOWN: &str = "acme's own file";
 
 /// How close in time two clicks are to make a double click.
 const DOUBLE_MS: u32 = 500;
@@ -109,6 +128,10 @@ struct Acme {
     /// pile up.
     waitfd: Option<File>,
     cwd: String,
+    /// The font's file, for acme(4)'s `ctl`.
+    font_name: String,
+    /// The file system on `/mnt/acme`, when it could be mounted.
+    fs: Option<fs::Fs>,
     /// Redraw everything.
     full: bool,
     exit_warned: bool,
@@ -157,7 +180,7 @@ fn split_addr(s: &str) -> (&str, Option<usize>) {
 }
 
 impl Acme {
-    fn new(font: Font) -> Result<Acme, Error> {
+    fn new(font: Font, font_name: String) -> Result<Acme, Error> {
         let mut d = Display::open()?;
         let screen = d.screen();
         let c = Colours::new(&mut d)?;
@@ -184,6 +207,8 @@ impl Acme {
             children: Vec::new(),
             waitfd,
             cwd,
+            font_name,
+            fs: None,
             full: true,
             exit_warned: false,
             exit: false,
@@ -300,6 +325,7 @@ impl Acme {
             warned: false,
             is_dir,
             tag_lines: 1,
+            fs: ui::WinFs::default(),
         };
         w.body.b.load(body);
         set_tag(&mut w, name);
@@ -341,6 +367,17 @@ impl Acme {
             }
         }
         None
+    }
+
+    /// The ids of the windows, in order.
+    fn ids(&self) -> Vec<u64> {
+        let mut v: Vec<u64> = self
+            .cols
+            .iter()
+            .flat_map(|c| c.wins.iter().map(|w| w.id))
+            .collect();
+        v.sort_unstable();
+        v
     }
 
     fn win(&self, id: u64) -> Option<&Window> {
@@ -670,12 +707,15 @@ impl Acme {
                 if pressed & 1 != 0 {
                     self.select(t, m)?;
                 } else if pressed & 2 != 0 {
-                    if let Some((q0, q1)) = self.sweep(t, m, 2)? {
+                    if let Some((q0, q1)) = self.sweep(t, m, 2)?
+                        && !self.send_event(t, q0, q1, 'X')
+                    {
                         let s = self.expand(t, q0, q1, false);
                         self.execute(t, &s)?;
                     }
                 } else if pressed & 4 != 0
                     && let Some((q0, q1)) = self.sweep(t, m, 4)?
+                    && !self.send_event(t, q0, q1, 'L')
                 {
                     let s = self.expand(t, q0, q1, true);
                     self.look(t, &s)?;
@@ -791,14 +831,20 @@ impl Acme {
     /// selection when the click was in it, else the word (for button 2,
     /// anything between blanks; for button 3, a file name) around it.
     fn expand(&self, t: Tid, q0: usize, q1: usize, file: bool) -> String {
+        let (q0, q1) = self.expand_range(t, q0, q1, file);
+        self.text(t).map(|x| x.b.string(q0, q1)).unwrap_or_default()
+    }
+
+    /// Where the text [`Acme::expand`] finds is.
+    fn expand_range(&self, t: Tid, q0: usize, q1: usize, file: bool) -> (usize, usize) {
         let Some(x) = self.text(t) else {
-            return String::new();
+            return (q0, q1);
         };
         if q0 < q1 {
-            return x.b.string(q0, q1);
+            return (q0, q1);
         }
         if x.q0 < x.q1 && q0 >= x.q0 && q0 <= x.q1 {
-            return x.selection();
+            return (x.q0, x.q1);
         }
         let ok = |c: char| {
             if file { is_file(c) } else { !c.is_whitespace() }
@@ -810,7 +856,105 @@ impl Acme {
         while b < x.b.len() && ok(x.b.at(b)) {
             b += 1;
         }
-        x.b.string(a, b)
+        (a, b)
+    }
+
+    /// A button 2 (`kind` `X`) or button 3 (`L`) action on `q0..q1` of
+    /// `t`, when its window's `event` file is open: queues it as acme(4)
+    /// events for the program reading them, and returns true. Otherwise
+    /// returns false, for acme to act on it.
+    fn send_event(&mut self, t: Tid, q0: usize, q1: usize, kind: char) -> bool {
+        let Some(id) = Acme::win_of(t) else {
+            return false;
+        };
+        if self.win(id).is_none_or(|w| w.fs.nevent == 0) {
+            return false;
+        }
+        let (e0, e1) = self.expand_range(t, q0, q1, kind == 'L');
+        let text = self.text(t).map(|x| x.b.string(e0, e1)).unwrap_or_default();
+        let mut flag = 0;
+        if kind == 'X' {
+            let cmd = text.split_whitespace().next().unwrap_or("");
+            if BUILTINS.contains(&cmd) {
+                flag |= 1;
+            }
+        } else {
+            let (name, _) = split_addr(&text);
+            let path = self.resolve(&self.dir_of(t), name);
+            if !name.is_empty() && !own(&path) && purgatorio::stat(&path).is_ok() {
+                flag |= 4;
+                if self.by_name(&path).is_some() {
+                    flag |= 1;
+                }
+            } else {
+                flag |= 1;
+            }
+        }
+        let k = if matches!(t, Tid::Tag(_)) {
+            kind.to_ascii_lowercase()
+        } else {
+            kind
+        };
+        let mut ev = String::new();
+        if (e0, e1) != (q0, q1) {
+            // A null selection with a non-null expansion: the click, then
+            // what it expands to.
+            ev.push_str(&fs::event('M', k, q0, q1, flag | 2, ""));
+            ev.push_str(&fs::event('M', k, e0, e1, 0, &text));
+        } else {
+            ev.push_str(&fs::event('M', k, q0, q1, flag, &text));
+        }
+        if let Some(w) = self.win_mut(id) {
+            w.fs.events.extend_from_slice(ev.as_bytes());
+        }
+        true
+    }
+
+    /// Turns the inserts and deletes made in windows whose `event` file
+    /// is open into events from `origin`: `K` the keyboard, `M` the
+    /// mouse, `E` writes to `body` or `tag`, `F` the other files.
+    fn post_changes(&mut self, origin: char) {
+        for w in self.cols.iter_mut().flat_map(|c| c.wins.iter_mut()) {
+            let open = w.fs.nevent > 0;
+            for (tag, b) in [(false, &mut w.body.b), (true, &mut w.tag.b)] {
+                for c in b.changes.drain(..) {
+                    if !open {
+                        continue;
+                    }
+                    let kind = match (c.insert, tag) {
+                        (true, false) => 'I',
+                        (false, false) => 'D',
+                        (true, true) => 'i',
+                        (false, true) => 'd',
+                    };
+                    let text = c.text.unwrap_or_default();
+                    let e = fs::event(origin, kind, c.q0, c.q1, 0, &text);
+                    w.fs.events.extend_from_slice(e.as_bytes());
+                }
+            }
+        }
+    }
+
+    /// Answers the reads of acme(4) files that wait, after anything acme
+    /// did. A file system whose pipe broke is dropped.
+    fn serve_waiting(&mut self) {
+        if let Some(mut f) = self.fs.take() {
+            match f.flush(self) {
+                Ok(()) => self.fs = Some(f),
+                Err(e) => eprintln!("acme: {}: {e}", fs::MTPT),
+            }
+        }
+    }
+
+    /// Answers the messages waiting on the file system's pipe.
+    fn serve(&mut self) {
+        if let Some(mut f) = self.fs.take() {
+            match f.input(self) {
+                Ok(true) => self.fs = Some(f),
+                Ok(false) => {}
+                Err(e) => eprintln!("acme: {}: {e}", fs::MTPT),
+            }
+        }
     }
 
     /// The scroll bar: button 1 moves the line at the top down to the
@@ -894,6 +1038,12 @@ impl Acme {
             self.typing = None;
             return self.edited(t);
         }
+        // A window a program reads the events of gets the interrupt
+        // keys too, for `win` to pass on.
+        let events = matches!(t, Tid::Body(_))
+            && Acme::win_of(t)
+                .and_then(|id| self.win(id))
+                .is_some_and(|w| w.fs.nevent > 0);
         let Some(x) = self.text_mut(t) else {
             return Ok(());
         };
@@ -950,7 +1100,11 @@ impl Acme {
                 new_typing = typing.map(|q| q.min(x.q0));
             }
             '\n' if x.kind == Kind::Tag => return Ok(()),
-            c if c == '\n' || c == '\t' || !c.is_control() => {
+            c if c == '\n'
+                || c == '\t'
+                || !c.is_control()
+                || (events && (c == '\x7F' || c == '\x03')) =>
+            {
                 let start = typing.unwrap_or(x.q0);
                 x.replace(&c.to_string());
                 new_typing = Some(start.min(x.q0));
@@ -1075,6 +1229,9 @@ impl Acme {
 
     /// Reads file or directory `name` for a body.
     fn read(name: &str) -> Result<(String, bool), Error> {
+        if own(name) {
+            return Err(Error::from(EOWN));
+        }
         let d = purgatorio::stat(name)?;
         if d.qid.is_dir() {
             let mut names: Vec<String> = std::fs::read_dir(name)
@@ -1206,6 +1363,10 @@ impl Acme {
         }
         if w.is_dir {
             self.error(&dir, &format!("{name} is a directory"));
+            return;
+        }
+        if own(&name) {
+            self.error(&dir, &format!("{name}: {EOWN}"));
             return;
         }
         let s = w.body.b.all();
@@ -1372,17 +1533,22 @@ impl Acme {
         let dir = self.dir_of(t);
         let [r, w] = purgatorio::pipe()?;
         let null = purgatorio::open("/dev/null", purgatorio::abi::mode::OREAD)?;
+        // As in acme(1), a command run from a window knows it as $winid.
+        let winid = Acme::win_of(t).map_or_else(String::new, |id| format!("winid={id}; "));
         let argv = vec![
             String::from("sh"),
             String::from("-c"),
-            format!("cd {}; {}", quote(&dir), s),
+            format!("{winid}cd {}; {}", quote(&dir), s),
         ];
         let map = [
             (null.as_raw_fd(), 0),
             (w.as_raw_fd(), 1),
             (w.as_raw_fd(), 2),
         ];
-        if let Err(e) = purgatorio::spawn("sh", &argv, purgatorio::abi::pctl::NEWFD, &map) {
+        // Each command gets a copy of acme's namespace, with /mnt/acme,
+        // and a process group of its own.
+        let flags = pctl::NEWFD | pctl::FORKNS | pctl::NEWPGRP;
+        if let Err(e) = purgatorio::spawn("sh", &argv, flags, &map) {
             self.error(&dir, &format!("{s}: {e}"));
             return Ok(());
         }
@@ -1467,7 +1633,7 @@ impl Acme {
         }
         if !name.is_empty() {
             let path = self.resolve(&dir, name);
-            if purgatorio::stat(&path).is_ok() {
+            if !own(&path) && purgatorio::stat(&path).is_ok() {
                 let ci = self.col_of(t);
                 let id = self.open(ci, &path, line);
                 self.seltext = Some(Tid::Body(id));
@@ -1522,17 +1688,25 @@ impl Acme {
 
     fn main_loop(&mut self) -> Result<(), Error> {
         while !self.exit {
+            self.serve_waiting();
             self.redraw()?;
             if self.kbd.pending() {
                 let c = self.kbd.read()?;
                 self.key(c)?;
+                self.post_changes('K');
                 continue;
             }
+            let nchild = self.children.len();
             let mut fds = vec![Ready::Read(self.mouse.fd()), Ready::Read(self.kbd.fd())];
             fds.extend(self.children.iter().map(|c| Ready::Read(c.fd.as_raw_fd())));
-            if let Some(w) = &self.waitfd {
+            let wait_i = self.waitfd.as_ref().map(|w| {
                 fds.push(Ready::Read(w.as_raw_fd()));
-            }
+                fds.len() - 1
+            });
+            let fs_i = self.fs.as_ref().map(|f| {
+                fds.push(Ready::Read(f.fd()));
+                fds.len() - 1
+            });
             let Some(i) = purgatorio::ready(&fds, -1)? else {
                 continue;
             };
@@ -1540,13 +1714,19 @@ impl Acme {
                 0 => {
                     let m = self.mouse.read()?;
                     self.mouse(m)?;
+                    self.post_changes('M');
                 }
                 1 => {
                     let c = self.kbd.read()?;
                     self.key(c)?;
+                    self.post_changes('K');
                 }
-                i if i - 2 < self.children.len() => self.output(i - 2)?,
-                _ => {
+                i if i >= 2 && i - 2 < nchild => {
+                    self.output(i - 2)?;
+                    self.post_changes('F');
+                }
+                i if Some(i) == fs_i => self.serve(),
+                i if Some(i) == wait_i => {
                     let mut buf = [0u8; 512];
                     let n = self
                         .waitfd
@@ -1556,6 +1736,7 @@ impl Acme {
                         self.waitfd = None;
                     }
                 }
+                _ => {}
             }
         }
         Ok(())
@@ -1594,9 +1775,12 @@ fn set_tag(w: &mut Window, name: &str) {
         }
     };
     let (q0, q1) = (shift(w.tag.q0), shift(w.tag.q1));
+    // acme's own rewriting of the tag is not an event.
+    let watch = std::mem::replace(&mut w.tag.b.watch, false);
     let n = w.tag.b.len();
     w.tag.b.delete(0, n);
     w.tag.b.insert(0, &s);
+    w.tag.b.watch = watch;
     w.tag.set_select(q0, q1);
     w.tag.dirty = true;
 }
@@ -1675,6 +1859,9 @@ use purgatorio::draw::Rect;
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    if args.get(1).map(String::as_str) == Some("--mount") {
+        return fs::mount_helper();
+    }
     let mut args = args.into_iter().skip(1).peekable();
     let mut font = None;
     while let Some(a) = args.peek() {
@@ -1693,11 +1880,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             break;
         }
     }
+    let font_name = font.clone().unwrap_or_else(|| {
+        purgatorio::env::get("font")
+            .filter(|f| !f.is_empty())
+            .unwrap_or_else(|| String::from(purgatorio::draw::DEFAULT_FONT))
+    });
     let font = match font {
         Some(f) => Font::open(&f)?,
         None => Font::default_font()?,
     };
-    let mut a = Acme::new(font)?;
+    let mut a = Acme::new(font, font_name)?;
+    a.fs = fs::start(&mut a);
     let files: Vec<String> = args.collect();
     for f in &files {
         let path = a.resolve(&a.cwd.clone(), f);

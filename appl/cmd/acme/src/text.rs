@@ -5,6 +5,9 @@
 //! keeps a log, each edit is recorded with the current sequence number,
 //! and [`Buffer::undo`] reverses every edit of the latest sequence at
 //! once, as acme's `Undo` reverses one user action.
+//!
+//! While a window's `event` file is open its buffers also keep a list of
+//! [`Change`]s, which acme turns into acme(4) insert and delete events.
 
 /// Runes with a gap at the last edit, so that typing at one place moves
 /// nothing.
@@ -86,6 +89,20 @@ struct Edit {
     text: Vec<char>,
 }
 
+/// One insert or delete, as reported on a window's `event` file. The
+/// text is kept only when it is short enough to go in the event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Change {
+    pub insert: bool,
+    pub q0: usize,
+    pub q1: usize,
+    pub text: Option<String>,
+}
+
+/// Inserts this long or longer are reported without their text
+/// (acme's `EVENTSIZE`).
+pub const EVENTSIZE: usize = 256;
+
 /// A buffer and, for a body, its undo and redo logs.
 #[derive(Default)]
 pub struct Buffer {
@@ -100,6 +117,9 @@ pub struct Buffer {
     /// The sequence at the top of the undo log when the text was last
     /// read or written: the text is clean while that is still so.
     clean: u64,
+    /// Record [`Change`]s.
+    pub watch: bool,
+    pub changes: Vec<Change>,
 }
 
 impl Buffer {
@@ -141,7 +161,20 @@ impl Buffer {
         }
     }
 
+    fn note(&mut self, insert: bool, q: usize, text: &[char]) {
+        if !self.watch || text.is_empty() {
+            return;
+        }
+        self.changes.push(Change {
+            insert,
+            q0: q,
+            q1: q + text.len(),
+            text: (insert && text.len() < EVENTSIZE).then(|| text.iter().collect()),
+        });
+    }
+
     fn record(&mut self, insert: bool, q: usize, text: &[char]) {
+        self.note(insert, q, text);
         if !self.log || text.is_empty() {
             return;
         }
@@ -204,6 +237,12 @@ impl Buffer {
         self.clean = self.top();
     }
 
+    /// Calls the text modified until the next [`Buffer::set_clean`], as
+    /// acme(4)'s `dirty` does.
+    pub fn set_dirty(&mut self) {
+        self.clean = u64::MAX;
+    }
+
     fn top(&self) -> u64 {
         self.undo.last().map_or(0, |e| e.seq)
     }
@@ -231,6 +270,7 @@ impl Buffer {
         };
         let seq = from.last()?.seq;
         let mut range: Option<(usize, usize)> = None;
+        let mut notes = Vec::new();
         while from.last().is_some_and(|e| e.seq == seq) {
             let e = from.pop().unwrap_or_else(|| unreachable!());
             // Undoing an insert deletes; undoing a delete inserts. A redo
@@ -243,7 +283,11 @@ impl Buffer {
                 self.text.delete(e.q, e.q + e.text.len());
                 range = Some((e.q, e.q));
             }
+            notes.push((insert, e.q, e.text.clone()));
             to.push(e);
+        }
+        for (insert, q, text) in notes {
+            self.note(insert, q, &text);
         }
         self.seq += 1;
         self.used = false;
@@ -335,6 +379,41 @@ mod tests {
         b.delete(2, 3);
         b.undo();
         assert_eq!(b.all(), "abcd");
+    }
+
+    #[test]
+    fn changes() {
+        let mut b = Buffer::new(true);
+        b.insert(0, "gone");
+        assert!(b.changes.is_empty());
+        b.watch = true;
+        b.mark();
+        b.insert(4, "ab");
+        b.delete(0, 2);
+        b.undo();
+        let ins = |q0, q1, t: &str| Change {
+            insert: true,
+            q0,
+            q1,
+            text: Some(t.to_string()),
+        };
+        let del = |q0, q1| Change {
+            insert: false,
+            q0,
+            q1,
+            text: None,
+        };
+        assert_eq!(
+            b.changes,
+            [ins(4, 6, "ab"), del(0, 2), ins(0, 2, "go"), del(4, 6)]
+        );
+        b.changes.clear();
+        b.insert(0, &"x".repeat(EVENTSIZE));
+        assert_eq!(b.changes[0].text, None);
+        b.set_clean();
+        assert!(!b.dirty());
+        b.set_dirty();
+        assert!(b.dirty());
     }
 
     #[test]
