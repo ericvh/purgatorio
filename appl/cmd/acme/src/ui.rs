@@ -102,6 +102,39 @@ impl Text {
         self.dirty = true;
     }
 
+    /// Replaces runes `q0..q1` with `s`, as a write to acme(4)'s files
+    /// does, keeping the selection and the first rune shown on the same
+    /// text. A cursor at `q0` moves past the new text, so it follows
+    /// output. Returns whether it did.
+    pub fn edit(&mut self, q0: usize, q1: usize, s: &str) -> bool {
+        let n = s.chars().count();
+        let follow = self.q0 == self.q1 && self.q0 == q0 && n > 0;
+        self.b.delete(q0, q1);
+        self.b.insert(q0, s);
+        let fix = |q: usize| {
+            if q >= q1 {
+                q - (q1 - q0) + n
+            } else if q > q0 {
+                q0
+            } else {
+                q
+            }
+        };
+        if follow {
+            self.q0 += n;
+            self.q1 = self.q0;
+        } else {
+            self.q0 = fix(self.q0);
+            self.q1 = fix(self.q1);
+        }
+        if self.org > q0 {
+            self.org = fix(self.org);
+        }
+        self.fix_org();
+        self.dirty = true;
+        follow
+    }
+
     /// Keeps `org` inside the text after a deletion.
     pub fn fix_org(&mut self) {
         if self.org > self.b.len() {
@@ -134,6 +167,26 @@ pub struct Window {
     pub is_dir: bool,
     /// How many lines the tag has: it grows to hold its text.
     pub tag_lines: i32,
+    /// Its state in acme(4)'s file system.
+    pub fs: WinFs,
+}
+
+/// What a window's files on `/mnt/acme/<id>` keep.
+#[derive(Default)]
+pub struct WinFs {
+    /// The address `addr` sets and `data` reads and writes.
+    pub addr: (usize, usize),
+    /// How many times `addr` is open: the first open sets it to `0,0`.
+    pub naddr: usize,
+    /// How many times `event` is open. While it is, button 2 and 3
+    /// actions and changes to the text are events, not acted on.
+    pub nevent: usize,
+    /// Event text not read yet.
+    pub events: Vec<u8>,
+    /// `nomark`: writes to the files do not start new undo groups.
+    pub nomark: bool,
+    pub dump: Option<String>,
+    pub dumpdir: Option<String>,
 }
 
 impl Window {

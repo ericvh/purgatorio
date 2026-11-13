@@ -157,6 +157,8 @@ dependencies = [
 name = "appl-cmd-acme"
 version = "0.1.0"
 dependencies = [
+ "appl-lib-regexp",
+ "purg-styx",
  "purgatorio",
 ]
 
@@ -1487,6 +1489,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-win"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-xargs"
 version = "0.1.0"
 dependencies = [
@@ -1600,6 +1609,13 @@ dependencies = [
 
 [[package]]
 name = "appl-test-abi"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-test-acmefs"
 version = "0.1.0"
 dependencies = [
  "purgatorio",
