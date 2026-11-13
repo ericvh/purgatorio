@@ -29,10 +29,10 @@ pub fn names_wanted() -> bool {
     std::env::var_os(NAMES_ENV).is_some_and(|v| v == "1")
 }
 
-/// Files for the draw device (docs/graphics.md), which only the emu has,
-/// and `fontgen`, which makes fonts for it at build time. The fonts in
+/// Files for the draw device (docs/graphics.md), which only the emu has:
+/// its programs, and `fontgen`, which makes fonts for it at build time. The fonts in
 /// `root/fonts` stay out by not being under `bin` or `lib`.
-const GRAPHICS: &[&str] = &["bin/draw/", "bin/test/draw.", "bin/fontgen."];
+const GRAPHICS: &[&str] = &["bin/draw/", "bin/test/draw.", "bin/fontgen.", "bin/acme."];
 
 /// Whether the file at `path` (relative to the root, `/`-separated) goes
 /// into an image; `names` is [`names_wanted`].
@@ -236,6 +236,7 @@ mod tests {
         assert!(!in_image("bin/test/draw.wasm", true));
         assert!(!in_image("bin/test/draw.names", false));
         assert!(!in_image("bin/fontgen.wasm", false));
+        assert!(!in_image("bin/acme.wasm", false));
         assert!(in_image("bin/test/drawn.wasm", false));
         assert!(in_image("bin/test/abi.wasm", false));
     }

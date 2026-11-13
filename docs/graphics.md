@@ -1108,7 +1108,162 @@ options 150, the screen trait 40, the test guest and goldens 290, xtask
 - The font cache in the kernel (the device is still emu-only).
 - Real Inferno goldens; the text goldens are ours.
 
-## 10. Sources
+## 10. acme: the first application
+
+`acme` (`appl/cmd/acme`, `/bin/acme.wasm`) is a first slice of Inferno's
+acme(1): a text editor and command window system that draws on
+`/dev/draw` with the SDK alone. acme(1) is the behavioural spec; the
+look follows acme's colours but is not pixel-matched, as the owner
+allowed (issue #29). No Inferno code was used.
+
+### 10.1 What it does
+
+`acme [-f font] [file ...]` fills the screen with a row: a tag along the
+top (`Newcol Putall Exit`) and two columns, each with a tag (`New
+Delcol`) and windows stacked in it. The files given open in the first
+column. A window is a tag line and a body. The tag starts with the file
+name, then the commands that apply now (`Del Snarf`, with `Undo`,
+`Redo` and `Put` added when they mean something), a bar, and whatever
+the user typed after the bar. The box at a tag's left is filled dark
+blue while the file is modified. A tag grows to four lines to hold its
+text. A body has a scroll bar on its left.
+
+The mouse:
+
+- Button 1 selects. A double click selects a word, a line (at either
+  end of one), or the text inside brackets or quotes. With button 1
+  held, button 2 cuts and button 3 pastes.
+- Button 2 sweeps in red and executes what it swept, or the selection
+  when clicked inside it, or the blank-separated word under it. Built
+  in: `Cut`, `Del` (and `Delete`, which never warns), `Delcol`, `Exit`,
+  `Get [file]`, `Look [text]`, `New`, `Newcol`, `Paste`, `Put [file]`,
+  `Putall`, `Redo`, `Snarf`, `Undo`. Anything else is a command line
+  for `sh -c`, run in the window's directory with its standard output
+  and error on a pipe; the output is appended to the directory's
+  `+Errors` window, which is made in the last column when needed.
+- Button 3 sweeps in green. When the text (or the file name under the
+  pointer, made of letters, digits and `./-+:~,#@$%`) names a file or
+  directory relative to the window's directory, it is opened in a new
+  window, or the window that has it is used; `name:n` selects line `n`
+  and `:n` does so in the same window. Otherwise the body is searched
+  for the text from the end of the selection, wrapping round; the
+  match is selected and shown, and the pointer moves to it.
+- In a scroll bar, button 1 moves the line at the top down to the
+  pointer, button 3 moves the line at the pointer to the top, and
+  button 2 shows the part of the file that far down. The wheel scrolls
+  three lines.
+
+Typing goes to the tag or body under the pointer and replaces its
+selection. Backspace, `^U` (to the line's start), `^W` (a word),
+`^A` and `^E` (start and end of line), Escape (selects what was just
+typed, or cuts the selection), left and right arrows, up and down
+arrows (a third of the window), Page Up, Page Down, Home and End work
+as in acme. A directory opens as a listing, one name per line, with a
+`/` after directories.
+
+`Del`, `Get` and `Exit` on a modified file first print `name
+modified` in `+Errors` and act on the second try. Windows without a
+name, directory listings and `+Errors` windows are never counted as
+modified. When the screen changes size the columns and windows keep
+their proportions.
+
+### 10.2 Design
+
+**The text.** Each tag and body holds its runes in a gap buffer of
+`char` (`text.rs`), so positions are rune offsets, as acme(4) counts
+them, and typing at one place moves nothing. A body keeps an undo log
+of inserts and deletes, each tagged with a sequence number; each mouse
+action and command starts a new sequence, and consecutive typed runes
+or backspaces join one edit. `Undo` reverses every edit of the latest
+sequence, moving it to the redo log. The file is clean while the top of
+the undo log is the sequence it had at the last `Get` or `Put`, so
+undoing back to the saved text makes the window clean again.
+
+**Layout.** `frame.rs` lays out lines from the first rune shown,
+wrapping at the frame's width and putting tabs at multiples of four
+widths of `0` (acme's default). Scrolling back finds the start of the
+logical line and lays it out forward to find where it wrapped, as
+libframe's users do. Rune widths come from `Font::string_width` and are
+remembered per rune. A text that changed is drawn again whole:
+background, selection or sweep highlight, runes (one `string` message
+per stretch between tabs) and the cursor tick. Each event ends with one
+flush (`v`), so the device sends one damaged rectangle per change.
+
+**Events.** acme is one prog. It waits with `purgatorio::ready` on
+`/dev/pointer`, `/dev/keyboard`, the pipes of the commands it runs and
+`/prog/<pid>/wait`, and reads whichever is ready. Inferno's acme uses
+threads and channels for this; Limbo's `alt` over files is the closest
+here. While a button is held (a sweep, a selection, a chord), acme reads
+only the pointer until the buttons are up, as acme does.
+
+**SDK and device additions.** For this, `/dev/pointer` and
+`/dev/keyboard` now say when they are ready: `Input` in
+`purg-platform` keeps a list of watchers woken with its readers, and
+`#m` and `#c` answer `ready`, `watch` and `unwatch` for those files
+(before, a device that cannot tell is always ready, so a wait on them
+returned at once). The SDK gained `purgatorio::ready(&[Ready], timeout)`
+over `purgatorio.wait`, `Mouse::fd`, `Keyboard::fd` and
+`Keyboard::pending` (characters already read but not returned), and
+`Keyboard::read` no longer blocks when a whole character is buffered
+before a partial one. Nothing in the ABI changed.
+
+### 10.3 Tests
+
+- Unit tests in `appl/cmd/acme`: the gap buffer, undo and redo groups
+  and the clean state, layout with wrapping, tabs, scrolling back,
+  double clicks and path cleaning.
+- `purg-core`: `pointer` is ready only with an event queued, and a
+  watcher is woken by one.
+- `crates/purg-emu/tests/acme.rs`, on wasmtime and wasmi: the emu runs
+  `acme /tmp/acme/notes` with `-w` on an 800×300 screen, and the test is
+  the browser. It clicks in the body and types, types `Put` at the end
+  of the window's tag and clicks it with button 2 (and checks the file
+  on the host), runs `ls` the same way, undoes the typing, searches with
+  button 3, and exits with `Exit` twice, the first warning about the
+  modified file. Each step waits for the screen to change and then stay
+  unchanged for 0.7 s. Then `test/draw -d` dumps the screen, which is
+  compared with `tests/golden/acme.ppm.z` (the screen as a PPM,
+  compressed with zlib, 11,761 bytes); both VMs give the same pixels.
+  `PURG_GOLDEN_UPDATE=1` rewrites it and `PURG_GOLDEN_SHOW=1` writes
+  the screen out as a PPM to look at.
+
+Nothing here was seen on a real display: the tests run on the
+in-memory screen through the browser backend's input path, and the
+screen was checked by eye from the dumped PPM. Resizing was not tested
+(neither the browser screen nor the in-memory one changes size from a
+test).
+
+### 10.4 Sizes
+
+`acme.wasm` is 200,997 bytes. The source is about 2,800 lines with its
+unit tests (`main.rs` 1,740, `ui.rs` 530, `text.rs` 350, `frame.rs`
+210), plus the acceptance test (330), the device and SDK changes (about
+130). acme is a graphics program, so it stays out of the kernel's and
+the probe's images, as `draw/demo` does.
+
+### 10.5 Not done
+
+- acme(4), the file system on `/mnt/acme` (`cons`, `index`, `new`, and
+  each window's `addr`, `body`, `ctl`, `data`, `event`, `tag`): the next
+  step, and what `win`, `Mail` and external commands need.
+- `Edit` (sam's command language), `Zerox`, `Sort`, `Kill`, `Dump` and
+  `Load`, `Font`, `Tab`, `Indent`, `ID`, `Incl`, `Local`, `Send`.
+- Commands that start with `<`, `|` or `>` (piping the selection), the
+  2-1 chord (an argument for a button 2 command), and `$acmewin`-style
+  environment for commands.
+- Moving and resizing windows and columns with the mouse (the box and
+  column borders), the automatic arrangement acme does when a column is
+  full, and growing a window by clicking its box.
+- Autoscroll while sweeping past a frame's edge, and repeating while a
+  scroll bar button is held.
+- `/dev/snarf`: the snarf buffer is acme's own, as `#^` does not exist
+  yet.
+- Regular expressions in button 3 addresses (`file:/re/`, `:#n`,
+  `:n,m`).
+- Drawing only what changed in a frame (a change draws its text again
+  whole) and a full-screen copy for scrolling.
+
+## 11. Sources
 
 All accessed 2026-11-12.
 
