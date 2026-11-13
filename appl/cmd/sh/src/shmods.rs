@@ -377,7 +377,10 @@ impl Shell {
         };
         self.restore_vars(saved);
         res?;
-        self.set_var("*", args.into(), false);
+        // Inferno's arg leaves the remaining arguments in $args as well.
+        let rest: Vec<String> = args.into();
+        self.set_var("args", rest.clone(), false);
+        self.set_var("*", rest, false);
         Ok(status)
     }
 
