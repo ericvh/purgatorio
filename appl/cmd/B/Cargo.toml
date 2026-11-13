@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-b"
+description = "B: send files to the editor through the plumber"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "B"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+plumbmsg = { package = "appl-lib-plumbmsg", path = "../../lib/plumbmsg" }
+
+[lints]
+workspace = true

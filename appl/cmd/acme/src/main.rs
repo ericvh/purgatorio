@@ -30,6 +30,7 @@
 mod addr;
 mod frame;
 mod fs;
+mod plumb;
 mod text;
 mod ui;
 
@@ -132,6 +133,8 @@ struct Acme {
     font_name: String,
     /// The file system on `/mnt/acme`, when it could be mounted.
     fs: Option<fs::Fs>,
+    /// The plumber's `edit` port, through the helper that reads it.
+    plumb: Option<plumb::Port>,
     /// Redraw everything.
     full: bool,
     exit_warned: bool,
@@ -209,6 +212,7 @@ impl Acme {
             cwd,
             font_name,
             fs: None,
+            plumb: None,
             full: true,
             exit_warned: false,
             exit: false,
@@ -1684,6 +1688,27 @@ impl Acme {
         }
     }
 
+    /// Reads what the plumber sent to the `edit` port and opens each
+    /// file it names, at its line, in the first column.
+    fn plumbed(&mut self) {
+        let Some(p) = self.plumb.as_mut() else {
+            return;
+        };
+        let msgs = match p.read() {
+            Some(m) => m,
+            None => {
+                self.plumb = None;
+                return;
+            }
+        };
+        for m in msgs {
+            let (path, line) = plumb::target(&m);
+            let path = clean(&self.resolve(&m.dir, &path));
+            let id = self.open(0, &path, line);
+            self.seltext = Some(Tid::Body(id));
+        }
+    }
+
     // ---- The loop.
 
     fn main_loop(&mut self) -> Result<(), Error> {
@@ -1707,6 +1732,10 @@ impl Acme {
                 fds.push(Ready::Read(f.fd()));
                 fds.len() - 1
             });
+            let plumb_i = self.plumb.as_ref().map(|p| {
+                fds.push(Ready::Read(p.fd()));
+                fds.len() - 1
+            });
             let Some(i) = purgatorio::ready(&fds, -1)? else {
                 continue;
             };
@@ -1726,6 +1755,7 @@ impl Acme {
                     self.post_changes('F');
                 }
                 i if Some(i) == fs_i => self.serve(),
+                i if Some(i) == plumb_i => self.plumbed(),
                 i if Some(i) == wait_i => {
                     let mut buf = [0u8; 512];
                     let n = self
@@ -1862,6 +1892,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.get(1).map(String::as_str) == Some("--mount") {
         return fs::mount_helper();
     }
+    if args.get(1).map(String::as_str) == Some(plumb::HELPER) {
+        return plumb::helper();
+    }
     let mut args = args.into_iter().skip(1).peekable();
     let mut font = None;
     while let Some(a) = args.peek() {
@@ -1891,6 +1924,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     };
     let mut a = Acme::new(font, font_name)?;
     a.fs = fs::start(&mut a);
+    a.plumb = plumb::start();
     let files: Vec<String> = args.collect();
     for f in &files {
         let path = a.resolve(&a.cwd.clone(), f);
@@ -1899,7 +1933,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if let Some(id) = a.cols.first().and_then(|c| c.wins.first()).map(|w| w.id) {
         a.seltext = Some(Tid::Body(id));
     }
-    a.main_loop()
+    let r = a.main_loop();
+    if let Some(p) = a.plumb.take() {
+        p.stop();
+    }
+    r
 }
 
 #[cfg(test)]

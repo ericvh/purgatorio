@@ -157,6 +157,7 @@ dependencies = [
 name = "appl-cmd-acme"
 version = "0.1.0"
 dependencies = [
+ "appl-lib-plumbmsg",
  "appl-lib-regexp",
  "purg-styx",
  "purgatorio",
@@ -294,6 +295,14 @@ name = "appl-cmd-auxi-rstyxd"
 version = "0.1.0"
 dependencies = [
  "appl-lib-rstyx",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-b"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-plumbmsg",
  "purgatorio",
 ]
 
