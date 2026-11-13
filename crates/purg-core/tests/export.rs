@@ -519,3 +519,74 @@ fn a_bind_on_one_exported_device_root_stays_there() {
     within("the export ends", move || s.server.join().unwrap());
     kprocs_gone(&mock);
 }
+
+/// As in Inferno's export, an open fid cannot be walked, even with no
+/// names, nor opened or created in again. 9P2000 forbids all three.
+#[test]
+fn an_open_fid_is_not_walked_or_opened_again() {
+    let (mut p, mock) = setup();
+    let s = serve(&mut p, &mock);
+    let raw = Raw::new(&mut p, s.conn);
+    raw.call(
+        1,
+        Fcall::Twalk {
+            fid: 0,
+            newfid: 1,
+            wnames: vec![],
+        },
+        "Rwalk",
+    );
+    raw.call(
+        1,
+        Fcall::Topen {
+            fid: 1,
+            mode: mode::OREAD,
+        },
+        "Ropen",
+    );
+    for wnames in [vec![], vec!["plain"]] {
+        let text = raw.call(
+            1,
+            Fcall::Twalk {
+                fid: 1,
+                newfid: 2,
+                wnames,
+            },
+            "Rerror",
+        );
+        assert!(text.contains("walk of open fid"), "{text}");
+    }
+    let text = raw.call(
+        1,
+        Fcall::Topen {
+            fid: 1,
+            mode: mode::OREAD,
+        },
+        "Rerror",
+    );
+    assert!(text.contains("open/create -- unknown mode"), "{text}");
+    let text = raw.call(
+        1,
+        Fcall::Tcreate {
+            fid: 1,
+            name: "new",
+            perm: 0o644,
+            mode: mode::OWRITE,
+        },
+        "Rerror",
+    );
+    assert!(text.contains("open/create -- unknown mode"), "{text}");
+    // The fid it was cloned from is still unopened, and walks.
+    raw.call(
+        1,
+        Fcall::Twalk {
+            fid: 0,
+            newfid: 2,
+            wnames: vec!["plain"],
+        },
+        "Rwalk",
+    );
+    drop(raw);
+    within("the export ends", move || s.server.join().unwrap());
+    kprocs_gone(&mock);
+}
