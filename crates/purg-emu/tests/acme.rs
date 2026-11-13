@@ -335,6 +335,56 @@ fn edit_put_run_exit_wasmi() {
     run("wasmi");
 }
 
+/// Runs `test/acmefs` (by a button 2 click at `at`) in `mode` until
+/// `done` holds for what it reports, and returns that; fails with `what`
+/// once [`WAIT`] has passed.
+fn until(
+    p: &mut Page,
+    tmp: &Path,
+    out: &common::Collected,
+    at: (i32, i32),
+    mode: &str,
+    what: &str,
+    done: impl Fn(&str) -> bool,
+) -> String {
+    std::fs::write(tmp.join("mode"), mode).unwrap();
+    let start = Instant::now();
+    loop {
+        p.click(at.0, at.1, 2, what);
+        let got = results(tmp, what, out);
+        if done(&got) {
+            return got;
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "{what}: not so after {WAIT:?}:\n{got}"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Where to click with button 2 to execute the last word of a tag holding
+/// `text`, drawn from `x0` in `width` pixels with lines `fh` high from
+/// `y0`: right of the end of its last line. The tag wraps as acme's
+/// frames do, by the default font's widths.
+fn tag_end_at(text: &str, x0: i32, width: i32, y0: i32, fh: i32) -> (i32, i32) {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../root/fonts/go/regular.13/0000");
+    let sub = purg_memdraw::Subfont::read(&std::fs::read(path).unwrap()).unwrap();
+    let (mut x, mut line) = (0, 0);
+    for c in text.chars() {
+        let i = c as usize;
+        assert!(i < sub.n(), "{c:?} is not in the font's first subfont");
+        let w = i32::from(sub.info[i].width);
+        if x + w > width && x > 0 {
+            line += 1;
+            x = 0;
+        }
+        x += w;
+    }
+    ((x0 + x + 4).min(x0 + width - 2), y0 + line * fh + fh / 2)
+}
+
 /// Waits for `test/acmefs` to write its results, and returns them.
 fn results(tmp: &Path, what: &str, con: &common::Collected) -> String {
     let out = tmp.join("out");
@@ -424,11 +474,10 @@ fn fs_and_win(vm: &str) {
     const FH: i32 = 19;
     // The end of the row's tag, and the right column: its tag (with
     // `win` 69 to 88 pixels into it in the default font) and the first
-    // window in it, whose tag and body's first line are under it.
+    // line of the body of the first window in it.
     let row_end = (SIZE.0 - 6, FH / 2);
     let col_x = SIZE.0 / 2 + 16;
     let win_cmd = (col_x + 75, FH + 1 + FH / 2);
-    let tag_end = (SIZE.0 - 6, 2 * (FH + 1) + FH / 2);
     let body1 = (col_x + 4, 3 * (FH + 1) + FH / 2);
 
     // acme(4).
@@ -452,40 +501,82 @@ fn fs_and_win(vm: &str) {
     assert_eq!(got, FS_WANT, "{vm}: acme(4)");
 
     // win, from the right column's tag: the shell's prompt comes, `cat`
-    // waits for input until Delete interrupts it, and echo answers.
+    // waits for input until Delete interrupts it, and echo answers. Each
+    // step waits until the guest sees it done, as the progs take their
+    // time on a loaded host.
+    let body_is = |want: &'static str| {
+        move |got: &str| got.lines().any(|l| l.strip_prefix("body: ") == Some(want))
+    };
     p.click(win_cmd.0, win_cmd.1, 2, "win");
+    until(
+        &mut p,
+        &tmp,
+        &out,
+        row_end,
+        "body",
+        "win's prompt",
+        body_is(r#""; ""#),
+    );
     p.hover(SIZE.0 - 100, SIZE.1 - 20);
     p.typed("cat\n", "typing cat");
+    until(&mut p, &tmp, &out, row_end, "ps", "cat running", |g| {
+        g.contains(" cat")
+    });
+    p.hover(SIZE.0 - 100, SIZE.1 - 20);
     p.typed("\x7F", "interrupting cat");
+    until(
+        &mut p,
+        &tmp,
+        &out,
+        row_end,
+        "body",
+        "the prompt after cat",
+        body_is(r#""; cat\n; ""#),
+    );
+    p.hover(SIZE.0 - 100, SIZE.1 - 20);
     p.typed("echo hello\n", "typing echo hello");
-    std::fs::write(tmp.join("mode"), "body").unwrap();
-    p.click(row_end.0, row_end.1, 2, "test/acmefs body");
-    let got = results(&tmp, "body", &out);
-    let body = got
-        .lines()
-        .find_map(|l| l.strip_prefix("body: "))
-        .unwrap_or_else(|| panic!("{vm}: no win window:\n{got}"));
-    assert_eq!(
-        body, r#""; cat\n; echo hello\nhello\n; ""#,
-        "{vm}: win\n{got}"
+    let got = until(
+        &mut p,
+        &tmp,
+        &out,
+        row_end,
+        "body",
+        "echo's output",
+        body_is(r#""; cat\n; echo hello\nhello\n; ""#),
     );
     assert!(got.contains("/-"), "{vm}: win's name\n{got}");
 
-    // Del in win's tag kills the shell and deletes the window.
-    p.hover(tag_end.0, tag_end.1);
+    // Del typed at the end of win's tag and clicked kills the shell and
+    // deletes the window. The tag holds the host's name, so where its end
+    // is depends on the host: a long name wraps it.
+    let tag = got
+        .lines()
+        .find_map(|l| l.strip_prefix("tag: "))
+        .unwrap_or_else(|| panic!("{vm}: no tag for win:\n{got}"))
+        .to_string();
+    let del = tag_end_at(
+        &format!("{tag}Del"),
+        col_x,
+        SIZE.0 - col_x,
+        2 * (FH + 1),
+        FH,
+    );
+    p.hover(del.0, del.1);
     p.typed("Del", "typing Del");
-    p.click(tag_end.0, tag_end.1, 2, "Del");
-    std::fs::write(tmp.join("mode"), "ps").unwrap();
-    // The shell is killed after the window goes; give it a moment.
-    std::thread::sleep(Duration::from_millis(500));
-    p.click(row_end.0, row_end.1, 2, "test/acmefs ps");
-    let got = results(&tmp, "ps", &out);
-    let progs = got.lines().next().unwrap_or("");
-    assert!(!progs.contains("win"), "{vm}: win left: {progs}");
-    assert_eq!(
-        progs.matches(" sh").count(),
-        2,
-        "{vm}: only the emu's shell and the one running test/acmefs: {progs}"
+    p.click(del.0, del.1, 2, "Del");
+    // win kills the group and acme deletes the window: wait until no win
+    // and no shell of its is left.
+    until(
+        &mut p,
+        &tmp,
+        &out,
+        row_end,
+        "ps",
+        "the progs after Del",
+        |g| {
+            let progs = g.lines().next().unwrap_or("");
+            !progs.contains("win") && progs.matches(" sh").count() == 2
+        },
     );
     std::fs::write(tmp.join("mode"), "body").unwrap();
     p.click(row_end.0, row_end.1, 2, "test/acmefs body");

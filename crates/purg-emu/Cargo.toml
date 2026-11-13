@@ -50,5 +50,8 @@ miniz_oxide = { version = "0.8", default-features = false, features = ["with-all
 workspace = true
 
 [dev-dependencies]
+# The default font's widths, for where text lands on the screen in
+# tests/acme.rs.
+purg-memdraw.workspace = true
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
