@@ -318,7 +318,7 @@ host and compares the hashes with the rest.
 ## Ahead-of-time images
 
 The kernel can run a module as native code compiled on the build host
-(`purg-vm-aot`, `docs/perf.md` Section 11). Native code is outside the
+(`purg-vm-aot`, `docs/perf.md` Sections 5.2 and 12). Native code is outside the
 WebAssembly sandbox: it can do anything the kernel can. So an image is
 trusted as the kernel is, never as a module is, and the module policy
 alone never lets one run.
