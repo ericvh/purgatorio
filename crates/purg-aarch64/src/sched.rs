@@ -229,6 +229,9 @@ struct Thread {
     timed_out: AtomicBool,
     /// PC and link register where the timer last preempted it.
     preempted_at: (u64, u64),
+    /// One word of thread-local storage ([`tls`]). Only the thread itself
+    /// reads or writes it.
+    tls: AtomicUsize,
 }
 
 impl Thread {
@@ -263,6 +266,7 @@ impl Thread {
             deadline: 0,
             timed_out: AtomicBool::new(false),
             preempted_at: (0, 0),
+            tls: AtomicUsize::new(0),
         }
     }
 
@@ -411,6 +415,23 @@ unsafe extern "C" {
 
 global_asm!(
     r#"
+// x0: the top of a stack, x1: an argument, x2: a function. Calls x2(x1)
+// on that stack and returns on this one. The old stack pointer is kept
+// on the new stack, and x29 links the new frames to the old ones.
+.global purg_aarch64_on_stack
+purg_aarch64_on_stack:
+    stp     x29, x30, [sp, #-16]!
+    mov     x29, sp
+    mov     x9, sp
+    mov     sp, x0
+    str     x9, [sp, #-16]!
+    mov     x0, x1
+    blr     x2
+    ldr     x9, [sp], #16
+    mov     sp, x9
+    ldp     x29, x30, [sp], #16
+    ret
+
 .global purg_aarch64_switch
 purg_aarch64_switch:
     stp     x19, x20, [x0, #0]
@@ -438,6 +459,9 @@ purg_aarch64_switch:
     ldp     d10, d11, [x1, #120]
     ldp     d12, d13, [x1, #136]
     ldp     d14, d15, [x1, #152]
+    // The thread may go on to run code another CPU wrote and made
+    // executable (`crate::code`): drop anything fetched before here.
+    isb
     ret
 
 .global purg_aarch64_thread_start
@@ -478,6 +502,47 @@ extern "C" fn purg_aarch64_thread_main(sched: &'static Scheduler) -> ! {
     }
 }
 
+unsafe extern "C" {
+    fn purg_aarch64_on_stack(top: usize, arg: *mut u8, f: unsafe extern "C" fn(*mut u8));
+}
+
+/// Calls `f` on `stack` instead of the thread's own stack, and returns
+/// on the thread's stack. The thread stays the same thread: it can block,
+/// be preempted and move to another CPU while on `stack`, and its
+/// [`tls`] word is the same. Nothing checks `stack` for overflow (the
+/// switch's paint check covers only the thread's own stack), so `f` must
+/// bound its own depth: the AOT engine runs guests here, whose code
+/// checks its stack in each function's prologue.
+pub fn on_stack(stack: &mut [u8], f: &mut dyn FnMut()) {
+    unsafe extern "C" fn call(arg: *mut u8) {
+        // SAFETY: `arg` is the `&mut &mut dyn FnMut()` below, live for
+        // the call.
+        let f = unsafe { &mut *arg.cast::<&mut dyn FnMut()>() };
+        f();
+    }
+    let top = (stack.as_mut_ptr() as usize + stack.len()) & !15;
+    let mut f = f;
+    // SAFETY: `top` is the 16-byte aligned top of memory the caller lends
+    // for the call, and `call` gets a pointer to `f`, which outlives it.
+    unsafe { purg_aarch64_on_stack(top, (&raw mut f).cast(), call) };
+}
+
+/// The running thread's word of thread-local storage, 0 until
+/// [`set_tls`]. It lives in the thread itself, which `TPIDR_EL1` names
+/// on whatever CPU the thread is on, so nothing is switched or locked to
+/// reach it. wasmtime's `wasmtime_tls_get` hook reads it.
+pub fn tls() -> usize {
+    running().map_or(0, |th| th.tls.load(Ordering::Relaxed))
+}
+
+/// Sets the running thread's [`tls`] word. Before [`Scheduler::init`]
+/// there is no thread and the word is dropped.
+pub fn set_tls(v: usize) {
+    if let Some(th) = running() {
+        th.tls.store(v, Ordering::Relaxed);
+    }
+}
+
 /// The running thread, through `TPIDR_EL1`; `None` before
 /// [`Scheduler::init`].
 fn running() -> Option<&'static Thread> {
@@ -485,7 +550,7 @@ fn running() -> Option<&'static Thread> {
     // SAFETY: the scheduler stores in TPIDR_EL1 only the address of the
     // boxed Thread it switches to, and frees a Thread only once it has
     // exited and another thread runs on the CPU that ran it last. Its
-    // `preempt` and `pending` fields are atomics.
+    // `preempt`, `pending` and `tls` fields are atomics.
     (p != 0).then(|| unsafe { &*(p as *const Thread) })
 }
 

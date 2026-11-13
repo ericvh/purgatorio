@@ -142,6 +142,8 @@ pub struct TableAlloc {
     next: usize,
     end: usize,
     access: usize,
+    /// Whether [`AddressSpace::map`] may use 1 GiB blocks.
+    gib: bool,
 }
 
 impl TableAlloc {
@@ -157,7 +159,17 @@ impl TableAlloc {
             next: pool.base,
             end: pool.base + pool.size,
             access,
+            gib: true,
         }
+    }
+
+    /// Makes [`AddressSpace::map`] use blocks of at most 2 MiB with these
+    /// tables. The kernel's runtime map is built this way, so that a
+    /// 2 MiB block of RAM can change its permissions alone
+    /// ([`crate::code`]) without splitting a live 1 GiB block.
+    pub const fn without_gib_blocks(mut self) -> TableAlloc {
+        self.gib = false;
+        self
     }
 
     /// Pages left in the pool.
@@ -232,7 +244,7 @@ impl AddressSpace {
         let (mut va, mut pa, mut len) = (va, pa, len);
         while len > 0 {
             let fits = |size: usize| (va | pa).is_multiple_of(size) && len >= size;
-            let (level, size, kind) = if fits(L1_BLOCK) {
+            let (level, size, kind) = if alloc.gib && fits(L1_BLOCK) {
                 (1, L1_BLOCK, BLOCK)
             } else if fits(L2_BLOCK) {
                 (2, L2_BLOCK, BLOCK)
@@ -301,6 +313,76 @@ impl AddressSpace {
         }
         None
     }
+}
+
+impl AddressSpace {
+    /// The entry for `va` at `level` (2 for a 2 MiB block, 3 for a page),
+    /// if the tables above it exist. The entry itself may be invalid.
+    ///
+    /// # Safety
+    /// The tables must be valid and readable at `physical + access`.
+    pub unsafe fn entry_at(&self, access: usize, va: usize, level: usize) -> Option<*mut u64> {
+        let mut table = self.root;
+        for l in 0..level {
+            let e = table.wrapping_add(access) as *const u64;
+            // SAFETY: the caller guarantees the tables are readable.
+            let d = unsafe { e.wrapping_add(index(va, l)).read_volatile() };
+            if d & 0b11 != TABLE {
+                return None;
+            }
+            table = (d & ADDR_MASK) as usize;
+        }
+        Some((table.wrapping_add(access) as *mut u64).wrapping_add(index(va, level)))
+    }
+
+    /// The level-3 (page) entry for `va`, making the tables above it with
+    /// `new_table`, which returns the physical address of a zeroed page,
+    /// or `None` when there is no memory.
+    ///
+    /// # Safety
+    /// The tables must be valid and writable at `physical + access`, and
+    /// so must the pages `new_table` returns. The caller orders the new
+    /// table entries before any walk that needs them (`dsb ishst`).
+    pub unsafe fn page_entry_with(
+        &self,
+        access: usize,
+        va: usize,
+        new_table: &mut dyn FnMut() -> Option<usize>,
+    ) -> Result<*mut u64, Error> {
+        let mut table = self.root;
+        for l in 0..3 {
+            let e = (table.wrapping_add(access) as *mut u64).wrapping_add(index(va, l));
+            // SAFETY: the caller guarantees the tables are writable.
+            let d = unsafe { e.read_volatile() };
+            table = if d & VALID == 0 {
+                let t = new_table().ok_or(Error::OutOfTables)?;
+                // SAFETY: as above.
+                unsafe { e.write_volatile(t as u64 | TABLE) };
+                t
+            } else if d & 0b11 == TABLE {
+                (d & ADDR_MASK) as usize
+            } else {
+                return Err(Error::AlreadyMapped);
+            };
+        }
+        Ok((table.wrapping_add(access) as *mut u64).wrapping_add(index(va, 3)))
+    }
+}
+
+/// A level-3 descriptor mapping the 4 KiB page at physical `pa`.
+pub const fn page_descriptor(pa: usize, perm: Perm) -> u64 {
+    (pa as u64 & ADDR_MASK) | perm.bits() | PAGE
+}
+
+/// True if `d` is a valid block descriptor (at level 1 or 2).
+pub const fn is_block(d: u64) -> bool {
+    d & 0b11 == BLOCK
+}
+
+/// Leaf descriptor `d` made read-only (`true`) or read-write, nothing
+/// else changed.
+pub const fn with_read_only(d: u64, ro: bool) -> u64 {
+    if ro { d | AP_RO } else { d & !AP_RO }
 }
 
 /// True if leaf descriptor `d` (from [`AddressSpace::lookup`]) is
@@ -690,5 +772,51 @@ mod tests {
         assert_eq!(alloc.remaining(), 2);
         let (pa, _) = look(&a, access, phys_to_virt(0x8765_4321)).unwrap();
         assert_eq!(pa, 0x8765_4321);
+    }
+
+    #[test]
+    fn without_gigabyte_blocks() {
+        let mut pool = Pool::new(8);
+        let (alloc, access) = pool.alloc(8);
+        let mut alloc = alloc.without_gib_blocks();
+        let mut a = AddressSpace::new(&mut alloc).unwrap();
+        let va = phys_to_virt(0x4000_0000);
+        a.map(&mut alloc, va, 0x4000_0000, 2 << 30, Perm::ReadWrite)
+            .unwrap();
+        // L0, L1 and an L2 table per gigabyte.
+        assert_eq!(alloc.remaining(), 4);
+        // SAFETY: the tables live in `pool`.
+        let e = unsafe { a.entry_at(access, va + (3 << 20), 2) }.unwrap();
+        // SAFETY: as above.
+        let d = unsafe { e.read_volatile() };
+        assert!(is_block(d) && writable(d));
+        let ro = with_read_only(d, true);
+        assert!(!writable(ro) && !executable(ro) && with_read_only(ro, false) == d);
+        assert!(unsafe { a.entry_at(access, va, 3) }.is_none());
+    }
+
+    #[test]
+    fn pages_made_on_demand() {
+        let mut pool = Pool::new(8);
+        let (mut alloc, access) = pool.alloc(8);
+        let a = AddressSpace::new(&mut alloc).unwrap();
+        let va = 0xffff_8000_0000_0000 + 0x5000;
+        let mut tables = (0..3).map(|_| alloc.alloc().unwrap()).collect::<Vec<_>>();
+        let mut new = || tables.pop();
+        // SAFETY: the tables live in `pool`.
+        let e = unsafe { a.page_entry_with(access, va, &mut new) }.unwrap();
+        // SAFETY: as above.
+        unsafe { e.write_volatile(page_descriptor(0x4123_4000, Perm::Text)) };
+        let (pa, d) = look(&a, access, va + 0x12).unwrap();
+        assert_eq!(pa, 0x4123_4012);
+        assert!(executable(d) && !writable(d));
+        // The tables exist now: no more are needed for the next page.
+        let mut none = || None;
+        // SAFETY: as above.
+        assert!(unsafe { a.page_entry_with(access, va + 0x1000, &mut none) }.is_ok());
+        assert_eq!(
+            unsafe { a.page_entry_with(access, va + (2 << 20), &mut none) },
+            Err(Error::OutOfTables)
+        );
     }
 }

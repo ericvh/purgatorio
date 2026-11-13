@@ -27,6 +27,8 @@ pub mod boot;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod cache;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+pub mod code;
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod console;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod cpu;
