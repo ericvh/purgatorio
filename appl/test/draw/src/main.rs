@@ -68,6 +68,14 @@ fn ctl_info() -> Result<(), String> {
     if got != i {
         return Err(format!("ctl says {got:?}, want {i:?}"));
     }
+    // As devdraw, a read answers one request: read again without asking
+    // and there is no image to describe.
+    let mut ctl =
+        std::fs::File::open(format!("/dev/draw/{}/ctl", d.conn)).map_err(|x| e(x.into()))?;
+    match std::io::Read::read(&mut ctl, &mut [0u8; 144]).map_err(|x| e(x.into())) {
+        Err(x) if x == "unknown id for draw image" => {}
+        other => return Err(format!("a second read of ctl: {other:?}")),
+    }
     match d.info(999) {
         Err(x) if x.0 == "unknown id for draw image" => Ok(()),
         other => Err(format!("info of a bad id: {other:?}")),

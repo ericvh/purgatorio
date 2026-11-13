@@ -72,7 +72,7 @@ const ENODRAWSCREEN: &str = "unknown id for draw screen";
 const ESHORTDRAW: &str = "short draw message";
 const ESHORTREAD: &str = "draw read too short";
 const EIMAGEEXISTS: &str = "image id in use";
-const EDRAWMEM: &str = "image memory allocation failed";
+const EDRAWMEM: &str = "out of memory: image";
 const EREADOUTSIDE: &str = "readimage outside image";
 const EWRITEOUTSIDE: &str = "writeimage outside image";
 const EBADCMD: &str = "bad draw command";
@@ -82,6 +82,9 @@ const ENOTFONT: &str = "image not a font";
 const EINDEX: &str = "character index out of range";
 const EDISPLAYFONT: &str = "cannot use display as font";
 const EFONTSIZE: &str = "bad font size (4096 chars max)";
+/// What `new` and `ctl` read: twelve fields of 11 characters, each
+/// followed by a blank.
+const INFO: usize = 144;
 
 const QTOP: u64 = 0;
 const QDRAW: u64 = 1;
@@ -112,8 +115,9 @@ struct Conn {
     images: BTreeMap<u32, Image>,
     /// Whether id 0 still names the screen (`f 0` drops it).
     screen: bool,
-    /// The image `ctl` reports on.
-    info: u32,
+    /// The image the next read of `ctl` reports on: the screen at first,
+    /// then whatever `ctl` was last told; a read clears it.
+    info: Option<u32>,
     /// The operator for the next drawing message.
     op: Op,
     /// Pixels waiting for a read of `data`, after `r`.
@@ -135,7 +139,7 @@ impl Conn {
         Conn {
             images: BTreeMap::new(),
             screen: true,
-            info: 0,
+            info: Some(0),
             op: Op::SOVER_D,
             readdata: None,
             fonts: BTreeMap::new(),
@@ -613,11 +617,18 @@ impl DevDraw {
                     return Err(Error::new(ENODRAWIMAGE));
                 }
                 let font = conn.font(fid)?;
-                let mut glyphs = Vec::with_capacity(n);
-                for i in 0..n {
-                    let o = head + 2 * i;
-                    let ci = usize::from(u16::from_le_bytes([a[o], a[o + 1]]));
-                    glyphs.push(*font.chars.get(ci).ok_or(Error::new(EINDEX))?);
+                // The glyphs up to the first bad index. As in devdraw, `x`
+                // checks them all before it paints the background, and `s`
+                // draws those before the bad one and then fails.
+                let glyphs: Vec<md::CacheChar> = (0..n)
+                    .map(|i| {
+                        usize::from(u16::from_le_bytes([a[head + 2 * i], a[head + 2 * i + 1]]))
+                    })
+                    .map_while(|ci| font.chars.get(ci).copied())
+                    .collect();
+                let bad = glyphs.len() < n;
+                if bad && bg {
+                    return Err(Error::new(EINDEX));
                 }
                 let ascent = font.ascent;
                 let mut srcs = alloc::vec![src, fid];
@@ -652,6 +663,9 @@ impl DevDraw {
                     d.clipr = saved;
                     ((), damage)
                 })?;
+                if bad {
+                    return Err(Error::new(EINDEX));
+                }
                 Ok(m)
             }
             _ => Err(Error::new(EBADCMD)),
@@ -842,12 +856,16 @@ impl Dev for DevDraw {
             KCTL => {
                 self.sync_size();
                 let cl = self.client(conn_of(path))?;
-                let conn = cl.conn.lock();
-                let s = self.info(conn_of(path), &conn, conn.info)?;
-                if buf.len() < s.len() {
+                let mut conn = cl.conn.lock();
+                if buf.len() < INFO {
                     return Err(Error::new(ESHORTREAD));
                 }
+                let id = conn.info.ok_or(Error::new(ENODRAWIMAGE))?;
+                let s = self.info(conn_of(path), &conn, id)?;
                 buf[..s.len()].copy_from_slice(s.as_bytes());
+                // As devdraw: each read answers one request, so the next
+                // needs another `ctl` write.
+                conn.info = None;
                 Ok(s.len())
             }
             KDATA => {
@@ -930,7 +948,7 @@ impl Dev for DevDraw {
                 if !ok {
                     return Err(Error::new(ENODRAWIMAGE));
                 }
-                conn.info = id;
+                conn.info = Some(id);
                 Ok(4)
             }
             KDATA => {
@@ -1087,6 +1105,71 @@ mod tests {
         // left -1: glyphs at x 3..5 and 6..8, rows 4 and 5.
         let got: Vec<usize> = (0..16).filter(|&x| blue(x, 0) && blue(x, 1)).collect();
         assert_eq!(got, [3, 4, 6, 7]);
+    }
+
+    /// devdraw's `s` draws the glyphs before a bad index, then fails;
+    /// `x` checks every index before it paints anything.
+    #[test]
+    fn a_bad_glyph_index() {
+        // The font of `glyphs_from_the_cache`, and a white background.
+        let setup = |d: &DevDraw, c: &mut Conn| {
+            let mut m = alloc(1, md::GREY8, false, Rect::new(0, 0, 4, 3), 0);
+            m.extend(alloc(
+                2,
+                md::GREY1,
+                false,
+                Rect::new(0, 0, 8, 2),
+                0xFFFFFFFF,
+            ));
+            m.extend(alloc(3, md::RGB24, true, Rect::new(0, 0, 1, 1), 0x0000FFFF));
+            m.extend(alloc(4, md::RGB24, true, Rect::new(0, 0, 1, 1), 0xFF0000FF));
+            m.extend([b'i', 1, 0, 0, 0, 2, 0, 0, 0, 2]);
+            m.extend([b'l', 1, 0, 0, 0, 2, 0, 0, 0, 1, 0]);
+            for v in [1i32, 0, 3, 2, 0, 0] {
+                m.extend(v.to_le_bytes());
+            }
+            m.extend([0xFF, 3]);
+            d.messages(c, &m).unwrap();
+        };
+        // Glyphs 1, 1 and 2 (out of range) from baseline (4, 6).
+        let text = |bg: bool| {
+            let mut m = alloc::vec![if bg { b'x' } else { b's' }];
+            for v in [0u32, 3, 1] {
+                m.extend(v.to_le_bytes());
+            }
+            for v in [4i32, 6, 0, 0, 16, 8, 0, 0] {
+                m.extend(v.to_le_bytes());
+            }
+            m.extend(3u16.to_le_bytes());
+            if bg {
+                m.extend(4u32.to_le_bytes());
+                m.extend([0u8; 8]);
+            }
+            m.extend([1, 0, 1, 0, 2, 0]);
+            m
+        };
+        // The columns of rows 4 and 5 that are not white.
+        let inked = |d: &DevDraw, c: &mut Conn| {
+            let mut m = alloc::vec![b'r'];
+            m.extend(0u32.to_le_bytes());
+            for v in [0i32, 4, 16, 6] {
+                m.extend(v.to_le_bytes());
+            }
+            d.messages(c, &m).unwrap();
+            let px = c.readdata.take().unwrap();
+            let white = |x: usize, y: usize| px[(y * 16 + x) * 4..][..3] == [0xFF; 3];
+            (0..16)
+                .filter(|&x| !white(x, 0) || !white(x, 1))
+                .collect::<Vec<usize>>()
+        };
+        for bg in [false, true] {
+            let (d, mut c) = conn();
+            setup(&d, &mut c);
+            let err = d.messages(&mut c, &text(bg)).unwrap_err();
+            assert_eq!(err.as_str(), EINDEX);
+            let want: &[usize] = if bg { &[] } else { &[3, 4, 6, 7] };
+            assert_eq!(inked(&d, &mut c), want, "{}", if bg { 'x' } else { 's' });
+        }
     }
 
     #[test]
