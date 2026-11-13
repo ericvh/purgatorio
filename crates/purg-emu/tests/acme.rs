@@ -43,7 +43,10 @@ impl Root {
             std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../root"))
                 .unwrap();
         assert!(
-            real.join("bin/acme.wasm").exists() && real.join("bin/test/draw.wasm").exists(),
+            real.join("bin/acme.wasm").exists()
+                && real.join("bin/test/draw.wasm").exists()
+                && real.join("bin/test/acmefs.wasm").exists()
+                && real.join("bin/win.wasm").exists(),
             "guest binaries missing; run `cargo xtask build-root` first"
         );
         let path = Path::new(env!("CARGO_TARGET_TMPDIR"))
@@ -195,6 +198,7 @@ impl Page {
             match c {
                 '\n' => m.extend_from_slice(b"Enter"),
                 '\x08' => m.extend_from_slice(b"Backspace"),
+                '\x7F' => m.extend_from_slice(b"Delete"),
                 c => m.extend_from_slice(c.to_string().as_bytes()),
             }
             self.send(&m);
@@ -329,4 +333,188 @@ fn edit_put_run_exit_wasmtime() {
 #[test]
 fn edit_put_run_exit_wasmi() {
     run("wasmi");
+}
+
+/// Waits for `test/acmefs` to write its results, and returns them.
+fn results(tmp: &Path, what: &str, con: &common::Collected) -> String {
+    let out = tmp.join("out");
+    let start = Instant::now();
+    loop {
+        if let Ok(s) = std::fs::read_to_string(&out)
+            && s.ends_with("end\n")
+        {
+            let _ = std::fs::remove_file(&out);
+            return s;
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "{what}: no results from test/acmefs; the console:\n{}",
+            common::tail(&con.bytes(Duration::ZERO))
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// What `test/acmefs` reports of acme(4) (see `appl/test/acmefs`).
+const FS_WANT: &str = "\
+ctl: 8 fields, body 0 dir 0 dirty 0 width>0 true font /fonts/default.font tab>0 true
+body: \"one\\ntwo\\nthree\\n\"
+addr 2: 4 8
+addr #3,#5: 3 5
+addr /thr/: 8 11
+addr 0: 0 0
+addr $: 14 14
+addr 3-1: 4 8
+addr 2,3: 4 14
+addr /o/: 0 1
+addr ?o?: 6 7
+addr /(/: bad address syntax
+addr 9: address out of range
+xdata #3,#5: \"\\nt\"
+dot=addr: ok
+addr=dot: 8 11
+data write at 2: addr 8 8
+data from 0: \"one\\nTWO\\nthree\\n\"
+addr after: 14 14
+dirty: 1
+clean: 0
+bogus: ill-formed control message
+name: ok
+index: /tmp/acme/fsw Del Snarf Undo | Look
+tag: /tmp/acme/fsw Del Snarf Undo | Look Extra
+cleartag: /tmp/acme/fsw Del Snarf Undo |
+event: MX 0 flag 3
+event: \"MX0 3 0 3 New\"
+write back: ok
+windows after New: 2
+body write: [\"EI8 13 0 5 more\\n\"]
+after a killed reader: [\"EI0 1 0 1 x\"]
+index at end: \"\"
+deleted: deleted window
+end
+";
+
+/// acme(4) and `win` from inside acme. The test types `test/acmefs` in
+/// the row's tag and runs it with button 2, a mode in
+/// `/tmp/acme/mode` saying what to check: first acme(4) itself (with a
+/// button 2 click on `New` in the window it made, for the events), then,
+/// after `win` is run from the right column's tag and given `cat`, an
+/// interrupt and `echo hello`, the win window's text, and after `Del` in
+/// its tag, the progs left.
+fn fs_and_win(vm: &str) {
+    let root = Root::new(vm);
+    let tmp = root.0.join("tmp/acme");
+    let mut w = common::Watched::spawn(
+        Command::new(env!("CARGO_BIN_EXE_emu"))
+            .arg("-r")
+            .arg(&root.0)
+            .arg(format!("--vm={vm}"))
+            .args(["-s", &format!("{}x{}", SIZE.0, SIZE.1), "-w"])
+            .args(["sh", "-c", "acme; echo acme: $status"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped()),
+    );
+    let out = common::Collected::new(w.child.stdout.take().unwrap());
+    let (host, token) = url(&w);
+    let s = connect(&host, &token);
+    let frames = Frames::start(s.try_clone().unwrap());
+    let mut p = Page { s, frames };
+    p.frames.settle(0, "acme's first screen");
+
+    const FH: i32 = 19;
+    // The end of the row's tag, and the right column: its tag (with
+    // `win` 69 to 88 pixels into it in the default font) and the first
+    // window in it, whose tag and body's first line are under it.
+    let row_end = (SIZE.0 - 6, FH / 2);
+    let col_x = SIZE.0 / 2 + 16;
+    let win_cmd = (col_x + 75, FH + 1 + FH / 2);
+    let tag_end = (SIZE.0 - 6, 2 * (FH + 1) + FH / 2);
+    let body1 = (col_x + 4, 3 * (FH + 1) + FH / 2);
+
+    // acme(4).
+    std::fs::write(tmp.join("mode"), "fs").unwrap();
+    p.hover(row_end.0, row_end.1);
+    p.typed("test/acmefs", "typing test/acmefs");
+    p.click(row_end.0, row_end.1, 2, "test/acmefs");
+    let start = Instant::now();
+    while !tmp.join("ready").exists() {
+        if let Ok(o) = std::fs::read_to_string(tmp.join("out")) {
+            panic!("{vm}: test/acmefs ended early:\n{o}");
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "{vm}: test/acmefs did not get ready"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    p.click(body1.0, body1.1, 2, "button 2 on New");
+    let got = results(&tmp, "fs", &out);
+    assert_eq!(got, FS_WANT, "{vm}: acme(4)");
+
+    // win, from the right column's tag: the shell's prompt comes, `cat`
+    // waits for input until Delete interrupts it, and echo answers.
+    p.click(win_cmd.0, win_cmd.1, 2, "win");
+    p.hover(SIZE.0 - 100, SIZE.1 - 20);
+    p.typed("cat\n", "typing cat");
+    p.typed("\x7F", "interrupting cat");
+    p.typed("echo hello\n", "typing echo hello");
+    std::fs::write(tmp.join("mode"), "body").unwrap();
+    p.click(row_end.0, row_end.1, 2, "test/acmefs body");
+    let got = results(&tmp, "body", &out);
+    let body = got
+        .lines()
+        .find_map(|l| l.strip_prefix("body: "))
+        .unwrap_or_else(|| panic!("{vm}: no win window:\n{got}"));
+    assert_eq!(
+        body, r#""; cat\n; echo hello\nhello\n; ""#,
+        "{vm}: win\n{got}"
+    );
+    assert!(got.contains("/-"), "{vm}: win's name\n{got}");
+
+    // Del in win's tag kills the shell and deletes the window.
+    p.hover(tag_end.0, tag_end.1);
+    p.typed("Del", "typing Del");
+    p.click(tag_end.0, tag_end.1, 2, "Del");
+    std::fs::write(tmp.join("mode"), "ps").unwrap();
+    // The shell is killed after the window goes; give it a moment.
+    std::thread::sleep(Duration::from_millis(500));
+    p.click(row_end.0, row_end.1, 2, "test/acmefs ps");
+    let got = results(&tmp, "ps", &out);
+    let progs = got.lines().next().unwrap_or("");
+    assert!(!progs.contains("win"), "{vm}: win left: {progs}");
+    assert_eq!(
+        progs.matches(" sh").count(),
+        2,
+        "{vm}: only the emu's shell and the one running test/acmefs: {progs}"
+    );
+    std::fs::write(tmp.join("mode"), "body").unwrap();
+    p.click(row_end.0, row_end.1, 2, "test/acmefs body");
+    assert_eq!(
+        results(&tmp, "after Del", &out),
+        "end\n",
+        "{vm}: the window stayed"
+    );
+
+    // acme still works: Exit ends it.
+    p.hover(row_end.0, row_end.1);
+    p.typed(
+        "\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08\x08Exit",
+        "typing Exit",
+    );
+    p.pointer(row_end.0, row_end.1, 2);
+    p.pointer(row_end.0, row_end.1, 0);
+    let (status, err) = w.finish(WAIT);
+    assert!(status.success(), "{vm}: {}", common::failure(status, &err));
+    let out = String::from_utf8_lossy(&out.bytes(WAIT)).into_owned();
+    assert_eq!(out, "acme: \n", "{vm}: acme failed");
+}
+
+#[test]
+fn fs_and_win_wasmtime() {
+    fs_and_win("wasmtime");
+}
+
+#[test]
+fn fs_and_win_wasmi() {
+    fs_and_win("wasmi");
 }
