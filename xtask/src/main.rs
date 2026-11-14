@@ -2175,6 +2175,8 @@ fn mcp_guest(ws: &Path, port: u16, run: &str) -> Result<()> {
         .arg("-r")
         .arg(ws.join("root"))
         .arg("--vm=wasmi")
+        // rcmd's status, as the emu's.
+        .arg("-x")
         // The kernel's rstyxd proves itself with the public test key, and
         // its test mode trusts that key for this client: trust it back.
         .args([

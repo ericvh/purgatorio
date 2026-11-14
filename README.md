@@ -379,9 +379,17 @@ The fonts in `root/fonts` are made from `fonts/` by `cargo xtask fonts`
 The time zones in `root/locale` are made from `tzdata/` by
 `cargo xtask timezones`; the xtask test `locale_is_current` checks them.
 
-You can also run the binary directly: `target/debug/emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi] [cmd [args...]]`.
-A command name `cmd` runs `/bin/cmd.wasm`. The exit code is 0 when the prog's
-Inferno exit status is empty and 1 otherwise.
+You can also run the binary directly: `target/debug/emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [-x] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]`.
+A command name `cmd` runs `/bin/cmd.wasm`. As in Inferno, the emu exits when
+the last prog exits, not the first, and its exit code is then 0. A background
+prog, a server left running or a broken prog keeps it running until it ends
+or is killed. With `-g` or `-w` the window or page stays until then; closing
+the window ends the emu and the progs still running.
+
+`-x` is not an Inferno flag: the emu exits when the first prog does, with exit
+code 0 when its Inferno exit status is empty and 1 otherwise, and other progs
+are stopped with it. Scripts and tests on the host use it to get a command's
+status: `emu -x cat /nonexistent` exits 1.
 
 ### Tests
 

@@ -166,6 +166,10 @@ traps does the same:
 - `kill` on its `ctl` (the `kill` command, or `broke` for all of them)
   removes it.
 
+Like any prog, a broken one keeps the emu running until it is killed:
+the emu exits when the last prog has gone, as Inferno's does (`emu -x`
+does not wait).
+
 A prog that is not traced leaves nothing behind when it traps, as before.
 
 ### `/prog/<pid>/stack`

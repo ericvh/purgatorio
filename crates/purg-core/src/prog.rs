@@ -338,6 +338,8 @@ pub struct Procs {
     /// the child is counted as a member, so two spawns cannot both take
     /// the last place.
     admit: Mutex<()>,
+    /// Woken when a prog leaves the table, for [`Procs::wait_empty`].
+    gone: Rendez,
 }
 
 impl Procs {
@@ -350,7 +352,14 @@ impl Procs {
             modpolicy: Mutex::new(ModPolicy::default()),
             domain_limits: Mutex::new(BTreeMap::new()),
             admit: Mutex::new(()),
+            gone: Rendez::new(),
         })
+    }
+
+    /// Sleeps until the table is empty: every prog has exited, and every
+    /// broken one has been killed. Inferno's emu exits then (`progexit`).
+    pub fn wait_empty(&self) {
+        self.gone.sleep(|| self.table.lock().is_empty());
     }
 
     /// The limits of domain `id`.
@@ -526,6 +535,7 @@ impl Procs {
         });
         // Dropped outside the table's lock.
         drop(broken);
+        self.gone.wakeup();
     }
 
     /// Sends the `interrupt` note to `pid`: a prog that catches it has
@@ -577,7 +587,10 @@ impl Procs {
                 None => None,
             }
         };
-        drop(p);
+        if p.is_some() {
+            drop(p);
+            self.gone.wakeup();
+        }
     }
 
     pub fn get(&self, pid: u32) -> Option<Arc<Proc>> {
@@ -614,6 +627,7 @@ impl Procs {
             }
         } else {
             self.table.lock().remove(&pid);
+            self.gone.wakeup();
         }
         let parent = self.get(p.ppid);
         // The samples and counts of a profiled prog and of its children

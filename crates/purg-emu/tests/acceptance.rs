@@ -64,7 +64,17 @@ impl Drop for Root {
     }
 }
 
+/// Runs emu with `-x`, so that it exits when its first prog does, with
+/// that prog's status: most tests check a command's status, and some leave
+/// servers running.
 fn emu(vm: &str, args: &[&str], stdin: &[u8]) -> Output {
+    let mut all = vec!["-x"];
+    all.extend_from_slice(args);
+    emu_inferno(vm, &all, stdin)
+}
+
+/// Runs emu as Inferno's runs: until the last prog exits, then with 0.
+fn emu_inferno(vm: &str, args: &[&str], stdin: &[u8]) -> Output {
     let root = Root::new();
     common::output(
         Command::new(env!("CARGO_BIN_EXE_emu"))
@@ -184,7 +194,7 @@ on_each_vm! {
                 .arg("-r")
                 .arg(&root.0)
                 .arg(format!("--vm={vm}"))
-                .args(["fontgen", "-i", "/fontsrc", "-o", "/tmp/out", "/tmp/recipe"]),
+                .args(["-x", "fontgen", "-i", "/fontsrc", "-o", "/tmp/out", "/tmp/recipe"]),
             b"",
         );
         assert!(o.status.success(), "{vm}: {o:?}");
@@ -426,10 +436,44 @@ on_each_vm! {
         let o = emu(vm, &["sh", "-c", "echo -n partial; exit 1"], b"");
         assert_eq!(stdout(&o), "partial", "{vm}");
     }
+
+    /// As in Inferno, the emu exits when the last prog does, with 0 whatever
+    /// the first prog's status, so a background prog's late output arrives.
+    /// With `-x` it exits with the first prog, and its status.
+    fn waits_for_the_last_prog(vm) {
+        for script in ["{sleep 1; echo late} &", "{sleep 1; echo late} & exit 1"] {
+            let o = emu_inferno(vm, &["sh", "-c", script], b"");
+            assert_eq!(stdout(&o), "late\n", "{vm}: {script}");
+            assert!(o.status.success(), "{vm}: {script}: {o:?}");
+        }
+        let o = emu(vm, &["sh", "-c", "{sleep 10; echo late} & exit 1"], b"");
+        assert_eq!(stdout(&o), "", "{vm}");
+        assert_eq!(o.status.code(), Some(1), "{vm}: {o:?}");
+    }
+
+    /// A server left running keeps the emu: what a later prog reads from
+    /// it is printed, and the emu exits once the server is killed.
+    fn a_server_keeps_the_emu(vm) {
+        let script = "mkdir /tmp/s; memfs /tmp/s; echo hello > /tmp/s/f
+{sleep 1; cat /tmp/s/f; kill memfs > /dev/null; echo done} &";
+        let o = emu_inferno(vm, &["sh", "-c", script], b"");
+        assert_eq!(stdout(&o), "hello\ndone\n", "{vm}: {o:?}");
+        assert!(o.status.success(), "{vm}: {o:?}");
+    }
+
+    /// A broken prog stays in the prog table, as in Inferno, so it keeps
+    /// the emu after every other prog has gone, until it is killed.
+    fn a_broken_prog_keeps_the_emu(vm) {
+        let script = "trace test/debug trap > /dev/null >[2=1]
+{sleep 1; ps | grep -c ' broken +debug$'; kill debug > /dev/null; echo killed} &";
+        let o = emu_inferno(vm, &["sh", "-c", script], b"");
+        assert_eq!(stdout(&o), "1\nkilled\n", "{vm}: {o:?}");
+        assert!(o.status.success(), "{vm}: {o:?}");
+    }
 }
 
-/// The emu exits when its first prog does, whatever its other progs are
-/// doing: here they are dying, killed just before, and the last of them
+/// With `-x` the emu exits when its first prog does, whatever its other
+/// progs are doing: here they are dying, killed just before, and the last of them
 /// to go frees the compiled modules while the process exits. With the C
 /// library's exit handlers run, libgcc aborted the process then, rarely
 /// (issue #145), so each VM does this many times.

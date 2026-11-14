@@ -480,7 +480,7 @@ and in an `mcpServers` table:
   server that offers no session key; `-A` asks for a connection in the
   clear, authenticated by nobody, and only an `rstyxd -A` accepts it.
 - `rcmd`'s own errors (`rcmd: bad record mac`, a refused proof) go to the
-  emu's standard output, which is the MCP stream, and the emu exits; the
+  emu's standard output, which is the MCP stream, and `rcmd` exits; the
   client sees the server go away.
 
 Each connection is one `mcpd` with its own sessions. The caller's

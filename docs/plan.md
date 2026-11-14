@@ -552,7 +552,7 @@ Acceptance criteria:
 
 - `cargo xtask run-emu -- echo hello world` prints `hello world` and exits 0.
 - `cargo xtask run-emu -- cat /dev/sysname /dev/user` prints the host name and user.
-- `cat /nonexistent` prints `cat: /nonexistent: file does not exist` (Inferno wording) on fd 2 and exits with non-empty status. The emu exit code is non-zero.
+- `cat /nonexistent` prints `cat: /nonexistent: file does not exist` (Inferno wording) on fd 2 and exits with non-empty status. The emu exit code is non-zero. (Later the emu came to exit as Inferno's does, when the last prog exits and with 0; `emu -x` keeps this criterion.)
 - `echo hi | cargo xtask run-emu -- cat` echoes stdin.
 - A guest that passes an out-of-bounds pointer to `fd_read` gets errno `EFAULT`, and `purgatorio.errstr` returns `"bad address"`. The host does not crash (ABI test crate).
 - `cat` is written with plain Rust `std::fs::File::open`, and its error text comes from `purgatorio.errstr`. This proves WASI-level std I/O and Inferno-exact errors coexist.

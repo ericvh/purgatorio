@@ -59,6 +59,8 @@ pub fn generate(vm: &str) -> Result<PathBuf> {
         .arg("-r")
         .arg(&ws)
         .arg(format!("--vm={vm}"))
+        // fontgen's status, as the emu's.
+        .arg("-x")
         .args([
             "/root/bin/fontgen.wasm",
             "-o",
