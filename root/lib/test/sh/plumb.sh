@@ -4,6 +4,11 @@ d=/tmp/plumbtest
 rm -rf $d
 mkdir -p $d
 cd $d
+# A namespace and a /chan of its own, so the plumber's ports are this
+# run's alone when runs overlap (the kernel's stress mode).
+pctl forkns
+mkdir $d/chan
+bind -c $d/chan /chan
 echo notes > $d/notes.txt
 echo '# plain words go to the editor
 kind is text

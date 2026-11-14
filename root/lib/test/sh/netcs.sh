@@ -1,6 +1,9 @@
 # ndb/cs, ndb/csquery, ndb/dns and ndb/dnsquery, with a DNS server on
 # loopback (test/netsrv dns) that knows a few names under example.test.
 load std
+# ndb/cs binds over /net/cs: in a namespace of its own, so overlapping
+# runs and other scripts keep the kernel's.
+pctl forkns
 d=/tmp/netcs
 rm -rf $d
 mkdir -p $d
