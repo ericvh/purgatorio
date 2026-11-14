@@ -42,6 +42,9 @@ pub const MTPT: &str = "/mnt/acme";
 const EDEL: &str = "deleted window";
 const EBADCTL: &str = "ill-formed control message";
 const EBADEVENT: &str = "bad event syntax";
+/// A write that would change a body an `Edit` holds while its command
+/// runs.
+const ELOCKED: &str = "locked by Edit";
 
 /// The files, numbered for qid paths: `(window id << 8) | file`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,12 +124,24 @@ struct Pending {
     count: u32,
 }
 
+/// A write of `event` that executes a command: acme answers it once
+/// the command has been done, after the messages read with it (see
+/// [`Acme::serve`]), so the file system is free to answer the command.
+pub struct Exec {
+    tag: u16,
+    win: u64,
+    events: Vec<(char, usize, usize)>,
+    count: u32,
+}
+
 pub struct Fs {
     io: File,
     buf: Vec<u8>,
     msize: u32,
     fids: HashMap<u32, Fid>,
     reads: Vec<Pending>,
+    /// The tags of the [`Exec`]s not yet answered.
+    execs: Vec<u16>,
     user: String,
     label: String,
     attached: bool,
@@ -174,6 +189,7 @@ fn try_start(a: &mut Acme) -> Result<Option<Fs>, Error> {
         msize: MAX_MSIZE,
         fids: HashMap::new(),
         reads: Vec::new(),
+        execs: Vec::new(),
         user,
         label: String::new(),
         attached: false,
@@ -381,6 +397,8 @@ impl Fs {
                 self.msize = (*msize).clamp(IOHDRSZ + 1, MAX_MSIZE);
                 self.fids.clear();
                 self.reads.clear();
+                self.execs.clear();
+                a.fs_exec.clear();
                 let v = if version.starts_with("9P2000") {
                     "9P2000"
                 } else {
@@ -411,6 +429,9 @@ impl Fs {
             }
             Fcall::Tflush { oldtag } => {
                 self.reads.retain(|p| p.tag != *oldtag);
+                // A command being done goes on, but is not answered.
+                self.execs.retain(|t| t != oldtag);
+                a.fs_exec.retain(|e| e.tag != *oldtag);
                 return self.send(tag, Fcall::Rflush);
             }
             Fcall::Twalk {
@@ -438,8 +459,10 @@ impl Fs {
                 let count = (*count).min(self.msize - IOHDRSZ);
                 self.read(a, tag, *fid, *offset, count)
             }
-            Fcall::Twrite { fid, data, .. } => match self.write(a, *fid, data) {
-                Ok(()) => {
+            Fcall::Twrite { fid, data, .. } => match self.write(a, tag, *fid, data) {
+                // Answered once the command is done.
+                Ok(false) => return Ok(()),
+                Ok(true) => {
                     return self.send(
                         tag,
                         Fcall::Rwrite {
@@ -723,7 +746,20 @@ impl Fs {
         Ok(Some(snap[start..end].to_vec()))
     }
 
-    fn write(&mut self, a: &mut Acme, fid: u32, data: &[u8]) -> R<()> {
+    /// Answers an [`Exec`] that is done, unless it was flushed.
+    pub fn answer(&mut self, e: &Exec, r: R<()>) -> Result<(), Error> {
+        let Some(i) = self.execs.iter().position(|t| *t == e.tag) else {
+            return Ok(());
+        };
+        self.execs.remove(i);
+        match r {
+            Ok(()) => self.send(e.tag, Fcall::Rwrite { count: e.count }),
+            Err(s) => self.send(e.tag, Fcall::Rerror { ename: &s }),
+        }
+    }
+
+    /// A write; false when it is an [`Exec`], answered later.
+    fn write(&mut self, a: &mut Acme, tag: u16, fid: u32, data: &[u8]) -> R<bool> {
         let f = self.fids.get_mut(&fid).ok_or("unknown fid")?;
         match f.open {
             Some(m) if m & mode::ACCESS != mode::OREAD => {}
@@ -747,6 +783,9 @@ impl Fs {
                 } else {
                     Tid::Tag(win)
                 };
+                if a.locked(t) {
+                    return err(ELOCKED);
+                }
                 let nomark = a.win(win).is_some_and(|w| w.fs.nomark);
                 if let Some(x) = a.text_mut(t) {
                     if !nomark {
@@ -763,6 +802,9 @@ impl Fs {
                 a.post_changes('E');
             }
             Q::Data | Q::Xdata => {
+                if a.locked(Tid::Body(win)) {
+                    return err(ELOCKED);
+                }
                 let w = a.win_mut(win).ok_or(EDEL)?;
                 let (q0, q1) = w.fs.addr;
                 let len = w.body.b.len();
@@ -794,29 +836,25 @@ impl Fs {
                 a.post_changes('F');
             }
             Q::Event => {
-                for (_, kind, q0, q1) in parse_events(&s)? {
-                    let t = match kind {
-                        'X' | 'L' => Tid::Body(win),
-                        'x' | 'l' => Tid::Tag(win),
-                        _ => return err(EBADEVENT),
-                    };
-                    let n = a.text(t).map_or(0, |x| x.b.len());
-                    if q0 > q1 || q1 > n {
-                        return err(EBADEVENT);
-                    }
-                    if kind.eq_ignore_ascii_case(&'x') {
-                        let s = a.expand(t, q0, q1, false);
-                        a.execute(t, &s).map_err(|e| e.0)?;
-                    } else {
-                        let s = a.expand(t, q0, q1, true);
-                        a.look(t, &s).map_err(|e| e.0)?;
-                    }
-                    a.post_changes('M');
+                let events: Vec<(char, usize, usize)> = parse_events(&s)?
+                    .into_iter()
+                    .map(|(_, kind, q0, q1)| (kind, q0, q1))
+                    .collect();
+                if events.iter().any(|e| e.0.eq_ignore_ascii_case(&'x')) {
+                    self.execs.push(tag);
+                    a.fs_exec.push(Exec {
+                        tag,
+                        win,
+                        events,
+                        count: data.len() as u32,
+                    });
+                    return Ok(false);
                 }
+                act(a, win, &events)?;
             }
             _ => return err(error::EPERM),
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Answers the reads of `event` that can be: with the events that
@@ -854,6 +892,39 @@ impl Fid {
             carry: Vec::new(),
         }
     }
+}
+
+/// Does what the events written to window `win`'s `event` say: executes
+/// (`X`, `x`) or looks for (`L`, `l`) the text they give.
+fn act(a: &mut Acme, win: u64, events: &[(char, usize, usize)]) -> R<()> {
+    for &(kind, q0, q1) in events {
+        if a.win(win).is_none() {
+            return err(EDEL);
+        }
+        let t = match kind {
+            'X' | 'L' => Tid::Body(win),
+            'x' | 'l' => Tid::Tag(win),
+            _ => return err(EBADEVENT),
+        };
+        let n = a.text(t).map_or(0, |x| x.b.len());
+        if q0 > q1 || q1 > n {
+            return err(EBADEVENT);
+        }
+        if kind.eq_ignore_ascii_case(&'x') {
+            let s = a.expand(t, q0, q1, false);
+            a.execute(t, &s).map_err(|e| e.0)?;
+        } else {
+            let s = a.expand(t, q0, q1, true);
+            a.look(t, &s).map_err(|e| e.0)?;
+        }
+        a.post_changes('M');
+    }
+    Ok(())
+}
+
+/// Does an [`Exec`].
+pub fn exec(a: &mut Acme, e: &Exec) -> R<()> {
+    act(a, e.win, &e.events)
 }
 
 /// One step of a walk from `(q, win)`.
@@ -895,6 +966,9 @@ fn ctl(a: &mut Acme, id: u64, line: &str) -> R<()> {
         Some((c, r)) => (c, r.trim()),
         None => (line, ""),
     };
+    if matches!(cmd, "get" | "mark") && a.locked(Tid::Body(id)) {
+        return err(ELOCKED);
+    }
     match cmd {
         "name" => {
             if arg.is_empty() || arg.chars().any(|c| c.is_whitespace() || c.is_control()) {

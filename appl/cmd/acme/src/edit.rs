@@ -71,7 +71,9 @@ pub trait Host {
     fn write_file(&mut self, path: &str, s: &str) -> Result<(), String>;
     /// Runs `cmd` in `dir` with `input` on its standard input (or none)
     /// and returns what it wrote on its standard output and error.
-    fn run(&mut self, dir: &str, cmd: &str, input: Option<&str>) -> String;
+    /// `busy` names the files whose text this `Edit` holds positions in:
+    /// nothing else may change them until `run` returns.
+    fn run(&mut self, dir: &str, cmd: &str, input: Option<&str>, busy: &[u64]) -> String;
     /// Prints a message where acme prints errors.
     fn print(&mut self, s: &str);
 }
@@ -801,7 +803,18 @@ impl<H: Host> Ed<'_, H> {
                     }
                     _ => None,
                 };
-                let out = self.h.run(&dir, cmd, input.as_deref());
+                // The files this command holds positions in: the
+                // current one and those with changes or marks pending.
+                let mut busy: Vec<u64> = self
+                    .snaps
+                    .keys()
+                    .chain(self.marks.keys())
+                    .copied()
+                    .chain(self.cur)
+                    .collect();
+                busy.sort_unstable();
+                busy.dedup();
+                let out = self.h.run(&dir, cmd, input.as_deref(), &busy);
                 match k {
                     '<' | '|' => {
                         let i = self.change(r.0, r.1, &out)?;
@@ -1165,6 +1178,8 @@ mod tests {
         out: String,
         disk: HashMap<String, String>,
         next: u64,
+        /// The files each command run held.
+        busy: Vec<Vec<u64>>,
     }
 
     impl Mock {
@@ -1277,7 +1292,8 @@ mod tests {
             self.disk.insert(path.to_string(), s.to_string());
             Ok(())
         }
-        fn run(&mut self, _dir: &str, cmd: &str, input: Option<&str>) -> String {
+        fn run(&mut self, _dir: &str, cmd: &str, input: Option<&str>, busy: &[u64]) -> String {
+            self.busy.push(busy.to_vec());
             // Two commands: `up` upper-cases its input, `echo` echoes.
             match cmd.split_once(' ').map_or((cmd, ""), |(a, b)| (a, b)) {
                 ("up", _) => input.unwrap_or("").to_uppercase(),
@@ -1537,6 +1553,25 @@ mod tests {
         m.edit(1, "#1k\n#3\n',.c/Q/").unwrap();
         assert_eq!(m.body(1), "xQ\n");
         m.edit(1, "q").unwrap();
+    }
+
+    #[test]
+    fn busy_files() {
+        // A command run holds the files the Edit has positions in: those
+        // with changes pending, so acme keeps them still while it runs.
+        let mut m = Mock::new(&[("/d/a", "one\n"), ("/d/b", "two\n")]);
+        m.edit(1, "X/./ ,|up").unwrap();
+        assert_eq!(m.body(1), "ONE\n");
+        assert_eq!(m.body(2), "TWO\n");
+        assert_eq!(m.busy, vec![vec![1], vec![1, 2]]);
+        // Once a command's changes are in, the next starts afresh, but
+        // a mark keeps its file held.
+        m.busy.clear();
+        m.edit(1, "k\nb /d/b\n,|up").unwrap();
+        assert_eq!(m.busy, vec![vec![1, 2]]);
+        m.busy.clear();
+        m.edit(2, ",|up\n,|up").unwrap();
+        assert_eq!(m.busy, vec![vec![2], vec![2]]);
     }
 
     #[test]

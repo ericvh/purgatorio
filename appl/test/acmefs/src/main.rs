@@ -19,6 +19,12 @@
 //!   windows it makes, by writing their text to a tag and an `x` event
 //!   for it, and reports the bodies, dots, `ctl` fields and the dump
 //!   file they lead to.
+//! - `pipe`: `Edit` commands that run commands while acme goes on: a
+//!   command that reads the window's body through acme(4), and one
+//!   that waits (`sleep`) while acme answers, refuses writes to the
+//!   body it holds and a second `Edit`, and takes a `New` the test
+//!   clicks once `/tmp/acme/ready` is written; `Kill` ends it. Also the
+//!   events of a `Zerox`ed text, read through the second window.
 //! - `win`: the name, dot and body (the start of a long one) of each
 //!   window. `layout` adds what `Dump` writes of the columns and
 //!   windows, run in the first window.
@@ -541,6 +547,88 @@ fn edit(out: &mut Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+fn pipe(out: &mut Vec<String>) -> Result<(), String> {
+    const T: &str = "one two\nthree four\nfive\n";
+    let a = window("/tmp/acme/pa")?;
+    let mut addr = open(&format!("{ACME}/{a}/addr"))?;
+
+    // Every view of a shared text reports its changes.
+    exec(&a, "Zerox")?;
+    let z = find("/tmp/acme/pa")?
+        .into_iter()
+        .find(|i| *i != a)
+        .ok_or("no Zerox")?;
+    let mut zev = open(&format!("{ACME}/{z}/event"))?;
+    put(&format!("{ACME}/{a}/body"), "x")?;
+    out.push(format!("Zerox event: {:?}", events(&mut zev, 1)));
+    drop(zev);
+    put(&format!("{ACME}/{z}/ctl"), "delete\n")?;
+
+    // A command that reads the window through acme(4) while acme waits
+    // for it.
+    set(&a, &mut addr, T, 4, 7)?;
+    let cmd = "|{tr a-z A-Z; echo; sed -n 2p /mnt/acme/$winid/body}";
+    exec(&a, cmd)?;
+    out.push(format!("{cmd:?}: {}", state(&a, &mut addr)?));
+    exec(&a, "Undo")?;
+    out.push(format!("Undo: {}", state(&a, &mut addr)?));
+
+    // A command that waits. Another prog runs it, as the write of the
+    // event is answered when the command has been done.
+    set(&a, &mut addr, T, 0, 3)?;
+    let argv = ["acmefs", "-x", a.as_str(), "|{sleep 1000; tr a-z A-Z}"].map(String::from);
+    purgatorio::spawn(
+        "/bin/test/acmefs.wasm",
+        &argv,
+        purgatorio::abi::pctl::NEWFD,
+        &[(0, 0), (1, 1), (2, 2)],
+    )
+    .map_err(|e| e.0)?;
+    until("sleep starting", || running("sleep"))?;
+    let index = read(&format!("{ACME}/index"))?;
+    out.push(format!(
+        "index while it runs: {}",
+        index.lines().filter(|l| l.contains("/tmp/acme/pa")).count()
+    ));
+    out.push(format!(
+        "body read while it runs: {:?}",
+        read(&format!("{ACME}/{a}/body"))?
+    ));
+    out.push(format!(
+        "body write while it runs: {:?}",
+        put(&format!("{ACME}/{a}/body"), "no\n")
+    ));
+    let b = window("/tmp/acme/pb")?;
+    put(&format!("{ACME}/{b}/body"), "free\n")?;
+    out.push(format!(
+        "another window: {:?}",
+        read(&format!("{ACME}/{b}/body"))?
+    ));
+    exec(&b, "Edit ,d")?;
+    out.push(format!(
+        "a second Edit: {:?} {:?}",
+        read(&format!("{ACME}/{b}/body"))?,
+        body_of("/tmp/acme/+Errors")?
+    ));
+    // The test clicks New in the right column's tag.
+    let windows = || read(&format!("{ACME}/index")).map_or(0, |s| s.lines().count());
+    let n = windows();
+    std::fs::write(format!("{DIR}/ready"), &a).map_err(|e| Error::from(e).0)?;
+    until("New while it runs", || windows() > n)?;
+    out.push(String::from("New while it runs: made"));
+    exec(&a, "Kill")?;
+    until("sleep killed", || !running("sleep"))?;
+    let _ = purgatorio::wait();
+    // The command wrote nothing before it was killed.
+    out.push(format!("after Kill: {}", state(&a, &mut addr)?));
+
+    for l in read(&format!("{ACME}/index"))?.lines() {
+        let n = nums(l)[0].clone();
+        put(&format!("{ACME}/{n}/ctl"), "delete\n")?;
+    }
+    Ok(())
+}
+
 /// Each window's name, dot and the start of its body; with `layout`,
 /// the dump of the layout too.
 fn win(out: &mut Vec<String>, layout: bool) -> Result<(), String> {
@@ -578,6 +666,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         readf(&mut ev);
         return Ok(());
     }
+    if args.get(1).map(String::as_str) == Some("-x") {
+        // Executes a command in a window, for `pipe`.
+        let id = args.get(2).cloned().unwrap_or_default();
+        let cmd = args.get(3).cloned().unwrap_or_default();
+        return exec(&id, &cmd).map_err(Error);
+    }
     let mode = std::fs::read_to_string(format!("{DIR}/mode")).unwrap_or_default();
     let mut out = Vec::new();
     let r = match mode.trim() {
@@ -586,6 +680,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         "ps" => ps(&mut out),
         "plumb" => plumb(&mut out),
         "edit" => edit(&mut out),
+        "pipe" => pipe(&mut out),
         "win" => win(&mut out, false),
         "layout" => win(&mut out, true),
         m => Err(format!("unknown mode {m:?}")),

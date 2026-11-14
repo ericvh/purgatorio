@@ -48,6 +48,10 @@ use purgatorio::{Context, Error, Ready};
 use text::{is_file, is_word};
 use ui::{BORDER, Colours, Column, Fnt, Kind, SCROLLWID, Sweep, Text, Window};
 
+/// What acme says when an `Edit` waits for its command and something
+/// would get in its way.
+const EBUSY: &str = "an Edit is running";
+
 /// The tags of the row and of a new column.
 const ROW_TAG: &str = "Newcol Putall Exit ";
 const COL_TAG: &str = "New Delcol win ";
@@ -158,8 +162,16 @@ struct Acme {
     cwd: String,
     /// The file system on `/mnt/acme`, when it could be mounted.
     fs: Option<fs::Fs>,
+    /// Writes of acme(4)'s `event` that execute commands, to do once the
+    /// messages read with them are answered.
+    fs_exec: Vec<fs::Exec>,
     /// The plumber's `edit` port, through the helper that reads it.
     plumb: Option<plumb::Port>,
+    /// The command an `Edit` waits for, while acme goes on serving.
+    edit_run: Option<cmds::EditRun>,
+    /// Output for a `+Errors` window an `Edit` holds, by directory,
+    /// appended when its command ends.
+    held: Vec<(String, String)>,
     /// Redraw everything.
     full: bool,
     exit_warned: bool,
@@ -240,7 +252,10 @@ impl Acme {
             waitfd,
             cwd,
             fs: None,
+            fs_exec: Vec::new(),
             plumb: None,
+            edit_run: None,
+            held: Vec::new(),
             full: true,
             exit_warned: false,
             exit: false,
@@ -771,7 +786,9 @@ impl Acme {
             Hit::Box(id) => self.drag_win(id, m, pressed)?,
             Hit::ColBox(ci) => self.drag_col(ci, m)?,
             Hit::Text(t) => {
-                if let Some(x) = self.text_mut(t) {
+                if !self.locked(t)
+                    && let Some(x) = self.text_mut(t)
+                {
                     x.b.mark();
                 }
                 if pressed & 1 != 0 {
@@ -1050,7 +1067,10 @@ impl Acme {
         }
     }
 
-    /// Answers the messages waiting on the file system's pipe.
+    /// Answers the messages waiting on the file system's pipe. Writes
+    /// that execute commands are done after the others, with the file
+    /// system back in place: a command (an `Edit` waiting for one in
+    /// particular) may need it.
     fn serve(&mut self) {
         if let Some(mut f) = self.fs.take() {
             match f.input(self) {
@@ -1058,6 +1078,19 @@ impl Acme {
                 Ok(false) => {}
                 Err(e) => eprintln!("acme: {}: {e}", fs::MTPT),
             }
+        }
+        while self.fs.is_some() && !self.fs_exec.is_empty() {
+            let e = self.fs_exec.remove(0);
+            let r = fs::exec(self, &e);
+            if let Some(f) = self.fs.as_mut()
+                && let Err(err) = f.answer(&e, r)
+            {
+                eprintln!("acme: {}: {err}", fs::MTPT);
+                self.fs = None;
+            }
+        }
+        if self.fs.is_none() {
+            self.fs_exec.clear();
         }
     }
 
@@ -1159,6 +1192,10 @@ impl Acme {
                 return Ok(());
             }
             _ => {}
+        }
+        // A text an Edit holds takes no typing.
+        if self.locked(t) {
+            return Ok(());
         }
         self.seltext = Some(t);
         let typing = self.typing.filter(|(tt, _)| *tt == t).map(|(_, q)| q);
@@ -1288,6 +1325,7 @@ impl Acme {
     /// Copies the selection of `t` to the snarf buffer and, if `del`,
     /// deletes it.
     fn cut(&mut self, t: Tid, del: bool) -> Result<(), Error> {
+        let del = del && !self.locked(t);
         let Some(x) = self.text_mut(t) else {
             return Ok(());
         };
@@ -1308,6 +1346,9 @@ impl Acme {
     /// Replaces the selection of `t` with the snarf buffer and selects
     /// it.
     fn paste(&mut self, t: Tid) -> Result<(), Error> {
+        if self.locked(t) {
+            return Ok(());
+        }
         let s = self.get_snarf();
         let Some(x) = self.text_mut(t) else {
             return Ok(());
@@ -1362,6 +1403,10 @@ impl Acme {
         let mut msg = msg.to_string();
         if !msg.is_empty() && !msg.ends_with('\n') {
             msg.push('\n');
+        }
+        if self.locked(Tid::Body(id)) {
+            self.held.push((dir, msg));
+            return;
         }
         if let Some(w) = self.win_mut(id) {
             let n = w.body.b.len();
@@ -1556,7 +1601,16 @@ impl Acme {
             None => (s, ""),
         };
         let win = self.target_win(t);
+        // While an Edit waits for its command, another cannot start, and
+        // Load would replace the windows it works on.
+        if self.editing() && (s.starts_with(['<', '|', '>']) || cmd == "Edit" || cmd == "Load") {
+            let dir = self.dir_of(t);
+            let name = if cmd == "Load" { "Load" } else { "Edit" };
+            self.error(&dir, &format!("{name}: {EBUSY}"));
+            return Ok(());
+        }
         if let Some(id) = win
+            && !self.locked(Tid::Body(id))
             && let Some(w) = self.win_mut(id)
         {
             w.body.b.mark();
@@ -1621,7 +1675,9 @@ impl Acme {
                 }
             }
             "Get" => {
-                if let Some(id) = win {
+                if let Some(id) = win
+                    && !self.locked(Tid::Body(id))
+                {
                     self.get(id, arg);
                 }
             }
@@ -1644,6 +1700,7 @@ impl Acme {
             }
             "Undo" | "Redo" => {
                 if let Some(id) = win
+                    && !self.locked(Tid::Body(id))
                     && let Some(w) = self.win_mut(id)
                 {
                     let r = if cmd == "Undo" {
@@ -1804,6 +1861,10 @@ impl Acme {
         let Some(id) = self.by_name(&name) else {
             return;
         };
+        if self.locked(Tid::Body(id)) {
+            self.held.push((dir.to_string(), s.to_string()));
+            return;
+        }
         if let Some(w) = self.win_mut(id) {
             let n = w.body.b.len();
             w.body.b.insert(n, s);
@@ -1908,64 +1969,78 @@ impl Acme {
 
     fn main_loop(&mut self) -> Result<(), Error> {
         while !self.exit {
-            self.sync_views();
-            self.serve_waiting();
-            self.redraw()?;
-            if self.kbd.pending() {
+            self.step(None)?;
+        }
+        Ok(())
+    }
+
+    /// Brings the screen and acme(4) up to date, then waits for one
+    /// thing to happen and handles it. `extra` is another fd to wait on,
+    /// for an `Edit` waiting for its command: when that is the one
+    /// ready, `step` returns true and leaves it to the caller.
+    fn step(&mut self, extra: Option<i32>) -> Result<bool, Error> {
+        self.sync_views();
+        self.serve_waiting();
+        self.redraw()?;
+        if self.kbd.pending() {
+            let c = self.kbd.read()?;
+            self.key(c)?;
+            self.post_changes('K');
+            return Ok(false);
+        }
+        let nchild = self.children.len();
+        let mut fds = vec![Ready::Read(self.mouse.fd()), Ready::Read(self.kbd.fd())];
+        fds.extend(self.children.iter().map(|c| Ready::Read(c.fd.as_raw_fd())));
+        let wait_i = self.waitfd.as_ref().map(|w| {
+            fds.push(Ready::Read(w.as_raw_fd()));
+            fds.len() - 1
+        });
+        let fs_i = self.fs.as_ref().map(|f| {
+            fds.push(Ready::Read(f.fd()));
+            fds.len() - 1
+        });
+        let plumb_i = self.plumb.as_ref().map(|p| {
+            fds.push(Ready::Read(p.fd()));
+            fds.len() - 1
+        });
+        let extra_i = extra.map(|fd| {
+            fds.push(Ready::Read(fd));
+            fds.len() - 1
+        });
+        let Some(i) = purgatorio::ready(&fds, -1)? else {
+            return Ok(false);
+        };
+        match i {
+            0 => {
+                let m = self.mouse.read()?;
+                self.mouse(m)?;
+                self.post_changes('M');
+            }
+            1 => {
                 let c = self.kbd.read()?;
                 self.key(c)?;
                 self.post_changes('K');
-                continue;
             }
-            let nchild = self.children.len();
-            let mut fds = vec![Ready::Read(self.mouse.fd()), Ready::Read(self.kbd.fd())];
-            fds.extend(self.children.iter().map(|c| Ready::Read(c.fd.as_raw_fd())));
-            let wait_i = self.waitfd.as_ref().map(|w| {
-                fds.push(Ready::Read(w.as_raw_fd()));
-                fds.len() - 1
-            });
-            let fs_i = self.fs.as_ref().map(|f| {
-                fds.push(Ready::Read(f.fd()));
-                fds.len() - 1
-            });
-            let plumb_i = self.plumb.as_ref().map(|p| {
-                fds.push(Ready::Read(p.fd()));
-                fds.len() - 1
-            });
-            let Some(i) = purgatorio::ready(&fds, -1)? else {
-                continue;
-            };
-            match i {
-                0 => {
-                    let m = self.mouse.read()?;
-                    self.mouse(m)?;
-                    self.post_changes('M');
-                }
-                1 => {
-                    let c = self.kbd.read()?;
-                    self.key(c)?;
-                    self.post_changes('K');
-                }
-                i if i >= 2 && i - 2 < nchild => {
-                    self.output(i - 2)?;
-                    self.post_changes('F');
-                }
-                i if Some(i) == fs_i => self.serve(),
-                i if Some(i) == plumb_i => self.plumbed(),
-                i if Some(i) == wait_i => {
-                    let mut buf = [0u8; 512];
-                    let n = self
-                        .waitfd
-                        .as_mut()
-                        .map_or(0, |w| w.read(&mut buf).unwrap_or(0));
-                    if n == 0 {
-                        self.waitfd = None;
-                    }
-                }
-                _ => {}
+            i if i >= 2 && i - 2 < nchild => {
+                self.output(i - 2)?;
+                self.post_changes('F');
             }
+            i if Some(i) == extra_i => return Ok(true),
+            i if Some(i) == fs_i => self.serve(),
+            i if Some(i) == plumb_i => self.plumbed(),
+            i if Some(i) == wait_i => {
+                let mut buf = [0u8; 512];
+                let n = self
+                    .waitfd
+                    .as_mut()
+                    .map_or(0, |w| w.read(&mut buf).unwrap_or(0));
+                if n == 0 {
+                    self.waitfd = None;
+                }
+            }
+            _ => {}
         }
-        Ok(())
+        Ok(false)
     }
 }
 
