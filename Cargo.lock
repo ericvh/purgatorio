@@ -1605,6 +1605,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-vacfs"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-styxserv",
+ "appl-lib-venti",
+ "purg-styx",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-vacget"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-venti",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-vacput"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-venti",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-wasmdep"
 version = "0.1.0"
 dependencies = [
@@ -1753,6 +1779,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-lib-venti"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-lib-wasmobj"
 version = "0.1.0"
 
@@ -1841,6 +1874,7 @@ name = "appl-test-netsrv"
 version = "0.1.0"
 dependencies = [
  "appl-lib-ndb",
+ "appl-lib-venti",
  "purgatorio",
 ]
 

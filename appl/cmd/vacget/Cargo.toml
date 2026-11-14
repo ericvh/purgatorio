@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-vacget"
+description = "vacget: restore a vac archive from a Venti server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vacget"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+venti.workspace = true
+
+[lints]
+workspace = true

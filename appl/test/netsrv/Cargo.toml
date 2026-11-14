@@ -1,6 +1,6 @@
 [package]
 name = "appl-test-netsrv"
-description = "Loopback DNS, NTP, HTTP, whois and telnet servers and a TFTP client for the sh corpus"
+description = "Loopback DNS, NTP, HTTP, whois and telnet servers, a Venti server and a TFTP client for the sh corpus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 ndb.workspace = true
 purgatorio.workspace = true
+venti.workspace = true
 
 [lints]
 workspace = true
