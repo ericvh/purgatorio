@@ -19,14 +19,14 @@ ipnet=lan ip=10.0.0.0 ipmask=255.255.255.0 ipgw=10.0.0.1 dns=10.0.0.1
 sys='a host' ip=10.0.0.9
 miss 
 ndb/query: can't open /tmp/admin/nodb: file does not exist
-fail:error
+error
 abcdef
 ghijklm
 ef
 ghijklm
 nopq
 echo: write error: write too long for buffer
-fail:write error
+write error
 every day at 10:15
 five minutes on Monday
 nov 9

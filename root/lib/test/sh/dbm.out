@@ -10,14 +10,14 @@ three	three, after a space
 two	2 with a tab before it
 errors
 one exists
-fail:store
+store
 not found
 not found
 four
 one
 three
 dbm/store: bad input
-fail:bad input
+bad input|
 not found
 many
 same keys

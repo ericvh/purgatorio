@@ -18,7 +18,7 @@ sys=fs dom=fs.example.org
 	ip=10.0.0.2 ether=00a0c9e1b2c3
 	tcp=styx port=6666
 tcp=styx port=6666
-fail:errors
+errors
 > /net/tcp/clone 10.0.0.1!6666
 /net/tcp/clone 10.0.1.1!6666
 > 
@@ -29,7 +29,7 @@ here.example.test ip 10.9.9.9
 3.2.1.10.in-addr.arpa ptr www.example.test
 10.9.9.9 ptr here.example.test
 ndb/dnsquery: nosuch.example.test: dns: name does not exist
-fail:errors
+errors
 > example.test mx 10 mail.example.test
 > www.example.test ip 10.1.2.3
 > alias.example.test cname www.example.test

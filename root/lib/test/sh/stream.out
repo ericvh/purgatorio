@@ -4,7 +4,7 @@ hello stream
 
 hello stream
 stream: can't open /tmp/streamtest/nosuch: file does not exist
-fail:open
+open
 Usage: stream [-a] [-b bufsize] file1 [file2]
 Usage: stream [-a] [-b bufsize] file1 [file2]
 eg start

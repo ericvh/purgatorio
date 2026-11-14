@@ -144,4 +144,4 @@ fs: chstat: bad time never
 fs: chstat: unknown option -z
 fs: merge: option -c needs a value
 fs: nosuch: file does not exist
-status fail:nosuch: file does not exist
+status nosuch: file does not exist

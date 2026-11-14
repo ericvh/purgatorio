@@ -44,4 +44,4 @@ part nvram 206 207
 part fs 207 307
 part other 307 2048
 disk/prep: unknown partition name "nosuch"
-fail:unknown partition name "nosuch"
+unknown partition name "nosuch"

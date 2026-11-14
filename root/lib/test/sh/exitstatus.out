@@ -1,17 +1,17 @@
 usage: kill [-g] pid|module ...
-kill usage fail: usage
-kill bad flag fail: usage
+kill usage usage
+kill bad flag usage
 kill: cannot open /prog/999999/ctl: file does not exist
 kill: cannot open /prog/999998/ctl: file does not exist
-kill none fail:nothing killed
+kill none nothing killed
 kill: cannot open /prog/999999/ctl: file does not exist
 kill some 
 kill module 
 kill: cannot find nosuchmodule
-kill no module fail:nothing killed
+kill no module nothing killed
 diff: cannot open /tmp/sh-exitstatus/missing: file does not exist
 diff missing 
-diff usage fail:error
+diff usage error
 usage: time cmd ...
 time usage 
 time: /tmp/sh-exitstatus/nosuchcmd: file does not exist
@@ -24,13 +24,13 @@ b
 a
 tsort cycle 
 dd: open /tmp/sh-exitstatus/missing: file does not exist
-dd open fail:open
+dd open open
 dd: create /tmp/sh-exitstatus/missing/x: file does not exist
-dd create fail:create
+dd create create
 dd: bad arg: foo
-dd bad arg fail:arg
+dd bad arg arg
 dd: counts: cannot be zero
-dd counts fail:counts
+dd counts counts
 read: stat buffer too small
 0+0 records in
 0+0 records out

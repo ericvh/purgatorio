@@ -27,7 +27,7 @@ text
 plumb: can't start application
 plumb: don't know who message goes to
 plumb: no matching plumb rule
-fail:no matching plumb rule
+no matching plumb rule
 plumb
 edit
 /tmp/plumbtest

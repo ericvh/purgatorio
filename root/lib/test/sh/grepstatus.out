@@ -4,7 +4,7 @@ status
 no banana
 status 
 quiet match
--s status fail:no matches
+-s status no matches
 if took plum
 if took else
 negated
@@ -24,15 +24,15 @@ counted none
 -L status 
 /tmp/sh-grepstatus/a
 /tmp/sh-grepstatus/b
--L none status fail:no matches
+-L none status no matches
 one apple
 stdin
 /tmp/sh-grepstatus/a: one apple
 missing file status 
 grep: cannot open /tmp/sh-grepstatus/missing: file does not exist
-only missing status fail:no matches
-bad pattern status fail:bad regex
+only missing status no matches
+bad pattern status bad regex
 grep: unmatched left paren
-usage status fail:usage
+usage status usage
 usage: grep [-cilLnsv] pattern [file...]
-bad option status fail:usage
+bad option status usage

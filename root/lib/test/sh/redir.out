@@ -3,6 +3,6 @@ second
       2
 cat: /nonexistent: file does not exist
 to stderr
-closed fail:errors
+closed errors
 out
 cat: /nonexistent: file does not exist

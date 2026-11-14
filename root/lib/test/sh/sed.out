@@ -137,7 +137,7 @@ line1
 inserted
 # errors
 sed: unrecognised command: 'k' (k)
-fail:error
+error
 sed: line no 0 is illegal address
 sed: only one address allowed:  '1,2q'
 sed: leftover junk: q
@@ -150,8 +150,8 @@ sed: missing operand for * '*'
 sed: y command needs same length sets: y/ab/c/
 sed: First RE in address may not be null
 sed: can't open '/tmp/sh-sed/nonexistent'
-fail:error
+error
 sed: couldn't open '/tmp/sh-sed/nonexistent': file does not exist
 sed: missing pattern
 usage: sed [-ngd] [-e expr] [-f file] [expr] [file...]
-fail:usage
+usage

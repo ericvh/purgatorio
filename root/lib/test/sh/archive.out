@@ -59,12 +59,12 @@ src/sub/deep/c
 gettar same
 src/a
 gunzip: not in gzip format
-fail:not in gzip format
+not in gzip format|
 gunzip: src/a: no .gz suffix
 tar: missing.tar: file does not exist
-fail:missing.tar: file does not exist
+missing.tar: file does not exist
 tar: unexpected end of archive
 usage: tar {ctx}[fkmpRTvz] [archive] [file ...]
 usage: tar {ctx}[fkmpRTvz] [archive] [file ...]
 tar: missing: file does not exist
-fail:errors
+errors

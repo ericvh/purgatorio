@@ -4,7 +4,7 @@ cat: /nonexistent: file does not exist
 recovered
 
 cat: /nonexistent: file does not exist
-status is fail:errors
+status is errors
 cat: /nonexistent: file does not exist
 negated
 hi

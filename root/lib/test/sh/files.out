@@ -11,7 +11,7 @@ b
 f
 /
 rm: /tmp/sh-files/nonexistent: file does not exist
-fail:errors
+errors
 
 cat #c/sysname
 cmp #c/sysname in /lib

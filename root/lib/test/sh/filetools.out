@@ -11,10 +11,10 @@ c.b
 /abs
 created
 newer
-fail:older
-fail:new:file does not exist
+older
+new:file does not exist
 touch: /tmp/sh-filetools/missing: cannot change time: file does not exist
-fail:touch
+touch
 not created
 --rw-r--r--
 --rwxr-xr-x
@@ -45,20 +45,20 @@ older
 newer
 old file
 test: bad syntax: unknown operator -foo
-fail:bad syntax
+bad syntax
 test: bad syntax: argument expected
-fail:bad syntax
-fail:usage
+bad syntax
+usage
 hel
 ll
 lo
-fail:eof
+eof
 x a b
 x c
 x d
 data
 cat: /tmp/sh-filetools/nonexistent: file does not exist
-fail:errors
+errors|
 xargs: can't load nonexistent: file does not exist
 timed
 
@@ -83,4 +83,4 @@ cdef
 0+1 records in
 0+1 records out
 dd: bad arg: foo
-fail:arg
+arg

@@ -12,4 +12,4 @@ bootpd: 00a0c9000007 -> term 10.0.0.7 (ack)
 bootpd: 00a0c9000007 -> term 10.0.0.7 (nak)
 bootpd: 00a0c9e1b2c3 -> fs 10.0.0.2 (ack)
 bootpd: cannot open /tmp/sh-bootpd/nosuch: file does not exist
-fail:error
+error

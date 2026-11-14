@@ -27,6 +27,27 @@ fn ctl(pid: u32, msg: &str) -> std::io::Result<()> {
         .write_all(msg.as_bytes())
 }
 
+/// The status a failure shows in `$status`, from the text after its
+/// `fail:`: without leading blanks, or `failed` if nothing is left. This is
+/// failurestatus in Inferno's sh.
+pub fn failure_status(s: &str) -> String {
+    match s.trim_start_matches([' ', '\t']) {
+        "" => String::from("failed"),
+        t => String::from(t),
+    }
+}
+
+/// A pipeline's status, from its stages' statuses in order: empty if all
+/// succeeded, else every stage's status, the last stage's first, joined by
+/// `|`, as Inferno's sh does it.
+fn pipe_status(statuses: impl DoubleEndedIterator<Item = String>) -> String {
+    let all: Vec<String> = statuses.rev().collect();
+    if all.iter().all(String::is_empty) {
+        return String::new();
+    }
+    all.join("|")
+}
+
 /// Variables that are never written to `/env`.
 fn exported(name: &str) -> bool {
     !(name == "*" || name == "status" || name == "apid" || name.chars().all(|c| c.is_ascii_digit()))
@@ -241,7 +262,7 @@ impl Shell {
 
     fn fail(&mut self, msg: &str) {
         eprintln!("sh: {msg}");
-        self.status = format!("fail:{msg}");
+        self.status = String::from(msg);
     }
 
     fn run_items(&mut self, items: &[Item], io: &Io) -> Flow<()> {
@@ -305,12 +326,7 @@ impl Shell {
                     }
                     statuses.extend(here);
                     statuses.sort_by_key(|(i, _)| *i);
-                    let failed: Vec<&str> = statuses
-                        .iter()
-                        .map(|(_, s)| s.as_str())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    failed.join("|")
+                    pipe_status(statuses.into_iter().map(|(_, s)| s))
                 }
                 Err(e) => self.cmd_err(e, io)?,
             }
@@ -513,7 +529,8 @@ impl Shell {
     }
 
     /// Waits until every prog in `pids` has exited and returns their
-    /// statuses, in order. Messages from other children are kept.
+    /// statuses, in order, as `$status` shows them: without the `fail:`
+    /// prefix, as Inferno's sh. Messages from other children are kept.
     ///
     /// An interrupt while waiting is passed on to the progs not yet
     /// exited, which may have started after the console's note went to
@@ -541,10 +558,12 @@ impl Shell {
             }
         }
         pids.iter()
-            .map(|p| {
-                self.exited
-                    .remove(p)
-                    .unwrap_or_else(|| String::from("fail:lost"))
+            .map(|p| match self.exited.remove(p) {
+                Some(s) => match s.strip_prefix("fail:") {
+                    Some(rest) => failure_status(rest),
+                    None => s,
+                },
+                None => String::from("lost"),
             })
             .collect()
     }
@@ -558,7 +577,7 @@ impl Shell {
             return Err(Stop::Raise(name));
         }
         io.write(2, &format!("sh: {e}\n"));
-        Ok(format!("fail:{e}"))
+        Ok(e.0)
     }
 
     /// Runs a builtin, assignment or block in this prog.
@@ -661,7 +680,7 @@ impl Shell {
             Ok(()) => String::new(),
             Err(e) => {
                 io.write(2, &format!("{e}\n"));
-                format!("fail:{e}")
+                e.0
             }
         })
     }
@@ -926,7 +945,9 @@ impl Shell {
             } else {
                 argv[1..].join(" ")
             })),
-            _ => Ok(String::from("fail:unknown builtin")),
+            // As std's status: the status is its argument, as it is.
+            "status" => Ok(argv.get(1).cloned().unwrap_or_default()),
+            _ => Ok(String::from("unknown builtin")),
         }
     }
 

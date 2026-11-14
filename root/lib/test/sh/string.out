@@ -45,7 +45,7 @@ one / two three / two
 [b c]
 []
 sh: usage: len s
-fail:usage: len s
+usage: len s
 sh: usage: len s
 sh: usage: slice start end s
 sh: usage: slice start end s

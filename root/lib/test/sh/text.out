@@ -18,7 +18,7 @@ x
 2
 1
 sort: cannot open /tmp/sh-text/nonexistent: file does not exist
-fail:open file
+open file
 usage: sort [-nr] [file]
 apple
 banana
@@ -42,7 +42,7 @@ d
 a
 	c
 usage: comm [-123] file1 file2
-fail:usage
+usage
 HELLO WORLD
 heo
 a bbb
@@ -68,5 +68,5 @@ y
 a9993e364706816aba3e25717850c26c9cd0d89d
 d73bae1a37aeaf9cd79b9366d3c56d73d2ad1d17	/tmp/sh-text/one
 sha1sum: cannot open /tmp/sh-text/nonexistent: file does not exist
-fail:error
+error
 87a16d5c      6 /tmp/sh-text/one

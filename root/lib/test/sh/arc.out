@@ -47,12 +47,12 @@ three
 --rw-r--r-- 4 one
 --rw-r--r-- 6 three.txt
 ar: cannot open nosuch.a: file does not exist
-fail:error
+error
 ar: one not in archive format
 ar: bad option `z'
 usage: ar [uvnbailo][mrxtdpq] archive files ...
 ar: missing not found
-fail: file not found
+file not found
 usage: ar [uvnbailo][mrxtdpq] archive files ...
 ar: abi not allowed with q
 ar: creating new.a
