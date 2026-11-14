@@ -7,7 +7,9 @@ use purgatorio::{Context, Error};
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let [_, s, delims] = args.as_slice() else {
-        return Err(Error::from("usage: tokenize string delimiters"));
+        // As Inferno's tokenize: `Usage:`, and `fail: usage` with a space.
+        eprintln!("Usage: tokenize string delimiters");
+        purgatorio::exits("fail: usage");
     };
     for w in s.split(|c| delims.contains(c)).filter(|w| !w.is_empty()) {
         println!("{w}");

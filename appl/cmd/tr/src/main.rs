@@ -104,6 +104,12 @@ impl Tr {
     }
 }
 
+/// Inferno's tr prints `Usage:` and raises `fail: usage`, with a space.
+fn usage() -> ! {
+    eprintln!("Usage: tr [-cds] [string1 [string2]]");
+    purgatorio::exits("fail: usage");
+}
+
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, "tr [-cds] [string1 [string2]]");
@@ -113,13 +119,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'c' => complement = true,
             'd' => delete = true,
             's' => squeeze = true,
-            _ => return Err(arg.usage()),
+            _ => usage(),
         }
     }
-    let usage = arg.usage();
     let strs = arg.argv();
     if strs.len() > 2 {
-        return Err(usage);
+        usage();
     }
     let s1 = strs.first().map(|s| expand(s)).unwrap_or_default();
     let mut s2 = strs.get(1).map(|s| expand(s)).unwrap_or_default();

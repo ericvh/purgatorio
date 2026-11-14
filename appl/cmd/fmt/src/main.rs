@@ -127,14 +127,14 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             Ok(file) => f.file(&mut BufReader::new(file))?,
             Err(_) => {
                 f.out.flush()?;
-                eprintln!("fmt: {name}: {}", purgatorio::errstr());
+                eprintln!("fmt: can't open {name}: {}", purgatorio::errstr());
                 failed = true;
             }
         }
     }
     f.out.flush()?;
     if failed {
-        purgatorio::exits("fail:errors");
+        purgatorio::exits("fail:open");
     }
     Ok(())
 }

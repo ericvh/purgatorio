@@ -8,7 +8,10 @@ use purgatorio::{Context, Error};
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut data = Vec::new();
     if let Some(path) = args.get(1) {
-        data = std::fs::read(path).map_err(|_| Error::last())?;
+        if std::fs::read(path).map(|d| data = d).is_err() {
+            eprintln!("xd: cannot open {path}: {}", purgatorio::errstr());
+            purgatorio::exits("fail:cannot open");
+        }
     } else {
         std::io::stdin().read_to_end(&mut data)?;
     }

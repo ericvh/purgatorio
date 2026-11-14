@@ -82,8 +82,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         p.copy(&mut io::stdin().lock())?;
     }
     for f in files {
-        let file =
-            std::fs::File::open(f).map_err(|_| Error(format!("{f}: {}", purgatorio::errstr())))?;
+        let Ok(file) = std::fs::File::open(f) else {
+            // As Inferno's p: reported, skipped, no status.
+            eprintln!("p: can't open {f}: {}", purgatorio::errstr());
+            continue;
+        };
         if !p.copy(&mut BufReader::new(file))? {
             break;
         }

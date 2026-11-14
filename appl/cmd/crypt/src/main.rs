@@ -92,6 +92,11 @@ fn decrypt(secret: &[u8]) -> Result<(), Error> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's crypt ends a bad command line with `fail: bad usage`.
+    run(args).map_err(|e| e.usage_exits("usage: ", "fail: bad usage"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let mut decrypting = false;
     let mut secret = None;

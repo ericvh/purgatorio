@@ -18,7 +18,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut lines = Vec::new();
     let mut line = String::new();
     if let Some(path) = args.get(i) {
-        let f = std::fs::File::open(path).map_err(|_| Error::last())?;
+        let Ok(f) = std::fs::File::open(path) else {
+            // As Inferno's tail: the error is printed, the status is empty.
+            eprintln!("tail: {path}: {}", purgatorio::errstr());
+            return Ok(());
+        };
         let mut input = std::io::BufReader::new(f);
         loop {
             line.clear();

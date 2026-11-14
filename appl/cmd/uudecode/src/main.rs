@@ -88,6 +88,15 @@ fn decode(r: &mut dyn BufRead, to_stdout: bool) -> Result<(), Error> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's uudecode prints its usage, or any error, alone and exits
+    // with no status.
+    run(args).map_err(|e| {
+        eprintln!("{e}");
+        purgatorio::exits("")
+    })
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, "uudecode [-p] [encodedfile...]");
     let mut to_stdout = false;
     while let Some(o) = arg.opt() {

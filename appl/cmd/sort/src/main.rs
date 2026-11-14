@@ -53,7 +53,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             io::stdin().lock().read_to_end(&mut data)?;
         }
         [f] => {
-            data = std::fs::read(f).map_err(|_| Error(format!("{f}: {}", purgatorio::errstr())))?;
+            // As Inferno's sort: `cannot open`, and `fail:open file`.
+            let Ok(d) = std::fs::read(f) else {
+                eprintln!("sort: cannot open {f}: {}", purgatorio::errstr());
+                purgatorio::exits("fail:open file");
+            };
+            data = d;
         }
         _ => return Err(Error::from("usage: sort [-nr] [file]")),
     }
