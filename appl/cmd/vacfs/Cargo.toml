@@ -1,0 +1,20 @@
+[package]
+name = "appl-cmd-vacfs"
+description = "vacfs: serve vac archives from a Venti server, read-only, over Styx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vacfs"
+path = "src/main.rs"
+
+[dependencies]
+purg-styx.workspace = true
+purgatorio.workspace = true
+styxserv = { package = "appl-lib-styxserv", path = "../../lib/styxserv" }
+venti.workspace = true
+
+[lints]
+workspace = true

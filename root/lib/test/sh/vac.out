@@ -1,0 +1,75 @@
+put
+vxx:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+src
+src/a
+src/empty
+src/sub
+src/sub/b
+src/sub/deeper
+src/sub/deeper/c
+src/sub/fs.sh
+vac:...
+list
+./src
+./src/a
+./src/empty
+./src/sub
+./src/sub/b
+./src/sub/deeper
+./src/sub/deeper/c
+./src/sub/fs.sh
+get
+same
+hello
+in sub
+deeper still
+out/src/a
+out/src/empty
+out/src/sub
+out/src/sub/b
+out/src/sub/deeper
+out/src/sub/fs.sh
+out/src/sub/deeper/c
+empty 0
+small blocks, two paths, a name, an owner
+./fs.sh
+./sub
+./sub/b
+./sub/deeper
+./sub/deeper/c
+./sub/fs.sh
+same
+vacput: bad block size
+include and exclude
+./src
+./src/sub
+./src/sub/b
+./src
+./src/a
+./src/empty
+vacfs
+m/src
+m/src/a
+m/src/empty
+m/src/sub
+m/src/sub/b
+m/src/sub/deeper
+m/src/sub/fs.sh
+hello
+deeper still
+same
+--rw-r----- 6
+sh: m/src/a: permission denied
+cat: m/nonexistent: no such file or directory
+--rw-r----- bob sys 7
+cat: m/sub/b: permission denied
+any archive
+hello
+in sub
+errors
+reading vac score: no block with score 0123456789012345678901234567890123456789/1 exists
+bad score type: fossil
+bad score: xyz
+cannot have both -i and -x
+usage: vacput [-dv] [-i | -x] [-a addr] [-b blocksize] [-n name] [-u uid] [-g gid] path ...
+dialing tcp!127.0.0.1!1: connection refused
