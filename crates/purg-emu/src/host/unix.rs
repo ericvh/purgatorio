@@ -5,7 +5,8 @@ use std::ffi::CStr;
 use std::fs::{File, Metadata};
 use std::io;
 use std::os::unix::fs::{FileExt, MetadataExt};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use purg_abi::error;
 
@@ -200,52 +201,304 @@ pub fn report_aborts() {
     }
 }
 
-/// The SIGABRT handler: one `write` of a line built on the stack, with
-/// no allocation and no lock, since the abort may have come from inside
-/// the allocator.
+/// The SIGABRT handler: one `write` of a line built on the stack.
 extern "C" fn on_abort(sig: libc::c_int) {
-    let mut line = [0u8; 160];
-    let mut n = 0;
-    let mut put = |bytes: &[u8]| {
+    Line::new().put(b"emu: abort (SIGABRT) on ").whose().write();
+    // SAFETY: the default action is back in place (SA_RESETHAND), so the
+    // raise ends the process when this handler returns, whoever sent the
+    // signal.
+    unsafe { libc::raise(sig) };
+}
+
+/// A line of a signal report, built on the stack: a signal handler may
+/// not allocate or lock, since the signal may have come from inside the
+/// allocator.
+struct Line {
+    buf: [u8; 256],
+    n: usize,
+}
+
+impl Line {
+    fn new() -> Line {
+        Line {
+            buf: [0; 256],
+            n: 0,
+        }
+    }
+
+    fn put(&mut self, bytes: &[u8]) -> &mut Line {
         for &b in bytes {
-            if n < line.len() {
-                line[n] = b;
-                n += 1;
+            if self.n < self.buf.len() {
+                self.buf[self.n] = b;
+                self.n += 1;
             }
         }
-    };
-    put(b"emu: abort (SIGABRT) on thread '");
-    let mut name = [0u8; 64];
-    // SAFETY: name is valid for writes of its length, and the call
-    // NUL-terminates what it writes.
-    let named = unsafe {
-        libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr().cast(), name.len())
-    };
-    let len = name.iter().position(|&b| b == 0).unwrap_or(0);
-    put(if named == 0 && len > 0 {
-        &name[..len]
-    } else {
-        b"?"
-    });
-    put(b"', prog ");
-    let mut digits = [0u8; 10];
-    let mut pid = crate::platform::current_pid();
-    let mut at = digits.len();
-    loop {
-        at -= 1;
-        digits[at] = b'0' + (pid % 10) as u8;
-        pid /= 10;
-        if pid == 0 {
-            break;
+        self
+    }
+
+    fn dec(&mut self, v: i64) -> &mut Line {
+        if v < 0 {
+            self.put(b"-");
+        }
+        let mut v = v.unsigned_abs();
+        let mut digits = [0u8; 20];
+        let mut at = digits.len();
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                break;
+            }
+        }
+        self.put(&digits[at..])
+    }
+
+    fn hex(&mut self, mut v: usize) -> &mut Line {
+        let mut digits = [0u8; 16];
+        let mut at = digits.len();
+        loop {
+            at -= 1;
+            digits[at] = b"0123456789abcdef"[v & 15];
+            v >>= 4;
+            if v == 0 {
+                break;
+            }
+        }
+        self.put(b"0x").put(&digits[at..])
+    }
+
+    /// A code address as `0x... (emu+0x...)`: the offset in the emu's
+    /// image is what `addr2line -e emu` (or `atos`) takes.
+    fn code(&mut self, pc: usize) -> &mut Line {
+        self.hex(pc);
+        let base = IMAGE_BASE.load(Ordering::Relaxed);
+        // Only an address in the emu's image, which is well under 4 GiB.
+        if base != 0 && pc >= base && pc - base < 1 << 32 {
+            self.put(b" (emu+").hex(pc - base).put(b")");
+        }
+        self
+    }
+
+    /// The calling thread and its prog: `thread 'name', prog N`.
+    fn whose(&mut self) -> &mut Line {
+        let mut name = [0u8; 64];
+        // SAFETY: name is valid for writes of its length, and the call
+        // NUL-terminates what it writes.
+        let named = unsafe {
+            libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr().cast(), name.len())
+        };
+        let len = name.iter().position(|&b| b == 0).unwrap_or(0);
+        self.put(b"thread '").put(if named == 0 && len > 0 {
+            &name[..len]
+        } else {
+            b"?"
+        });
+        self.put(b"', prog ")
+            .dec(i64::from(crate::platform::current_pid()))
+    }
+
+    /// Writes the line and a newline to standard error, in one `write`.
+    fn write(&mut self) {
+        self.put(b"\n");
+        // SAFETY: buf is valid for reads of n bytes.
+        unsafe { libc::write(libc::STDERR_FILENO, self.buf.as_ptr().cast(), self.n) };
+    }
+}
+
+/// Where the emu's image is loaded, for the offsets in a fault report.
+static IMAGE_BASE: AtomicUsize = AtomicUsize::new(0);
+
+/// The actions SIGSEGV and SIGBUS had before [`report_faults`]: std's
+/// handler, which reports a stack overflow on a thread's guard page.
+static PREVIOUS: OnceLock<[libc::sigaction; 2]> = OnceLock::new();
+
+/// A pipe through which the fault handler reads memory that may not be
+/// mapped: `write` fails with EFAULT where a load would fault again.
+static PROBE: OnceLock<[libc::c_int; 2]> = OnceLock::new();
+
+/// The most return addresses a fault report shows, and the most frames
+/// it follows (a deep recursion is shown as one address and a count).
+const FRAMES: usize = 32;
+const STEPS: usize = 1 << 16;
+
+/// Makes a memory fault (SIGSEGV, SIGBUS) say where it happened: an emu
+/// once died of SIGSEGV with nothing on its standard error (issue #239).
+/// The handler prints the signal, the faulting address, the thread and
+/// its prog, the program counter and other registers, and the return
+/// addresses found by following frame pointers, where the code keeps
+/// them. Then it puts the previous action back and returns, so the
+/// faulting instruction runs again into std's handler: that one says
+/// "has overflowed its stack" for a guard page, and otherwise lets the
+/// default action end the process with a core dump. Nothing is spent
+/// until a fault.
+///
+/// Call it from `main`, after std has installed its handler and before
+/// other threads start.
+pub fn report_faults() {
+    let here = report_faults as fn() as usize;
+    // SAFETY: dladdr only reads the loader's tables and fills `info`.
+    unsafe {
+        let mut info: libc::Dl_info = core::mem::zeroed();
+        if libc::dladdr(here as *const libc::c_void, &mut info) != 0 {
+            IMAGE_BASE.store(info.dli_fbase as usize, Ordering::Relaxed);
         }
     }
-    put(&digits[at..]);
-    put(b"\n");
-    // SAFETY: line is valid for reads of n bytes. The default action is
-    // back in place (SA_RESETHAND), so the raise ends the process when
-    // this handler returns, whoever sent the signal.
-    unsafe {
-        libc::write(libc::STDERR_FILENO, line.as_ptr().cast(), n);
-        libc::raise(sig);
+    let mut fds = [-1; 2];
+    // SAFETY: fds has room for the two descriptors pipe returns.
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
+        for fd in fds {
+            // SAFETY: fd is one of the pipe's descriptors, just made.
+            unsafe {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+            }
+        }
+        let _ = PROBE.set(fds);
     }
+    // SAFETY: zeroed sigactions are valid, and the handler only makes
+    // async-signal-safe calls. SA_ONSTACK runs it on the thread's
+    // alternate signal stack, which std gives the threads it starts, so
+    // that a stack overflow still gets as far as std's handler.
+    unsafe {
+        let mut old: [libc::sigaction; 2] = core::mem::zeroed();
+        for (sig, old) in [libc::SIGSEGV, libc::SIGBUS].into_iter().zip(&mut old) {
+            libc::sigaction(sig, core::ptr::null(), old);
+        }
+        if PREVIOUS.set(old).is_err() {
+            return;
+        }
+        let mut sa: libc::sigaction = core::mem::zeroed();
+        sa.sa_sigaction = on_fault
+            as extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void)
+            as usize;
+        sa.sa_flags = libc::SA_SIGINFO | libc::SA_ONSTACK;
+        libc::sigemptyset(&mut sa.sa_mask);
+        for sig in [libc::SIGSEGV, libc::SIGBUS] {
+            libc::sigaction(sig, &sa, core::ptr::null_mut());
+        }
+    }
+}
+
+/// The two words at `at`, if they are mapped, read through [`PROBE`].
+fn probe_pair(at: usize) -> Option<[usize; 2]> {
+    let [rd, wr] = *PROBE.get()?;
+    let mut out = [0usize; 2];
+    let len = core::mem::size_of_val(&out);
+    // SAFETY: the kernel reads the `len` bytes at `at` for write, which
+    // fails with EFAULT, rather than faulting, where they are not
+    // mapped; the read fills `out`, which has room for them.
+    unsafe {
+        if libc::write(wr, at as *const libc::c_void, len) != len as isize {
+            return None;
+        }
+        if libc::read(rd, out.as_mut_ptr().cast(), len) != len as isize {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// The SIGSEGV and SIGBUS handler (see [`report_faults`]).
+extern "C" fn on_fault(sig: libc::c_int, info: *mut libc::siginfo_t, uc: *mut libc::c_void) {
+    // SAFETY: the kernel passes a valid siginfo to an SA_SIGINFO handler.
+    let (addr, code) = unsafe { ((*info).si_addr() as usize, (*info).si_code) };
+    let regs = super::os::fault_registers(uc);
+    let what: &[u8] = if sig == libc::SIGBUS {
+        b"emu: bus error (SIGBUS) at "
+    } else {
+        b"emu: memory fault (SIGSEGV) at "
+    };
+    Line::new()
+        .put(what)
+        .hex(addr)
+        .put(b" on ")
+        .whose()
+        .put(b", pc ")
+        .code(regs.pc)
+        .write();
+    Line::new()
+        .put(b"emu:   lr ")
+        .code(regs.lr)
+        .put(b" sp ")
+        .hex(regs.sp)
+        .put(b" fp ")
+        .hex(regs.fp)
+        .put(b" si_code ")
+        .dec(i64::from(code))
+        .write();
+    // The return address saved beside each frame pointer, up the stack:
+    // the AArch64 and x86-64 frame records are both the caller's frame
+    // pointer and then the return address. A run of one return address
+    // (a recursion) is one line and a count. Two threads faulting at once
+    // share the probe pipe and may mix up each other's frames.
+    let mut fp = regs.fp;
+    let (mut last, mut again) = (0, 0);
+    let mut shown = 0;
+    for _ in 0..STEPS {
+        if shown == FRAMES {
+            break;
+        }
+        if fp == 0 || !fp.is_multiple_of(core::mem::size_of::<usize>()) || fp < regs.sp {
+            break;
+        }
+        let Some([next, ret]) = probe_pair(fp) else {
+            break;
+        };
+        if ret == 0 {
+            break;
+        }
+        if ret == last {
+            again += 1;
+        } else {
+            if again > 0 {
+                Line::new()
+                    .put(b"emu:   ... ")
+                    .dec(again)
+                    .put(b" more of it")
+                    .write();
+            }
+            Line::new().put(b"emu:   called from ").code(ret).write();
+            (last, again) = (ret, 0);
+            shown += 1;
+        }
+        if next <= fp {
+            break;
+        }
+        fp = next;
+    }
+    if again > 0 {
+        Line::new()
+            .put(b"emu:   ... ")
+            .dec(again)
+            .put(b" more of it")
+            .write();
+    }
+    // SAFETY: PREVIOUS holds the actions report_faults read; signal,
+    // sigaction and raise are async-signal-safe.
+    unsafe {
+        if super::os::sent_by_kill(code) {
+            // A signal sent by kill does not come again when the handler
+            // returns, as a fault does, and std's handler would ignore it
+            // (it only puts the default action back): send it again, to
+            // the default action, which acts on it once this returns.
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        } else if let Some(old) = PREVIOUS.get() {
+            libc::sigaction(
+                sig,
+                &old[usize::from(sig == libc::SIGBUS)],
+                core::ptr::null_mut(),
+            );
+        }
+    }
+}
+
+/// Registers at a fault, from the signal context, for [`on_fault`]. Zero
+/// where the CPU has no such register (`lr` on x86-64).
+pub struct FaultRegisters {
+    pub pc: usize,
+    pub sp: usize,
+    pub fp: usize,
+    pub lr: usize,
 }

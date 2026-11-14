@@ -143,3 +143,45 @@ pub fn icmp_recv(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<IcmpIn> {
         src: Ipv4Addr::from(u32::from_be(name.sin_addr.s_addr)),
     })
 }
+
+/// The registers at a fault, from the context Linux passes a signal
+/// handler.
+pub fn fault_registers(uc: *mut libc::c_void) -> super::unix::FaultRegisters {
+    let mut regs = super::unix::FaultRegisters {
+        pc: 0,
+        sp: 0,
+        fp: 0,
+        lr: 0,
+    };
+    if uc.is_null() {
+        return regs;
+    }
+    // SAFETY: an SA_SIGINFO handler's third argument is the ucontext_t
+    // of the interrupted thread.
+    let uc = unsafe { &*uc.cast::<libc::ucontext_t>() };
+    #[cfg(target_arch = "aarch64")]
+    {
+        let m = &uc.uc_mcontext;
+        regs.pc = m.pc as usize;
+        regs.sp = m.sp as usize;
+        regs.fp = m.regs[29] as usize;
+        regs.lr = m.regs[30] as usize;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let g = &uc.uc_mcontext.gregs;
+        regs.pc = g[libc::REG_RIP as usize] as usize;
+        regs.sp = g[libc::REG_RSP as usize] as usize;
+        regs.fp = g[libc::REG_RBP as usize] as usize;
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    let _ = uc;
+    regs
+}
+
+/// Whether a signal's `si_code` says a process sent it (`kill`,
+/// `sigqueue`, `tgkill`) rather than the CPU raising it: Linux's codes
+/// for those are 0 and below.
+pub fn sent_by_kill(code: libc::c_int) -> bool {
+    code <= 0
+}
