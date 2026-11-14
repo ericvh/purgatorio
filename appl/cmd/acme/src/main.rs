@@ -1152,6 +1152,14 @@ impl Acme {
         if del {
             x.replace("");
         }
+        // The shared buffer too, for rio and other programs.
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open("/dev/snarf")
+        {
+            let _ = std::io::Write::write_all(&mut f, s.as_bytes());
+        }
         self.snarf = s;
         if del {
             self.edited(t)?;
@@ -1162,7 +1170,9 @@ impl Acme {
     /// Replaces the selection of `t` with the snarf buffer and selects
     /// it.
     fn paste(&mut self, t: Tid) -> Result<(), Error> {
-        let s = self.snarf.clone();
+        let s = std::fs::read("/dev/snarf")
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_else(|_| self.snarf.clone());
         let Some(x) = self.text_mut(t) else {
             return Ok(());
         };

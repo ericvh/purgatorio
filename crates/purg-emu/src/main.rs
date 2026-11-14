@@ -164,6 +164,8 @@ fn boot(root: PathBuf, modules: Level, screen: Arc<dyn Screen>) -> Result<Prog, 
     // The draw device and the pointer, after #c as Inferno's emu has them.
     pgrp.bind("#i", "/dev", MAFTER)?;
     pgrp.bind("#m", "/dev", MAFTER)?;
+    // The snarf buffer, as Inferno's emu binds it.
+    pgrp.bind("#^", "/dev", MAFTER)?;
     pgrp.bind("#e", "/env", MREPL | MCREATE)?;
     pgrp.bind("#p", "/prog", MREPL)?;
     pgrp.bind("#s", "/chan", MREPL | MCREATE)?;

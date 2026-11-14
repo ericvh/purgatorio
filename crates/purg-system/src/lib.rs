@@ -49,11 +49,11 @@ pub struct Boot {
 
 /// Builds the emu's boot namespace: `#/` the root, the RAM tree made by
 /// `root` (as `#U`, with its owner and the platform) unioned after it and
-/// taking creates, `#c` before `/dev`, and `#e`, `#p`, `#s`, `#d` and `#I`
-/// on `/env`, `/prog`, `/chan`, `/fd` and `/net`. Unlike the emu, nothing
-/// is bound on `/cmd`: a bare-metal image has no host to run commands on.
-/// `#C` is still in the device table, and its `clone` fails with `not
-/// implemented`.
+/// taking creates, `#c` before `/dev` and `#^` after it, and `#e`, `#p`,
+/// `#s`, `#d` and `#I` on `/env`, `/prog`, `/chan`, `/fd` and `/net`.
+/// Unlike the emu, nothing is bound on `/cmd`: a bare-metal image has no
+/// host to run commands on. `#C` is still in the device table, and its
+/// `clone` fails with `not implemented`.
 pub fn boot(
     b: Boot,
     root: impl FnOnce(&str, &Arc<dyn Platform>) -> Result<RamTree, Error>,
@@ -74,6 +74,7 @@ pub fn boot(
     let pgrp = Pgrp::new(devtab.clone(), devtab.attach('/', "")?);
     pgrp.bind("#U", "/", MAFTER | MCREATE)?;
     pgrp.bind("#c", "/dev", MBEFORE)?;
+    pgrp.bind("#^", "/dev", MAFTER)?;
     pgrp.bind("#e", "/env", MREPL | MCREATE)?;
     pgrp.bind("#p", "/prog", MREPL)?;
     pgrp.bind("#s", "/chan", MREPL | MCREATE)?;
