@@ -2,20 +2,25 @@
 //!
 //! `rio [-f font] [-i cmd]` takes the screen (or, run in a rio window,
 //! that window), fills it with a background and serves windows on it.
-//! Button 3 on the background, on a window's border or in a text window
-//! brings up the menu: `New`, `Resize`, `Move`, `Delete`, `Hide`, `Exit`,
-//! then the hidden windows by label. `New` and `Resize` ask for a
-//! rectangle, swept with button 3; `Resize`, `Move`, `Delete` and `Hide`
-//! ask for a window, chosen with button 3 (`Move` drags it). Button 1 on
-//! a window that is not current makes it current and raises it. `-i cmd`
-//! runs `cmd` in a first window that fills most of the screen.
+//! Button 3 on the background or in a text window brings up the menu:
+//! `New`, `Resize`, `Move`, `Delete`, `Hide`, `Exit`, then the hidden
+//! windows by label. `New` and `Resize` ask for a rectangle, swept with
+//! button 3; `Resize`, `Move`, `Delete` and `Hide` ask for a window,
+//! chosen with button 3 (`Move` drags it). Button 1 on a window that is
+//! not current makes it current and raises it. Button 1 or 3 on a
+//! window's border drags the nearest edge or corner. `-i cmd` runs `cmd`
+//! in a first window that fills most of the screen.
 //!
 //! Each window runs `sh -i` with the window's files (rio(4), see
 //! [`fs`]) bound before `/dev`. Without a program drawing in it, a window
 //! is a simple terminal: what is written to `/dev/cons` is shown, typing
-//! goes at the end and is sent a line at a time, `^D` sends what is
-//! typed without a newline, Delete flushes what is typed and interrupts
-//! the window's processes, and the wheel scrolls. A program that opens
+//! goes at the selection (or the end) and is sent a line at a time, `^D`
+//! sends what is typed without a newline, Delete flushes what is typed
+//! and interrupts the window's processes, and the wheel scrolls. Button 1
+//! selects text (a double click selects a word or a line; button 2 or 3
+//! pressed while it is held cuts or pastes), and button 2 brings up
+//! `cut`, `paste`, `snarf`, `plumb` (when the plumber runs), `send` and
+//! `scroll` or `noscroll`, on `/dev/snarf`. A program that opens
 //! `/dev/draw` gets the window, not the screen (Plan 9's `getwindow`, in
 //! the SDK, through `/dev/winname`), and while it holds `/dev/pointer`
 //! open the pointer's events in the window go to it.
@@ -25,7 +30,10 @@
 //! on it per rio window, and names it; the program in the window looks
 //! the name up and makes a screen and window of its own on it. A resize
 //! or move gives the window a new image and a new name, and the program
-//! hears of it as a pointer event marked `r`. See docs/graphics.md.
+//! hears of it as a pointer event marked `r`. A hidden window's image is
+//! an ordinary image, off every screen. When rio's own screen changes
+//! size, the windows are scaled to the new one, as rio does. See
+//! docs/graphics.md.
 //!
 //! `rio -W [cmd]` is the window side of a new window, run by rio: it
 //! mounts the window's files (fd 0) before `/dev` in a namespace of its
@@ -55,13 +63,25 @@ const UNFOCUS: u32 = 0x9ECECEFF;
 const MENUBG: u32 = 0xEAFFEAFF;
 const MENUHI: u32 = 0x448844FF;
 const SWEEP: u32 = 0xDD2222FF;
+/// The selection's background in text windows.
+const HIGH: u32 = 0xEEEE9EFF;
 /// The smallest window a sweep makes.
 const MINSIZE: i32 = 50;
+/// How near a corner, along an edge, a press on the border drags the
+/// corner.
+const CORNER: i32 = 20;
+/// The most milliseconds between the clicks of a double click.
+const DOUBLE: u32 = 500;
+/// The snarf buffer.
+const SNARF: &str = "/dev/snarf";
 /// Pointer events kept for a program that does not read them.
 const MOUSEQ: usize = 64;
 
 /// The menu's fixed items; hidden windows follow.
 pub const MENU: &[&str] = &["New", "Resize", "Move", "Delete", "Hide", "Exit"];
+/// The menu of button 2 in a text window; `plumb` only while the plumber
+/// runs, and `scroll` or `noscroll` last.
+pub const MENU2: &[&str] = &["cut", "paste", "snarf", "plumb", "send"];
 /// Pixels above and below each menu item's text.
 pub const MENUPAD: i32 = 2;
 
@@ -82,6 +102,8 @@ pub struct Win {
     pub text: Text,
     /// Scroll to show the end before the next drawing.
     pub follow: bool,
+    /// Output scrolls the text to show it (`scroll`, `noscroll`).
+    pub scroll: bool,
     /// The text needs drawing.
     dirty: bool,
     pub mouseq: VecDeque<String>,
@@ -96,7 +118,9 @@ pub struct Win {
 }
 
 struct Colours {
+    bg: Image,
     black: Image,
+    high: Image,
     white: Image,
     focus: Image,
     unfocus: Image,
@@ -118,6 +142,11 @@ pub struct Rio {
     next_id: u32,
     z: u64,
     lasthit: usize,
+    /// The last item chosen from button 2's menu.
+    lasthit2: usize,
+    /// The last click of button 1 that selected nothing: its window, rune
+    /// and time, for a double click.
+    click: Option<(u32, usize, u32)>,
     /// The window that gets the pointer while the buttons pressed in it
     /// are held.
     grab: Option<u32>,
@@ -140,6 +169,52 @@ fn canon(a: Point, b: Point) -> Rect {
     Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y))
 }
 
+/// The snarf buffer's text.
+fn snarf_get() -> String {
+    std::fs::read(SNARF)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default()
+}
+
+/// Replaces the snarf buffer.
+fn snarf_put(s: &str) {
+    match OpenOptions::new().write(true).truncate(true).open(SNARF) {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(s.as_bytes()) {
+                eprintln!("rio: {SNARF}: {e}");
+            }
+        }
+        Err(e) => eprintln!("rio: {SNARF}: {e}"),
+    }
+}
+
+/// `r` on screen `from` put in the same place, scaled, on screen `to`,
+/// as rio does when its screen changes size: at least [`MINSIZE`] each
+/// way where the screen allows, and on it.
+pub fn scale(r: Rect, from: Rect, to: Rect) -> Rect {
+    let along = |v: i32, f0: i32, fd: i32, t0: i32, td: i32| -> i32 {
+        t0 + (i64::from(v - f0) * i64::from(td) / i64::from(fd.max(1))) as i32
+    };
+    let fit = |lo: i32, hi: i32, t0: i32, t1: i32| -> (i32, i32) {
+        let size = (hi - lo).max(MINSIZE.min(t1 - t0)).min(t1 - t0);
+        let lo = lo.clamp(t0, (t1 - size).max(t0));
+        (lo, lo + size)
+    };
+    let (x0, x1) = fit(
+        along(r.min.x, from.min.x, from.dx(), to.min.x, to.dx()),
+        along(r.max.x, from.min.x, from.dx(), to.min.x, to.dx()),
+        to.min.x,
+        to.max.x,
+    );
+    let (y0, y1) = fit(
+        along(r.min.y, from.min.y, from.dy(), to.min.y, to.dy()),
+        along(r.max.y, from.min.y, from.dy(), to.min.y, to.dy()),
+        to.min.y,
+        to.max.y,
+    );
+    Rect::new(x0, y0, x1, y1)
+}
+
 impl Rio {
     fn new(font: Font) -> Result<Rio, Error> {
         let mut d = Display::open()?;
@@ -148,7 +223,9 @@ impl Rio {
         d.draw(&screen, screen.r, &bg, None, Point::new(0, 0))?;
         let scr = d.alloc_screen(&screen, &bg, true)?;
         let c = Colours {
+            bg,
             black: d.color(0x000000FF)?,
+            high: d.color(HIGH)?,
             white: d.color(WHITE)?,
             focus: d.color(FOCUS)?,
             unfocus: d.color(UNFOCUS)?,
@@ -171,6 +248,8 @@ impl Rio {
             next_id: 1,
             z: 0,
             lasthit: 0,
+            lasthit2: 0,
+            click: None,
             grab: None,
             waitfd: File::open(format!("/prog/{}/wait", purgatorio::pid())).ok(),
             user,
@@ -224,7 +303,8 @@ impl Rio {
         Ok(())
     }
 
-    /// Draws window `id`'s text, unless a program draws in it.
+    /// Draws window `id`'s text, unless a program draws in it: the
+    /// selection on its background, or the tick at the point.
     fn paint(&mut self, id: u32) -> Result<(), Error> {
         let Some(w) = self.wins.iter_mut().find(|w| w.id == id) else {
             return Ok(());
@@ -245,17 +325,37 @@ impl Rio {
             }
         }
         let lines = w.text.layout(w.text.org, n, width, f);
+        let (q0, q1) = (w.text.q0, w.text.q1);
         let mut runs = Vec::new();
+        let mut highs = Vec::new();
         for (i, &(s, e)) in lines.iter().enumerate() {
+            let y = area.min.y + i as i32 * fh;
+            let (a, b) = (q0.max(s), q1.min(e));
+            if a < b {
+                let x0 = w.text.x_of(s, a, f);
+                let x1 = if w.text.s[b - 1] == '\n' {
+                    area.dx()
+                } else {
+                    w.text.x_of(s, b, f)
+                };
+                highs.push(Rect::new(area.min.x + x0, y, area.min.x + x1, y + fh));
+            }
             for (t, x) in w.text.pieces(s, e, f) {
-                runs.push((t, Point::new(area.min.x + x, area.min.y + i as i32 * fh)));
+                runs.push((t, Point::new(area.min.x + x, y)));
             }
         }
-        let tick = w.text.end_point(&lines, fh, f);
+        let tick = if q0 == q1 {
+            w.text.point_of(q0, &lines, fh, f)
+        } else {
+            None
+        };
         let img = w.img.clone();
         let inner = inset(w.r, BORDER);
         self.d
             .draw(&img, inner, &self.c.white, None, Point::new(0, 0))?;
+        for r in highs {
+            self.d.draw(&img, r, &self.c.high, None, Point::new(0, 0))?;
+        }
         for (t, p) in runs {
             self.d.string(
                 &img,
@@ -278,6 +378,46 @@ impl Rio {
             }
         }
         Ok(())
+    }
+
+    /// The rune of window `id`'s text drawn at `p`, or nearest it.
+    fn rune_at(&mut self, id: u32, p: Point) -> usize {
+        let fh = self.widths.font.height.max(1);
+        let Some(w) = self.wins.iter().find(|w| w.id == id) else {
+            return 0;
+        };
+        let area = Text::area(w.r, BORDER);
+        let n = (area.dy() / fh).max(1) as usize;
+        let f = &mut self.widths;
+        let lines = w.text.layout(w.text.org, n, area.dx().max(1), f);
+        if lines.is_empty() {
+            return w.text.org;
+        }
+        let i = ((p.y - area.min.y) / fh).clamp(0, lines.len() as i32 - 1) as usize;
+        let (s, e) = lines[i];
+        w.text.at_x(s, e, p.x - area.min.x, f)
+    }
+
+    /// The image file of `/dev/screen` (`Q::Screen`) or window `win`'s
+    /// `/dev/window`: image(6), uncompressed.
+    pub fn image_file(&mut self, screen: bool, win: u32) -> Result<Vec<u8>, String> {
+        let img = if screen {
+            self.screen.clone()
+        } else {
+            self.win(win).ok_or(EDELETED)?.img.clone()
+        };
+        let r = img.r;
+        let mut out = format!(
+            "{:>11} {:>11} {:>11} {:>11} {:>11} ",
+            img.chan.to_string(),
+            r.min.x,
+            r.min.y,
+            r.max.x,
+            r.max.y
+        )
+        .into_bytes();
+        out.extend(self.d.unload(&img, r).map_err(|e| e.0)?);
+        Ok(out)
     }
 
     // ---- Windows.
@@ -324,6 +464,7 @@ impl Rio {
             sess: Session::new(File::from(ours)),
             text: Text::default(),
             follow: true,
+            scroll: true,
             dirty: true,
             mouseq: VecDeque::new(),
             mouse_opens: 0,
@@ -338,8 +479,14 @@ impl Rio {
         Ok(id)
     }
 
-    /// Makes window `id` current and raises it.
+    /// Makes window `id` current and raises it, showing it if hidden.
     fn focus(&mut self, id: u32) -> Result<(), Error> {
+        if let Some(w) = self.win(id)
+            && w.hidden
+        {
+            let r = w.r;
+            return self.reshape(id, r, true, false);
+        }
         let old = self.current.replace(id);
         self.z += 1;
         let z = self.z;
@@ -372,9 +519,11 @@ impl Rio {
     }
 
     /// Gives window `id` a new image on `r`, with a new name; with
-    /// `keep`, the old pixels moved with it. A program drawing in it
+    /// `keep`, the old pixels moved with it. With `hidden` the image is an
+    /// ordinary one, on no screen, so the window shows nowhere; else it
+    /// is a window on rio's screen, and current. A program drawing in it
     /// hears of it.
-    fn reshape(&mut self, id: u32, r: Rect, keep: bool) -> Result<(), Error> {
+    fn reshape(&mut self, id: u32, r: Rect, keep: bool, hidden: bool) -> Result<(), Error> {
         let pid = purgatorio::pid();
         let scr = self.scr.clone();
         let Some(w) = self.win_mut(id) else {
@@ -383,7 +532,11 @@ impl Rio {
         let (old, oldname) = (w.img.clone(), w.name.clone());
         w.serial += 1;
         let name = format!("window.{pid}.{id}.{}", w.serial);
-        let img = self.d.alloc_window(&scr, r, WHITE)?;
+        let img = if hidden {
+            self.d.alloc(r, scr.chan, false, WHITE)?
+        } else {
+            self.d.alloc_window(&scr, r, WHITE)?
+        };
         if keep {
             self.d.draw(&img, r, &old, None, old.r.min)?;
         }
@@ -397,42 +550,71 @@ impl Rio {
         w.img = img;
         w.r = r;
         w.name = name;
-        w.hidden = false;
+        w.hidden = hidden;
         w.dirty = true;
         w.follow = true;
         if w.mouse_opens > 0 {
             Rio::queue_mouse(w, m, 'r');
         }
-        self.focus(id)
-    }
-
-    fn hide(&mut self, id: u32) -> Result<(), Error> {
-        let far = Point::new(self.screen.r.max.x + 64, self.screen.r.max.y + 64);
-        let Some(w) = self.win_mut(id) else {
-            return Ok(());
-        };
-        if w.hidden {
-            return Ok(());
+        if !hidden {
+            return self.focus(id);
         }
-        w.hidden = true;
-        let img = w.img.clone();
-        self.d.origin_window(&img, far)?;
         if self.current == Some(id) {
             self.focus_top()?;
         }
         Ok(())
     }
 
-    fn unhide(&mut self, id: u32) -> Result<(), Error> {
-        let Some(w) = self.win_mut(id) else {
+    /// Takes window `id` off the screen: its image becomes an ordinary
+    /// one, as in rio, and its program draws on that.
+    fn hide(&mut self, id: u32) -> Result<(), Error> {
+        let Some(w) = self.win(id) else {
             return Ok(());
         };
         if w.hidden {
-            w.hidden = false;
-            let img = w.img.clone();
-            self.d.origin_window(&img, img.r.min)?;
+            return Ok(());
         }
+        let r = w.r;
+        self.reshape(id, r, true, true)
+    }
+
+    fn unhide(&mut self, id: u32) -> Result<(), Error> {
         self.focus(id)
+    }
+
+    /// rio's screen has changed size (the display, or the window rio
+    /// runs in): makes a screen on the new image if there is one, and
+    /// scales every window to it, as rio does.
+    fn resized(&mut self) -> Result<(), Error> {
+        let old = self.screen.r;
+        let new = self.d.screen();
+        let mut oldscr = None;
+        if new.id != self.screen.id {
+            // In a rio window: a new image, so a new screen on it.
+            self.d
+                .draw(&new, new.r, &self.c.bg, None, Point::new(0, 0))?;
+            let scr = self.d.alloc_screen(&new, &self.c.bg, true)?;
+            oldscr = Some(std::mem::replace(&mut self.scr, scr));
+        }
+        self.screen = new.clone();
+        let current = self.current;
+        let mut order: Vec<(u64, u32)> = self.wins.iter().map(|w| (w.z, w.id)).collect();
+        order.sort();
+        for (_, id) in order {
+            let Some(w) = self.win(id) else {
+                continue;
+            };
+            let (r, hidden) = (scale(w.r, old, new.r), w.hidden);
+            self.reshape(id, r, false, hidden)?;
+        }
+        match current {
+            Some(id) if self.win(id).is_some_and(|w| !w.hidden) => self.focus(id)?,
+            _ => self.focus_top()?,
+        }
+        if let Some(s) = oldscr {
+            self.d.free_screen(s)?;
+        }
+        self.d.flush()
     }
 
     /// Kills window `id`'s processes and takes it away.
@@ -489,25 +671,37 @@ impl Rio {
                 let mut nr = c.r.unwrap_or(r);
                 nr.max.x += c.dx.unwrap_or(0);
                 nr.max.y += c.dy.unwrap_or(0);
-                self.reshape(id, ok(nr)?, false).map_err(e)
+                self.reshape(id, ok(nr)?, false, false).map_err(e)
             }
             "move" => {
                 let p = Point::new(c.minx.unwrap_or(r.min.x), c.miny.unwrap_or(r.min.y));
-                self.reshape(id, r.sub(r.min).add(p), true).map_err(e)
+                self.reshape(id, r.sub(r.min).add(p), true, false)
+                    .map_err(e)
             }
             "top" => self.focus(id).map_err(e),
             "current" => self.focus(id).map_err(e),
             "bottom" => {
-                let img = self.win(id).ok_or(EDELETED)?.img.clone();
+                let w = self.win(id).ok_or(EDELETED)?;
+                let (img, hidden) = (w.img.clone(), w.hidden);
                 if let Some(w) = self.win_mut(id) {
                     w.z = 0;
+                }
+                if hidden {
+                    return Ok(());
                 }
                 self.d.top_windows(&[&img], false).map_err(e)
             }
             "hide" => self.hide(id).map_err(e),
             "unhide" => self.unhide(id).map_err(e),
             "delete" => self.delete(id).map_err(e),
-            "scroll" | "noscroll" => Ok(()),
+            "scroll" | "noscroll" => {
+                if let Some(w) = self.win_mut(id) {
+                    w.scroll = c.verb == "scroll";
+                    w.follow |= w.scroll;
+                    w.dirty = true;
+                }
+                Ok(())
+            }
             _ => Err(String::from("unrecognized wctl command")),
         }
     }
@@ -538,6 +732,9 @@ impl Rio {
     }
 
     fn mouse_event(&mut self, m: Pointer) -> Result<(), Error> {
+        if self.grab.is_none() && self.m.buttons == 0 && self.d.check_resize()? {
+            self.resized()?;
+        }
         let pressed = m.buttons & !self.m.buttons;
         self.m = m;
         if let Some(g) = self.grab {
@@ -551,14 +748,17 @@ impl Rio {
         }
         let hit = self.at(m.xy);
         let drawn = |rio: &Rio, id: u32| rio.win(id).is_some_and(|w| w.mouse_opens > 0);
-        if pressed & 4 != 0 {
-            let to_rio = match hit {
-                None => true,
-                Some((id, inner)) => !inner || !drawn(self, id),
-            };
-            if to_rio {
-                return self.menu();
+        // Buttons 1 and 3 on a border drag its edge or corner.
+        if pressed & (1 | 4) != 0
+            && let Some((id, false)) = hit
+        {
+            if self.current != Some(id) {
+                self.focus(id)?;
             }
+            return self.border_drag(id, m.buttons);
+        }
+        if pressed & 4 != 0 && hit.is_none_or(|(id, _)| !drawn(self, id)) {
+            return self.menu();
         }
         if pressed & 1 != 0
             && let Some((id, _)) = hit
@@ -579,6 +779,16 @@ impl Rio {
             }
             return Ok(());
         }
+        if let Some((id, true)) = hit
+            && self.current == Some(id)
+        {
+            if pressed & 1 != 0 {
+                return self.select(id);
+            }
+            if pressed & 2 != 0 {
+                return self.menu2(id);
+            }
+        }
         if pressed & (8 | 16) != 0
             && let Some((id, _)) = hit
             && !drawn(self, id)
@@ -592,6 +802,219 @@ impl Rio {
                 w.text.scroll(n, width, f);
                 w.dirty = true;
             }
+        }
+        Ok(())
+    }
+
+    /// Shows window `id`'s text now.
+    fn show(&mut self, id: u32) -> Result<(), Error> {
+        self.paint(id)?;
+        self.d.flush()
+    }
+
+    /// Selects text in window `id` with button 1, from a press: sweeps
+    /// from the rune pressed on to the rune it is released on, or after
+    /// a second click on the same rune selects the word or line there.
+    fn select(&mut self, id: u32) -> Result<(), Error> {
+        let q = self.rune_at(id, self.m.xy);
+        let msec = self.m.msec;
+        let double = self
+            .click
+            .is_some_and(|(w, cq, t)| w == id && cq == q && msec.wrapping_sub(t) < DOUBLE);
+        self.click = None;
+        if double {
+            if let Some(w) = self.win_mut(id) {
+                let (a, b) = w.text.double(q);
+                w.text.select(a, b);
+            }
+            self.show(id)?;
+        } else {
+            if let Some(w) = self.win_mut(id) {
+                w.text.select(q, q);
+            }
+            self.show(id)?;
+            while self.m.buttons == 1 {
+                let m = self.read_mouse()?;
+                if m.buttons != 1 {
+                    break;
+                }
+                let q1 = self.rune_at(id, m.xy);
+                if let Some(w) = self.win_mut(id)
+                    && (w.text.q0, w.text.q1) != (q.min(q1), q.max(q1))
+                {
+                    w.text.select(q, q1);
+                    self.show(id)?;
+                }
+            }
+            if self.win(id).is_some_and(|w| w.text.q0 == w.text.q1) {
+                self.click = Some((id, q, msec));
+            }
+        }
+        self.chords(id)
+    }
+
+    /// While button 1 is held after a selection, button 2 cuts and button
+    /// 3 pastes, as in rio. Returns when every button is up.
+    fn chords(&mut self, id: u32) -> Result<(), Error> {
+        let mut last = 1;
+        while self.m.buttons != 0 {
+            let b = self.m.buttons;
+            let pressed = b & !last;
+            if b & 1 != 0 && pressed & 2 != 0 {
+                self.cut(id);
+            } else if b & 1 != 0 && pressed & 4 != 0 {
+                self.paste(id);
+            }
+            if pressed & 6 != 0 {
+                self.click = None;
+                self.show(id)?;
+            }
+            last = b;
+            self.read_mouse()?;
+        }
+        Ok(())
+    }
+
+    /// Window `id`'s selection to the snarf buffer, and with `del` out of
+    /// the text.
+    fn snarf(&mut self, id: u32, del: bool) {
+        let Some(w) = self.win_mut(id) else {
+            return;
+        };
+        let s = w.text.selected();
+        if s.is_empty() {
+            return;
+        }
+        if del {
+            w.text.delete(w.text.q0, w.text.q1);
+            w.dirty = true;
+        }
+        snarf_put(&s);
+    }
+
+    fn cut(&mut self, id: u32) {
+        self.snarf(id, true);
+    }
+
+    /// The snarf buffer in place of window `id`'s selection.
+    fn paste(&mut self, id: u32) {
+        let s = snarf_get();
+        if let Some(w) = self.win_mut(id) {
+            w.text.paste(&s);
+            w.dirty = true;
+        }
+    }
+
+    /// The selection, or the word at the point, sent to the plumber.
+    fn plumb(&mut self, id: u32) {
+        let Some(w) = self.win(id) else {
+            return;
+        };
+        let mut data = w.text.selected();
+        if data.is_empty() {
+            let (a, b) = w.text.double(w.text.q0);
+            data = w.text.s[a..b].iter().collect::<String>().trim().to_string();
+        }
+        if data.is_empty() {
+            return;
+        }
+        let m = plumbmsg::Msg {
+            src: String::from("rio"),
+            dir: purgatorio::dot().unwrap_or_default(),
+            kind: String::from("text"),
+            data: data.into_bytes(),
+            ..plumbmsg::Msg::default()
+        };
+        match OpenOptions::new().write(true).open(plumbmsg::INPUT) {
+            Ok(mut f) => {
+                let _ = f.write_all(&m.pack());
+            }
+            Err(e) => eprintln!("rio: {}: {e}", plumbmsg::INPUT),
+        }
+    }
+
+    /// Button 2's menu in text window `id`, from a press.
+    fn menu2(&mut self, id: u32) -> Result<(), Error> {
+        let plumber = std::fs::metadata(plumbmsg::INPUT).is_ok();
+        let scroll = self.win(id).is_some_and(|w| w.scroll);
+        let mut items: Vec<String> = MENU2
+            .iter()
+            .filter(|&&s| s != "plumb" || plumber)
+            .map(|s| s.to_string())
+            .collect();
+        items.push(String::from(if scroll { "noscroll" } else { "scroll" }));
+        let Some(i) = self.menuhit(&items, 2, self.lasthit2)? else {
+            return Ok(());
+        };
+        self.lasthit2 = i;
+        self.click = None;
+        match items[i].as_str() {
+            "cut" => self.cut(id),
+            "paste" => self.paste(id),
+            "snarf" => self.snarf(id, false),
+            "plumb" => self.plumb(id),
+            "send" => {
+                self.snarf(id, false);
+                let s = snarf_get();
+                if let Some(w) = self.win_mut(id)
+                    && !s.is_empty()
+                {
+                    w.text.send(&s);
+                    w.follow = true;
+                    w.dirty = true;
+                }
+            }
+            v => {
+                if let Some(w) = self.win_mut(id) {
+                    w.scroll = v == "scroll";
+                    w.follow |= w.scroll;
+                    w.dirty = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Drags the edge or corner of window `id`'s border nearest the
+    /// pointer while `button` is held, showing the outline, and gives the
+    /// window the rectangle it ends on.
+    fn border_drag(&mut self, id: u32, button: u32) -> Result<(), Error> {
+        let Some(r0) = self.win(id).map(|w| w.r) else {
+            return self.release();
+        };
+        let p0 = self.m.xy;
+        let near = |v: i32, lo: i32, hi: i32| -> (bool, bool) {
+            let c = CORNER.min((hi - lo) / 2);
+            (v < lo + c, v >= hi - c)
+        };
+        let (left, right) = near(p0.x, r0.min.x, r0.max.x);
+        let (top, bottom) = near(p0.y, r0.min.y, r0.max.y);
+        let mut boxes = Vec::new();
+        let mut r = r0;
+        while self.m.buttons == button {
+            let m = self.read_mouse()?;
+            let d = m.xy - p0;
+            let mut n = r0;
+            if left {
+                n.min.x += d.x;
+            }
+            if right {
+                n.max.x += d.x;
+            }
+            if top {
+                n.min.y += d.y;
+            }
+            if bottom {
+                n.max.y += d.y;
+            }
+            r = canon(n.min, n.max);
+            boxes = self.outline(boxes, Some(r))?;
+        }
+        let ok = self.m.buttons == 0;
+        self.outline(boxes, None)?;
+        self.release()?;
+        if ok && r != r0 && r.dx() >= MINSIZE && r.dy() >= MINSIZE {
+            self.reshape(id, r, false, false)?;
         }
         Ok(())
     }
@@ -610,10 +1033,11 @@ impl Rio {
             .map(|s| s.to_string())
             .chain(hidden.iter().map(|h| h.1.clone()))
             .collect();
-        let hit = self.menuhit(&items)?;
+        let hit = self.menuhit(&items, 4, self.lasthit)?;
         let Some(i) = hit else {
             return Ok(());
         };
+        self.lasthit = i;
         match items[i].as_str() {
             _ if i >= MENU.len() => self.unhide(hidden[i - MENU.len()].0),
             "New" => {
@@ -628,7 +1052,7 @@ impl Rio {
                 if let Some(id) = self.pick()?
                     && let Some(r) = self.sweep()?
                 {
-                    self.reshape(id, r, false)?;
+                    self.reshape(id, r, false, false)?;
                 }
                 Ok(())
             }
@@ -658,10 +1082,14 @@ impl Rio {
         Rect::new(r.min.x + 1, y, r.max.x - 1, y + ih)
     }
 
-    /// Shows `items` in a menu with the last item chosen under the
-    /// pointer, and returns the item the pointer is on when button 3 is
-    /// released.
-    fn menuhit(&mut self, items: &[String]) -> Result<Option<usize>, Error> {
+    /// Shows `items` in a menu with item `last` under the pointer, and
+    /// returns the item the pointer is on when `button` is released.
+    fn menuhit(
+        &mut self,
+        items: &[String],
+        button: u32,
+        last: usize,
+    ) -> Result<Option<usize>, Error> {
         let ih = self.widths.font.height + 2 * MENUPAD;
         let wid = items
             .iter()
@@ -669,7 +1097,7 @@ impl Rio {
             .max()
             .unwrap_or(0)
             + 16;
-        let last = self.lasthit.min(items.len() - 1);
+        let last = last.min(items.len() - 1);
         let p = self.m.xy;
         let h = ih * items.len() as i32 + 2;
         let s = self.screen.r;
@@ -707,7 +1135,7 @@ impl Rio {
                 self.d.flush()?;
                 shown = Some(hit);
             }
-            if self.m.buttons & 4 == 0 {
+            if self.m.buttons & button == 0 {
                 break;
             }
             let m = self.read_mouse()?;
@@ -716,9 +1144,6 @@ impl Rio {
         self.d.free(mw)?;
         self.d.flush()?;
         self.release()?;
-        if let Some(i) = hit {
-            self.lasthit = i;
-        }
         Ok(hit)
     }
 
@@ -810,7 +1235,7 @@ impl Rio {
         self.outline(boxes, None)?;
         self.release()?;
         if ok && r != r0 {
-            self.reshape(id, r, true)?;
+            self.reshape(id, r, true, false)?;
         }
         Ok(())
     }
@@ -818,6 +1243,7 @@ impl Rio {
     // ---- The keyboard.
 
     fn key(&mut self, c: char) {
+        self.click = None;
         let Some(id) = self.current else {
             return;
         };
@@ -973,4 +1399,31 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         rio.new_window(r, &cmd)?;
     }
     rio.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_scale_with_the_screen() {
+        let from = Rect::new(0, 0, 800, 600);
+        let to = Rect::new(0, 0, 400, 300);
+        assert_eq!(
+            scale(Rect::new(100, 100, 500, 400), from, to),
+            Rect::new(50, 50, 250, 200)
+        );
+        // Never smaller than MINSIZE, and on the screen.
+        assert_eq!(
+            scale(Rect::new(780, 580, 800, 600), from, to),
+            Rect::new(350, 250, 400, 300)
+        );
+        // A screen elsewhere, as in a rio window.
+        let to = Rect::new(424, 24, 616, 196);
+        let from = Rect::new(424, 24, 776, 276);
+        assert_eq!(
+            scale(Rect::new(482, 66, 716, 234), from, to),
+            Rect::new(455, 52, 583, 167)
+        );
+    }
 }

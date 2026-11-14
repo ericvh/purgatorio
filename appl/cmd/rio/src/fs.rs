@@ -3,9 +3,12 @@
 //! Each window has a pipe of its own. Its far end is mounted before
 //! `/dev` in the namespace of the window's process group (by `rio -W`,
 //! see `main.rs`), so the programs in the window see its `cons`,
-//! `consctl`, `keyboard`, `pointer`, `label`, `text`, `wctl`, `winid`
-//! and `winname` there, with the rest of `/dev` (`draw`, `user`, ...)
-//! after them, and `wsys/<id>/` holding the same files of every window.
+//! `consctl`, `keyboard`, `pointer`, `label`, `screen`, `text`, `wctl`,
+//! `window`, `winid` and `winname` there, with the rest of `/dev`
+//! (`draw`, `snarf`, `user`, ...) after them, and `wsys/<id>/` holding
+//! the same files of every window. `screen` and `window` read as
+//! image(6) files of rio's screen and of the window's image, border
+//! included.
 //! rio answers the messages that come on a window's pipe at once,
 //! except reads of `cons`, `pointer` and `keyboard` with nothing to
 //! read: those wait, with their tags, until there is something, or a
@@ -34,8 +37,10 @@ pub enum Q {
     Keyboard,
     Label,
     Pointer,
+    Screen,
     Text,
     Wctl,
+    Window,
     Winid,
     Winname,
     Wsys,
@@ -50,8 +55,10 @@ const FILES: &[(&str, Q, u32)] = &[
     ("keyboard", Q::Keyboard, 0o400),
     ("label", Q::Label, 0o600),
     ("pointer", Q::Pointer, 0o600),
+    ("screen", Q::Screen, 0o400),
     ("text", Q::Text, 0o400),
     ("wctl", Q::Wctl, 0o600),
+    ("window", Q::Window, 0o400),
     ("winid", Q::Winid, 0o400),
     ("winname", Q::Winname, 0o400),
 ];
@@ -581,6 +588,7 @@ impl Rio {
                     }
                     out
                 }
+                Q::Screen | Q::Window => self.image_file(q == Q::Screen, win)?,
                 _ => self.contents(q, win).into_bytes(),
             };
             if let Some(f) = self.sess(sid).and_then(|s| s.fids.get_mut(&fid)) {
@@ -700,7 +708,7 @@ impl Rio {
             Q::Cons => {
                 if let Some(w) = self.win_mut(win) {
                     w.text.output(&text);
-                    w.follow = true;
+                    w.follow |= w.scroll;
                 }
                 self.redraw(win);
                 Ok(())
