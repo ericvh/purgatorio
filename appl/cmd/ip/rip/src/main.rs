@@ -19,9 +19,9 @@
 //! start and broadcasts its own changed routes every 60 seconds, as
 //! version 1 or with `-2` version 2.
 //!
-//! `#I` keeps only the interfaces' networks and the default route, so on
-//! Purgatorio an `add` for any other route is refused (`-d` says so) and
-//! rip offers the route again at its next update. `-a addr` (Purgatorio's
+//! An `add` `#I` refuses (`-d` says so) is offered again at the next
+//! update. On the kernel the routes reach smoltcp; on the hosted emu the
+//! host routes, and `#I` only lists them. `-a addr` (Purgatorio's
 //! addition, for tests on loopback) announces `addr` instead of port 520;
 //! then responses from any port are taken, only those from the announced
 //! address itself are ignored as its own, and with `-d` the announced
@@ -216,6 +216,19 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// A mask from `iproute`: `/n`, `n` counting the 96 bits before an IPv4
+/// address in its IPv6 form, as ip(3) prints it, or dotted.
+fn parse_mask(s: &str) -> Option<u32> {
+    match s.strip_prefix('/') {
+        Some(n) => {
+            let n: u32 = n.parse().ok()?;
+            let bits = n.checked_sub(96).filter(|&b| b <= 32)?;
+            Some(u32::MAX.checked_shl(32 - bits).unwrap_or(0))
+        }
+        None => parse_ip(s),
+    }
+}
+
 fn parse_ip(s: &str) -> Option<u32> {
     let mut a = [0u8; 4];
     let mut parts = s.split('.');
@@ -368,7 +381,7 @@ impl Rip {
                 continue;
             }
             let (Some(dest), Some(mask), Some(gw)) =
-                (parse_ip(f[0]), parse_ip(f[1]), parse_ip(f[2]))
+                (parse_ip(f[0]), parse_mask(f[1]), parse_ip(f[2]))
             else {
                 continue;
             };
@@ -726,5 +739,26 @@ mod tests {
         r.unpackroute(&entry("10.0.0.0", 0, 0, 1), 1, gw1);
         let k = r.findroute(parse_ip("10.0.0.9").unwrap()).unwrap();
         assert!(r.routes[k].local);
+    }
+
+    #[test]
+    fn reads_iproute() {
+        let mut r = rip();
+        r.readroutes(concat!(
+            "10.0.2.0        /120 10.0.2.0        4i   ifc    0\n",
+            "10.0.2.15       /128 10.0.2.15       4u   ifc    0\n",
+            "10.0.2.255      /128 10.0.2.255      4b   ifc    0\n",
+            "0.0.0.0         /96  10.0.2.2        4    none   0\n",
+            "192.0.2.0       /120 10.0.2.9        4     rip   0\n",
+        ));
+        let i = r.findroute(parse_ip("192.0.2.1").unwrap()).unwrap();
+        assert_eq!(r.routes[i].mask, 0xffff_ff00);
+        assert_eq!(r.routes[i].gateway, parse_ip("10.0.2.9").unwrap());
+        assert!(r.defroute.is_some());
+        assert!(r.findroute(parse_ip("10.0.2.255").unwrap()) == r.defroute);
+        assert_eq!(parse_mask("/96"), Some(0));
+        assert_eq!(parse_mask("/128"), Some(u32::MAX));
+        assert_eq!(parse_mask("/24"), None);
+        assert_eq!(parse_mask("255.255.0.0"), Some(0xffff_0000));
     }
 }

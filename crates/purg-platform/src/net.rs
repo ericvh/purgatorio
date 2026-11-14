@@ -70,10 +70,18 @@ pub trait Net: Send + Sync {
         let _ = (n, addr, prefix);
         Err(alloc::borrow::Cow::Borrowed("permission denied"))
     }
-    /// Sets or removes the default route (`/net/iproute`).
-    fn set_gateway(&self, gateway: Option<[u8; 4]>) -> Result<()> {
-        let _ = gateway;
-        Err(alloc::borrow::Cow::Borrowed("permission denied"))
+    /// Routes packets for `target`/`mask` through `gateway`, replacing
+    /// any route to that same network (`add` on `/net/iproute`). `#I`
+    /// keeps the table itself; the platform only applies it. A hosted
+    /// emu leaves routing to the host OS, so the default does nothing.
+    fn add_route(&self, target: [u8; 4], mask: [u8; 4], gateway: [u8; 4]) -> Result<()> {
+        let _ = (target, mask, gateway);
+        Ok(())
+    }
+    /// Stops routing `target`/`mask` (`remove` and `flush`).
+    fn remove_route(&self, target: [u8; 4], mask: [u8; 4]) -> Result<()> {
+        let _ = (target, mask);
+        Ok(())
     }
 }
 
@@ -86,7 +94,8 @@ pub struct Ifc {
     pub mac: [u8; 6],
     pub addr: [u8; 4],
     pub prefix: u8,
-    /// The default route through it, if any.
+    /// The default route through it the platform starts with, if any.
+    /// `#I` takes it into its route table on first use.
     pub gateway: Option<[u8; 4]>,
 }
 

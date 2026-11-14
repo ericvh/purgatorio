@@ -1,0 +1,18 @@
+198.18.1.0      /120 198.19.0.1      4    none   -
+198.18.2.0      /120 198.19.0.2      4    test   -
+198.18.3.0      /121 198.19.0.3      4    test   -
+again
+198.18.1.0      /120 198.19.0.1      4    none   -
+198.18.2.0      /120 198.19.0.9      4    test   -
+198.18.3.0      /121 198.19.0.3      4    test   -
+remove
+198.18.2.0      /120 198.19.0.9      4    test   -
+198.18.3.0      /121 198.19.0.3      4    test   -
+flush
+gone
+echo: write error: bad arg in system call
+echo: write error: bad arg in system call
+echo: write error: bad arg in system call
+echo: write error: bad arg in system call
+echo: write error: bad arg in system call
+still gone
