@@ -28,7 +28,7 @@ echo $status
 # other than by exiting or failing.
 mash -e -c 'test -f /nonexistent | echo piped; echo reached' >[2=1]
 echo $status
-mash -e -c 'echo x | test -f /nonexistent; echo not reached' >[2=1]
+mash -e -c 'sleep 0 | test -f /nonexistent; echo not reached' >[2=1]
 echo $status
 mash -e -c 'test/debug trap; echo reached' >[2=1] | sed 's/^[0-9]+ /PID /' | sed 's/trap: .*unreachable.*/trap: unreachable/'
 echo '# modules'
