@@ -18,7 +18,7 @@ DATA
 MAIL FROM:<user@example.org>
 RCPT TO:<eve@example.org>
 sendmail: send failed :  RCPT receive failed ( no such user)
-fail:error
+error|
 sendmail: recipients specified on To: line and as args - aborted
 sendmail: send failed : no 'to' name
 sendmail: smtp open failed: dialup failed

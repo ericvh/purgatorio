@@ -11,13 +11,19 @@
 //! with `:=`. Builtins: `cd`, `exit`, `run`, `wait`,
 //! `load` and `@`, which runs a command in a sub-shell with its own copies
 //! of the variables, environment, fds and namespace. `load std` adds `if`,
-//! `while`, `for`, `and`, `or`, `not`, `~`, `fn`, `raise`, `pctl` and
+//! `while`, `for`, `and`, `or`, `not`, `~`, `fn`, `raise`, `status`, `pctl` and
 //! `${hd}`, `${tl}`, `${index}`, `${quote}`, `${unquote}` and `${pid}`. `load expr` and `load mpexpr` add `${expr}` and `ntest`.
 //! `load string` adds the sh-string(1) builtins and `load regex` adds
 //! `match` and `${re}`. `load arg`, `csv`, `echo`, `file2chan`, `mload`,
 //! `sexprs` and `test` add the builtins of their sh-*(1) pages. All of
 //! these are compiled in; any other module name loads a reactor from
 //! `/bin/lib`.
+//!
+//! As in Inferno's sh, `$status` shows a prog's exit status without its
+//! `fail:` and the blanks after it (`failed` if nothing is left); other
+//! statuses are kept whole. A pipeline's status, if any stage failed, is
+//! every stage's status, the last stage's first, joined by `|`. sh exits
+//! with `fail:` and its status.
 //!
 //! With `-e`, a command that fails anywhere but at the end of a sequence
 //! stops the script with its status, as in Inferno's sh source (its
@@ -51,10 +57,15 @@ use lex::SyntaxError;
 
 const PROFILE: &str = "/lib/sh/profile";
 
+/// Exits with the shell's status. As in Inferno, a failure exits with
+/// `fail:` and its `$status`, or the name of the exception that stopped
+/// the shell. `exit word`, which Inferno's sh lacks, exits with `word`.
 fn finish(sh: &Shell, stop: Option<Stop>) -> ! {
     let status = match stop {
-        Some(Stop::Exit(s) | Stop::Raise(s)) => s,
-        None => sh.status.clone(),
+        Some(Stop::Exit(s)) => s,
+        Some(Stop::Raise(s)) => format!("fail:{s}"),
+        None if sh.status.is_empty() => String::new(),
+        None => format!("fail:{}", sh.status),
     };
     purgatorio::exits(&status)
 }
@@ -101,7 +112,7 @@ fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
                 sh.interrupted = false;
                 if let Err(stop) = sh.run_src(&src) {
                     match stop {
-                        Stop::Raise(s) => sh.status = s,
+                        Stop::Raise(s) => sh.status = exec::failure_status(&s),
                         other => return Some(other),
                     }
                 }

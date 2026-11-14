@@ -1,39 +1,39 @@
 usage: wc [-lwc] [file ...]
-	wc fail:usage
+	wc usage
 usage: sort [-nr] [file]
-	sort fail:usage
+	sort usage
 usage: ls [-dlp] [name ...]
-	ls fail:usage
+	ls usage
 usage: cmp a b
-	cmp fail:usage
+	cmp usage
 usage: mv file ... target
-	mv fail:usage
+	mv usage
 usage: sleep seconds
-	sleep fail:usage
+	sleep usage
 usage: sleep seconds
-	sleep fail:usage
+	sleep usage
 usage: stack [-v] pid ...
-	stack fail:usage
+	stack usage
 Usage: nsbuild [nsfile]
-	nsbuild fail:usage
+	nsbuild usage
 Usage: rm [-fr] file ...
-	rm fail: usage
+	rm usage
 Usage: tr [-cds] [string1 [string2]]
-	tr fail: usage
+	tr usage
 Usage: tokenize string delimiters
-	tokenize fail: usage
+	tokenize usage
 usage: logfile [-size] file
-	logfile fail: usage
+	logfile usage
 Usage: install/inst [-chtuvF] [-r root] package [prefix ...]
-	install/inst fail: usage
+	install/inst usage
 usage: crypt [-d] [-C m,t] (-k secret | -f secretfile)
-	crypt fail: bad usage
+	crypt bad usage
 Usage: mk [-f file] [-n] [-a] [-e] [-t] [-k] [-i] [-d[egp]] [-wtarget,...] [targets ...]
-	mk fail:error
+	mk error
 Usage: stream [-a] [-b bufsize] file1 [file2]
-	stream fail:usage
+	stream usage
 usage: install/info [-r root] package
-	install/info fail:error
+	install/info error
 usage: uudecode [-p] [encodedfile...]
 	uudecode 
 usage: unicode { [-t] hex hex ... | hexmin-hexmax ... | [-n] char ... }
@@ -54,70 +54,70 @@ usage: ramfile path
 wc: can't open /tmp/sh-statuses/missing: file does not exist
 	wc 
 md5sum: cannot open /tmp/sh-statuses/missing: file does not exist
-	md5sum fail:error
+	md5sum error
 sha1sum: cannot open /tmp/sh-statuses/missing: file does not exist
-	sha1sum fail:error
+	sha1sum error
 sum: cannot get status of /tmp/sh-statuses/missing: file does not exist
-	sum fail:error
+	sum error
 du: can't stat /tmp/sh-statuses/missing: file does not exist
 	du 
 tail: /tmp/sh-statuses/missing: file does not exist
 	tail 
 xd: cannot open /tmp/sh-statuses/missing: file does not exist
-	xd fail:cannot open
+	xd cannot open
 sort: cannot open /tmp/sh-statuses/missing: file does not exist
-	sort fail:open file
+	sort open file
 uniq: cannot open /tmp/sh-statuses/missing: file does not exist
-	uniq fail:open file
+	uniq open file
 cannot open /tmp/sh-statuses/missing
 	strings 
 cannot open /tmp/sh-statuses/missing
 	freq 
 fmt: can't open /tmp/sh-statuses/missing: file does not exist
-	fmt fail:open
+	fmt open
 gzip: /tmp/sh-statuses/missing: file does not exist
 	gzip 
 units: cannot open /tmp/sh-statuses/missing: file does not exist
-	units fail:open
+	units open
 tcs: cannot open /tmp/sh-statuses/missing: file does not exist
-	tcs fail:open
+	tcs open
 p: can't open /tmp/sh-statuses/missing: file does not exist
 	p 
 mc: can't open /tmp/sh-statuses/missing: file does not exist
 	mc 
 stream: can't open /tmp/sh-statuses/missing: file does not exist
-	stream fail:open
+	stream open
 auth/getpk: /tmp/sh-statuses/missing: file does not exist
 	auth/getpk 
 auth/ai2key: /tmp/sh-statuses/missing: file does not exist
-	auth/ai2key fail:error
+	auth/ai2key error
 disk/mbr: /tmp/sh-statuses/missing: file does not exist
-	disk/mbr fail:error
+	disk/mbr error
 disk/fdisk: /tmp/sh-statuses/missing: file does not exist
-	disk/fdisk fail:error
+	disk/fdisk error
 wasmdump: /tmp/sh-statuses/missing: file does not exist
-	wasmdump fail:errors
+	wasmdump errors
 xargs: can't load /tmp/sh-statuses/nosuchcmd: file does not exist
 	xargs 
 ns: can't open /prog/999999/ns: file does not exist
-	ns fail:open
+	ns open
 	stack 
 	unmount 
 cp: /tmp/sh-statuses/missing: file does not exist
-	cp fail:error
+	cp error
 mv: /tmp/sh-statuses/missing: file does not exist
-	mv fail:error
+	mv error
 chmod: cannot stat /tmp/sh-statuses/missing: file does not exist
 	chmod 
 chgrp: can't change /tmp/sh-statuses/missing: file does not exist
-	chgrp fail:error
+	chgrp error
 mkdir: /tmp/sh-statuses already exists
-	mkdir fail:error
+	mkdir error
 mkdir: can't create /tmp/sh-statuses/missing/a: file does not exist
-	mkdir fail:error
+	mkdir error
 tee: cannot open /tmp/sh-statuses/missing/a: file does not exist
-	tee fail:error
+	tee error
 bind: cannot bind /tmp/sh-statuses/missing onto /tmp/sh-statuses: file does not exist
-	bind fail:bind
+	bind bind
 comm: cannot open /tmp/sh-statuses/missing: file does not exist
-	comm fail:open
+	comm open

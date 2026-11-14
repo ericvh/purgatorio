@@ -5,7 +5,7 @@ still the host owner
 bob
 refused
 runas: can't set user name: permission denied
-fail:can't set user name: permission denied
+can't set user name: permission denied
 permission denied
 permission denied
 permission denied

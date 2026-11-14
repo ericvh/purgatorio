@@ -6,8 +6,8 @@ status
 /tmp/disktest/img: block 35 is marked in use but nothing uses it
 status errors
 disk/chkdisk: /tmp/disktest/img: bad superblock checksum
-status fail:/tmp/disktest/img: bad superblock checksum
+status /tmp/disktest/img: bad superblock checksum
 disk/mkdisk: /tmp/disktest/none: file does not exist
-status fail:/tmp/disktest/none: file does not exist
+status /tmp/disktest/none: file does not exist
 disk/mkdisk: /tmp/disktest/tiny: file system too small
-status fail:/tmp/disktest/tiny: file system too small
+status /tmp/disktest/tiny: file system too small

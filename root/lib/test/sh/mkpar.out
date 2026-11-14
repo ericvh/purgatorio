@@ -1,15 +1,15 @@
 one
 cat: /nonexistent: file does not exist
-status fail:errors
+status errors
 last
-status fail:errors
+status errors
 or
 after or
 no
 after if
-status fail:errors
+status errors
 in sub
-status fail:errors
+status |errors
 without -e
 load std
 for i in 1 2 3 {test -e bflag || sleep 1}
@@ -36,15 +36,15 @@ for i in 1 2 3 {test -e bflag || sleep 1}
 test -e bflag
 echo a slot 0 > alog
 mk: load std: exit status=fail:false
-status fail:error
+status error
 echo f one > flog; cat /nonexistent >[2] /dev/null; echo f two >> flog
 sleep 1; echo g ran > glog
 mk: echo f one > flog; cat /nonexistent >[2] /dev/null; echo f two >> flog: exit status=fail:errors
-status fail:error
+status error
 f one
 g ran
 cat /nonexistent >[2] /dev/null; echo f two
 echo h ran > hlog
 mk: cat /nonexistent >[2] /dev/null; echo f two: exit status=fail:errors
-status fail:error
+status error
 h ran

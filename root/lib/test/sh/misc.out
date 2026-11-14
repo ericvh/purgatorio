@@ -27,9 +27,9 @@ apricot
 apple
 banana
 cherry
-fail:not found
+not found
 look: can't open /tmp/sh-misc/nonexistent
-fail:no dictionary
+no dictionary
 a
 b
 c
@@ -71,5 +71,5 @@ HI
      17
      41
 Usage: randpass [password-length(<256, default=16)]
-fail:usage
+usage
 page

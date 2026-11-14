@@ -11,9 +11,9 @@ x
 x
 rest y -x
 option -f requires 1 arguments
-status usage
+status |usage
 unknown option -b
-status usage
+status |usage
 usage: arg [opts {command}]... - args
 a
 after keep

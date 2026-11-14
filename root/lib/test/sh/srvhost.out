@@ -8,4 +8,4 @@ client file
 client file
 rcmd: certificate name mismatch
 auxi/rstyxd: mount /n/client: certificate name mismatch
-status fail:mount /n/client: certificate name mismatch
+status mount /n/client: certificate name mismatch

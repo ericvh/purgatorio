@@ -167,15 +167,15 @@ x = 1&
 if (x) { echo y; } else echo z;
 y
 usage: mash [-denx] [-c command] [src [args]]
-fail: mash usage
+mash usage
 # -e
 one
 cat: /nonexistent: file does not exist
-fail:errors
+errors
 <string>:1: nope: undefined
-fail: mash error
+mash error
 don't know how to make nosuch
-fail: make error
+make error
 # modules
 HELLO WORLD
 abc

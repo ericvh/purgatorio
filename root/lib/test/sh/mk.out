@@ -23,9 +23,9 @@ b.txt
 dir
 mkfile
 mk: don't know how to make 'nosuch'
-fail:error
+error
 mk: nofile: file does not exist
-fail:nofile: file does not exist
+nofile: file does not exist
 amp x x.lo
 echo pct y
 pct y
@@ -41,7 +41,7 @@ mk: echo partial > f; cat /nonexistent: exit status=fail:errors, deleting 'f'
 cat /nonexistent >[2] /dev/null
 mk: cat /nonexistent >[2] /dev/null: exit status=fail:errors
 touch(h)
-fail:error
+error
 h
 echo from-include piped second one two $#L
 echo Q $Q flags -f mk4

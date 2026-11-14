@@ -1,8 +1,8 @@
 cmp same
-cmp differ fail:differ
-cmp missing fail:open
-cmp eof fail:EOF
+cmp differ differ
+cmp missing open
+cmp eof EOF
 diff same
-diff some fail:some
-mkdir existing fail:error
+diff some some
+mkdir existing error
 mkdir -p existing

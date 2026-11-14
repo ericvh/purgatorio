@@ -1,5 +1,5 @@
 rcmd: no session key offered
-status fail:no session key offered
+status no session key offered
 clear
 clear again
 sealed

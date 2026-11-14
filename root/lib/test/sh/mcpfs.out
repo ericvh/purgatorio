@@ -16,4 +16,4 @@ cat: the arguments must be a JSON object
 cat: tools/nosuch/call: file does not exist
 sh: tools/run/schema: permission denied
 mcpfs: nosuchcommand: /bin/nosuchcommand.wasm: file does not exist
-status fail:nosuchcommand: /bin/nosuchcommand.wasm: file does not exist
+status nosuchcommand: /bin/nosuchcommand.wasm: file does not exist

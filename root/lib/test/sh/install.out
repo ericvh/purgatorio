@@ -66,5 +66,5 @@ A
 conflict: c /a: changed locally
 mine
 conflict: c /a: changed locally
-fail:1 errors
+1 errors
 AA

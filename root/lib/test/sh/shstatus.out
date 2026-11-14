@@ -1,0 +1,14 @@
+kill usage
+matched usage
+raise spaced spaced
+raise empty failed
+exit three three
+sh -c kill usage
+sh -e usage
+both two|one
+first |one
+last two|
+x
+none 
+status fail:kept
+empty 

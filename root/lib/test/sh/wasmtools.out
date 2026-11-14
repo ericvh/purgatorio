@@ -82,7 +82,7 @@ same digest
 errors
 wasmdump: /tmp/sh-wasmtools/text: not a wasm module at offset 0
 wasmdep: /tmp/sh-wasmtools/text: not a wasm module at offset 0
-status fail:errors
+status errors
 wasmdump: /tmp/sh-wasmtools/cut.wasm: truncated module at offset 178
 module /lib/test/tiny.wasm
 wasmdump: /tmp/sh-wasmtools/missing.wasm: file does not exist

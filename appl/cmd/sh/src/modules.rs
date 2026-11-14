@@ -63,7 +63,7 @@ impl Module {
     pub fn cmds(self) -> &'static [&'static str] {
         match self {
             Module::Std => &[
-                "if", "while", "for", "and", "or", "not", "~", "fn", "raise", "pctl",
+                "if", "while", "for", "and", "or", "not", "~", "fn", "raise", "status", "pctl",
             ],
             Module::Expr | Module::Mpexpr => &["ntest"],
             Module::String => crate::string::CMDS,

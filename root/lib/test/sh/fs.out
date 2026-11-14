@@ -129,4 +129,4 @@ fs: bad mode q
 fs: bad mode u+q
 fs: out/junk: bad bundle
 fs: out/nodir/x: file does not exist
-status fail:errors
+status errors
