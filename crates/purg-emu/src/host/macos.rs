@@ -118,3 +118,81 @@ pub fn icmp_recv(fd: &impl AsRawFd, buf: &mut [u8]) -> io::Result<IcmpIn> {
         src: Ipv4Addr::new(buf[12], buf[13], buf[14], buf[15]),
     })
 }
+
+// The host clipboard for `#^` under `emu -g` (docs/graphics.md, Section
+// 12.4): the general pasteboard's plain text (`NSPasteboardTypeString`,
+// `public.utf8-plain-text`).
+//
+// Prog threads call these, not the main thread that runs winit's event
+// loop. AppKit does not mark NSPasteboard as main-thread-only (objc2
+// declares it `InteriorMutable`, not `MainThreadOnly`); it talks to the
+// pasteboard server over IPC and is used from other threads in practice.
+// That is what this relies on. Each call makes its own autorelease pool,
+// since prog threads have none and AppKit autoreleases internally.
+
+/// The pasteboard's text, at most `MAXSNARF` bytes (cut on a character
+/// boundary); empty when it holds no text.
+pub fn clipboard_get() -> Option<String> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    objc2::rc::autoreleasepool(|_| {
+        // SAFETY: generalPasteboard and stringForType: take and return
+        // objects of the declared types; NSPasteboardTypeString is a
+        // constant AppKit defines.
+        let text =
+            unsafe { NSPasteboard::generalPasteboard().stringForType(NSPasteboardTypeString) };
+        let mut text = text.map(|s| s.to_string()).unwrap_or_default();
+        let max = purg_core::devsnarf::MAXSNARF;
+        if text.len() > max {
+            text.truncate(text.floor_char_boundary(max));
+        }
+        Some(text)
+    })
+}
+
+/// Replaces the pasteboard's contents with `text`; false if AppKit
+/// refuses.
+pub fn clipboard_put(text: &str) -> bool {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    use objc2_foundation::NSString;
+    objc2::rc::autoreleasepool(|_| {
+        let s = NSString::from_str(text);
+        // SAFETY: as in clipboard_get; clearContents must come before
+        // writing to take ownership of the pasteboard.
+        unsafe {
+            let pb = NSPasteboard::generalPasteboard();
+            pb.clearContents();
+            pb.setString_forType(&s, NSPasteboardTypeString)
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clipboard_get, clipboard_put};
+
+    /// A string goes onto the pasteboard and comes back. The pasteboard
+    /// is the user's, so its text is put back afterwards (only the text:
+    /// other types on it, such as an image, are lost). If the pasteboard
+    /// refuses the write, as it might with no login session, the test
+    /// says so and passes; GitHub's macOS runners have one.
+    #[test]
+    fn pasteboard_round_trip() {
+        let before = clipboard_get().unwrap_or_default();
+        let text = "purgatorio snarf test: αβγ ☃";
+        if !clipboard_put(text) {
+            eprintln!("skipped: the pasteboard refused a write");
+            return;
+        }
+        let got = clipboard_get();
+        clipboard_put(&before);
+        assert_eq!(got.as_deref(), Some(text));
+        // The 1 MiB limit holds on the way in.
+        let big = "é".repeat(purg_core::devsnarf::MAXSNARF / 2 + 1);
+        if clipboard_put(&big) {
+            let got = clipboard_get().unwrap_or_default();
+            clipboard_put(&before);
+            assert!(got.len() <= purg_core::devsnarf::MAXSNARF);
+            assert!(big.starts_with(&got));
+        }
+    }
+}

@@ -46,6 +46,14 @@ softbuffer = "0.4.8"
 ring = { version = "0.17", default-features = false }
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 
+# The host clipboard for `#^` under `emu -g` on macOS (src/host/macos.rs):
+# NSPasteboard through the objc2 crates winit already uses, at the same
+# versions, so there is one objc2 in the graph.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", default-features = false, features = ["std", "NSString"] }
+objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std", "NSPasteboard"] }
+
 [lints]
 workspace = true
 
