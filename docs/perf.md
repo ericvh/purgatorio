@@ -95,6 +95,8 @@ start are not in the numbers.
 | `cat-styx` | the same file through `mount -A {export -A dir}`: a Styx conversation over a pipe, with the export served in the kernel |
 | `cat-styx-sealed` | the same, encrypted: `mount -k` with an authinfo from a signer the exporter trusts, and `export -e` |
 | `cat-disk` | a 100 MiB file in purgfs on virtio-blk (`/n/disk`; the kernel only) |
+| `mount-sealed-10` | ten `mount -k info {export -e dir}` and `unmount`: each spawns an export and runs the version 3 handshake |
+| `mount-pq-10` | the same with `-C x25519mlkem768` on both: the hybrid post-quantum handshake (`docs/auth.md`); the difference to `mount-sealed-10` is its cost |
 | `sha1-pipe-16m` | `zeros 1024 16384 \| sha1sum`, the CPU-bound guest `docs/footprint.md` uses |
 | `sha1-file-16m` | `sha1sum` of a 16 MiB file in `/tmp` |
 | `sh-builtin-10k` | `sh -c` with four nested `for` loops over ten words, 10,000 assignments |
