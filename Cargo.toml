@@ -120,6 +120,7 @@ disk = { package = "appl-lib-disk", path = "appl/lib/disk" }
 wasmobj = { package = "appl-lib-wasmobj", path = "appl/lib/wasmobj" }
 progdebug = { package = "appl-lib-progdebug", path = "appl/lib/progdebug" }
 ndb = { package = "appl-lib-ndb", path = "appl/lib/ndb" }
+venti = { package = "appl-lib-venti", path = "appl/lib/venti" }
 
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "ticket_mutex", "rwlock", "once"] }
 libc = "0.2"
