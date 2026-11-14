@@ -829,6 +829,17 @@ post-quantum file encryption needs: Grover's search over the key is
 2^128 work, and over the password no cheaper than Argon2id lets it be.
 Nothing changes in this mode.
 
+**The decryptor's limit.** The file records its cost, and `-C` takes
+up to 262144 KiB (256 MiB) and 16 passes, so a hostile file could make
+`crypt -d` allocate 256 MiB and spend 16 passes over it. `crypt -d`
+refuses a file that asks for more than 65536 KiB or 8 passes with `file
+cost m,t is above the limit 65536,8; use -C m,t`, before it derives
+anything. With `-d`, `-C m,t` is the limit instead, for a
+file made with a higher cost. 64 MiB is three times the default and
+above OWASP's largest Argon2id setting (46 MiB, 1 pass). The
+password-sealed stores (`keyfs`, `secstore`) read their own files and
+keep the hard limit of 256 MiB.
+
 ```
 pgcrypt1 file = "pgcrypt1" || m u32 LE || t u32 LE || p u32 LE || salt[16] || prefix[7]
                 || chunks

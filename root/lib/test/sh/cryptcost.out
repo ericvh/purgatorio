@@ -1,0 +1,9 @@
+cheap
+cheap
+cheap
+crypt: file cost 8,9 is above the limit 65536,8; use -C m,t
+status file cost 8,9 is above the limit 65536,8; use -C m,t
+slow
+crypt: file cost 16,1 is above the limit 8,1; use -C m,t
+status file cost 16,1 is above the limit 8,1; use -C m,t
+more memory
