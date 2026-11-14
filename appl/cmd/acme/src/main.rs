@@ -1003,10 +1003,25 @@ impl Acme {
     /// is open into events from `origin`: `K` the keyboard, `M` the
     /// mouse, `E` writes to `body` or `tag`, `F` the other files.
     fn post_changes(&mut self, origin: char) {
+        // The views of a shared text share its changes: take them once,
+        // and give them to every view's event file.
+        let mut shared: Vec<(usize, Vec<text::Change>)> = Vec::new();
+        for w in self.cols.iter().flat_map(|c| c.wins.iter()) {
+            let k = w.body.b.key();
+            if !shared.iter().any(|(sk, _)| *sk == k) {
+                shared.push((k, w.body.b.take_changes()));
+            }
+        }
         for w in self.cols.iter_mut().flat_map(|c| c.wins.iter_mut()) {
             let open = w.fs.nevent > 0;
-            for (tag, b) in [(false, &mut w.body.b), (true, &mut w.tag.b)] {
-                for c in b.take_changes() {
+            let k = w.body.b.key();
+            let body = shared
+                .iter()
+                .find(|(sk, _)| *sk == k)
+                .map(|(_, c)| c.clone())
+                .unwrap_or_default();
+            for (tag, changes) in [(false, body), (true, w.tag.b.take_changes())] {
+                for c in changes {
                     if !open {
                         continue;
                     }

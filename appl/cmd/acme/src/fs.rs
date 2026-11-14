@@ -586,6 +586,14 @@ impl Fs {
         if f.open.is_none() {
             return Ok(());
         }
+        // Another view of the body may still read its events.
+        let watched = a.win(f.win).is_some_and(|w| {
+            let k = w.body.b.key();
+            a.cols
+                .iter()
+                .flat_map(|c| c.wins.iter())
+                .any(|o| o.id != w.id && o.body.b.key() == k && o.fs.nevent > 0)
+        });
         if let Some(w) = a.win_mut(f.win) {
             match f.q {
                 Q::Addr => w.fs.naddr = w.fs.naddr.saturating_sub(1),
@@ -593,9 +601,11 @@ impl Fs {
                     w.fs.nevent = w.fs.nevent.saturating_sub(1);
                     if w.fs.nevent == 0 {
                         w.fs.events.clear();
-                        for b in [&mut w.body.b, &mut w.tag.b] {
-                            b.set_watch(false);
-                            b.take_changes();
+                        w.tag.b.set_watch(false);
+                        w.tag.b.take_changes();
+                        if !watched {
+                            w.body.b.set_watch(false);
+                            w.body.b.take_changes();
                         }
                     }
                 }
