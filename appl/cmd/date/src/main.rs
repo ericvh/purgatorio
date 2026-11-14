@@ -1,5 +1,6 @@
-//! date [-nu] [seconds]: print the date, or the given time, in GMT (so
-//! `-u` changes nothing yet). `-n` prints seconds since the epoch instead.
+//! date [-nu] [seconds]: print the date, or the given time, in local time
+//! (daytime(2): `$timezone`, else `/locale/timezone`); `-u` prints it in
+//! GMT, and `-n` prints seconds since the epoch instead.
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, daytime};
@@ -7,11 +8,11 @@ use purgatorio::{Context, Error, daytime};
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, "date [-nu] [seconds]");
-    let mut numeric = false;
+    let (mut numeric, mut utc) = (false, false);
     while let Some(c) = arg.opt() {
         match c {
             'n' => numeric = true,
-            'u' => {}
+            'u' => utc = true,
             _ => return Err(arg.usage()),
         }
     }
@@ -21,8 +22,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     };
     if numeric {
         println!("{t}");
-    } else {
+    } else if utc {
         println!("{}", daytime::text(&daytime::gmt(t)));
+    } else {
+        println!("{}", daytime::text(&daytime::local(t)));
     }
     Ok(())
 }

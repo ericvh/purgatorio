@@ -1,0 +1,31 @@
+Time zone sources for root/locale
+=================================
+
+`cargo xtask timezones` reads these files and writes root/locale: one
+file for each line of `zones`, in the format Inferno's daytime(2)
+reads, a README (`README.locale`), and `timezone`, the default (GMT).
+The output is committed; the xtask test `locale_is_current` makes it
+again and compares, so `cargo test --workspace` checks it on every
+host. See docs/graphics.md, Section 11.4, and xtask/src/tz.rs.
+
+africa, asia, australasia, backward, etcetera, europe, northamerica,
+southamerica, LICENSE and version are from the IANA time zone database,
+release 2026f (2026-10-28), https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz
+    sha256 01b4a91cec5167ed48c11e8ab78f2048cead78ce94b0cafcad0ae8c5a3044d3d  tzdata2026f.tar.gz
+    sha256 f2851d4be4a4925cbdc9d56e10d780bccadb89d6ffb9aed78c3e35f97c200aed  africa
+    sha256 02b69728085f6b0c999da70de2f1f9a2d8952b533a450d53bb41e03eb7d0e92e  asia
+    sha256 846ba455578e3e0f9eb850f05be3cc06d02ff51bbe4b726f755be9dc765f16c9  australasia
+    sha256 b8296b9ef1ece72d813878132c0f17e2c52b26af6004eeb9c37d049b64cd9401  backward
+    sha256 7281f095b42c13c4ae36b8bcba884e81dbb38127221fc1d9805c4dbf852487db  etcetera
+    sha256 fec11bf6c6bd0619a8777bbdaa2ecd184fde291cb4b97efa87d334c7145ba3c2  europe
+    sha256 da7366f6e0862ed15cb787dd056dca3a255df2ec50d19ff0a9f54eeb1562083a  northamerica
+    sha256 df4f2ae71a6980a76038f51bfc4cdaaca9af5ba8799df0b5bc73283db68c8cd6  southamerica
+    sha256 0613408568889f5739e5ae252b722a2659c02002839ad970a63dc5e9174b27cf  LICENSE
+    sha256 9f9a9e6bfd18cd6a0a4d65764931072577edcbb731981a068ef52bba6615b1de  version
+  Licence: public domain (LICENSE). The other files of the release
+  (antarctica, backzone, the tables and the code) are not used.
+
+`zones` and `README.locale` are ours.
+
+To move to a new release, replace the files above, update the checksums
+here, and run `cargo xtask timezones`.

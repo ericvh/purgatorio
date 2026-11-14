@@ -5,9 +5,10 @@
 //! `draw/clock [-d] [-t seconds]` fills the screen (or its window) with
 //! an analog face: sixty ticks, numerals when there is room, hour, minute
 //! and second hands, and the date. `-d` shows a seven-segment
-//! `HH:MM:SS` instead. The time is GMT, as `date` prints it: there is no
-//! timezone database yet. `-t seconds` stops the clock at that many
-//! seconds after the epoch, for tests and screenshots.
+//! `HH:MM:SS` instead. The time is local, as `date` prints it, in the
+//! zone of `$timezone` or `/locale/timezone` (daytime(2)), whose name the
+//! face shows. `-t seconds` stops the clock at that many seconds after
+//! the epoch, for tests and screenshots.
 //!
 //! The clock wakes at each second and redraws; it follows a resize (the
 //! emu's window, or a window manager's) by checking the screen's size on
@@ -99,7 +100,7 @@ fn date(tm: &Tm) -> String {
 impl Clock {
     fn draw(&mut self, t: i64) -> Result<(), Error> {
         let screen = self.d.screen();
-        let tm = daytime::gmt(t);
+        let tm = daytime::local(t);
         // Drawn off screen and copied, so the screen never shows a
         // half-drawn face.
         let back = self.d.alloc(screen.r, screen.chan, false, WHITE)?;
@@ -154,10 +155,7 @@ impl Clock {
         if rad >= 60 {
             for (s, y) in [
                 (date(tm), ctr.y + rad * 2 / 5),
-                (
-                    String::from("GMT"),
-                    ctr.y - rad * 3 / 10 - self.small.height,
-                ),
+                (tm.zone.clone(), ctr.y - rad * 3 / 10 - self.small.height),
             ] {
                 let w = self.small.string_width(&s);
                 let at = Point::new(ctr.x - w / 2, y);
@@ -250,7 +248,7 @@ impl Clock {
             }
             x += dw + dw / 4;
         }
-        let s = format!("{} GMT", date(tm));
+        let s = format!("{} {}", date(tm), tm.zone);
         let w = self.small.string_width(&s);
         let at = Point::new(r.min.x + (r.dx() - w) / 2, y + dh + k * 3);
         d.string(dst, at, &c.lit, zero, &mut self.small, &s)?;
@@ -366,6 +364,11 @@ mod tests {
     fn dates() {
         // 2026-11-13 12:34:56 GMT, a Friday.
         assert_eq!(date(&daytime::gmt(1_794_573_296)), "Fri 13 Nov 2026");
+        // 18:00 GMT on Friday is 03:00 on Saturday in Tokyo.
+        let tz = daytime::Timezone::parse("JST 32400 JST 32400\n");
+        let tm = tz.local(1_794_592_800);
+        assert_eq!(date(&tm), "Sat 14 Nov 2026");
+        assert_eq!((tm.zone.as_str(), tm.hour), ("JST", 3));
     }
 
     #[test]

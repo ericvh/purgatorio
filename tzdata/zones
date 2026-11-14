@@ -1,0 +1,92 @@
+# The files `cargo xtask timezones` writes in root/locale, and the zone
+# of the database each is made from. The names are Inferno's /locale
+# names, which are the database's old names with / as _. `file = other`
+# copies a file made above.
+
+GMT		Etc/GMT
+Argentina	America/Argentina/Buenos_Aires
+Australia_ACT	Australia/ACT
+Australia_Broken-Hill	Australia/Broken_Hill
+Australia_LHI	Australia/LHI
+Australia_NSW	Australia/NSW
+Australia_North	Australia/North
+Australia_Queensland	Australia/Queensland
+Australia_South	Australia/South
+Australia_Tasmania	Australia/Tasmania
+Australia_Victoria	Australia/Victoria
+Australia_West	Australia/West
+Australia_Yancowinna	Australia/Yancowinna
+Brazil_Acre	Brazil/Acre
+Brazil_DeNoronha	Brazil/DeNoronha
+Brazil_East	Brazil/East
+Brazil_West	Brazil/West
+CET		CET
+CST.CDT		CST6CDT
+Canada_Atlantic	Canada/Atlantic
+Canada_Central	Canada/Central
+Canada_East-Saskatchewan	Canada/Saskatchewan
+Canada_Eastern	Canada/Eastern
+Canada_Mountain	Canada/Mountain
+Canada_Newfoundland	Canada/Newfoundland
+Canada_Pacific	Canada/Pacific
+Canada_Yukon	Canada/Yukon
+Chile_Continental	Chile/Continental
+Chile_EasterIsland	Chile/EasterIsland
+Cuba		Cuba
+EET		EET
+EST.EDT		EST5EDT
+Egypt		Egypt
+GB-Eire		GB-Eire
+HST		HST
+Hongkong	Hongkong
+Iceland		Iceland
+Iran		Iran
+Israel		Israel
+Jamaica		Jamaica
+Japan		Japan
+Libya		Libya
+MET		MET
+MST.MDT		MST7MDT
+Mexico_BajaNorte	Mexico/BajaNorte
+Mexico_BajaSur	Mexico/BajaSur
+Mexico_General	Mexico/General
+Moscow		Europe/Moscow
+NZ		NZ
+NZ_CHAT		NZ-CHAT
+Navajo		Navajo
+PRC		PRC
+PST.PDT		PST8PDT
+Poland		Poland
+ROC		ROC
+ROK		ROK
+Singapore	Singapore
+Turkey		Turkey
+US_Alaska	US/Alaska
+US_Arizona	US/Arizona
+US_Central	US/Central
+US_East-Indiana	US/East-Indiana
+US_Eastern	US/Eastern
+US_Hawaii	US/Hawaii
+US_Michigan	US/Michigan
+US_Mountain	US/Mountain
+US_Pacific	US/Pacific
+W-SU		W-SU
+WET		WET
+
+# Zones Inferno's list lacks, by their database names with / as _.
+Africa_Johannesburg	Africa/Johannesburg
+Africa_Lagos	Africa/Lagos
+Africa_Nairobi	Africa/Nairobi
+America_Mexico_City	America/Mexico_City
+America_Sao_Paulo	America/Sao_Paulo
+Asia_Bangkok	Asia/Bangkok
+Asia_Dubai	Asia/Dubai
+Asia_Jakarta	Asia/Jakarta
+Asia_Kolkata	Asia/Kolkata
+Europe_Berlin	Europe/Berlin
+Europe_Paris	Europe/Paris
+UTC		Etc/UTC
+
+# The default, read when $timezone is not set: GMT, so that a system
+# shows the same times wherever it runs until someone puts a zone here.
+timezone = GMT

@@ -20,7 +20,7 @@ type Result<T> = std::result::Result<T, String>;
 mod tar;
 
 /// Directories of `root/` in the archive; the same as `xtask initrd`.
-const ROOT_DIRS: &[&str] = &["bin", "lib"];
+const ROOT_DIRS: &[&str] = &["bin", "lib", "locale"];
 
 fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("none") {

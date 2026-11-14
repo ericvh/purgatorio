@@ -17,7 +17,7 @@ type Result<T> = std::result::Result<T, String>;
 mod tar;
 
 /// Directories under `root/` embedded in the image.
-const EMBEDDED: &[&str] = &["bin", "lib"];
+const EMBEDDED: &[&str] = &["bin", "lib", "locale"];
 
 fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     let mut entries: Vec<PathBuf> = fs::read_dir(dir)

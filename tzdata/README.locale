@@ -1,0 +1,12 @@
+Time zones for daytime(2), in Inferno's format: a line with the
+standard time's name and offset east of Greenwich in seconds, and the
+daylight time's, then the start and end of each period of daylight time
+from 1970 to 2037, in seconds since 1970 as counted on standard time.
+
+timezone is the zone programs use. It is GMT; to change it, copy or
+bind another file over it, or set $timezone to a zone's text or to the
+name of its file.
+
+The files are made from the IANA time zone database, which is in the
+public domain, by `cargo xtask timezones`; see tzdata/README in the
+source tree.
