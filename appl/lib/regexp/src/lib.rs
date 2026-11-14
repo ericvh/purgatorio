@@ -273,10 +273,14 @@ struct Thread {
     caps: Vec<usize>,
 }
 
-/// The text a search runs over, and per-search scratch state.
+/// The text a search runs over, and per-search scratch state. The text
+/// is decoded only as far as the search goes, so a match near the start
+/// of a long text costs no more than one in a short text.
 struct Vm<'a> {
     prog: &'a [Inst],
     text: Vec<(usize, char)>,
+    rest: core::str::CharIndices<'a>,
+    from: usize,
     end: usize,
     /// The character before the search start, for `^`.
     before: Option<char>,
@@ -285,6 +289,16 @@ struct Vm<'a> {
 }
 
 impl Vm<'_> {
+    /// Decodes the text up to and including position `i`.
+    fn fill(&mut self, i: usize) {
+        while self.text.len() <= i {
+            match self.rest.next() {
+                Some((o, c)) => self.text.push((o + self.from, c)),
+                None => break,
+            }
+        }
+    }
+
     fn offset(&self, i: usize) -> usize {
         self.text.get(i).map_or(self.end, |t| t.0)
     }
@@ -377,19 +391,19 @@ impl Regex {
     pub fn find_at(&self, s: &str, from: usize) -> Option<Captures> {
         let mut vm = Vm {
             prog: &self.prog,
-            text: s[from..]
-                .char_indices()
-                .map(|(i, c)| (i + from, c))
-                .collect(),
+            text: Vec::new(),
+            rest: s[from..].char_indices(),
+            from,
             end: s.len(),
             before: s[..from].chars().next_back(),
             seen: vec![UNSET; self.prog.len()],
         };
-        let n = vm.text.len();
         let slots = 2 * (self.groups + 1);
         let mut clist: Vec<Thread> = Vec::new();
         let mut best: Option<Vec<usize>> = None;
-        for i in 0..=n {
+        let mut i = 0;
+        loop {
+            vm.fill(i + 1);
             if best.is_none() {
                 vm.add(&mut clist, 0, vec![UNSET; slots], i);
             } else if clist.is_empty() {
@@ -421,6 +435,10 @@ impl Regex {
                 }
             }
             clist = nlist;
+            if i >= vm.text.len() {
+                break;
+            }
+            i += 1;
         }
         best.map(|caps| {
             caps.chunks(2)
