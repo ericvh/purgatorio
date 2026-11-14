@@ -421,7 +421,7 @@ fn a_stripped_offer_is_refused() {
             let r = read_msg(&to_server, MAX_MSIZE).unwrap();
             let msg = Msg::decode(&r, MAX_MSIZE).unwrap();
             let out = match msg.fcall {
-                Fcall::Rread { data } if data.len() == 64 => Msg {
+                Fcall::Rread { data } if data.len() >= 64 => Msg {
                     tag: msg.tag,
                     fcall: Fcall::Rread { data: &data[..32] },
                 }
@@ -653,7 +653,10 @@ fn fake_server(p: &mut Prog, mock: &Arc<Mock>, answer: Answer) -> (thread::JoinH
     let t = thread::spawn(move || {
         enter(&m, &prog);
         let conn = prog.chan(0).unwrap();
-        let kx = purg_auth::session::Server::new([1; 32], [2; 32]);
+        // A server built before version 4: no mark in its challenge, and
+        // only the short offer, whatever the client asks for.
+        let mut kx = purg_auth::session::Server::new([1; 32], [2; 32]);
+        kx.offer[24..32].fill(1);
         let mut ends: Option<(purg_auth::record::Sealer, purg_auth::record::Opener)> = None;
         let mut keys = None;
         let mut reads = 0;
@@ -1063,9 +1066,10 @@ fn fauth_with_a_version_4_proof() {
     }
 }
 
-/// An export with `MPQ` refuses the classical exchange, from the kernel's
-/// mount and from a version 3 proof through `fauth`, and takes the hybrid
-/// one. A classical client of an export without it works as before.
+/// An export with `MPQ` refuses the classical exchange of a version 3
+/// proof through `fauth`, and takes the hybrid one, which the kernel's
+/// own mount uses by default. A client of an export without it works as
+/// before.
 #[test]
 fn an_export_can_require_pq() {
     assert_eq!(mount_with(0, |_| {}), Ok(()));
@@ -1073,9 +1077,10 @@ fn an_export_can_require_pq() {
     let (mut p, mock) = setup();
     install_fixture(&mut p);
     let (server, c) = spawn_export(&mut p, &mock, MPQ);
-    let r = p.mount(c, -1, "#R/mnt", MREPL, "");
-    assert_eq!(r.unwrap_err().as_str(), PQ_REQUIRED);
+    p.mount(c, -1, "#R/mnt", MREPL | MCREATE, "").unwrap();
     p.close(c).unwrap();
+    use_mount(&mut p);
+    p.unmount(None, "#R/mnt").unwrap();
     within("the export ends", move || server.join().unwrap()).unwrap();
     let (server, c) = spawn_export(&mut p, &mock, MPQ);
     let afd = p.fauth(c, "").unwrap();
@@ -1242,4 +1247,154 @@ fn a_proof_stripped_to_version_3_is_refused() {
         out
     });
     assert_eq!(err, purg_core::auth::FAILED);
+}
+
+/// By default the kernel's mount asks for the long offer and takes the
+/// hybrid exchange from a server that gives it (`docs/auth.md`, "The
+/// default exchange").
+#[test]
+fn a_default_mount_takes_the_hybrid_exchange() {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, &mock, 0);
+    let (relay, c) = Relay::new(&mut p, &mock, b, None);
+    p.mount(c, -1, "#R/mnt", MREPL | MCREATE, "").unwrap();
+    p.close(c).unwrap();
+    use_mount(&mut p);
+    p.unmount(None, "#R/mnt").unwrap();
+    let (up, down) = relay.join();
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    let rread = frame_end(&down, 2).unwrap() - frame_end(&down, 1).unwrap();
+    assert_eq!(rread, 4 + 1 + 2 + 4 + OFFER_PQ);
+    let start = frame_end(&up, 2).unwrap();
+    assert_eq!(up[start + 23], purg_auth::proof::V4);
+    // Every offer, long or short, carries the mark.
+    let offer = &down[frame_end(&down, 1).unwrap() + 11..][..OFFER];
+    assert!(purg_auth::session::offers_pq(offer));
+    kprocs_gone(&mock);
+}
+
+/// Runs a mount with `flags` through [`mitm`] and returns its error.
+fn mount_through(flags: u32, n: usize, rewrite: fn(bool, Vec<u8>) -> Vec<u8>) -> String {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, &mock, 0);
+    let (relay, c) = mitm(&mut p, &mock, b, n, rewrite);
+    let conn = p.chan(c).unwrap();
+    let err = p.mount(c, -1, "#R/mnt", MREPL | flags, "").unwrap_err();
+    p.close(c).unwrap();
+    drop(conn);
+    within("the relay ends", move || relay.join().unwrap());
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    kprocs_gone(&mock);
+    String::from(err.as_str())
+}
+
+/// The long offer cut to the short one on the way.
+fn strip(up: bool, m: Vec<u8>) -> Vec<u8> {
+    if up {
+        return m;
+    }
+    rewrite_msg(&m, |f| match f {
+        purg_styx::Fcall::Rread { data } if data.len() == OFFER_PQ => Some(data[..OFFER].to_vec()),
+        _ => None,
+    })
+}
+
+/// A default mount is not talked down to the classical exchange by
+/// someone in between: the long offer cut to the short one, or the
+/// request for it shortened, leaves a challenge that says the server can
+/// do version 4, and the mount fails with `no post-quantum key offered`.
+/// Taking the mark out of the challenge as well changes what the client
+/// signs, so the server refuses the proof.
+#[test]
+fn a_default_mount_is_not_downgraded() {
+    assert_eq!(mount_through(0, 3, strip), NO_PQ);
+    let shorten = |up: bool, mut m: Vec<u8>| {
+        // Tread: size[4] type[1] tag[2] fid[4] offset[8] count[4].
+        if up && m.get(4) == Some(&purg_styx::kind::TREAD) && m.len() == 23 {
+            m[19..23].copy_from_slice(&(OFFER as u32).to_le_bytes());
+        }
+        m
+    };
+    assert_eq!(mount_through(0, 3, shorten), NO_PQ);
+    let unmark = |up: bool, m: Vec<u8>| {
+        if up {
+            return m;
+        }
+        rewrite_msg(&m, |f| match f {
+            purg_styx::Fcall::Rread { data } if data.len() == OFFER_PQ => {
+                let mut d = data[..OFFER].to_vec();
+                d[24..32].fill(0);
+                Some(d)
+            }
+            _ => None,
+        })
+    };
+    assert_eq!(mount_through(0, 4, unmark), purg_core::auth::FAILED);
+}
+
+/// Through `fauth`: once a read of the long offer got a short one that
+/// says the server can do version 4, a read of the short offer is
+/// refused too, so a guest that falls back on `no post-quantum key
+/// offered` cannot be talked into version 3.
+#[test]
+fn a_stripped_fauth_offer_stays_refused() {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, &mock, 0);
+    let (relay, c) = mitm(&mut p, &mock, b, 4, strip);
+    let afd = p.fauth(c, "").unwrap();
+    let mut signed = vec![0u8; SIGNED_PQ];
+    assert_eq!(p.read(afd, &mut signed).unwrap_err().as_str(), NO_PQ);
+    let mut short = [0u8; purg_core::auth::SIGNED];
+    assert_eq!(p.pread(afd, &mut short, 0).unwrap_err().as_str(), NO_PQ);
+    p.close(afd).unwrap();
+    p.close(c).unwrap();
+    within("the relay ends", move || relay.join().unwrap());
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    kprocs_gone(&mock);
+}
+
+/// A server built before version 4 (no mark, the short offer whatever is
+/// asked): a default mount takes version 3 from it, through the kernel's
+/// own mount and through `fauth`, where the read of the long offer fails
+/// and the short one is then given. A mount with `MPQ` refuses it.
+#[test]
+fn a_default_mount_of_an_old_server_is_classical() {
+    let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
+    for flags in [0, MPQ] {
+        let (mut p, mock) = setup();
+        install_fixture(&mut p);
+        let (server, c) = fake_server(&mut p, &mock, Answer::Fresh);
+        let r = p.mount(c, -1, "#R/mnt", MREPL | flags, "");
+        p.close(c).unwrap();
+        if r.is_ok() {
+            p.unmount(None, "#R/mnt").unwrap();
+        }
+        let want = if flags == 0 {
+            Ok(())
+        } else {
+            Err(String::from(NO_PQ))
+        };
+        assert_eq!(r.map_err(|e| String::from(e.as_str())), want);
+        within("the server ends", move || server.join().unwrap());
+        kprocs_gone(&mock);
+    }
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, c) = fake_server(&mut p, &mock, Answer::Fresh);
+    let afd = p.fauth(c, "").unwrap();
+    let mut signed = vec![0u8; SIGNED_PQ];
+    assert_eq!(p.read(afd, &mut signed).unwrap_err().as_str(), NO_PQ);
+    let mut short = [0u8; purg_core::auth::SIGNED];
+    assert_eq!(p.pread(afd, &mut short, 0).unwrap(), short.len());
+    let proof = purg_auth::proof::make(&seed, None, &short, "inferno", "");
+    assert_eq!(p.write(afd, &proof).unwrap(), proof.len());
+    p.mount(c, afd, "#R/mnt", MREPL, "").unwrap();
+    p.unmount(None, "#R/mnt").unwrap();
+    p.close(afd).unwrap();
+    p.close(c).unwrap();
+    within("the server ends", move || server.join().unwrap());
+    kprocs_gone(&mock);
 }

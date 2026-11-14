@@ -10,10 +10,12 @@
 //! for the host it names: a key listed for that host, or a certificate
 //! with that name (`docs/auth.md`, "Servers per host"). `-C alg` picks
 //! the key exchange, as Inferno's `-C` picks the algorithms pushed after
-//! authentication: `x25519` (the default) or `x25519mlkem768`, the hybrid
-//! post-quantum exchange, which a server that does not offer it fails
-//! with `no post-quantum key offered` (`docs/auth.md`, "Post-quantum
-//! options"). It also takes `mldsa65` (and `ed25519`, the default), for
+//! authentication. By default the mount uses the hybrid post-quantum
+//! exchange (X25519 with ML-KEM-768) with a server that offers it, and
+//! X25519 alone with a server that cannot (`docs/auth.md`, "The default
+//! exchange"). `x25519mlkem768` requires the hybrid exchange: a server
+//! that does not offer it fails with `no post-quantum key offered`.
+//! `x25519` asks for X25519 alone. It also takes `mldsa65` (and `ed25519`, the default), for
 //! hybrid Ed25519 + ML-DSA-65 signatures: the mount proves with a hybrid
 //! key when factotum has one, and requires the server to prove itself
 //! with a hybrid key or certificate, as `-S` does (`docs/auth.md`,
@@ -35,6 +37,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let (mut order, mut create, mut noauth, mut srvauth) = (mount::MREPL, 0, 0, 0);
     let mut keyfile = None;
     let mut kex = 0;
+    let mut alg = None;
     while let Some(c) = arg.opt() {
         match c {
             'a' => order = mount::MAFTER,
@@ -44,7 +47,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'A' => noauth = mount::MNOAUTH,
             'S' => srvauth = mount::MSRVAUTH,
             'k' => keyfile = Some(arg.earg()?),
-            'C' => kex = purgatorio::auth::kex_flags(&arg.earg()?)?,
+            'C' => {
+                let a = arg.earg()?;
+                kex = purgatorio::auth::kex_flags(&a)?;
+                alg = Some(a);
+            }
             _ => return Err(arg.usage()),
         }
     }
@@ -83,18 +90,25 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         rest[0].parse().map_err(|_| Error::from("bad fd"))?
     };
     let flags = order | create | noauth | srvauth | kex;
-    // The kernel authenticates a plain mount itself, in one conversation.
-    // A keyfile or a guest factotum means the proof is built here, with
-    // fauth first, and so does a server proof that must be for a host.
+    let kx = purgatorio::auth::Kx::from_alg(alg.as_deref(), flags);
+    // The kernel authenticates a plain mount itself, in one conversation,
+    // with the default exchange. A keyfile or a guest factotum means the
+    // proof is built here, with fauth first, and so does a server proof
+    // that must be for a host, and X25519 alone.
     let srvauth = srvauth != 0 || kex & mount::MPQSIG != 0;
-    if keyfile.is_some() || purgatorio::auth::have_factotum() || (srvauth && host.is_some()) {
-        purgatorio::auth::amount_host(
+    if keyfile.is_some()
+        || purgatorio::auth::have_factotum()
+        || (srvauth && host.is_some())
+        || (kx == purgatorio::auth::Kx::Classical && noauth == 0)
+    {
+        purgatorio::auth::amount_kx(
             fd,
             &rest[1],
             flags,
             spec,
             keyfile.as_deref(),
             host.as_deref(),
+            kx,
         )
     } else {
         purgatorio::mount(fd, -1, &rest[1], flags, spec)

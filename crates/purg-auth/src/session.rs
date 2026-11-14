@@ -40,6 +40,22 @@ const C2S4: &[u8] = b"pgauth4 c2s";
 const S2C4: &[u8] = b"pgauth4 s2c";
 const BIND4: &[u8] = b"pgauth4 server";
 
+/// What a server that can do version 4 puts in the last bytes of its
+/// challenge (`docs/auth.md`, "The default exchange"), whatever offer a
+/// client reads. A version 1, 2 or 3 client signs the challenge as it is
+/// and never looks at these bytes; a client that asked for the long
+/// offer and got the short one refuses a challenge that carries them,
+/// since that server would have given the long offer. The client's proof
+/// signs the challenge, so the bytes cannot be taken out on the way
+/// without failing the proof. The other 24 bytes stay random.
+pub const PQ_MARK: [u8; 8] = *b"pgauth4\x01";
+
+/// Whether `offer` (any offer: it starts with the challenge) comes from
+/// a server that can do version 4.
+pub fn offers_pq(offer: &[u8]) -> bool {
+    offer.get(24..32) == Some(&PQ_MARK[..])
+}
+
 /// An ephemeral X25519 key pair.
 #[derive(Clone)]
 pub struct Ephemeral {
@@ -148,10 +164,13 @@ struct ServerPq {
 }
 
 impl Server {
+    /// An exchange with a random `challenge` and a random X25519 key. The
+    /// challenge's last 8 bytes become [`PQ_MARK`].
     pub fn new(challenge: [u8; 32], random: [u8; 32]) -> Server {
         let key = Ephemeral::new(random);
         let mut offer = [0u8; OFFER];
         offer[..32].copy_from_slice(&challenge);
+        offer[24..32].copy_from_slice(&PQ_MARK);
         offer[32..].copy_from_slice(&key.public);
         Server {
             key,
@@ -417,5 +436,37 @@ mod tests {
         let mut zero = offer;
         zero[32..OFFER].fill(0);
         assert!(Client::new_pq(&zero, [5; 32], [6; 32]).is_none());
+    }
+
+    /// Every server marks its challenge, in the short and the long offer,
+    /// and keeps the rest of it; the client signs the marked bytes, so a
+    /// proof over an unmarked copy does not check against this server.
+    #[test]
+    fn the_challenge_says_version_4() {
+        let mut server = Server::new([9; 32], [4; 32]);
+        assert_eq!(&server.offer[..24], &[9; 24]);
+        assert_eq!(&server.offer[24..32], b"pgauth4\x01");
+        assert!(offers_pq(&server.offer));
+        server.make_pq(&[3; kem::SEED]);
+        assert!(offers_pq(server.offered()));
+        assert!(!offers_pq(&[9; 32]));
+        assert!(!offers_pq(&[]));
+        let seed = [0x42; 32];
+        let mut plain = server.offer;
+        plain[24..32].fill(0);
+        let client = Client::new(&plain, [5; 32]).unwrap();
+        let proof = crate::proof::make(&seed, None, &client.signed, "alice", "");
+        let keys = [crate::public_key(&seed)].map(crate::sig::Id::Ed25519);
+        let policy = crate::proof::Policy {
+            keys: &keys,
+            signers: &[],
+            revoked: Some(&[]),
+            now: 0,
+            hybrid: false,
+        };
+        let check = |offer: &[u8]| crate::proof::check(&policy, offer, "alice", "", &proof);
+        assert!(check(&plain).is_ok());
+        assert!(check(server.offered()).is_err());
+        assert!(check(&server.offer).is_err());
     }
 }

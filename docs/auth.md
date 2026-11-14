@@ -662,13 +662,17 @@ Everything above rests on X25519 and Ed25519. A large quantum computer
 would break both: it could read a recorded conversation later by solving
 the X25519 exchange ("harvest now, decrypt later"), and forge signatures.
 The first threat is the urgent one, since recordings made today can be
-read whenever such a machine exists. The options here are opt-in. The
-defaults do not change, and old and new peers keep talking as before.
+read whenever such a machine exists. So the hybrid key exchange is the
+default, used whenever both ends can, and old and new peers keep talking
+as before; hybrid signatures cost more and stay opt-in.
 
 - **Key exchange:** a hybrid of X25519 and ML-KEM-768 (FIPS 203) in a new
-  proof version, 4. `mount -C x25519mlkem768` uses it and requires it;
-  `export -C x25519mlkem768` requires it of every client. Every export
-  offers it to a client that asks.
+  proof version, 4. Every client asks for it and uses it when the server
+  offers it, which every current server does; with a server built
+  before it, the client uses version 3 ("The default exchange").
+  `mount -C x25519mlkem768` requires it; `export -C x25519mlkem768`
+  requires it of every client. `mount -C x25519` asks for version 3
+  alone.
 - **Files:** `crypt -r` encrypts to a recipient's hybrid X25519 +
   ML-KEM-768 key (see "crypt's public-key mode"). The password mode was
   already a 256-bit-key AEAD under Argon2id, which a quantum computer does
@@ -739,34 +743,101 @@ S -> C  Rwrite  (or Rerror)                           last clear reply
   server's proof (with `bind` and `transcript` from this derivation) and
   the client's rules for the auth fd are as in version 3.
 
-### Requiring it, and downgrade
+### The default exchange
 
-A client or server either requires the hybrid exchange or does not use
-it; there is no "use it if the peer offers it" mode, so there is no
-quiet downgrade to reason about.
+A client that names no exchange asks for the long offer and uses
+version 4 when the server gives it. A server built before version 4
+answers with the short offer, and the client then uses version 3,
+which is all such a server can do. Someone in between must not be able
+to make a current server look like an old one, or the default would be
+a downgrade waiting to happen:
+
+- **Every server marks its challenge.** A server that can do version 4
+  puts `"pgauth4" 0x01` in the last 8 bytes of its challenge
+  (`purg_auth::session::PQ_MARK`), in the short offer and the long one
+  alike. The other 24 bytes stay random. Version 1, 2 and 3 clients sign
+  the challenge as it is and never look inside it.
+- **A client that asked for the long offer and got the short one
+  checks the mark.** If it is there, the server would have given the
+  long offer, so something on the way cut it or rewrote the request,
+  and the mount fails with `no post-quantum key offered`. Through
+  `fauth` the kernel remembers this for the auth fd: after a long read
+  fails that way, a read of the short offer fails the same way, so a
+  guest that falls back on `no post-quantum key offered` (as the SDK's
+  default does) cannot be talked into version 3 either.
+- **The mark cannot be taken out.** The client's proof signs the
+  challenge, and the server checks the proof against the challenge it
+  sent. A challenge with the mark removed makes a proof the server
+  refuses (`authentication failed`). So against a current server the
+  attacker's choice is between a version 4 exchange and no exchange.
+
+What is left, honestly:
+
+- **Old servers.** A server built before version 4 has no mark, and the
+  client uses version 3 with it. A recording of that conversation is
+  open to someone who later breaks X25519. That is the server's limit,
+  not something the client can fix; `-C x25519mlkem768` refuses such a
+  server instead.
+- **An attacker who can forge the user's signature during the
+  exchange.** The mark is only as good as the client's proof. Someone
+  who can forge it while the exchange runs (a quantum computer that
+  breaks Ed25519 at the time, not later) could strip the long offer,
+  take the mark out and sign the real challenge in the client's name.
+  The same attacker can break X25519 at that moment too, so this is an
+  active attack at the time of the conversation, not harvest now,
+  decrypt later; a hybrid key ("Post-quantum signatures") leaves it with
+  ML-DSA-65 to forge as well. Against a recording, the default is as
+  good as requiring version 4 whenever the server is current.
+- **A server that asks for no proof** (`export -A`, or one that answers
+  `authentication not required`) exchanges no keys at all and stays in
+  the clear, as before.
+- **The client cannot tell an old server from an impostor.** Without
+  `-S` a client that dials an impostor talks to the impostor, in either
+  version. `-S` (or `-C mldsa65`) is what authenticates the server.
+- **The user's choice.** `mount -C x25519` asks for the short offer and
+  does not check the mark: version 3 by request.
+
+The cost against a current server is version 4's ("Cost of the
+post-quantum options"): 2.3 KB more on the wire and about 0.1 ms of
+ML-KEM work, which the kernel does for a guest's mount. Measured whole,
+`xtask bench`'s `mount-pq-10` against `mount-sealed-10` put it at 0.7
+ms a mount on the kernel under KVM (below); `mount-sealed-10` now names
+`-C x25519`, so it still measures version 3. Against an old
+server it is nothing: the long read gets the short offer in the same
+round trip. Through `fauth`, a guest whose long read fails reads again,
+which sends one more `Tread`. A guest built before this (ABI 0.11 or
+earlier) reads the short offer as before and talks version 3 to a
+current server; nothing in the ABI changed, so `ABI_VERSION` stays 0.11.
+
+`rcmd`, `cpu` and Lethe have the same default, with their own ways to
+tell a forged refusal from an old server (`docs/rcmd.md`, "Post-quantum
+key exchange"; `docs/lethe.md`, "The default exchange").
+
+### Requiring it, and downgrade
 
 - `mount -C x25519mlkem768` and `import -C x25519mlkem768`
   (`purg_abi::mount::MPQ`) read the long offer. A server whose offer has
   no ML-KEM key, or that asks for no proof, fails the mount with `no
   post-quantum key offered`. A mount of an auth fd from `fauth` with
   `MPQ` fails with `post-quantum key exchange required` unless its proof
-  was version 4. `-C x25519` names the default; any other name fails with
-  `unknown algorithm`. Inferno's `mount -C` picks the algorithms pushed
+  was version 4. `-C x25519` asks for version 3 alone; any other name
+  fails with `unknown algorithm`. Inferno's `mount -C` picks the algorithms pushed
   after authentication; here it picks the key exchange, since the record
   layer is fixed.
 - `export -C x25519mlkem768` (`MPQ` on `sys->export`) refuses a version
   1, 2 or 3 proof, and an attach without a version 4 proof, with
   `post-quantum key exchange required`. It implies `-e`. Without it an
-  export takes version 4 from any client that asks, and every older
-  version as before.
+  export takes version 4 from any client that asks (every current client
+  does), and every older version as before.
 - `-A` with `-C x25519mlkem768` is a usage error on both commands.
 
 What an attacker on the wire can do against each:
 
 - **Strip the ML-KEM key from the offer**, or rewrite the client's read
   to ask for 64 bytes: a client that requires the exchange fails with
-  `no post-quantum key offered`. A client that does not require it was
-  never going to use it.
+  `no post-quantum key offered`, and so does a default client, from the
+  mark in the challenge ("The default exchange"). Only a client that
+  asked for version 3 by name was never going to use it.
 - **Strip the ciphertext from a version 4 proof** and pass the rest on as
   a version 3 proof: the signature is over the `pgauth4` message, the
   long offer and the ciphertext, so the server refuses it with
@@ -777,9 +848,9 @@ What an attacker on the wire can do against each:
   key in version 3. A changed `ct` alone would also give the server
   another ML-KEM secret (FIPS 203's implicit rejection), so the records
   could not be opened either way.
-- **A client and server that both could, but neither requires:** they
-  use version 3, as today. Turning the option on at either end is what
-  protects a conversation; at the server end it protects every client.
+- **A client and server that both can:** they use version 4 by
+  default. Requiring it at the server protects every client, older ones
+  included, by refusing those that cannot.
 
 The kernel enforces the auth fd rules of version 3 for version 4 too.
 Through `fauth`, a read of at least 2368 bytes (`SIGNED_PQ`) at offset 0
@@ -787,7 +858,8 @@ fetches the long offer and returns `signed` above, with the kernel's own
 X25519 key and ciphertext; the X25519 secret and the ML-KEM secret never
 leave the kernel. A server that gives no ML-KEM key fails that read with
 `no post-quantum key offered` and nothing is kept, so a guest may read
-96 bytes for version 3 instead. The first read that makes a key decides
+96 bytes for version 3 instead, unless the short offer carried the mark
+("The default exchange"). The first read that makes a key decides
 the exchange; every later read gives the same bytes, and a read too
 short for them fails with `bad arg in system call`. The guest factotum
 signs a version 4 message when the challenge it is given is 2368 bytes
@@ -798,18 +870,19 @@ version 4 proofs and the errors `no post-quantum key offered` and
 `post-quantum key exchange required`. A 0.9 guest never asks for the long
 offer, so it keeps talking version 3 to a 0.10 server.
 
-`rcmd -e x25519mlkem768`, `cpu -C x25519mlkem768` and `rstyxd -C
-x25519mlkem768` use the same exchange on an rstyx connection, with the
-same rules (`docs/rcmd.md`, "Post-quantum key exchange"). Lethe has its
-own one-round-trip exchange, with the client's ephemeral ML-KEM key:
-`lethe -C x25519mlkem768` and `lethed -C x25519mlkem768`
-(`docs/lethe.md`, "The post-quantum exchange").
+`rcmd`, `cpu` and `rstyxd` use the same exchange on an rstyx connection
+by default, with the same rules (`docs/rcmd.md`, "Post-quantum key
+exchange"); `-C x25519mlkem768` requires it. Lethe has its own
+one-round-trip exchange, with the client's ephemeral ML-KEM key, also
+the default, and required by `lethe -C x25519mlkem768` and `lethed -C
+x25519mlkem768` (`docs/lethe.md`, "The post-quantum exchange").
 
 ### Threat model
 
 - **Harvest now, decrypt later:** a conversation on version 4 cannot be
   read by someone who records it and later breaks X25519, as long as
-  ML-KEM-768 holds. This is what the option is for.
+  ML-KEM-768 holds. Every conversation between current peers is on
+  version 4 by default.
 - **Authentication** is Ed25519 by default. A quantum attacker who can forge
   Ed25519 signatures in real time can pose as a user or a server; that is
   an active attack at the time of the conversation, not a later

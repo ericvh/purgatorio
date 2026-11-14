@@ -1,9 +1,11 @@
      32
-classical
+plain export
 named classical
 pq only
 pq and server
 import
+default
+default and server
 mount: post-quantum key exchange required
 mount: post-quantum key exchange required
 mount: no post-quantum key offered
