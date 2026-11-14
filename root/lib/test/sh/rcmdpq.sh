@@ -1,9 +1,10 @@
 # rcmd -e x25519mlkem768 and cpu -C x25519mlkem768 use and require the
 # hybrid X25519 + ML-KEM-768 key exchange (docs/rcmd.md, "Encryption");
 # rstyxd -C x25519mlkem768 requires it of every client. A client that
-# asks for it refuses a server that does not offer it, and a server that
-# requires it refuses a client that does not ask. Both ends trust the
-# test keys, bound on /lib/keys.
+# requires it refuses a server that does not offer it, and a server that
+# requires it refuses a client that asks only for the classical exchange
+# (-e x25519). A default client asks for the hybrid exchange, so it gets
+# in. Both ends trust the test keys, bound on /lib/keys.
 load std
 bind /lib/test/keys /lib/keys
 d=/tmp/sh-rcmdpq
@@ -24,7 +25,8 @@ styxlisten tcp!127.0.0.1!0 /bin/auxi/rstyxd.wasm -C x25519mlkem768 >[2] $d/l2 &
 lpid=$apid
 while {! test -s $d/l2} {sleep 0}
 a=tcp!`{sed 's/styxlisten: //' $d/l2}
-rcmd $a echo no </dev/null
+rcmd $a echo default </dev/null
+rcmd -e x25519 $a echo no </dev/null
 echo status $status
 rcmd -e x25519mlkem768 $a echo required and used </dev/null
 kill $lpid

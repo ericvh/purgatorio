@@ -9,8 +9,12 @@
 //! the authinfo `keyfile` if given (`-f` is Inferno's name for `-k`), and
 //! then encrypted; `-A` skips both. `-S` requires the server to prove
 //! itself with a key or certificate this namespace trusts as a server's.
-//! `-e` names the algorithm: the one cipher, `chacha20poly1305`, or
-//! `none` with `-A`. The protocol is in `docs/rcmd.md`.
+//! `-e` names the algorithms, joined with `/`: the one cipher,
+//! `chacha20poly1305`, or `none` with `-A`; the key exchange, by default
+//! the hybrid `x25519mlkem768` when the server can do it, which
+//! `x25519mlkem768` requires and `x25519` turns off; and `mldsa65`, which
+//! proves with a hybrid Ed25519 + ML-DSA-65 key and requires one of the
+//! server. The protocol is in `docs/rcmd.md`.
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
@@ -41,7 +45,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     if let Some(alg) = alg {
-        o.pq = client::check_alg(&alg, o.noauth)?;
+        let a = client::check_alg(&alg, o.noauth)?;
+        o.kx = a.kx.unwrap_or_default();
+        o.pqsig = a.pqsig;
     }
     let rest = arg.argv();
     if o.noauth && o.srvauth {
