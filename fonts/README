@@ -19,11 +19,16 @@ go/: the Go fonts, by Bigelow & Holmes for the Go project.
 
 unifont/: GNU Unifont 18.0.01 (2026-09-16), by Roman Czyborra, Paul
   Hardy and contributors.
-  unifont-18.0.01.hex and unifont-combining-18.0.01.txt are
-  font/precompiled/ from https://ftp.gnu.org/gnu/unifont/unifont-18.0.01/unifont-18.0.01.tar.gz
+  unifont-18.0.01.hex, unifont_upper-18.0.01.hex and
+  unifont-combining-18.0.01.txt are font/precompiled/ from
+  https://ftp.gnu.org/gnu/unifont/unifont-18.0.01/unifont-18.0.01.tar.gz
     sha256 eab60847aac34c8768765cecc7821faf50de2636187b452b9b5fa50a12b00bc3  unifont-18.0.01.tar.gz
     sha256 2ab7801c809b76541a10b25858c1a962bdb650eee56b4c7df1f325b56e3955ee  unifont-18.0.01.hex
+    sha256 82fa5220cf8c0dc35d85f192e7fb274dcf0877b5d3fc32cade35b407b2fdf7cf  unifont_upper-18.0.01.hex
     sha256 d2372351ad05b050b7ceb41ee894961a33e6fdd6cf0201c4896aef2e55cf1bd0  unifont-combining-18.0.01.txt
+  unifont.hex is the Basic Multilingual Plane; unifont_upper.hex holds
+  Planes 1, 2, 3 and 14, kept whole so that its checksum matches the
+  tarball's. The recipe uses only its Plane 1.
   Licence: the font files are under the SIL Open Font License 1.1, and
   also GPLv2+ with the GNU font embedding exception (`COPYING`, from the
   same tarball; dual licensing started with Unifont 13.0.04 on

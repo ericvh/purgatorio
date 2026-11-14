@@ -9,12 +9,16 @@ ttf go/Go-Mono.ttf 20 go/mono.20
 
 # GNU Unifont: the whole Basic Multilingual Plane, 1-bit, 16 pixels.
 hex unifont/unifont-18.0.01.hex unifont/unifont-combining-18.0.01.txt unifont/unifont.16
+# Unifont's Plane 1: historic scripts, symbols, emoji. The upper file's
+# few glyphs of Planes 2 and 3 and its tags and variation selectors
+# (Plane 14) are left out; see docs/graphics.md, Section 9.8.
+hex 10000-1FFFF unifont/unifont_upper-18.0.01.hex unifont/unifont-combining-18.0.01.txt unifont/plane1.16
 
 # The fonts programs use: Go first, Unifont for the runes Go lacks.
-merge sans/unicode.13 go/regular.13 unifont/unifont.16
-merge sans/unicode.20 go/regular.20 unifont/unifont.16
-merge mono/unicode.13 go/mono.13 unifont/unifont.16
-merge mono/unicode.20 go/mono.20 unifont/unifont.16
+merge sans/unicode.13 go/regular.13 unifont/unifont.16 unifont/plane1.16
+merge sans/unicode.20 go/regular.20 unifont/unifont.16 unifont/plane1.16
+merge mono/unicode.13 go/mono.13 unifont/unifont.16 unifont/plane1.16
+merge mono/unicode.20 go/mono.20 unifont/unifont.16 unifont/plane1.16
 merge default sans/unicode.13
 
 # The licences travel with the fonts made from them.
