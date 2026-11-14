@@ -11,6 +11,14 @@
 //! draws again each time), deletes it and checks with `ps`, typed in the
 //! second, that its progs are gone, and ends rio with `Exit`.
 //!
+//! A second run (`editing_*`) selects text with button 1 (a double click
+//! and a sweep), snarfs it with button 2's menu and checks `/dev/snarf`,
+//! sends and pastes it into another window, resizes a window by dragging
+//! its border, reads `/dev/window` and `/dev/screen` as images, hides
+//! and shows a window, checks that a program that draws once and exits
+//! leaves its picture, and resizes the window a second rio runs in and
+//! checks that rio's window is scaled to stay on its screen.
+//!
 //! Each step waits for something it can see (a pixel, a file a command
 //! wrote) with a bound, never for a fixed time. Keys and pointer events
 //! reach rio on separate queues, so before the test types into a window
@@ -39,7 +47,14 @@ const NEW: usize = 0;
 const RESIZE: usize = 1;
 const MOVE: usize = 2;
 const DELETE: usize = 3;
+const HIDE: usize = 4;
 const EXIT: usize = 5;
+/// The first hidden window's label in the menu.
+const HIDDEN: usize = 6;
+/// Button 2's menu in a text window, with no plumber running.
+const SNARF: usize = 2;
+const PASTE: usize = 1;
+const SEND: usize = 3;
 /// Where the menu is called up: on the background throughout.
 const MENU_AT: (i32, i32) = (620, 450);
 /// rio's colours: the background, and the border of the current window.
@@ -149,6 +164,12 @@ impl Mirror {
         self.0.lock().unwrap()[(y * SIZE.0 + x) as usize]
     }
 
+    /// Whether any pixel in `r` is black: text drawn there.
+    fn ink(&self, r: Rect) -> bool {
+        let g = self.0.lock().unwrap();
+        (r.1..r.3).any(|y| (r.0..r.2).any(|x| g[(y * SIZE.0 + x) as usize] == 0))
+    }
+
     /// Whether every pixel in `draw/demo`'s red is inside window `r`.
     fn red_only_inside(&self, r: Rect) -> bool {
         let g = self.0.lock().unwrap();
@@ -189,6 +210,8 @@ struct Page {
     tmp: PathBuf,
     /// The menu item rio puts under the pointer: the last chosen.
     lasthit: usize,
+    /// The same for button 2's menu.
+    lasthit2: usize,
     vm: String,
     /// Commands run, for file names.
     n: usize,
@@ -234,6 +257,17 @@ impl Page {
         self.lasthit = i;
     }
 
+    /// Chooses item `i` of button 2's menu in the window at `at`.
+    fn menu2(&mut self, at: (i32, i32), i: usize) {
+        let (x, y) = at;
+        let iy = y + (i as i32 - self.lasthit2 as i32) * IH;
+        self.pointer(x, y, 0);
+        self.pointer(x, y, 2);
+        self.pointer(x, iy, 2);
+        self.pointer(x, iy, 0);
+        self.lasthit2 = i;
+    }
+
     fn typed(&mut self, s: &str) {
         for c in s.chars() {
             let mut m = vec![b'k', 0];
@@ -274,6 +308,19 @@ impl Page {
     /// Types `cmd` into the current window with its output going to a
     /// new file, and returns what it wrote once it has finished.
     fn run(&mut self, cmd: &str) -> String {
+        String::from_utf8_lossy(&self.run_bytes(cmd)).into_owned()
+    }
+
+    /// Waits for `/tmp/rio/<name>` to exist.
+    fn file(&self, name: &str) {
+        let start = Instant::now();
+        while !self.tmp.join(name).exists() {
+            assert!(start.elapsed() < WAIT, "{}: no {name}", self.vm);
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn run_bytes(&mut self, cmd: &str) -> Vec<u8> {
         self.n += 1;
         let out = format!("out{}", self.n);
         self.typed(&format!(
@@ -284,7 +331,7 @@ impl Page {
             assert!(start.elapsed() < WAIT, "{}: {cmd} did not finish", self.vm);
             std::thread::sleep(Duration::from_millis(20));
         }
-        String::from_utf8_lossy(&std::fs::read(self.tmp.join(&out)).unwrap()).into_owned()
+        std::fs::read(self.tmp.join(&out)).unwrap()
     }
 
     /// Runs `cmd` until `done` holds for its output.
@@ -332,7 +379,16 @@ fn demo_in(p: &Page, r: Rect, what: &str) {
     p.see(what, |s| s.at(x, y) == DEMO_RED && s.red_only_inside(r));
 }
 
-fn run(vm: &str) {
+/// An emu running rio, and the page on its screen. The page goes first,
+/// then the emu, then its root.
+struct Rio {
+    p: Page,
+    out: common::Collected,
+    w: common::Watched,
+    _root: Root,
+}
+
+fn start(vm: &str) -> Rio {
     let root = Root::new(vm);
     let mut w = common::Watched::spawn(
         Command::new(env!("CARGO_BIN_EXE_emu"))
@@ -348,15 +404,43 @@ fn run(vm: &str) {
     let (host, token) = url(&w);
     let s = connect(&host, &token);
     let screen = Mirror::start(s.try_clone().unwrap());
-    let mut p = Page {
+    let p = Page {
         s,
         screen,
         tmp: root.0.join("tmp/rio"),
         lasthit: 0,
+        lasthit2: 0,
         vm: vm.to_string(),
         n: 0,
     };
     p.see("rio's background", |s| s.at(400, 300) == BACKGROUND);
+    Rio {
+        p,
+        out,
+        w,
+        _root: root,
+    }
+}
+
+/// Ends rio with `Exit` and checks that it and the emu end well.
+fn exit(r: Rio) {
+    let Rio {
+        mut p,
+        out,
+        mut w,
+        _root,
+    } = r;
+    let vm = p.vm.clone();
+    p.menu(EXIT);
+    let (status, err) = w.finish(WAIT);
+    assert!(status.success(), "{vm}: {}", common::failure(status, &err));
+    let out = String::from_utf8_lossy(&out.bytes(WAIT)).into_owned();
+    assert_eq!(out, "rio: \n", "{vm}: rio failed");
+}
+
+fn run(vm: &str) {
+    let mut r = start(vm);
+    let p = &mut r.p;
 
     // A window, swept with button 3 after New. It is current: the shell
     // in it reads what is typed.
@@ -379,7 +463,7 @@ fn run(vm: &str) {
 
     // The demo draws in the window, not on the screen.
     p.typed("draw/demo\n");
-    demo_in(&p, w1, "the demo in the window");
+    demo_in(p, w1, "the demo in the window");
     assert_eq!(p.screen.at(400, 300), BACKGROUND, "{vm}: background");
 
     // A second window, for the commands that look.
@@ -398,7 +482,7 @@ fn run(vm: &str) {
     p.menu(RESIZE);
     p.click(200, 150, 4);
     p.drag((w1.0, w1.1), (w1.2, w1.3), 4);
-    demo_in(&p, w1, "the demo after the resize");
+    demo_in(p, w1, "the demo after the resize");
     p.see("where the window was", |s| {
         s.at(red_bar(old).0, red_bar(old).1) == BACKGROUND
     });
@@ -407,7 +491,7 @@ fn run(vm: &str) {
     p.menu(MOVE);
     p.drag((200, 400), (250, 380), 4);
     let w1 = (w1.0 + 50, w1.1 - 20, w1.2 + 50, w1.3 - 20);
-    demo_in(&p, w1, "the demo after the move");
+    demo_in(p, w1, "the demo after the move");
     p.see("the moved window's old place", |s| {
         s.at(30, 400) == BACKGROUND
     });
@@ -450,11 +534,192 @@ fn run(vm: &str) {
     p.until("echo back", "the shell after acme", |g| g == "back\n");
 
     // Exit ends rio, and its windows' progs.
-    p.menu(EXIT);
-    let (status, err) = w.finish(WAIT);
-    assert!(status.success(), "{vm}: {}", common::failure(status, &err));
-    let out = String::from_utf8_lossy(&out.bytes(WAIT)).into_owned();
-    assert_eq!(out, "rio: \n", "{vm}: rio failed");
+    exit(r);
+}
+
+/// The top left of the text in window `r`: inside the border and rio's
+/// margin.
+fn text_at(r: Rect) -> (i32, i32) {
+    (r.0 + 8, r.1 + 6)
+}
+
+/// An image(6) file's header and pixels: its rectangle, and the pixel at
+/// `(x, y)` as `0xRRGGBB`.
+fn image_pixel(vm: &str, img: &[u8], x: i32, y: i32) -> (Rect, u32) {
+    let head = String::from_utf8_lossy(&img[..60]).into_owned();
+    let f: Vec<&str> = head.split_whitespace().collect();
+    assert_eq!(f[0], "x8r8g8b8", "{vm}: {head:?}");
+    let v: Vec<i32> = f[1..5].iter().map(|v| v.parse().unwrap()).collect();
+    let r = (v[0], v[1], v[2], v[3]);
+    let dx = (r.2 - r.0) as usize;
+    assert_eq!(img.len(), 60 + 4 * dx * (r.3 - r.1) as usize, "{vm}: size");
+    let o = 60 + 4 * ((y - r.1) as usize * dx + (x - r.0) as usize);
+    let px = u32::from(img[o + 2]) << 16 | u32::from(img[o + 1]) << 8 | u32::from(img[o]);
+    (r, px)
+}
+
+/// rio's rule for a window when its screen changes size: the same place,
+/// scaled.
+fn scaled(r: Rect, from: Rect, to: Rect) -> Rect {
+    let x = |v: i32| to.0 + (v - from.0) * (to.2 - to.0) / (from.2 - from.0);
+    let y = |v: i32| to.1 + (v - from.1) * (to.3 - to.1) / (from.3 - from.1);
+    (x(r.0), y(r.1), x(r.2), y(r.3))
+}
+
+fn editing(vm: &str) {
+    let mut r = start(vm);
+    let p = &mut r.p;
+
+    // A tall window, and in it commands whose output is commands.
+    let w1 = (20, 20, 380, 560);
+    let (ax, ay) = text_at(w1);
+    p.menu(NEW);
+    p.drag((w1.0, w1.1), (w1.2, w1.3), 4);
+    p.see("the first window", |s| s.at(w1.0 + 1, w1.1 + 20) == FOCUS);
+    p.typed("echo touch /tmp/rio/sent1\necho touch /tmp/rio/sent2\n");
+    // The prompt after the second command's output, before typing more:
+    // a line typed sooner would be read with the second.
+    p.see("the prompt on the fifth line", |s| {
+        s.ink((ax, ay + 4 * FH, ax + width("; "), ay + 5 * FH))
+    });
+    p.until("cat /dev/text", "echo's output", |t| {
+        t.starts_with(
+            "; echo touch /tmp/rio/sent1\ntouch /tmp/rio/sent1\n\
+             ; echo touch /tmp/rio/sent2\ntouch /tmp/rio/sent2\n",
+        )
+    });
+
+    // A double click at the start of the second line selects the line;
+    // button 2's snarf copies it to /dev/snarf.
+    let line = |i: i32| ay + i * FH + FH / 2;
+    p.click(ax, line(1), 1);
+    p.click(ax, line(1), 1);
+    p.menu2((200, 400), SNARF);
+
+    // A second window (made after the snarf: pointer events are taken in
+    // order), where send runs the line.
+    let w2 = (420, 20, 780, 280);
+    p.menu(NEW);
+    p.drag((w2.0, w2.1), (w2.2, w2.3), 4);
+    p.see("the second window", |s| s.at(w2.0 + 1, w2.1 + 20) == FOCUS);
+    p.menu2((600, 150), SEND);
+    p.file("sent1");
+    assert_eq!(
+        p.run("cat /dev/snarf"),
+        "touch /tmp/rio/sent1\n",
+        "{vm}: /dev/snarf"
+    );
+
+    // Sweep the fourth line and its newline with button 1, snarf it, and
+    // paste it into the second window, where it runs.
+    p.focus(w1);
+    p.drag((ax, line(3)), (ax, line(4)), 1);
+    p.menu2((200, 400), SNARF);
+    p.focus(w2);
+    p.menu2((600, 150), PASTE);
+    p.file("sent2");
+
+    // Button 1 on the first window's bottom right corner drags it.
+    let old = w1;
+    let w1 = (20, 20, 400, 500);
+    p.drag((old.2 - 2, old.3 - 2), (w1.2 - 2, w1.3 - 2), 1);
+    p.see("the resized window", |s| {
+        s.at(w1.2 - 2, 300) == FOCUS && s.at(old.0 + 30, old.3 - 20) == BACKGROUND
+    });
+    let want = format!(
+        "{:11} {:11} {:11} {:11} visible current ",
+        w1.0, w1.1, w1.2, w1.3
+    );
+    assert_eq!(p.run("cat /dev/wctl"), want, "{vm}: wctl after the drag");
+
+    // /dev/window and /dev/screen are images.
+    let img = p.run_bytes("cat /dev/window");
+    let (ir, px) = image_pixel(vm, &img, w1.0 + 1, w1.1 + 20);
+    assert_eq!((ir, px), (w1, FOCUS), "{vm}: /dev/window");
+    let img = p.run_bytes("cat /dev/screen");
+    let (ir, px) = image_pixel(vm, &img, 700, 500);
+    assert_eq!(
+        (ir, px),
+        ((0, 0, SIZE.0, SIZE.1), BACKGROUND),
+        "{vm}: /dev/screen"
+    );
+    assert_eq!(image_pixel(vm, &img, w1.0 + 1, w1.1 + 20).1, FOCUS, "{vm}");
+
+    // Hide takes the window off the screen; its label shows it again.
+    p.menu(HIDE);
+    p.click(100, 300, 4);
+    p.see("the hidden window gone", |s| {
+        s.at(100, 300) == BACKGROUND && s.at(w2.0 + 1, w2.1 + 20) == FOCUS
+    });
+    assert!(
+        p.run("cat /dev/wsys/1/wctl").contains(" hidden "),
+        "{vm}: wctl of a hidden window"
+    );
+    p.menu(HIDDEN);
+    p.see("the window shown again", |s| {
+        s.at(w1.0 + 1, w1.1 + 20) == FOCUS
+    });
+    // That item has gone from the menu, and rio puts its last item under
+    // the pointer instead.
+    p.lasthit = EXIT;
+
+    // A program that draws once and exits leaves its picture.
+    let w3 = (440, 300, 760, 580);
+    p.typed(&format!(
+        "echo new -r {} {} {} {} 'test/draw -c dd22dd; echo > /tmp/rio/drawn; cat' > /dev/wctl\n",
+        w3.0, w3.1, w3.2, w3.3
+    ));
+    p.file("drawn");
+    p.see("the program's picture", |s| s.at(600, 440) == 0xDD22DD);
+    p.focus(w1);
+    assert_eq!(p.screen.at(600, 440), 0xDD22DD, "{vm}: the picture went");
+
+    // rio in the second window, with a window of its own; resizing the
+    // second window scales the inner rio's window to its new screen.
+    p.focus(w2);
+    p.typed("rio -i cat\n");
+    let screen = (w2.0 + 4, w2.1 + 4, w2.2 - 4, w2.3 - 4);
+    let (sw, sh) = (screen.2 - screen.0, screen.3 - screen.1);
+    let (iw, ih) = ((sw * 2 / 3).max(50), (sh * 2 / 3).max(50));
+    let inner = (
+        screen.0 + sw / 6,
+        screen.1 + sh / 6,
+        screen.0 + sw / 6 + iw,
+        screen.1 + sh / 6 + ih,
+    );
+    p.see("the inner rio's window", |s| {
+        s.at(inner.0 + 1, inner.1 + 20) == FOCUS && s.at(screen.0 + 2, screen.1 + 2) == BACKGROUND
+    });
+    let old2 = w2;
+    let w2 = (420, 20, 620, 200);
+    p.menu(RESIZE);
+    p.click(old2.0 + 10, old2.3 - 10, 4);
+    p.drag((w2.0, w2.1), (w2.2, w2.3), 4);
+    let screen2 = (w2.0 + 4, w2.1 + 4, w2.2 - 4, w2.3 - 4);
+    let inner2 = scaled(inner, screen, screen2);
+    p.see("the inner window scaled", |s| {
+        s.at(inner2.0 + 1, inner2.1 + 20) == FOCUS
+            && s.at(inner2.2 - 2, inner2.3 - 20) == FOCUS
+            && s.at(old2.2 - 10, old2.3 - 10) == BACKGROUND
+    });
+
+    // Delete the second window, and with it the inner rio.
+    p.menu(DELETE);
+    p.click(w2.0 + 10, w2.3 - 10, 4);
+    p.see("the second window gone", |s| {
+        s.at(w2.0 + 10, w2.3 - 10) == BACKGROUND
+    });
+    exit(r);
+}
+
+#[test]
+fn editing_wasmtime() {
+    editing("wasmtime");
+}
+
+#[test]
+fn editing_wasmi() {
+    editing("wasmi");
 }
 
 #[test]

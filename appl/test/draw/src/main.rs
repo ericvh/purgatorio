@@ -11,6 +11,10 @@
 //! height as a line of text and then its pixels, rows of `x8r8g8b8`, to
 //! standard output, for the tests that compare screens. It writes the
 //! whole display even when run in a window.
+//!
+//! `test/draw -c rrggbb` fills its screen (in a window system, its
+//! window) with the colour and exits, for the tests of what a window
+//! shows after its program has gone.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -561,6 +565,17 @@ fn dump() -> Result<(), Error> {
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.get(1).is_some_and(|a| a == "-d") {
         return dump();
+    }
+    if args.get(1).is_some_and(|a| a == "-c") {
+        let rgb = args
+            .get(2)
+            .and_then(|c| u32::from_str_radix(c, 16).ok())
+            .ok_or_else(|| Error::from("usage: test/draw -c rrggbb"))?;
+        let mut d = Display::open()?;
+        let colour = d.color(rgb << 8 | 0xFF)?;
+        let s = d.screen();
+        d.draw(&s, s.r, &colour, None, Point::new(0, 0))?;
+        return d.flush();
     }
     let checks: &[(&str, Check)] = &[
         ("screen", screen_info),
