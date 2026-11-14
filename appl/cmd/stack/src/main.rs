@@ -36,20 +36,16 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if pids.is_empty() {
         return Err(Error(format!("usage: {USAGE}")));
     }
-    let mut failed = false;
     let mut names = BTreeMap::new();
     for pid in &pids {
         if pids.len() > 1 {
             println!("prog {pid}");
         }
+        // As Inferno's stack: a prog it cannot trace is reported, with no
+        // status.
         if let Err(e) = stack(pid, verbose, &mut names) {
             eprintln!("stack: {pid}: {}", e.0);
-            failed = true;
         }
-    }
-    if failed {
-        // The messages are already printed.
-        purgatorio::exits("error");
     }
     Ok(())
 }

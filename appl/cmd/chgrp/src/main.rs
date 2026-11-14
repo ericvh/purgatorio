@@ -31,12 +31,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             d.gid = id.clone();
         }
         if let Err(e) = purgatorio::wstat(f, &d) {
-            eprintln!("chgrp: cannot change {f}: {e}");
+            eprintln!("chgrp: can't change {f}: {e}");
             failed = true;
         }
     }
     if failed {
-        purgatorio::exits("fail:errors");
+        purgatorio::exits("fail:error");
     }
     Ok(())
 }

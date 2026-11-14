@@ -721,7 +721,7 @@ fn the_session_is_confined() {
             assert_eq!(r.stdout, "", "{vm} {dev}: {r:?}");
             assert!(
                 r.stderr.starts_with(&format!(
-                    "bind: cannot bind {dev} on /n: mount/attach disallowed\n"
+                    "bind: cannot bind {dev} onto /n: mount/attach disallowed\n"
                 )),
                 "{vm} {dev}: {r:?}"
             );
@@ -1319,7 +1319,7 @@ fn namespace_tools() {
         assert!(e.starts_with("unmount: /n: "), "{vm}: {e}");
         let e = m.fails("bind", r#"{"from":"/nonexistent","to":"/n"}"#);
         assert_eq!(
-            e, "bind: cannot bind /nonexistent on /n: file does not exist",
+            e, "bind: cannot bind /nonexistent onto /n: file does not exist",
             "{vm}"
         );
 

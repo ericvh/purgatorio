@@ -264,12 +264,12 @@ impl Builder {
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() > 2 {
         eprintln!("Usage: nsbuild [nsfile]");
-        purgatorio::exits("usage");
+        purgatorio::exits("fail:usage");
     }
     let file = args.get(1).map_or("namespace", String::as_str);
     Builder { depth: 0 }.file(file).map_err(|e| {
         eprintln!("nsbuild: error building namespace: {e}");
-        purgatorio::exits(&format!("fail:{e}"))
+        purgatorio::exits("fail:newns")
     })
 }
 

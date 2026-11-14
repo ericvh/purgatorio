@@ -37,13 +37,20 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let dirs = arg.argv();
     if dirs.is_empty() {
-        return Err(Error::from("usage: mkdir [-p] dir ..."));
+        // As Inferno's mkdir: nothing to make is not an error.
+        return Ok(());
     }
     let mut failed = false;
     for d in &dirs {
         let res = if parents { make_all(d) } else { make(d) };
         if let Err(e) = res {
-            eprintln!("mkdir: {d}: {e}");
+            // Inferno's messages: a name that is there already is reported
+            // as such, any other failure as one it can't create.
+            if !parents && e.0 == purgatorio::abi::error::EEXIST {
+                eprintln!("mkdir: {d} already exists");
+            } else {
+                eprintln!("mkdir: can't create {d}: {e}");
+            }
             failed = true;
         }
     }
