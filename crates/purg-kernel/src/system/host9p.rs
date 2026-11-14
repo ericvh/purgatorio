@@ -364,7 +364,7 @@ pub fn mount(prog: &mut Prog, file: &str, at: &str) -> Result<()> {
     let flags = purg_abi::mount::MREPL | purg_abi::mount::MCREATE;
     let r = prog.mount(fd, -1, at, flags, "");
     prog.close(fd)?;
-    r
+    r.map(drop)
 }
 
 /// Files `xtask kernel` puts in the shared directory, and in the slow one.

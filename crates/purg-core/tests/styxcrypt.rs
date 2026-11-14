@@ -541,7 +541,7 @@ fn mount_with(flags: u32, prepare: impl FnOnce(&mut Prog)) -> Result<(), String>
     }
     within("the export ends", move || server.join().unwrap()).unwrap();
     kprocs_gone(&mock);
-    r.map_err(|e| String::from(e.as_str()))
+    r.map(drop).map_err(|e| String::from(e.as_str()))
 }
 
 /// The export proves itself with the test key, which the client trusts as
@@ -776,7 +776,7 @@ fn a_server_proof_from_another_session_is_refused() {
         if r.is_ok() {
             p.unmount(None, "#R/mnt").unwrap();
         }
-        assert_eq!(r.map_err(|e| String::from(e.as_str())), want);
+        assert_eq!(r.map(drop).map_err(|e| String::from(e.as_str())), want);
         within("the server ends", move || server.join().unwrap());
         kprocs_gone(&mock);
     }
@@ -948,7 +948,7 @@ fn the_server_proof_is_read_once() {
         if r.is_ok() {
             p.unmount(None, "#R/mnt").unwrap();
         }
-        assert_eq!(r.map_err(|e| String::from(e.as_str())), want);
+        assert_eq!(r.map(drop).map_err(|e| String::from(e.as_str())), want);
         p.close(afd).unwrap();
         p.close(c).unwrap();
         within("the server ends", move || server.join().unwrap());
@@ -1377,7 +1377,7 @@ fn a_default_mount_of_an_old_server_is_classical() {
         } else {
             Err(String::from(NO_PQ))
         };
-        assert_eq!(r.map_err(|e| String::from(e.as_str())), want);
+        assert_eq!(r.map(drop).map_err(|e| String::from(e.as_str())), want);
         within("the server ends", move || server.join().unwrap());
         kprocs_gone(&mock);
     }

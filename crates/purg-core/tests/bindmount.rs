@@ -146,7 +146,7 @@ fn bind_c_of_a_mount_point_needs_one_member_made_with_c() {
     for d in ["#R/z", "#R/w"] {
         mkdir(&mut p, d);
     }
-    let emount = |r: purg_core::Result<()>| {
+    let emount = |r: purg_core::Result<u64>| {
         assert_eq!(r.unwrap_err().as_str(), error::EISMOUNT);
     };
     // `mount fd /root; bind -c /root /`: the mount was made without -c.
@@ -176,7 +176,7 @@ fn bind_errors_are_inferno_strings() {
     p.close(fd).unwrap();
     let fd = p.create("#R/g", mode::OWRITE, 0o644).unwrap();
     p.close(fd).unwrap();
-    let err = |r: purg_core::Result<()>| String::from(r.unwrap_err().as_str());
+    let err = |r: purg_core::Result<u64>| String::from(r.unwrap_err().as_str());
     // A file cannot be a union.
     assert_eq!(err(p.bind("#R/g", "#R/f", MAFTER)), error::EISMOUNT);
     assert_eq!(err(p.bind("#R/g", "#R/f", MBEFORE)), error::EISMOUNT);
@@ -190,4 +190,17 @@ fn bind_errors_are_inferno_strings() {
     );
     // A file bound on a file is fine.
     p.bind("#R/g", "#R/f", MREPL).unwrap();
+}
+
+#[test]
+fn bind_returns_a_positive_mount_id_that_grows() {
+    // sys-bind(2): the result is a positive integer, a unique sequence
+    // number, which is also the order `ns` lists the entries in.
+    let mut p = setup();
+    mkdir(&mut p, "#R/i");
+    mkdir(&mut p, "#R/j");
+    let a = p.bind("#R/i", "#R/j", MREPL).unwrap();
+    let b = p.bind("#R/i", "#R/j", MAFTER).unwrap();
+    assert!(a > 0);
+    assert!(b > a);
 }

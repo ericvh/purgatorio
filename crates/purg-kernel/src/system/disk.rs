@@ -543,6 +543,7 @@ pub fn bind(prog: &mut Prog) -> Result<()> {
         MOUNT_POINT,
         purg_abi::mount::MREPL | purg_abi::mount::MCREATE,
     )
+    .map(drop)
 }
 
 /// What the kernel writes and the second boot reads back.

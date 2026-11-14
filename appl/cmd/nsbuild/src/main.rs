@@ -131,7 +131,8 @@ fn dial_mount(a: &str, service: &str, old: &str, flags: u32, spec: &str) -> Resu
     } else {
         purgatorio::auth::amount(fd, old, flags, spec)
     };
-    r.map_err(|e| format!("mount {} {}: {e}", q(a), q(old)))
+    r.map(drop)
+        .map_err(|e| format!("mount {} {}: {e}", q(a), q(old)))
 }
 
 struct Builder {

@@ -264,7 +264,9 @@ impl Pgrp {
     /// `new` is resolved through the mount table, as Inferno's `bind` does:
     /// when it is a mount point, what is mounted there is bound, and when
     /// that is a union every member is.
-    pub fn bind(&self, new: &str, old: &str, flags: u32) -> Result<()> {
+    ///
+    /// Returns the new member's mount id, as Inferno's `bind` does.
+    pub fn bind(&self, new: &str, old: &str, flags: u32) -> Result<u64> {
         let to = self.namec(new, &self.dot())?;
         self.bind_chan(to, old, flags)
     }
@@ -280,7 +282,10 @@ impl Pgrp {
     /// other, a file cannot be a union, and `MCREATE` cannot bind a mount
     /// point that is a union or that was mounted on without `MCREATE`:
     /// each of those is [`error::EISMOUNT`] (`inconsistent mount`).
-    pub fn bind_chan(&self, mut to: Chan, old: &str, flags: u32) -> Result<()> {
+    ///
+    /// Returns the mount id of the member made for `to`: Inferno's
+    /// `mountid`, a positive number unique among every namespace's.
+    pub fn bind_chan(&self, mut to: Chan, old: &str, flags: u32) -> Result<u64> {
         if flags & !(mount::MORDER | mount::MCREATE) != 0 || flags & mount::MORDER == mount::MORDER
         {
             return Err(Error::new(error::EBADARG));
@@ -344,6 +349,7 @@ impl Pgrp {
         for member in &mut to {
             member.id = next_mount_id();
         }
+        let id = to[0].id;
         let m = &mut mounts[idx];
         match flags & mount::MORDER {
             mount::MBEFORE => drop(m.to.splice(0..0, to)),
@@ -352,7 +358,7 @@ impl Pgrp {
         }
         drop(mounts);
         drop(released);
-        Ok(())
+        Ok(id)
     }
 
     /// `unmount(name, old)`: removes `name` from the union at `old`, or

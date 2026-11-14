@@ -1240,6 +1240,12 @@ pub mod purgatorio {
         call(ctx, |c| c.prog.iounit_of(fd).map(|n| n as i32))
     }
 
+    /// A mount id as `bind` and `mount` return it: positive, as an
+    /// Inferno `int`.
+    fn mount_id(id: u64) -> i32 {
+        i32::try_from(id).unwrap_or(i32::MAX)
+    }
+
     pub fn bind(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
@@ -1252,7 +1258,7 @@ pub mod purgatorio {
         call(ctx, |c| {
             c.prog
                 .bind(mem.str(name, nlen)?, mem.str(old, olen)?, flags as u32)
-                .map(|()| 0)
+                .map(mount_id)
         })
     }
 
@@ -1343,7 +1349,7 @@ pub mod purgatorio {
                     flags as u32,
                     mem.str(aname, alen)?,
                 )
-                .map(|()| 0)
+                .map(mount_id)
         })
     }
 

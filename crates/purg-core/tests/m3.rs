@@ -724,7 +724,7 @@ fn certificate_mount() {
             p.unmount(None, "#R/mnt").unwrap();
         }
         server.join().unwrap();
-        r.map_err(|e| String::from(e.as_str()))
+        r.map(drop).map_err(|e| String::from(e.as_str()))
     };
     assert_eq!(
         mount(&mut p, mock.clone()),

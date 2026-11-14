@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.11)
+# Purgatorio application ABI (v0.12)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.11`. The loader rejects a mismatched version. Modules
+section containing `0.12`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -103,7 +103,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.11
+## `purgatorio` imports in v0.12
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -122,11 +122,11 @@ chdir(path, plen) -> 0
 dup(old, new) -> fd               new = -1 picks the lowest free fd
 pipe(fds) -> 0                    writes two i32 fds at fds
 iounit(fd) -> n
-bind(name, nlen, old, olen, flags) -> 0
+bind(name, nlen, old, olen, flags) -> id    the new entry's mount id, positive (v0.12)
 unmount(name, nlen, old, olen) -> 0     nlen = 0 removes everything at old
 pctl(flags, movefd, n) -> pid     movefd: n i32 fds that NEWFD keeps
 spawn_prog(path, plen, argv, alen, flags, fdmap, n) -> pid
-mount(fd, afd, old, olen, flags, aname, alen) -> 0     afd = -1: mount authenticates
+mount(fd, afd, old, olen, flags, aname, alen) -> id    afd = -1: mount authenticates; id as for bind
 export(fd, dir, dlen, flags) -> 0
 export_key(fd, dir, dlen, flags, key, klen) -> 0     export -k: the server proof's authinfo (v0.9)
 fversion(fd, msize, ver, vlen) -> n
@@ -474,6 +474,10 @@ walks, stats and reads. It answers `permission denied` to an open for
 writing, with `OTRUNC` or with `ORCLOSE`, and to create, write, remove and
 wstat. The `export` command sets it with `-r`. This is how `mcpd` shows
 `/bin` and `/lib` to a session without letting it change them.
+
+`export` always serves until the client hangs up or the prog is killed,
+Inferno's `EXPWAIT`. `EXPASYNC` (serving from a new kproc while the call
+returns at once) is not implemented; spawn a prog to serve instead.
 
 `purgatorio.wait` accepts a fd open on `/prog/<pid>/wait` as a read
 operation: it is ready when an exit message is queued. `/dev/pointer` and
