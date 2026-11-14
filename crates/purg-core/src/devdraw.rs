@@ -57,7 +57,11 @@
 //! moving or restacking a window paints the area again from the
 //! screen's fill and its windows. A window freed by the connection
 //! that made it leaves its screen at once, even when other ids still
-//! refer to its image. Drawing straight on an image that has a screen
+//! refer to its image. When a connection closes, its windows on its own
+//! screens go without painting: their screens go with them, and the
+//! images under those screens keep the last pixels shown, so a program
+//! in a window system that draws and exits leaves its picture in the
+//! window. Drawing straight on an image that has a screen
 //! draws over its windows, until they are painted again.
 //!
 //! When the display changes size ([`Screen::size`] and
@@ -233,6 +237,8 @@ struct State {
     resizes: u64,
     /// A `v` came.
     flush_wanted: bool,
+    /// The connection being closed, if one is.
+    closing: Option<u32>,
 }
 
 pub struct DevDraw {
@@ -273,6 +279,7 @@ impl State {
             damage: Some(r),
             resizes,
             flush_wanted: false,
+            closing: None,
         }
     }
 
@@ -354,7 +361,14 @@ impl State {
         };
         if let Some(s) = self.screens.get_mut(&w.screen) {
             s.wins.retain(|&k| k != key);
-            self.repaint(w.screen, sr, 0, true);
+            // A closing connection's windows on its own screen leave
+            // their pixels on the screen's image: that screen goes too,
+            // and the image (a window system's window, say) keeps the
+            // last picture drawn on it.
+            let keep = self.closing.is_some_and(|c| c == s.owner);
+            if !keep {
+                self.repaint(w.screen, sr, 0, true);
+            }
             self.gc_screen(w.screen);
         }
     }
@@ -525,9 +539,11 @@ impl State {
             return;
         };
         let ids: Vec<u32> = conn.ids.keys().copied().collect();
+        self.closing = Some(cid);
         for id in ids {
             let _ = self.uninstall(&mut conn, cid, id);
         }
+        self.closing = None;
         for sid in core::mem::take(&mut conn.screens) {
             if let Some(s) = self.screens.get_mut(&sid) {
                 s.users = s.users.saturating_sub(1);
@@ -1837,5 +1853,44 @@ mod tests {
         assert_eq!(d.state.lock().images.len(), images - 4);
         assert!(d.state.lock().names.is_empty());
         assert!(!d.state.lock().screens.contains_key(&20));
+    }
+    /// A client that draws in its window on a window manager's window and
+    /// then closes its connection leaves its pixels; one that frees its
+    /// window shows its screen's fill.
+    #[test]
+    fn a_closed_clients_pixels_stay() {
+        let (d, mut wm) = conn();
+        let mut m = alloc(1, md::RGB24, true, Rect::new(0, 0, 1, 1), RED);
+        m.extend(screen_msg(9, 0, 1, true));
+        m.extend(window(2, 9, Rect::new(2, 2, 14, 8), RED));
+        m.extend(name(2, true, "window.1.1"));
+        d.messages(&mut wm, &m).unwrap();
+        let client = |cid: u32, sid: u32| {
+            let mut c = Conn::new(0);
+            let mut m = lookup(5, "window.1.1");
+            m.extend(alloc(6, md::RGB24, true, Rect::new(0, 0, 1, 1), GREEN));
+            m.extend(alloc(8, md::RGB24, true, Rect::new(0, 0, 1, 1), BLUE));
+            m.extend(alloc(
+                99,
+                md::GREY1,
+                true,
+                Rect::new(0, 0, 1, 1),
+                0xFFFFFFFF,
+            ));
+            m.extend(screen_msg(sid, 5, 8, false));
+            m.extend(window(7, sid, Rect::new(3, 3, 13, 7), YELLOW));
+            m.extend(fill(7, 6, Rect::new(0, 0, 16, 8)));
+            d.messages_from(cid, &mut c, &m).unwrap();
+            assert_eq!(d.px(5, 5), 0xFF00);
+            c
+        };
+        let c = client(2, 20);
+        d.state.lock().conns.insert(2, c);
+        d.state.lock().close(2);
+        assert_eq!([d.px(5, 5), d.px(2, 2)], [0xFF00, 0xFF0000]);
+        assert!(!d.state.lock().screens.contains_key(&20));
+        let mut c = client(3, 30);
+        d.messages_from(3, &mut c, &[b'f', 7, 0, 0, 0]).unwrap();
+        assert_eq!(d.px(5, 5), 0xFF);
     }
 }
