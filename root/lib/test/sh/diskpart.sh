@@ -33,6 +33,31 @@ q
 q' | disk/fdisk -r -s 512 img
 dd -if img -bs 2 -iseek 255 -count 1 >[2] /dev/null | xd
 
+# fdisk: secondary partitions, two chains, then a chain broken by a
+# primary partition, and one chain too many.
+zeros 512 2048 > img3
+echo 'a p1 63 500
+a s1 500 900
+a s2 900 1400
+a s3 1500 2048
+p
+e
+w
+q' | disk/fdisk -s 512 img3
+disk/fdisk -s 512 -p img3
+echo 'p
+d s2
+a p2 900 1400
+e
+w
+q' | disk/fdisk -s 512 img3
+disk/fdisk -s 512 -p img3
+echo 'a p3 1400 1450
+a p4 1450 1500
+w
+q
+q' | disk/fdisk -s 512 img3
+
 # mbr: the default boot code, and -9.
 disk/mbr img >[2] /dev/null
 dd -if img -bs 1 -iseek 22 -count 19 >[2] /dev/null
