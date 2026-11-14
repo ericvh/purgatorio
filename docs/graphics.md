@@ -1209,7 +1209,8 @@ allowed (issue #29). No Inferno code was used.
 
 ### 10.1 What it does
 
-`acme [-f font] [file ...]` fills the screen with a row: a tag along the
+`acme [-f varfont] [-F fixfont] [-l loadfile] [file ...]` fills the
+screen with a row: a tag along the
 top (`Newcol Putall Exit`) and two columns, each with a tag (`New
 Delcol win`) and windows stacked in it. The files given open in the first
 column. A window is a tag line and a body. The tag starts with the file
@@ -1342,18 +1343,14 @@ the probe's images, as `draw/demo` does.
 
 ### 10.5 Not done
 
-- `Edit` (sam's command language), `Zerox`, `Sort`, `Kill`, `Dump` and
-  `Load`, `Font`, `Tab`, `Indent`, `ID`, `Incl`, `Local`, `Send`.
-- Commands that start with `<`, `|` or `>` (piping the selection), the
-  2-1 chord (an argument for a button 2 command), and `$acmewin`-style
-  environment for commands.
-- Moving and resizing windows and columns with the mouse (the box and
-  column borders), the automatic arrangement acme does when a column is
-  full, and growing a window by clicking its box.
-- Autoscroll while sweeping past a frame's edge, and repeating while a
-  scroll bar button is held.
-- `/dev/snarf`: the snarf buffer is acme's own, as `#^` does not exist
-  yet.
+Section 10.7 added `Edit`, the commands on the selection, `Zerox`,
+`Dump`, `Load`, `Kill`, `Sort`, `Tab`, `Indent`, `Font`, `Local`, the
+2-1 chord, moving windows and columns with the mouse, autoscroll,
+scroll bar repeat and `/dev/snarf`. Still not done:
+
+- `ID`, `Incl`, `Send`, and `$acmewin`-style environment for commands.
+- The automatic arrangement acme does when a column is full, and
+  resizing a column by dragging its border (only its box moves it).
 - Regular expressions in button 3 addresses (`file:/re/`, `:#n`,
   `:n,m`).
 - Drawing only what changed in a frame (a change draws its text again
@@ -1390,7 +1387,7 @@ so that would make two.) Each window `n` has:
   tab width in pixels. Written, one message a line: `name n`, `clean`,
   `dirty`, `show`, `del` (fails with `file dirty`, after the usual
   warning, when the file is modified), `delete`, `get`, `put`, `dump
-  cmd` and `dumpdir dir` (kept, though nothing reads them yet),
+  cmd` and `dumpdir dir` (for `Dump`),
   `addr=dot`, `dot=addr`, `mark`, `nomark` and `cleartag`. Anything
   else is `ill-formed control message`.
 - `data` and `xdata`: a read returns the runes from the address on (to
@@ -1453,8 +1450,9 @@ does not warn. As `event` cannot say when it is ready, a second `win
 that and the shell's output.
 
 **Differences from Inferno.** No `limit=`, `font`, `menu` or `nomenu`
-in `ctl`; `dump` and `dumpdir` are kept but there is no `Dump`; no
-chorded argument (flag 8) since there is no 2-1 chord; `label` is a
+in `ctl`; `dump` and `dumpdir` are used by `Dump` (Section 10.7); a
+button 2 action with the 2-1 chord is reported without its argument
+(no flag 8 events); `label` is a
 plain file. With `event` open, acme still shows `Undo` and `Put` in the
 tag, where Inferno hides them. win's tag gets no `Send` or `Noscroll`;
 ^C interrupts as well as Delete; output always goes at the output
@@ -1491,6 +1489,168 @@ the 35 lines in the test.
 
 Nothing here was seen on a real display: all of it ran on the
 in-memory screen through the browser backend's input path.
+
+### 10.7 Edit, Zerox, Dump and the mouse
+
+This section covers what came after the first slice. acme(1), acme(4)
+and sam(1) (for the command language) are the spec; nothing was copied.
+
+**Edit** (`edit.rs`) runs sam's command language on window bodies.
+`Edit` in a window's tag or body acts on that window; from a row or
+column tag, on the window last selected in. Dot is the body's
+selection. Addresses are `addr.rs`'s, now parsed into a tree first so
+a command can hold one and evaluate it again in a loop, plus `'` (the
+mark) and `"re"` in front of one to pick the window whose menu line
+matches. The commands:
+
+- `a/text/`, `c/text/`, `i/text/` (or the text on the lines after,
+  ending at a line holding only `.`; `\n` is a newline), `d`,
+  `s/re/text/` (`sN/re/text/` for the Nth match, `g` after for all of
+  them; `&`, `\1` to `\9` and `\n` in the text), `m addr`, `t addr`;
+- `p` (dot's text) and `=` or `=#` (dot's address as `name:line` or
+  `name:line,line`, or `name:#q0,#q1`), printed in `+Errors`;
+- `x/re/ cmd` (for each match in dot; no expression means each line),
+  `y/re/ cmd` (each piece between matches), `g/re/ cmd`, `v/re/ cmd`,
+  `X/re/ cmd`, `Y/re/ cmd` (each window whose menu line matches, or
+  does not; the line is `'` if modified, `+`, `.` if current, a blank
+  and the name), and `{ }` around commands that all start from the
+  same dot;
+- `b file`, `B file ...` (open windows), `D [file ...]` (delete them),
+  `e file`, `r file`, `w [file]` (the whole body unless given an
+  address), `f [name]`;
+- `k`, `u [n]` (a negative count redoes), `q` (does nothing; acme
+  stays), `<cmd`, `|cmd`, `>cmd` and `!cmd`.
+
+While a command runs nothing changes: each change is logged against
+the text as it was, and they are applied when the command ends, so the
+addresses inside an `x` loop all refer to the text before the loop, as
+in sam. Changes to one body that overlap fail with `changes not in
+sequence`. The next command on the line sees the changed text. The
+whole `Edit` is one step for `Undo`: the body's undo log gets one new
+sequence on the first change. Errors are printed as `Edit: message`
+in `+Errors`, and the commands after one are not run.
+
+`<cmd`, `|cmd` and `>cmd` typed in a tag and executed with button 2
+run as `Edit` commands on the selection: `|` replaces it with the
+command's output, `<` with the output of the command alone, and `>`
+sends it to the command and prints the output in `+Errors`. Such a
+command runs to the end before acme goes on, as in acme. Its input
+goes through `acme --feed`, a copy of acme that reads all of it before
+writing any, so acme never waits on a command that waits for acme to
+read its output. A command run from `Edit` must not use `/mnt/acme`:
+acme answers no file requests until it ends.
+
+`appl/lib/regexp` now decodes the text only as far as a search goes,
+so the many searches of an `x` loop over a long body cost no more than
+one pass.
+
+**Zerox** makes another window on the same text. A body's `Buffer`
+(`text.rs`) is now a view of a shared store: views share the runes and
+the undo log, and each edit records which view made it. After each
+event the other views move their selections and first lines past the
+edits, and their tags are rewritten, so `Put` through one view makes
+both clean. `Del` does not warn for a modified text another window
+still shows, and `Exit` names it once.
+
+**Dump and Load** (`dump.rs`) write the layout to a file and read it
+back: by default `$home/acme.dump`, else the file named; `acme -l file`
+loads one at start. The format is acme's own text, not Plan 9's: the
+directory, the fonts, then a record per column and per window with
+positions in ten-thousandths of the screen and rune counts of the tag
+and body texts that follow. A window is read from its file again,
+or kept whole when it has no name, is modified or is `+Errors`;
+another view of a window before it becomes a `Zerox` again; and a
+window with acme(4)'s `dump` set (as `win` sets it) is made again by
+running that command in its `dumpdir`. `Load` replaces every column
+and window; with a modified window it first names it, as `Exit` does,
+and goes ahead the second time.
+
+**The other commands.** `Kill [name ...]` sends `killgrp` to the
+commands of those names, or with none to those started from this
+window (from a row or column tag, all). `Sort` orders the column's
+windows by name, each keeping its height. `Tab n` sets the window's tab
+stops to n widths of `0` (without n it prints them). `Indent` turns
+automatic indenting on or off for the window, `Indent on` and `Indent
+off` for all windows and new ones; a newline typed in an indenting
+window copies the leading blanks of its line. `Font` switches the
+window's body between the main font and the fixed-width one (`-F`,
+`/fonts/mono/unicode.13.font` by default), loaded when first wanted;
+`Font name` switches to that font. acme(4)'s `ctl` gives each window's
+own font and tab width. `Local cmd` runs the command in acme's own
+namespace (no `FORKNS`), so a `bind` there changes what acme sees;
+`Local cd dir` changes acme's own directory.
+
+**The mouse.** Button 2 with button 1 clicked during the sweep (the
+2-1 chord) runs the command with the text last selected with button 1
+as its argument. A window's box dragged with button 1 moves the window
+to where it is let go, in that column; clicked, the window grows to
+twice its height or half the column. Button 2 or 3 on the box makes it
+as tall as the column allows, the others keeping their tags. A
+column's tag now has a box too; dragged, it moves the column's left
+edge. While a button 1, 2 or 3 sweep is above or below a body, the
+body scrolls a line every 80 ms and the selection follows. A scroll
+bar button held down acts again after 350 ms and then every 100 ms;
+button 2 held follows the pointer.
+
+**Snarf.** `Snarf` and `Cut` write the text to `/dev/snarf` when it
+can be opened, and keep acme's own copy; `Paste` reads `/dev/snarf`
+when it can, else the copy. So acme shares the buffer with rio's
+windows once `#^` is bound there, and works alone without it.
+
+**Differences from Inferno's acme.** The dump file's format is acme's
+own. `q` in `Edit` does nothing. `Edit` errors are prefixed `Edit:`.
+`X` and `Y` see one file per text, so two views of one text are one
+file. A window's box clicked with button 1 doubles it rather than
+growing it by acme's steps; a column cannot be moved past its
+neighbours or dragged by its border. `Font` with no argument switches
+between two fonts only. `Kill` with no argument in a window kills that
+window's commands only. The 2-1 chord's argument goes to built-in
+commands and `sh` alike as text after the command.
+
+**Tests.** Unit tests: `edit.rs` has a table of 59 commands, each with
+the body and dot before and after (addresses alone, `a c i d` with
+both kinds of text, `s` with counts, `g`, groups, `&`, escapes and an
+empty regexp meaning the last one, `m` and `t`, `x` and `y` loops with
+null matches, `g` and `v`, groups, changes out of sequence, the errors,
+and the pipes against a stand-in host), and tests for printing (`p`,
+`=`, `=#`, `>`, `!`), files (`X` and `Y` over three files, `"re"`
+addresses, `b`, `B`, `D`, `w`, `e`, `r`, `f`), undo of a multi-command
+`Edit` and the mark. `text.rs` checks shared views, `dump.rs` a round
+trip and bad files, and `appl/lib/regexp` keeps its tests.
+`crates/purg-emu/tests/acme.rs`, on both VMs:
+
+- `edit_commands` runs `test/acmefs` in `edit` mode, which makes
+  windows through acme(4) and executes commands by writing them to a
+  tag and an `x` event for them: sixteen `Edit` and selection commands
+  on a three-line body with `tr`, `echo` and `cat` as the commands,
+  `X` and `Y` across two windows, the undo of a three-command `Edit`,
+  `Snarf` and `Paste`, `Zerox` (a write through one view read through
+  the other, and undone through the first), `Tab`, `Font`, `Kill` of a
+  `sleep` run from the window (waiting, within a minute, for it to
+  start and to go), `Sort`, `Local cd` and `Dump` (checked in the dump
+  file), and `Load` after the windows are deleted. 39 lines are
+  compared.
+- `mouse` opens a 100-line file and types `Indent` in the tag, a
+  newline and `x` after an indented line; holds button 3 in the scroll
+  bar until the screen stops changing; sweeps with button 1 from the
+  body up into the tag and holds it there until the screen stops
+  changing, and checks that the selection runs from the start to the
+  end (so the scroll bar repeated to the end and the sweep scrolled
+  back to the start). Then it double-clicks a word, runs `echo` from
+  the tag with the 2-1 chord (waiting for the output in `+Errors`),
+  drags the window's box into the other column, drags that column's
+  box, clicks button 2 on the window's box, and checks the windows and
+  the `Dump` of the layout.
+- The golden screen of `edit_put_run_exit` changed for the column
+  boxes (11,939 bytes).
+
+Nothing here was seen on a real display: all of it ran on the
+in-memory screen through the browser backend's input path, and the
+new golden was checked by eye from the dumped PPM.
+
+**Sizes.** `acme.wasm` is 393,647 bytes (273,872 before). The source
+is about 7,900 lines with its unit tests: `edit.rs` 1,560, `cmds.rs`
+700, `dump.rs` 500, and the rest grown by about 900.
 
 ## 11. The draw demos
 

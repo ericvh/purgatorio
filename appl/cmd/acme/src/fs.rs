@@ -261,8 +261,15 @@ pub fn parse_events(s: &str) -> Result<Vec<(char, char, usize, usize)>, &'static
 /// whether it is a directory and modified, the body's width, the font
 /// and the tab width, as acme(4) lists them.
 fn ctl_text(a: &mut Acme, id: u64) -> Option<String> {
-    let tab = crate::frame::Widths::tab(&mut a.f);
-    let font = a.font_name.clone();
+    let (font, tabs) = {
+        let w = a.win(id)?;
+        (a.font_name(&w.body), w.body.tab)
+    };
+    let tab = {
+        let (_, f) = a.text_font(Tid::Body(id))?;
+        f.use_tab(tabs);
+        crate::frame::Widths::tab(f)
+    };
     let w = a.win(id)?;
     Some(format!(
         "{:11} {:11} {:11} {:11} {:11} {:11} {} {:11} ",
@@ -550,8 +557,8 @@ impl Fs {
                 }
                 Q::Event => {
                     w.fs.nevent += 1;
-                    w.body.b.watch = true;
-                    w.tag.b.watch = true;
+                    w.body.b.set_watch(true);
+                    w.tag.b.set_watch(true);
                 }
                 _ => {}
             }
@@ -587,8 +594,8 @@ impl Fs {
                     if w.fs.nevent == 0 {
                         w.fs.events.clear();
                         for b in [&mut w.body.b, &mut w.tag.b] {
-                            b.watch = false;
-                            b.changes.clear();
+                            b.set_watch(false);
+                            b.take_changes();
                         }
                     }
                 }

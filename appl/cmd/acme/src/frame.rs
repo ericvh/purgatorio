@@ -165,7 +165,7 @@ mod tests {
     }
 
     fn buf(s: &str) -> Buffer {
-        let mut b = Buffer::new(false);
+        let b = Buffer::new(false);
         b.insert(0, s);
         b
     }
