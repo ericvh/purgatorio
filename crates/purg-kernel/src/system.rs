@@ -172,18 +172,19 @@ impl System {
         (HEAP.memory().0, SCHED.live())
     }
 
-    /// Runs the conformance guests and the sh corpus (only the scripts
-    /// named in `sh`, a comma-separated list, when given), then checks
-    /// that they left no kernel thread and no more than [`LEAK_LIMIT`] of
-    /// heap behind; returns the number that failed. With `memstat`,
-    /// prints [`System::memstat`] after each.
-    pub fn run_tests(&self, memstat: bool, sh: Option<&str>) -> usize {
+    /// Runs the conformance guests (if `guests`) and the sh corpus (only
+    /// the scripts named in `sh`, a comma-separated list, when given),
+    /// then checks that they left no kernel thread and no more than
+    /// [`LEAK_LIMIT`] of heap behind; returns the number that failed.
+    /// With `memstat`, prints [`System::memstat`] after each.
+    pub fn run_tests(&self, memstat: bool, guests: bool, sh: Option<&str>) -> usize {
         let mut failed = 0;
         let (heap, threads) = self.in_use();
         if memstat {
             self.memstat();
         }
-        for &(argv, ok) in SCRIPT {
+        let script = if guests { SCRIPT } else { &[] };
+        for &(argv, ok) in script {
             self.say(&format!("kernel: run {}", argv.join(" ")));
             let v = match (self.run_test(argv, None).map(|(s, _)| s), ok) {
                 (Ok(s), true) if s.is_empty() => Ok(String::from("ok")),
@@ -196,7 +197,9 @@ impl System {
                 self.memstat();
             }
         }
-        failed += self.device_tests();
+        if guests {
+            failed += self.device_tests();
+        }
         let names = match self.list(SH_CORPUS) {
             Ok(n) => n,
             Err(e) => {
@@ -305,6 +308,10 @@ pub enum Mode {
     /// The second boot of `xtask kernel` (`bootargs` has `diskcheck`):
     /// only check that the disk holds what the first boot left.
     DiskCheck,
+    /// Only the sh corpus, or the scripts `sh=a,b` names, and the leak
+    /// check (`bootargs` has `corpus`): `xtask kernel` boots this with no
+    /// network card, to run the loopback's scripts without one.
+    Corpus { sh: Option<&'static str> },
     /// The stress mode (`bootargs` has `stress=SECS`; see
     /// [`crate::stress`]).
     /// `sh=a,b` runs only those corpus scripts, and no guests.
@@ -360,7 +367,7 @@ pub fn start(
             Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref()), sys.bind_disk(&disks)) {
                 (Mode::Test { memstat, sh }, host, bound) => {
                     let watch = crate::watchdog::start(sys.0.clone(), disks.blks_rings());
-                    let failed = sys.run_tests(memstat, sh)
+                    let failed = sys.run_tests(memstat, true, sh)
                         + sys.host9p_tests(host, p9.as_deref())
                         + sys.disk_tests(&disks, bound)
                         + sys.net_tests(&checks)
@@ -372,6 +379,7 @@ pub fn start(
                     failed
                 }
                 (Mode::DiskCheck, _, bound) => sys.disk_persist(&disks, bound),
+                (Mode::Corpus { sh }, _, _) => sys.run_tests(false, false, sh),
                 (Mode::Bench, _, _) => sys.bench(),
                 (
                     Mode::Stress {

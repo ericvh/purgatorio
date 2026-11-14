@@ -442,6 +442,9 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
             sh: bootarg(&info, "sh"),
         },
         (false, false) if has_bootarg(&info, "bench") => Mode::Bench,
+        (false, false) if has_bootarg(&info, "corpus") => Mode::Corpus {
+            sh: bootarg(&info, "sh"),
+        },
         (false, false) => Mode::Interactive,
     };
     println!("kernel: root {from}");

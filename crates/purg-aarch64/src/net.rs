@@ -1,5 +1,5 @@
-//! A [`Net`] for `#I` on bare metal: in-process loopback for `127.0.0.1`,
-//! and `smoltcp` over a [`VirtioNet`] for everything else.
+//! A [`Net`] for `#I` on bare metal: a loopback interface for 127/8, and
+//! `smoltcp` over a [`VirtioNet`] for everything else.
 //!
 //! ```ignore
 //! let net = NetStack::open(&fdt, &Ipv4Config::QEMU_USER);
@@ -9,6 +9,16 @@
 //! [`NetStack::open`] finds the card in the DTB and routes its interrupt
 //! (so call it after [`irq::init`]). Without a card, or if it does not come
 //! up, loopback still works and other addresses fail with the reason.
+//!
+//! The loopback is Inferno's `bind loopback /dev/null` with address
+//! `127.0.0.1/8`: `/net/ipifc` lists it after the card's interface (or
+//! alone), with its routes in `/net/iproute`. It carries TCP and UDP
+//! between progs in process ([`Loopback`]). An announce on `*` listens on
+//! the loopback and on the card, on one port, so a dial to `127.0.0.1`
+//! reaches it; an announce on the card's address stays on the card.
+//! Nothing for 127/8 is ever sent on the card, whatever `/net/iproute`
+//! says, and a dial to an address on 127/8 other than `127.0.0.1` gets
+//! nowhere.
 //!
 //! Waiting: every operation polls the interface, and if it cannot finish
 //! sleeps until the card interrupts (a frame arrived or was sent) or
@@ -20,7 +30,7 @@
 //! `ip/dhcp` does, and `/net/iproute` adds routes to other networks through
 //! gateways (`ip/rip`), up to 64 in all. ARP for the gateway is smoltcp's.
 //! UDP `headers` mode is one smoltcp socket whose datagrams all go to one
-//! conversation.
+//! conversation; on `*` the loopback port's datagrams join them.
 //!
 //! UDP follows Inferno: a dialed conversation reads and writes datagrams
 //! with one remote, and an announced port starts a conversation for each
@@ -167,73 +177,85 @@ impl NetStack {
 
 impl Net for NetStack {
     fn dial_tcp(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
-        if is_loopback(host) {
-            return self.loopback.dial(port);
+        match dest(host) {
+            Dest::Loopback => self.loopback.dial(port),
+            // Nothing else on 127/8 answers, and it never goes on the card.
+            Dest::LoopNet(_) => Err(Cow::Borrowed("connection refused")),
+            Dest::Card(ip) => self.stack()?.dial(Ipv4Address::from(ip), port),
+            Dest::Any | Dest::Bad => Err(Cow::Borrowed("no translation")),
         }
-        let ip = parse_v4(host).ok_or(Cow::Borrowed("no translation"))?;
-        self.stack()?.dial(Ipv4Address::from(ip), port)
     }
 
     fn announce_tcp(&self, host: &str, port: u16) -> Result<Arc<dyn Listener>> {
-        if is_loopback(host) {
-            return self.loopback.announce(port);
+        match dest(host) {
+            Dest::Loopback | Dest::LoopNet(_) => {
+                Ok(self.loopback.announce(port, false)? as Arc<dyn Listener>)
+            }
+            Dest::Any => self.announce_any(port),
+            Dest::Card(_) => Ok(self.stack()?.listen(port)? as Arc<dyn Listener>),
+            Dest::Bad => Err(Cow::Borrowed("no translation")),
         }
-        if !(host.is_empty() || host == "*" || host == "0.0.0.0" || parse_v4(host).is_some()) {
-            return Err(Cow::Borrowed("no translation"));
-        }
-        self.stack()?.listen(port)
     }
 
     fn dial_udp(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
-        if is_loopback(host) {
-            return self.loopback.dial_udp(port);
+        match dest(host) {
+            Dest::Loopback => self.loopback.dial_udp(LOCALHOST, port),
+            Dest::LoopNet(ip) => self.loopback.dial_udp(ip, port),
+            Dest::Card(ip) => self.stack()?.dial_udp(Ipv4Address::from(ip), port),
+            Dest::Any | Dest::Bad => Err(Cow::Borrowed("no translation")),
         }
-        let ip = parse_v4(host).ok_or(Cow::Borrowed("no translation"))?;
-        self.stack()?.dial_udp(Ipv4Address::from(ip), port)
     }
 
     fn announce_udp(&self, host: &str, port: u16) -> Result<Arc<dyn Listener>> {
-        if is_loopback(host) {
-            return self.loopback.announce_udp(port);
+        match dest(host) {
+            Dest::Loopback | Dest::LoopNet(_) => self.loopback.announce_udp(port),
+            Dest::Any => self.announce_any_udp(port),
+            Dest::Card(_) => self.stack()?.announce_udp(port),
+            Dest::Bad => Err(Cow::Borrowed("no translation")),
         }
-        if !(host.is_empty() || host == "*" || host == "0.0.0.0" || parse_v4(host).is_some()) {
-            return Err(Cow::Borrowed("no translation"));
-        }
-        self.stack()?.announce_udp(port)
     }
 
     fn announce_udp_headers(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
-        if is_loopback(host) {
-            let sock = self.loopback.udp_port(port, true)?;
-            return Ok(Arc::new(LoopUdpHeaders {
-                ports: Arc::clone(&self.loopback.udp),
-                sock,
-            }));
+        match (dest(host), &self.smol) {
+            (Dest::Loopback | Dest::LoopNet(_), _) | (Dest::Any, Err(_)) => {
+                Ok(Arc::new(self.loopback.udp_headers(port, false)?))
+            }
+            (Dest::Any, Ok(smol)) => {
+                let port = self.free_udp_port(smol, port);
+                let lo = self.loopback.udp_headers(port, true)?;
+                Ok(Arc::new(AnyUdpHeaders {
+                    lo,
+                    smol: smol.announce_udp_headers(port)?,
+                }))
+            }
+            (Dest::Card(_), _) => Ok(self.stack()?.announce_udp_headers(port)? as Arc<dyn Conn>),
+            (Dest::Bad, _) => Err(Cow::Borrowed("no translation")),
         }
-        if !(host.is_empty() || host == "*" || host == "0.0.0.0" || parse_v4(host).is_some()) {
-            return Err(Cow::Borrowed("no translation"));
-        }
-        self.stack()?.announce_udp_headers(port)
     }
 
+    /// The card's interface, if there is a card, then the loopback.
     fn interfaces(&self) -> Vec<net::Ifc> {
-        self.smol
-            .as_ref()
-            .map(|s| vec![s.interface()])
-            .unwrap_or_default()
+        let mut out: Vec<net::Ifc> = self.smol.iter().map(|s| s.interface()).collect();
+        out.push(net::Ifc::loopback());
+        out
     }
 
+    /// Only the card's address can change; the loopback's is fixed.
     fn set_address(&self, n: usize, addr: [u8; 4], prefix: u8) -> Result<()> {
-        if n != 0 {
-            return Err(Cow::Borrowed("file does not exist"));
+        match (&self.smol, n) {
+            (Ok(smol), 0) => {
+                smol.set_address(addr, prefix);
+                Ok(())
+            }
+            (Ok(_), 1) | (Err(_), 0) => Err(Cow::Borrowed("permission denied")),
+            _ => Err(Cow::Borrowed("file does not exist")),
         }
-        self.stack()?.set_address(addr, prefix);
-        Ok(())
     }
 
     fn add_route(&self, target: [u8; 4], mask: [u8; 4], gateway: [u8; 4]) -> Result<()> {
         // Without a card there is only loopback, which routes nothing:
-        // `#I` keeps the table, as on the hosted emu.
+        // `#I` keeps the table, as on the hosted emu. With one, 127/8
+        // still never leaves by it, whatever the routes say.
         self.smol
             .as_ref()
             .map_or(Ok(()), |s| s.route(target, mask, Some(gateway)))
@@ -246,11 +268,12 @@ impl Net for NetStack {
     }
 
     fn dial_icmp(&self, host: &str) -> Result<Arc<dyn Conn>> {
-        if is_loopback(host) {
-            return Ok(Arc::new(LoopIcmp::new()));
+        match dest(host) {
+            Dest::Loopback => Ok(Arc::new(LoopIcmp::new(LOCALHOST))),
+            Dest::LoopNet(ip) => Ok(Arc::new(LoopIcmp::new(ip))),
+            Dest::Card(ip) => self.stack()?.dial_icmp(Ipv4Address::from(ip)),
+            Dest::Any | Dest::Bad => Err(Cow::Borrowed("no translation")),
         }
-        let ip = parse_v4(host).ok_or(Cow::Borrowed("no translation"))?;
-        self.stack()?.dial_icmp(Ipv4Address::from(ip))
     }
 
     fn resolve(&self, host: &str, _port: u16) -> Result<String> {
@@ -262,8 +285,111 @@ impl Net for NetStack {
     }
 }
 
-fn is_loopback(host: &str) -> bool {
-    host == "127.0.0.1" || host == "::1"
+impl NetStack {
+    /// Announces TCP `port` on every address (`*`): on the loopback, and
+    /// on the card if there is one, on the same port. A fresh port is one
+    /// of the card's ephemeral ports that the loopback has free.
+    fn announce_any(&self, port: u16) -> Result<Arc<dyn Listener>> {
+        let Ok(smol) = &self.smol else {
+            let lo = self.loopback.announce(port, false)?;
+            return Ok(Arc::new(AnyListen { lo, smol: None }));
+        };
+        let lo = if port != 0 {
+            self.loopback.announce(port, true)?
+        } else {
+            loop {
+                let p = smol.lock().ephemeral();
+                if let Ok(lo) = self.loopback.announce(p, true) {
+                    break lo;
+                }
+            }
+        };
+        let smol = smol.listen(lo.port)?;
+        Ok(Arc::new(AnyListen {
+            lo,
+            smol: Some(smol),
+        }))
+    }
+
+    /// Announces UDP `port` on every address, as [`NetStack::announce_any`].
+    fn announce_any_udp(&self, port: u16) -> Result<Arc<dyn Listener>> {
+        let Ok(smol) = &self.smol else {
+            let lo = self.loopback.udp_port(port, true, false)?;
+            return Ok(Arc::new(AnyUdpListen {
+                ports: Arc::clone(&self.loopback.udp),
+                lo,
+                smol: None,
+                any: true,
+            }));
+        };
+        let port = self.free_udp_port(smol, port);
+        let lo = self.loopback.udp_port(port, true, true)?;
+        Ok(Arc::new(AnyUdpListen {
+            ports: Arc::clone(&self.loopback.udp),
+            lo,
+            smol: Some(smol.udp_port(port, true)?),
+            any: true,
+        }))
+    }
+
+    /// `port`, or if it is 0 one of the card's ephemeral ports that no
+    /// loopback UDP port has.
+    fn free_udp_port(&self, smol: &Smol, port: u16) -> u16 {
+        if port != 0 {
+            return port;
+        }
+        loop {
+            let p = smol.lock().ephemeral();
+            if self.loopback.udp_free(p) {
+                return p;
+            }
+        }
+    }
+}
+
+/// The loopback's address.
+const LOCALHOST: [u8; 4] = [127, 0, 0, 1];
+
+/// Where an address leads.
+enum Dest {
+    /// `127.0.0.1` (or `::1`), the loopback's own address.
+    Loopback,
+    /// Another address on the loopback's network, 127/8. The loopback
+    /// carries packets to it, but nothing has that address, so they are
+    /// lost; they are never sent on the card.
+    LoopNet([u8; 4]),
+    /// Every address: `*`, empty, `0.0.0.0` or `::`.
+    Any,
+    /// Another IPv4 address: the card's business.
+    Card([u8; 4]),
+    /// Not an address.
+    Bad,
+}
+
+fn dest(host: &str) -> Dest {
+    match host {
+        "127.0.0.1" | "::1" => Dest::Loopback,
+        "" | "*" | "0.0.0.0" | "::" => Dest::Any,
+        _ => match parse_v4(host) {
+            Some(ip) if on_loopback(ip) => Dest::LoopNet(ip),
+            Some(ip) => Dest::Card(ip),
+            None => Dest::Bad,
+        },
+    }
+}
+
+/// Whether `ip` is on the loopback's network.
+fn on_loopback(ip: [u8; 4]) -> bool {
+    ip[0] == 127
+}
+
+/// Tells the card's sleepers ([`Smol::run`]) to look again: a listener
+/// that also waits on the loopback has a call or a datagram there.
+fn kick() {
+    EVENTS.fetch_add(1, Ordering::Release);
+    if let Some(w) = WAKE.get() {
+        w.wakeup();
+    }
 }
 
 fn parse_v4(host: &str) -> Option<[u8; 4]> {
@@ -525,7 +651,7 @@ impl Smol {
         }
     }
 
-    fn listen(self: &Arc<Self>, port: u16) -> Result<Arc<dyn Listener>> {
+    fn listen(self: &Arc<Self>, port: u16) -> Result<Arc<SmolListen>> {
         let mut stack = self.lock();
         let port = if port == 0 { stack.ephemeral() } else { port };
         let handle = stack.alloc();
@@ -715,7 +841,7 @@ impl Conn for SmolUdpConn {
 
 impl Smol {
     /// UDP port `port` (0: an ephemeral one) in `headers` mode.
-    fn announce_udp_headers(self: &Arc<Self>, port: u16) -> Result<Arc<dyn Conn>> {
+    fn announce_udp_headers(self: &Arc<Self>, port: u16) -> Result<Arc<SmolUdpHeaders>> {
         let mut stack = self.lock();
         let port = if port == 0 { stack.ephemeral() } else { port };
         let mut socket = new_udp_socket();
@@ -740,24 +866,28 @@ struct SmolUdpHeaders {
     port: u16,
 }
 
+impl SmolUdpHeaders {
+    /// The next datagram the socket has, with its header, if any.
+    fn try_read(&self, stack: &mut Stack, buf: &mut [u8]) -> Option<usize> {
+        let socket = stack.sockets.get_mut::<udp::Socket>(self.handle);
+        let (data, meta) = socket.recv().ok()?;
+        let IpAddress::Ipv4(from) = meta.endpoint.addr;
+        let to = match meta.local_address {
+            Some(IpAddress::Ipv4(a)) => a,
+            _ => self.smol.local_ip(),
+        };
+        let mut whole =
+            net::udp_header(from.octets(), meta.endpoint.port, to.octets(), self.port).to_vec();
+        whole.extend_from_slice(data);
+        let n = whole.len().min(buf.len());
+        buf[..n].copy_from_slice(&whole[..n]);
+        Some(n)
+    }
+}
+
 impl Conn for SmolUdpHeaders {
     fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        let local = self.smol.local_ip();
-        self.smol.run(|stack| {
-            let socket = stack.sockets.get_mut::<udp::Socket>(self.handle);
-            let (data, meta) = socket.recv().ok()?;
-            let IpAddress::Ipv4(from) = meta.endpoint.addr;
-            let to = match meta.local_address {
-                Some(IpAddress::Ipv4(a)) => a,
-                _ => local,
-            };
-            let mut whole =
-                net::udp_header(from.octets(), meta.endpoint.port, to.octets(), self.port).to_vec();
-            whole.extend_from_slice(data);
-            let n = whole.len().min(buf.len());
-            buf[..n].copy_from_slice(&whole[..n]);
-            Some(Ok(n))
-        })
+        self.smol.run(|stack| self.try_read(stack, buf).map(Ok))
     }
 
     fn write(&self, buf: &[u8]) -> Result<usize> {
@@ -765,6 +895,10 @@ impl Conn for SmolUdpHeaders {
         let data = &buf[net::UDP_HEADER..];
         if data.len() > UDP_MAX {
             return Err(Cow::Borrowed("message too long"));
+        }
+        // 127/8 is the loopback's, never the card's: lost from here.
+        if on_loopback(addr) {
+            return Ok(buf.len());
         }
         let to = IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::from(addr)), port);
         self.smol.run(|stack| {
@@ -920,20 +1054,24 @@ impl Drop for SmolIcmp {
     }
 }
 
-/// An ICMP echo conversation with `127.0.0.1`: each echo request written
-/// is answered at once, in process, as a host's loopback would.
+/// An ICMP echo conversation on the loopback: each echo request written
+/// to `127.0.0.1` is answered at once, in process, as a host's loopback
+/// would. Requests to another address on 127/8 are lost, since nothing
+/// there has it.
 struct LoopIcmp {
     replies: Mutex<VecDeque<Vec<u8>>>,
     ready: Rendez,
     ident: u16,
+    remote: [u8; 4],
 }
 
 impl LoopIcmp {
-    fn new() -> LoopIcmp {
+    fn new(remote: [u8; 4]) -> LoopIcmp {
         LoopIcmp {
             replies: Mutex::new(VecDeque::new()),
             ready: Rendez::new(),
             ident: ICMP_IDENT.fetch_add(1, Ordering::Relaxed),
+            remote,
         }
     }
 }
@@ -951,13 +1089,16 @@ impl Conn for LoopIcmp {
     }
 
     fn write(&self, buf: &[u8]) -> Result<usize> {
+        if self.remote != LOCALHOST {
+            return Ok(buf.len());
+        }
         let mut msg = buf.to_vec();
         if msg.len() >= 8 {
             msg[4..6].copy_from_slice(&self.ident.to_be_bytes());
         }
         net::icmp_fill_checksum(&mut msg);
         if let Some(reply) = net::icmp_echo_reply(&msg) {
-            let lo = [127, 0, 0, 1];
+            let lo = LOCALHOST;
             let mut r = net::ipv4_header(lo, lo, ICMP_TTL, reply.len()).to_vec();
             r.extend_from_slice(&reply);
             let mut q = self.replies.lock();
@@ -975,7 +1116,7 @@ impl Conn for LoopIcmp {
     }
 
     fn remote(&self) -> String {
-        String::from("127.0.0.1!1")
+        format!("{}!1", Ipv4Address::from(self.remote))
     }
 
     fn hangup(&self) {}
@@ -1067,35 +1208,40 @@ struct SmolListen {
     local: String,
 }
 
-impl Listener for SmolListen {
-    fn accept(&self) -> Result<Arc<dyn Conn>> {
-        let (handle, local, remote) = self.smol.run(|stack| {
-            let handle = *self.handle.lock();
-            let socket = stack.sockets.get::<tcp::Socket>(handle);
-            if socket.state() != State::Established {
-                return None;
-            }
-            let local = endpoint(socket.local_endpoint());
-            let remote = endpoint(socket.remote_endpoint());
-            let born = stack.alloc();
-            if stack
-                .sockets
-                .get_mut::<tcp::Socket>(born)
-                .listen(self.port)
-                .is_err()
-            {
-                stack.free.push(born);
-                return Some(Err(Cow::Borrowed("address in use")));
-            }
-            *self.handle.lock() = born;
-            Some(Ok((handle, local, remote)))
-        })?;
-        Ok(Arc::new(TcpConn {
+impl SmolListen {
+    /// The connection the listening socket has, if it has one yet, with
+    /// a new socket listening in its place.
+    fn try_accept(&self, stack: &mut Stack) -> Option<Result<Arc<dyn Conn>>> {
+        let handle = *self.handle.lock();
+        let socket = stack.sockets.get::<tcp::Socket>(handle);
+        if socket.state() != State::Established {
+            return None;
+        }
+        let local = endpoint(socket.local_endpoint());
+        let remote = endpoint(socket.remote_endpoint());
+        let born = stack.alloc();
+        if stack
+            .sockets
+            .get_mut::<tcp::Socket>(born)
+            .listen(self.port)
+            .is_err()
+        {
+            stack.free.push(born);
+            return Some(Err(Cow::Borrowed("address in use")));
+        }
+        *self.handle.lock() = born;
+        Some(Ok(Arc::new(TcpConn {
             smol: Arc::clone(&self.smol),
             handle,
             local,
             remote,
-        }))
+        })))
+    }
+}
+
+impl Listener for SmolListen {
+    fn accept(&self) -> Result<Arc<dyn Conn>> {
+        self.smol.run(|stack| self.try_accept(stack))
     }
 
     fn local(&self) -> String {
@@ -1117,7 +1263,15 @@ impl Drop for SmolListen {
 /// The loopback UDP ports in use, by number.
 type LoopUdpPorts = Mutex<Vec<(u16, Weak<LoopUdp>)>>;
 
-/// In-process connections for `127.0.0.1`. The guest tests dial themselves.
+/// The loopback interface, `127.0.0.1/8`: in-process connections and
+/// datagrams between progs, with or without a card. Its own address is
+/// `127.0.0.1`; what goes to another address on 127/8 is lost (a TCP dial
+/// is refused at once). Nothing on 127/8 goes on the card.
+///
+/// A listener on every address (`*`) has a loopback listener too
+/// ([`AnyListen`], [`AnyUdpListen`]); those are `shared`, and a call or
+/// datagram for one also wakes the card's sleepers ([`kick`]), since its
+/// accept waits on both.
 struct Loopback {
     /// Weak: a listener lives as long as its `#I` conversation.
     listeners: Mutex<Vec<(u16, Weak<LoopListen>)>>,
@@ -1140,8 +1294,15 @@ impl Loopback {
         }
     }
 
+    /// Whether no loopback UDP port is `port`.
+    fn udp_free(&self, port: u16) -> bool {
+        let mut ports = self.udp.lock();
+        ports.retain(|(_, w)| w.strong_count() > 0);
+        ports.iter().all(|(q, _)| *q != port)
+    }
+
     /// Opens loopback UDP port `port` (0: a fresh one).
-    fn udp_port(&self, port: u16, announced: bool) -> Result<Arc<LoopUdp>> {
+    fn udp_port(&self, port: u16, announced: bool, shared: bool) -> Result<Arc<LoopUdp>> {
         let mut ports = self.udp.lock();
         ports.retain(|(_, w)| w.strong_count() > 0);
         let port = if port == 0 {
@@ -1160,27 +1321,40 @@ impl Loopback {
             port,
             demux: Mutex::new(UdpDemux::new(announced)),
             ready: Rendez::new(),
+            shared,
         });
         ports.push((port, Arc::downgrade(&sock)));
         Ok(sock)
     }
 
-    fn dial_udp(&self, port: u16) -> Result<Arc<dyn Conn>> {
-        let sock = self.udp_port(0, false)?;
+    /// Loopback UDP port `port` in `headers` mode.
+    fn udp_headers(&self, port: u16, shared: bool) -> Result<LoopUdpHeaders> {
+        Ok(LoopUdpHeaders {
+            ports: Arc::clone(&self.udp),
+            sock: self.udp_port(port, true, shared)?,
+        })
+    }
+
+    /// A UDP conversation with `ip`!`port`, on 127/8.
+    fn dial_udp(&self, ip: [u8; 4], port: u16) -> Result<Arc<dyn Conn>> {
+        let sock = self.udp_port(0, false, false)?;
         let id = sock.demux.lock().connect(port);
         Ok(Arc::new(LoopUdpConn {
             ports: Arc::clone(&self.udp),
             sock,
             id,
             remote: port,
+            remote_ip: ip,
             closed: AtomicBool::new(false),
         }))
     }
 
     fn announce_udp(&self, port: u16) -> Result<Arc<dyn Listener>> {
-        Ok(Arc::new(LoopUdpListen {
+        Ok(Arc::new(AnyUdpListen {
             ports: Arc::clone(&self.udp),
-            sock: self.udp_port(port, true)?,
+            lo: self.udp_port(port, true, false)?,
+            smol: None,
+            any: false,
         }))
     }
 
@@ -1202,7 +1376,7 @@ impl Loopback {
     /// fresh ports came from the counter dials use, from 1 up; it wrapped
     /// often enough under load that a dial to a server that had gone
     /// reached another prog's.
-    fn announce(&self, port: u16) -> Result<Arc<dyn Listener>> {
+    fn announce(&self, port: u16, shared: bool) -> Result<Arc<LoopListen>> {
         let mut listeners = self.listeners.lock();
         listeners.retain(|(_, w)| w.strong_count() > 0);
         let used = |p: u16| listeners.iter().any(|(q, _)| *q == p);
@@ -1222,6 +1396,7 @@ impl Loopback {
             port,
             waiting: Mutex::new(VecDeque::new()),
             ready: Rendez::new(),
+            shared,
         });
         listeners.push((port, Arc::downgrade(&listen)));
         Ok(listen)
@@ -1252,6 +1427,9 @@ impl Loopback {
         });
         listen.waiting.lock().push_back(server);
         listen.ready.wakeup();
+        if listen.shared {
+            kick();
+        }
         Ok(client)
     }
 }
@@ -1260,6 +1438,14 @@ struct LoopListen {
     port: u16,
     waiting: Mutex<VecDeque<Arc<LoopConn>>>,
     ready: Rendez,
+    /// Part of an [`AnyListen`] that also listens on the card.
+    shared: bool,
+}
+
+impl LoopListen {
+    fn calling(&self) -> bool {
+        !self.waiting.lock().is_empty()
+    }
 }
 
 impl Listener for LoopListen {
@@ -1268,12 +1454,52 @@ impl Listener for LoopListen {
             if let Some(conn) = self.waiting.lock().pop_front() {
                 return Ok(conn);
             }
-            sleep(&self.ready, || !self.waiting.lock().is_empty(), None)?;
+            sleep(&self.ready, || self.calling(), None)?;
         }
     }
 
     fn local(&self) -> String {
         format!("127.0.0.1!{}", self.port)
+    }
+}
+
+/// A TCP listener on every address: the loopback's, and the card's if
+/// there is one, on one port.
+struct AnyListen {
+    lo: Arc<LoopListen>,
+    smol: Option<Arc<SmolListen>>,
+}
+
+impl Listener for AnyListen {
+    fn accept(&self) -> Result<Arc<dyn Conn>> {
+        loop {
+            if let Some(conn) = self.lo.waiting.lock().pop_front() {
+                return Ok(conn);
+            }
+            match &self.smol {
+                None => {
+                    sleep(&self.lo.ready, || self.lo.calling(), None)?;
+                }
+                // A loopback call kicks the card's sleepers, so one wait
+                // covers both.
+                Some(s) => {
+                    let conn = s.smol.run(|stack| {
+                        if self.lo.calling() {
+                            return Some(Ok(None));
+                        }
+                        s.try_accept(stack).map(|r| r.map(Some))
+                    })?;
+                    if let Some(conn) = conn {
+                        return Ok(conn);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every address, as the hosted emu shows it.
+    fn local(&self) -> String {
+        format!("*!{}", self.lo.port)
     }
 }
 
@@ -1359,31 +1585,83 @@ struct LoopUdp {
     demux: Mutex<UdpDemux<u16>>,
     /// Woken when a datagram arrives or a conversation hangs up.
     ready: Rendez,
+    /// Part of an [`AnyUdpListen`] or [`AnyUdpHeaders`] that also
+    /// listens on the card.
+    shared: bool,
 }
 
-struct LoopUdpListen {
+/// Sends `data` from loopback UDP port `from` to `127.0.0.1!to`. A
+/// datagram nobody is listening for is lost, as on a wire.
+fn loop_send(ports: &LoopUdpPorts, from: u16, to: u16, data: &[u8]) {
+    let peer = ports
+        .lock()
+        .iter()
+        .find(|(p, _)| *p == to)
+        .and_then(|(_, w)| w.upgrade());
+    if let Some(peer) = peer
+        && peer.demux.lock().deliver(from, data.to_vec())
+    {
+        peer.ready.wakeup();
+        if peer.shared {
+            kick();
+        }
+    }
+}
+
+/// A UDP port announced on every address: the loopback's, and the card's
+/// if there is one, on one port number. A new remote on either is a new
+/// conversation from `listen`.
+struct AnyUdpListen {
     ports: Arc<LoopUdpPorts>,
-    sock: Arc<LoopUdp>,
+    lo: Arc<LoopUdp>,
+    smol: Option<Arc<SmolUdp>>,
+    /// Announced on `*`, not on `127.0.0.1` alone.
+    any: bool,
 }
 
-impl Listener for LoopUdpListen {
+impl AnyUdpListen {
+    fn lo_conn(&self, id: u64, remote: u16) -> Arc<dyn Conn> {
+        Arc::new(LoopUdpConn {
+            ports: Arc::clone(&self.ports),
+            sock: Arc::clone(&self.lo),
+            id,
+            remote,
+            remote_ip: LOCALHOST,
+            closed: AtomicBool::new(false),
+        })
+    }
+}
+
+impl Listener for AnyUdpListen {
     fn accept(&self) -> Result<Arc<dyn Conn>> {
         loop {
-            if let Some((id, remote)) = self.sock.demux.lock().accept() {
-                return Ok(Arc::new(LoopUdpConn {
-                    ports: Arc::clone(&self.ports),
-                    sock: Arc::clone(&self.sock),
-                    id,
-                    remote,
-                    closed: AtomicBool::new(false),
-                }));
+            if let Some((id, remote)) = self.lo.demux.lock().accept() {
+                return Ok(self.lo_conn(id, remote));
             }
-            sleep(&self.sock.ready, || self.sock.demux.lock().pending(), None)?;
+            match &self.smol {
+                None => {
+                    sleep(&self.lo.ready, || self.lo.demux.lock().pending(), None)?;
+                }
+                Some(s) => {
+                    let got = s.smol.run(|stack| {
+                        if self.lo.demux.lock().pending() {
+                            return Some(Ok(None));
+                        }
+                        s.pump(stack);
+                        s.demux.lock().accept().map(|c| Ok(Some(c)))
+                    })?;
+                    if let Some((id, remote)) = got {
+                        return Ok(Arc::new(SmolUdpConn::new(Arc::clone(s), id, remote, false)));
+                    }
+                }
+            }
         }
     }
 
+    /// Every address, as the hosted emu shows it, or the loopback's.
     fn local(&self) -> String {
-        format!("127.0.0.1!{}", self.sock.port)
+        let host = if self.any { "*" } else { "127.0.0.1" };
+        format!("{host}!{}", self.lo.port)
     }
 }
 
@@ -1392,6 +1670,9 @@ struct LoopUdpConn {
     sock: Arc<LoopUdp>,
     id: u64,
     remote: u16,
+    /// The remote's address: `127.0.0.1`, or another on 127/8, to which
+    /// datagrams are lost.
+    remote_ip: [u8; 4],
     closed: AtomicBool,
 }
 
@@ -1401,18 +1682,27 @@ struct LoopUdpHeaders {
     sock: Arc<LoopUdp>,
 }
 
+impl LoopUdpHeaders {
+    /// The next datagram, with its header, if one has come.
+    fn try_read(&self, buf: &mut [u8]) -> Option<usize> {
+        if !self.sock.demux.lock().any_ready() {
+            return None;
+        }
+        let mut data = vec![0u8; UDP_MAX];
+        let (n, from) = self.sock.demux.lock().recv_any(&mut data)?;
+        let mut whole = net::udp_header(LOCALHOST, from, LOCALHOST, self.sock.port).to_vec();
+        whole.extend_from_slice(&data[..n]);
+        let k = whole.len().min(buf.len());
+        buf[..k].copy_from_slice(&whole[..k]);
+        Some(k)
+    }
+}
+
 impl Conn for LoopUdpHeaders {
     fn read(&self, buf: &mut [u8]) -> Result<usize> {
-        let lo = [127, 0, 0, 1];
-        let mut data = vec![0u8; UDP_MAX];
         loop {
-            let got = self.sock.demux.lock().recv_any(&mut data);
-            if let Some((n, from)) = got {
-                let mut whole = net::udp_header(lo, from, lo, self.sock.port).to_vec();
-                whole.extend_from_slice(&data[..n]);
-                let k = whole.len().min(buf.len());
-                buf[..k].copy_from_slice(&whole[..k]);
-                return Ok(k);
+            if let Some(n) = self.try_read(buf) {
+                return Ok(n);
             }
             sleep(
                 &self.sock.ready,
@@ -1429,25 +1719,51 @@ impl Conn for LoopUdpHeaders {
             return Err(Cow::Borrowed("message too long"));
         }
         // Loopback reaches only loopback; anything else is lost.
-        if addr != [127, 0, 0, 1] {
-            return Ok(buf.len());
-        }
-        let peer = self
-            .ports
-            .lock()
-            .iter()
-            .find(|(p, _)| *p == port)
-            .and_then(|(_, w)| w.upgrade());
-        if let Some(peer) = peer
-            && peer.demux.lock().deliver(self.sock.port, data.to_vec())
-        {
-            peer.ready.wakeup();
+        if addr == LOCALHOST {
+            loop_send(&self.ports, self.sock.port, port, data);
         }
         Ok(buf.len())
     }
 
     fn local(&self) -> String {
         format!("127.0.0.1!{}", self.sock.port)
+    }
+
+    fn remote(&self) -> String {
+        String::new()
+    }
+
+    fn hangup(&self) {}
+}
+
+/// A UDP port in `headers` mode on every address: datagrams from the
+/// loopback and the card, and each write goes out by the one its
+/// destination is on.
+struct AnyUdpHeaders {
+    lo: LoopUdpHeaders,
+    smol: Arc<SmolUdpHeaders>,
+}
+
+impl Conn for AnyUdpHeaders {
+    fn read(&self, buf: &mut [u8]) -> Result<usize> {
+        // A loopback datagram kicks the card's sleepers.
+        self.smol.smol.run(|stack| {
+            if let Some(n) = self.lo.try_read(buf) {
+                return Some(Ok(n));
+            }
+            self.smol.try_read(stack, buf).map(Ok)
+        })
+    }
+
+    fn write(&self, buf: &[u8]) -> Result<usize> {
+        match net::udp_header_remote(buf) {
+            Some((addr, _)) if on_loopback(addr) => self.lo.write(buf),
+            _ => self.smol.write(buf),
+        }
+    }
+
+    fn local(&self) -> String {
+        format!("*!{}", self.lo.sock.port)
     }
 
     fn remote(&self) -> String {
@@ -1481,17 +1797,8 @@ impl Conn for LoopUdpConn {
         if buf.len() > UDP_MAX {
             return Err(Cow::Borrowed("message too long"));
         }
-        let peer = self
-            .ports
-            .lock()
-            .iter()
-            .find(|(p, _)| *p == self.remote)
-            .and_then(|(_, w)| w.upgrade());
-        // A datagram nobody is listening for is lost, as on a wire.
-        if let Some(peer) = peer
-            && peer.demux.lock().deliver(self.sock.port, buf.to_vec())
-        {
-            peer.ready.wakeup();
+        if self.remote_ip == LOCALHOST {
+            loop_send(&self.ports, self.sock.port, self.remote, buf);
         }
         Ok(buf.len())
     }
@@ -1501,7 +1808,7 @@ impl Conn for LoopUdpConn {
     }
 
     fn remote(&self) -> String {
-        format!("127.0.0.1!{}", self.remote)
+        format!("{}!{}", Ipv4Address::from(self.remote_ip), self.remote)
     }
 
     fn hangup(&self) {
