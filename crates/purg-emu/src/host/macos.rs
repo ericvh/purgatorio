@@ -202,13 +202,6 @@ pub fn fault_registers(uc: *mut libc::c_void) -> super::unix::FaultRegisters {
     regs
 }
 
-/// Whether a signal's `si_code` says a process sent it rather than the
-/// CPU raising it: macOS's codes for those (`SI_USER` and on) start at
-/// 0x10001, and some paths leave 0.
-pub fn sent_by_kill(code: libc::c_int) -> bool {
-    code <= 0 || code > 0x10000
-}
-
 #[cfg(test)]
 mod tests {
     use super::{clipboard_get, clipboard_put};

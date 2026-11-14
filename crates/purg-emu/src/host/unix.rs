@@ -327,11 +327,14 @@ const STEPS: usize = 1 << 16;
 /// The handler prints the signal, the faulting address, the thread and
 /// its prog, the program counter and other registers, and the return
 /// addresses found by following frame pointers, where the code keeps
-/// them. Then it puts the previous action back and returns, so the
-/// faulting instruction runs again into std's handler: that one says
-/// "has overflowed its stack" for a guard page, and otherwise lets the
-/// default action end the process with a core dump. Nothing is spent
-/// until a fault.
+/// them. Then it calls the previous handler, std's, which says "has
+/// overflowed its stack" and aborts for a fault on a thread's guard
+/// page. If that returns, the handler puts the default action back and
+/// raises the signal again with it unblocked, so the process ends on the
+/// signal, with a core dump, there and then. It does not return to let
+/// the instruction fault again: a signal sent by `kill` would not come
+/// again, and macOS does not mark those in `si_code` as Linux does.
+/// Nothing is spent until a fault.
 ///
 /// Call it from `main`, after std has installed its handler and before
 /// other threads start.
@@ -474,23 +477,33 @@ extern "C" fn on_fault(sig: libc::c_int, info: *mut libc::siginfo_t, uc: *mut li
             .put(b" more of it")
             .write();
     }
-    // SAFETY: PREVIOUS holds the actions report_faults read; signal,
-    // sigaction and raise are async-signal-safe.
+    // SAFETY: PREVIOUS holds the actions report_faults read. A handler
+    // installed there takes the arguments this one was given; signal,
+    // sigaction, pthread_sigmask, raise and _exit are async-signal-safe.
     unsafe {
-        if super::os::sent_by_kill(code) {
-            // A signal sent by kill does not come again when the handler
-            // returns, as a fault does, and std's handler would ignore it
-            // (it only puts the default action back): send it again, to
-            // the default action, which acts on it once this returns.
-            libc::signal(sig, libc::SIG_DFL);
-            libc::raise(sig);
-        } else if let Some(old) = PREVIOUS.get() {
-            libc::sigaction(
-                sig,
-                &old[usize::from(sig == libc::SIGBUS)],
-                core::ptr::null_mut(),
-            );
+        if let Some(old) = PREVIOUS.get() {
+            let old = &old[usize::from(sig == libc::SIGBUS)];
+            let f = old.sa_sigaction;
+            if f != libc::SIG_DFL && f != libc::SIG_IGN && f != libc::SIG_ERR {
+                if old.sa_flags & libc::SA_SIGINFO != 0 {
+                    let f: extern "C" fn(libc::c_int, *mut libc::siginfo_t, *mut libc::c_void) =
+                        core::mem::transmute(f);
+                    f(sig, info, uc);
+                } else {
+                    let f: extern "C" fn(libc::c_int) = core::mem::transmute(f);
+                    f(sig);
+                }
+            }
         }
+        // Not an overflow std reports (or no std handler): end on the
+        // signal now, by its default action.
+        libc::signal(sig, libc::SIG_DFL);
+        let mut set: libc::sigset_t = core::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, sig);
+        libc::raise(sig);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, core::ptr::null_mut());
+        libc::_exit(128 + sig);
     }
 }
 
