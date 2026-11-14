@@ -68,10 +68,19 @@ impl net::Net for HostNet {
         if host == "*" || host.is_empty() || is_numeric(host) {
             return Ok(String::from(host));
         }
-        let mut addrs = (host, port)
+        // An IPv4 address when the host has one, as Inferno's emu (which
+        // resolves with gethostbyname) and the kernel's IPv4 stack do: a
+        // host that lists ::1 first for localhost would otherwise leave
+        // icmp, which is IPv4 only, with no translation.
+        let addrs: Vec<_> = (host, port)
             .to_socket_addrs()
-            .map_err(|_| no_translation())?;
-        let addr = addrs.next().ok_or_else(no_translation)?;
+            .map_err(|_| no_translation())?
+            .collect();
+        let addr = addrs
+            .iter()
+            .find(|a| a.is_ipv4())
+            .or_else(|| addrs.first())
+            .ok_or_else(no_translation)?;
         Ok(addr.ip().to_string())
     }
 
@@ -699,4 +708,19 @@ fn no_translation() -> std::borrow::Cow<'static, str> {
 
 fn poison() -> std::borrow::Cow<'static, str> {
     std::borrow::Cow::Borrowed("lock poisoned")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use purg_platform::net::Net;
+
+    #[test]
+    fn localhost_resolves_to_ipv4() {
+        // Hosts that list ::1 first for localhost still give 127.0.0.1,
+        // which icmp (IPv4 only) can use.
+        assert_eq!(HostNet.resolve("localhost", 0).unwrap(), "127.0.0.1");
+        assert_eq!(HostNet.resolve("127.0.0.1", 0).unwrap(), "127.0.0.1");
+        assert_eq!(HostNet.resolve("*", 0).unwrap(), "*");
+    }
 }
