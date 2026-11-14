@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.10)
+# Purgatorio application ABI (v0.11)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.10`. The loader rejects a mismatched version. Modules
+section containing `0.11`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -103,7 +103,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.10
+## `purgatorio` imports in v0.11
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -326,7 +326,7 @@ The host writes `args` into a fresh page of the module's memory, the export
 overwrites that page with its result and returns the result length, and the
 host copies up to `olen` bytes of it to `out`.
 
-### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7, server proofs in v0.8, no trust by default in v0.9, the post-quantum exchange in v0.10)
+### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7, server proofs in v0.8, no trust by default in v0.9, the post-quantum exchange in v0.10, hybrid signatures in v0.11)
 
 A mount authenticates before `Tattach` with an Ed25519 signature over a
 challenge from the server. This is not Inferno's keyring protocol, so real
@@ -407,6 +407,19 @@ and a security review.
   4. On `export` it refuses every proof but version 4, and every attach
   not on one, with `post-quantum key exchange required`, and implies
   `export::ENCRYPT`. With `MNOAUTH` it is `bad arg in system call`.
+- Kinds 2 and 3 (v0.11): a version 3 or 4 proof, and a server's proof,
+  may be by a hybrid Ed25519 + ML-DSA-65 key (`purg_abi::auth::
+  KIND_HYBRID_KEY`) or a `pgcert2` certificate of one
+  (`KIND_HYBRID_CERT`). Their signature field is 3373 bytes
+  (`HYBRID_SIGNATURE`) instead of 64, and a proof may be up to 60 KiB.
+  The kernel takes them through `fauth` and in its own mount, verifies
+  them on an export, and trust lists name such keys by a typed id
+  (`docs/auth.md`, "Post-quantum signatures").
+- `MPQSIG` (`0x0800_0000`, `-C mldsa65`; v0.11) asks for hybrid
+  signatures. On `mount` it requires the server's proof to be kind 2 or
+  3 and implies `MSRVAUTH`; on `export` it refuses every client proof
+  that is not. Either fails with `post-quantum signature required`. With
+  `MNOAUTH` it is `bad arg in system call`.
 - With `afd = -1`, `mount` does all of this itself. A guest can instead run
   the exchange with `fauth` (below) and pass the auth fd to `mount`.
   `MNOAUTH` is ignored when an `afd` is given.

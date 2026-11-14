@@ -80,7 +80,7 @@ pub fn handle_clear(frame: &[u8]) -> Vec<u8> {
 
 fn handle_with(server: &Server, frame: &[u8]) -> Vec<u8> {
     let trust = Trust {
-        keys: vec![purg_auth::public_key(&SEED)],
+        keys: vec![purg_auth::sig::Id::Ed25519(purg_auth::public_key(&SEED))],
         signers: vec![],
         revoked: Some(vec![]),
     };

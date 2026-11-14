@@ -176,7 +176,7 @@ impl Transport for Rig<'_> {
 
 fn direct() -> Trust {
     Trust {
-        keys: vec![purg_auth::public_key(&USER)],
+        keys: vec![purg_auth::sig::Id::Ed25519(purg_auth::public_key(&USER))],
         signers: vec![],
         revoked: Some(vec![]),
     }
@@ -395,7 +395,7 @@ fn certificates_and_refusals() {
     let now = Cell::new(T0);
     let signers = Trust {
         keys: vec![],
-        signers: vec![purg_auth::public_key(&SIGNER)],
+        signers: vec![purg_auth::sig::Id::Ed25519(purg_auth::public_key(&SIGNER))],
         revoked: Some(vec![]),
     };
     let mut r = rig(&server, &t, &now, signers.clone());
@@ -420,7 +420,9 @@ fn certificates_and_refusals() {
         read(&mut c, &mut r, "/hello", None),
         remote("untrusted signer")
     );
-    r.trust.revoked = Some(vec![purg_auth::public_key(&USER)]);
+    r.trust.revoked = Some(vec![purg_auth::sig::Id::Ed25519(purg_auth::public_key(
+        &USER,
+    ))]);
     let mut c = Client::new(creds(Some(cert(0))), rights::READ, "/");
     assert_eq!(
         read(&mut c, &mut r, "/hello", None),

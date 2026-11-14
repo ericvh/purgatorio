@@ -12,9 +12,9 @@ use alloc::vec::Vec;
 
 use purg_abi::auth::{FAILED, KIND_CERT, KIND_KEY, NO_TRUST, NOT_REQUIRED, REQUIRED};
 use purg_abi::error::{EISDIR, ENOTDIR, ENOTIMPL, EPERM, ESHORTSTAT};
-use purg_auth::cert::Cert;
-use purg_auth::proof::{Policy, check_cert};
+use purg_auth::proof::{Policy, check_signed};
 use purg_auth::session::Ephemeral;
+use purg_auth::sig::Id;
 use purg_styx::{DMDIR, Dir, Qid, STATFIXLEN};
 
 use crate::crypto::{self, Keys};
@@ -43,10 +43,10 @@ pub trait Tree {
 #[derive(Clone, Default, Debug)]
 pub struct Trust {
     /// Keys held directly.
-    pub keys: Vec<[u8; 32]>,
-    pub signers: Vec<[u8; 32]>,
+    pub keys: Vec<Id>,
+    pub signers: Vec<Id>,
     /// `None` when the list is damaged: every certificate then fails.
-    pub revoked: Option<Vec<[u8; 32]>>,
+    pub revoked: Option<Vec<Id>>,
 }
 
 /// A server's settings.
@@ -289,6 +289,7 @@ impl Server {
             signers: &trust.signers,
             revoked: trust.revoked.as_deref(),
             now: env.now,
+            hybrid: false,
         };
         // No key, nobody: refused as an export that trusts nothing
         // refuses (`docs/auth.md`, "Trust by default"). A server that
@@ -299,25 +300,22 @@ impl Server {
             return Err(if self.clear { NOT_REQUIRED } else { NO_TRUST });
         }
         let signed = t.message();
-        match t.kind {
-            KIND_KEY => {
-                let key: [u8; 32] = t.body.try_into().map_err(|_| FAILED)?;
-                if !policy.keys.contains(&key) || !purg_auth::verify(&key, &signed, &t.signature) {
-                    return Err(FAILED);
-                }
-                if policy.revoked.is_none_or(|r| r.contains(&key)) {
-                    return Err(purg_abi::auth::REVOKED);
-                }
-            }
-            KIND_CERT => {
-                let cert = Cert::parse(t.body).map_err(|_| FAILED)?;
-                if !purg_auth::verify(&cert.key, &signed, &t.signature) {
-                    return Err(FAILED);
-                }
-                check_cert(&policy, &cert, Some(t.uname))?;
-            }
-            _ => return Err(FAILED),
+        // Lethe's Tauth carries an Ed25519 signature, so only Ed25519 keys
+        // and `pgcert1` certificates (`docs/lethe.md`, Section 6).
+        if !matches!(t.kind, KIND_KEY | KIND_CERT) {
+            return Err(FAILED);
         }
+        if t.kind == KIND_KEY && policy.revoked.is_none() {
+            return Err(purg_abi::auth::REVOKED);
+        }
+        check_signed(
+            &policy,
+            t.kind,
+            &t.signature,
+            t.body,
+            &signed,
+            Some(t.uname),
+        )?;
         let granted = t.rights & self.config.allow & rights::GRANTABLE;
         if granted == 0 {
             return Err(EPERM);

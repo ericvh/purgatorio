@@ -194,10 +194,7 @@ fn load(p: &mut Prog, path: &str, wasm: &[u8]) -> Result<(), String> {
 }
 
 fn trust(p: &mut Prog, seeds: &[&[u8; 32]]) {
-    let text: String = seeds
-        .iter()
-        .map(|s| list_line(&public(s), "test"))
-        .collect();
+    let text: String = seeds.iter().map(|s| list_line(public(s), "test")).collect();
     write_file(p, "/lib/keys/modules", text.as_bytes());
 }
 
@@ -469,7 +466,7 @@ fn the_trust_lists_are_pinned_when_the_policy_is_set() {
     write_file(
         &mut p,
         "/fake/modules",
-        list_line(&public(&OTHER), "mine").as_bytes(),
+        list_line(public(&OTHER), "mine").as_bytes(),
     );
     let pid = p.pid;
     set_level(&mut p, pid, "require").unwrap();
@@ -513,7 +510,7 @@ fn the_trust_lists_are_pinned_when_the_policy_is_set() {
     write_file(
         &mut q,
         "/fake/modules",
-        list_line(&public(&OTHER), "").as_bytes(),
+        list_line(public(&OTHER), "").as_bytes(),
     );
     q.bind("/fake", "/lib/keys", MREPL).unwrap();
     let qpid = q.pid;
@@ -533,7 +530,7 @@ fn a_writer_pins_the_target_progs_namespace() {
     write_file(
         &mut p,
         "/fake/modules",
-        list_line(&public(&OTHER), "").as_bytes(),
+        list_line(public(&OTHER), "").as_bytes(),
     );
     p.bind("/fake", "/lib/keys", MREPL).unwrap();
     let cpid = child.pid;

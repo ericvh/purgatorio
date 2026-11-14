@@ -11,7 +11,9 @@
 //! ```
 //!
 //! with `kind` and `body` as in the client's proof (a public key, or a
-//! `pgcert1` line), and the signature by the body's key over `message`.
+//! `pgcert1` line; for kinds 2 and 3 a hybrid key or a `pgcert2` line,
+//! whose signature is a hybrid one of 3373 bytes instead of 64), and the
+//! signature by the body's key over `message`.
 //! `transcript` is SHA-256 of the client's signed message, which fixes the
 //! challenge, both ephemeral keys, both names and the client's identity.
 //! `bind` is a third output of the session's HKDF ([`Keys::bind`]), which
@@ -25,12 +27,16 @@
 
 use alloc::vec::Vec;
 
-use purg_abi::auth::{KIND_CERT, KIND_KEY, NAME_MISMATCH, SERVER_FAILED, SERVER_NONE};
+use purg_abi::auth::{
+    KIND_CERT, KIND_HYBRID_CERT, KIND_HYBRID_KEY, KIND_KEY, NAME_MISMATCH, PQSIG_REQUIRED,
+    SERVER_FAILED, SERVER_NONE,
+};
 
-use crate::cert::Cert;
-use crate::proof::{MAX_LEN, Policy, check_cert};
+use crate::cert::{AnyCert, Cert};
+use crate::proof::{MAX_LEN, Policy, check_cert, check_signed, signature_len};
 use crate::session::Keys;
-use crate::{PUBLIC, SEED, SIGNATURE};
+use crate::sig::{Public, Secret};
+use crate::{PUBLIC, SEED};
 
 /// The context string a server's signature starts with.
 pub const CONTEXT: &[u8] = b"pgauth3 server\0";
@@ -58,8 +64,8 @@ pub fn message_for(transcript: &[u8; 32], bind: &[u8; 32], kind: u8, body: &[u8]
 pub const SESSION: usize = 64;
 
 /// A server proof from its parts.
-pub fn assemble(kind: u8, signature: &[u8; SIGNATURE], body: &[u8]) -> Vec<u8> {
-    let mut p = Vec::with_capacity(1 + SIGNATURE + body.len());
+pub fn assemble(kind: u8, signature: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(1 + signature.len() + body.len());
     p.push(kind);
     p.extend_from_slice(signature);
     p.extend_from_slice(body);
@@ -74,10 +80,18 @@ pub fn make(seed: &[u8; SEED], cert: Option<&Cert>, keys: &Keys) -> Vec<u8> {
     assemble(kind, &sig, &body)
 }
 
+/// [`make`] with a key of either kind.
+pub fn make_any(secret: &Secret, cert: Option<&AnyCert>, keys: &Keys) -> Vec<u8> {
+    let (kind, body) = crate::proof::body_any(cert, &secret.public());
+    let sig = secret.sign(&message(keys, kind, &body));
+    assemble(kind, &sig, &body)
+}
+
 /// A server proof taken apart.
 pub struct Parsed<'a> {
     pub kind: u8,
-    pub signature: [u8; SIGNATURE],
+    /// 64 bytes, or a hybrid signature for kinds 2 and 3.
+    pub signature: &'a [u8],
     pub body: &'a [u8],
 }
 
@@ -87,8 +101,9 @@ pub fn parse(proof: &[u8]) -> Option<Parsed<'_>> {
         return None;
     }
     let kind = *proof.first()?;
-    let signature = proof.get(1..1 + SIGNATURE)?.try_into().ok()?;
-    let body = proof.get(1 + SIGNATURE..)?;
+    let n = signature_len(kind)?;
+    let signature = proof.get(1..1 + n)?;
+    let body = proof.get(1 + n..)?;
     if body.is_empty() {
         return None;
     }
@@ -99,13 +114,34 @@ pub fn parse(proof: &[u8]) -> Option<Parsed<'_>> {
     })
 }
 
-/// The server's public key, once [`check`] has accepted its proof.
+/// The server's Ed25519 public key, once [`check`] has accepted its
+/// proof. `None` for a hybrid one ([`key_any`]).
 pub fn key(proof: &[u8]) -> Option<[u8; PUBLIC]> {
     let p = parse(proof)?;
     match p.kind {
         KIND_KEY => p.body.try_into().ok(),
         KIND_CERT => Cert::parse(p.body).ok().map(|c| c.key),
         _ => None,
+    }
+}
+
+/// The server's public key of either kind.
+pub fn key_any(proof: &[u8]) -> Option<Public> {
+    let p = parse(proof)?;
+    match p.kind {
+        KIND_KEY | KIND_HYBRID_KEY => Public::from_slice(p.body),
+        KIND_CERT | KIND_HYBRID_CERT => AnyCert::parse(p.body).ok().map(|c| c.key()),
+        _ => None,
+    }
+}
+
+/// The error a server proof fails with: [`PQSIG_REQUIRED`] says what was
+/// wanted, anything else is [`SERVER_FAILED`].
+fn failed(e: &'static str) -> &'static str {
+    if e == PQSIG_REQUIRED {
+        e
+    } else {
+        SERVER_FAILED
     }
 }
 
@@ -123,27 +159,9 @@ pub fn check(policy: &Policy<'_>, keys: &Keys, proof: &[u8]) -> Result<(), &'sta
     }
     let p = parse(proof).ok_or(SERVER_FAILED)?;
     let msg = message(keys, p.kind, p.body);
-    let revoked = |k: &[u8; PUBLIC]| policy.revoked.is_some_and(|r| r.contains(k));
-    match p.kind {
-        KIND_KEY => {
-            let key: [u8; PUBLIC] = p.body.try_into().map_err(|_| SERVER_FAILED)?;
-            if !policy.keys.contains(&key)
-                || revoked(&key)
-                || !crate::verify(&key, &msg, &p.signature)
-            {
-                return Err(SERVER_FAILED);
-            }
-            Ok(())
-        }
-        KIND_CERT => {
-            let cert = Cert::parse(p.body).map_err(|_| SERVER_FAILED)?;
-            if !crate::verify(&cert.key, &msg, &p.signature) {
-                return Err(SERVER_FAILED);
-            }
-            check_cert(policy, &cert, None).map_err(|_| SERVER_FAILED)
-        }
-        _ => Err(SERVER_FAILED),
-    }
+    check_signed(policy, p.kind, p.signature, p.body, &msg, None)
+        .map(|_| ())
+        .map_err(failed)
 }
 
 /// Checks who the server in `proof` is, for a client that dialled
@@ -167,24 +185,34 @@ pub fn check_identity(
         return Err(SERVER_NONE);
     }
     let p = parse(proof).ok_or(SERVER_FAILED)?;
-    let revoked = |k: &[u8; PUBLIC]| policy.revoked.is_none_or(|r| r.contains(k));
+    let revoked = |k: &crate::sig::Id| policy.revoked.is_none_or(|r| r.contains(k));
     match p.kind {
-        KIND_KEY => {
-            let key: [u8; PUBLIC] = p.body.try_into().map_err(|_| SERVER_FAILED)?;
-            if !policy.keys.contains(&key) || revoked(&key) {
+        KIND_KEY | KIND_HYBRID_KEY => {
+            let key = Public::from_slice(p.body).ok_or(SERVER_FAILED)?;
+            if key.is_hybrid() != (p.kind == KIND_HYBRID_KEY) {
+                return Err(SERVER_FAILED);
+            }
+            if policy.hybrid && !key.is_hybrid() {
+                return Err(PQSIG_REQUIRED);
+            }
+            let id = key.id();
+            if !policy.keys.contains(&id) || revoked(&id) {
                 return Err(SERVER_FAILED);
             }
             Ok(())
         }
-        KIND_CERT => {
-            let cert = Cert::parse(p.body).map_err(|_| SERVER_FAILED)?;
+        KIND_CERT | KIND_HYBRID_CERT => {
+            let cert = AnyCert::parse(p.body).map_err(|_| SERVER_FAILED)?;
+            if cert.is_hybrid() != (p.kind == KIND_HYBRID_CERT) {
+                return Err(SERVER_FAILED);
+            }
             if let Some(h) = host
-                && !policy.keys.contains(&cert.key)
-                && !h.eq_ignore_ascii_case(&cert.name)
+                && !policy.keys.contains(&cert.key().id())
+                && !h.eq_ignore_ascii_case(cert.name())
             {
                 return Err(NAME_MISMATCH);
             }
-            check_cert(policy, &cert, None).map_err(|_| SERVER_FAILED)
+            check_cert(policy, &cert, None).map_err(failed)
         }
         _ => Err(SERVER_FAILED),
     }
@@ -225,12 +253,16 @@ mod tests {
         )
     }
 
-    fn policy<'a>(keys: &'a [[u8; PUBLIC]], signers: &'a [[u8; PUBLIC]]) -> Policy<'a> {
+    use crate::SIGNATURE;
+    use crate::proof::tests::ids;
+
+    fn policy(keys: &[[u8; PUBLIC]], signers: &[[u8; PUBLIC]]) -> Policy<'static> {
         Policy {
-            keys,
-            signers,
+            keys: ids(keys),
+            signers: ids(signers),
             revoked: Some(&[]),
             now: NOW,
+            hybrid: false,
         }
     }
 
@@ -285,7 +317,7 @@ mod tests {
         assert_eq!(check(&policy(&[], &[]), &c, &p), Err(SERVER_FAILED));
         // Revoked.
         let pol = Policy {
-            revoked: Some(&host),
+            revoked: Some(ids(&host)),
             ..policy(&host, &[])
         };
         assert_eq!(check(&pol, &c, &p), Err(SERVER_FAILED));
@@ -366,7 +398,7 @@ mod tests {
         );
         // Revoked keys, and a revocation list that did not parse.
         let revoked = Policy {
-            revoked: Some(&host),
+            revoked: Some(ids(&host)),
             ..policy(&[], &signer)
         };
         assert_eq!(
@@ -404,5 +436,59 @@ mod tests {
             message(&s, KIND_KEY, b"body"),
             message_for(&s.transcript, &s.bind, KIND_KEY, b"body")
         );
+    }
+
+    #[test]
+    fn hybrid_server_proofs() {
+        let (c, _) = exchange(1);
+        let host = crate::sig::HybridSecret([3; crate::sig::HYBRID_SEED]);
+        let secret = Secret::Hybrid(host.clone());
+        let id = secret.public().id();
+        let p = make_any(&secret, None, &c);
+        assert_eq!(p[0], KIND_HYBRID_KEY);
+        assert_eq!(key_any(&p), Some(secret.public()));
+        assert_eq!(key(&p), None);
+        let pol = |keys: &[crate::sig::Id], hybrid: bool| Policy {
+            keys: alloc::boxed::Box::leak(keys.to_vec().into_boxed_slice()),
+            signers: &[],
+            revoked: Some(&[]),
+            now: NOW,
+            hybrid,
+        };
+        assert_eq!(check(&pol(&[id], true), &c, &p), Ok(()));
+        assert_eq!(check_host(&pol(&[id], true), &c, &p, Some("h")), Ok(()));
+        let crate::sig::Id::Hybrid(raw) = id else {
+            panic!()
+        };
+        assert_eq!(
+            check(&pol(&[crate::sig::Id::Ed25519(raw)], false), &c, &p),
+            Err(SERVER_FAILED)
+        );
+        // Another session's keys.
+        let (other, _) = exchange(2);
+        assert_eq!(check(&pol(&[id], false), &other, &p), Err(SERVER_FAILED));
+        // An Ed25519 server where hybrid is required.
+        let e = make(&HOST, None, &c);
+        let ed = crate::sig::Id::Ed25519(crate::public_key(&HOST));
+        assert_eq!(check(&pol(&[ed], false), &c, &e), Ok(()));
+        assert_eq!(check(&pol(&[ed], true), &c, &e), Err(PQSIG_REQUIRED));
+        assert_eq!(
+            check_identity(&pol(&[ed], true), &e, None),
+            Err(PQSIG_REQUIRED)
+        );
+        // A certificate for the host.
+        let signer = crate::sig::HybridSecret([4; crate::sig::HYBRID_SEED]);
+        let mut cert = crate::cert::Cert2::new("box.example", host.public(), 0).unwrap();
+        cert.sign(&signer).unwrap();
+        let cert = AnyCert::V2(cert);
+        let p = make_any(&secret, Some(&cert), &c);
+        let sp = Policy {
+            signers: alloc::boxed::Box::leak(
+                alloc::vec![crate::sig::Id::Hybrid(signer.public().id())].into_boxed_slice(),
+            ),
+            ..pol(&[], true)
+        };
+        assert_eq!(check_host(&sp, &c, &p, Some("BOX.example")), Ok(()));
+        assert_eq!(check_host(&sp, &c, &p, Some("other")), Err(NAME_MISMATCH));
     }
 }

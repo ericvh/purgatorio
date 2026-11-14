@@ -41,13 +41,14 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 
-use purgatorio::abi::auth::{NO_PQ, NO_SESSION, NO_TRUST, PQ_REQUIRED};
+use purgatorio::abi::auth::{KIND_HYBRID_KEY, NO_PQ, NO_SESSION, NO_TRUST, PQ_REQUIRED};
 use purgatorio::abi::mode::OWRITE;
 use purgatorio::abi::pctl::{FORKENV, FORKNS, NEWFD, NEWPGRP};
 use purgatorio::arg::Arg;
 use purgatorio::auth::fmt::keys::{keys_for, parse_list, parse_list_lenient, parse_named};
 use purgatorio::auth::fmt::proof::{Policy, V4, check};
 use purgatorio::auth::fmt::session::Server as Offer;
+use purgatorio::auth::fmt::sig::{Id, Public};
 use purgatorio::{Context, Error, auth};
 use rstyx::io::{Children, Fd, kill, read_some, wait_readable};
 use rstyx::link::Link;
@@ -64,11 +65,11 @@ const LINGER_MS: i32 = 2000;
 /// What this namespace trusts for `uname`, read where the kernel's export
 /// reads it (`docs/auth.md`).
 struct Trust {
-    keys: Vec<[u8; 32]>,
-    signers: Vec<[u8; 32]>,
+    keys: Vec<Id>,
+    signers: Vec<Id>,
     /// `None` when the list is there but does not read or parse: every
     /// certificate then fails.
-    revoked: Option<Vec<[u8; 32]>>,
+    revoked: Option<Vec<Id>>,
 }
 
 fn trust(uname: &str) -> Trust {
@@ -81,10 +82,10 @@ fn trust(uname: &str) -> Trust {
         && uname != ".."
         && !uname.contains('/')
         && let Ok(bytes) = std::fs::read(format!("/usr/{uname}/key.pub"))
-        && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
-        && !keys.contains(&key)
+        && let Some(key) = Public::from_slice(&bytes)
+        && !keys.contains(&key.id())
     {
-        keys.push(key);
+        keys.push(key.id());
     }
     let signers = std::fs::read("/lib/keys/signers")
         .map(|t| parse_list_lenient(&t))
@@ -141,6 +142,7 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
         signers: &t.signers,
         revoked: t.revoked.as_deref(),
         now: auth::now(),
+        hybrid: false,
     };
     // The offer: a challenge and an ephemeral X25519 key, and for
     // pgrstyx3 an ephemeral ML-KEM-768 key as well.
@@ -187,7 +189,10 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
             return Err(refuse(net, NO_SESSION));
         };
         link = Link::server(&keys);
-        mine = auth::server_proof(&keys, &auth::user(), h.keyfile).unwrap_or_default();
+        // A client that proved with a hybrid key gets a hybrid proof
+        // back, when this side has one.
+        let hybrid = proof.get(1).is_some_and(|&k| k >= KIND_HYBRID_KEY);
+        mine = auth::server_proof_with(&keys, &auth::user(), h.keyfile, hybrid).unwrap_or_default();
     }
     net.write_all(&frame(kind::OK, &mine))
         .map_err(|_| String::from(proto::EHUNGUP))?;

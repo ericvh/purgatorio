@@ -57,9 +57,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             let (seed, mut certs) = match <[u8; authlib::fmt::SEED]>::try_from(bytes.as_slice()) {
                 Ok(seed) => (seed, Vec::new()),
                 Err(_) => {
-                    let a =
-                        AuthInfo::parse(&bytes).map_err(|_| Error(format!("{path}: not a key")))?;
-                    (a.seed, vec![a.cert])
+                    // Module signatures are Ed25519 only.
+                    let (seed, cert) = AuthInfo::parse(&bytes)
+                        .ok()
+                        .and_then(|a| a.ed25519())
+                        .ok_or_else(|| Error(format!("{path}: not an Ed25519 key")))?;
+                    (seed, vec![cert])
                 }
             };
             certs.extend(extra);

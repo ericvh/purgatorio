@@ -14,6 +14,11 @@
 //!   for the server's ephemeral encapsulation key beside it: the hybrid,
 //!   post-quantum exchange (`docs/auth.md`, "Post-quantum options").
 //!
+//! Versions 3 and 4 also take kinds 2 (a hybrid Ed25519 + ML-DSA-65 key)
+//! and 3 (a `pgcert2` certificate of one), whose signature is a hybrid one
+//! of [`HYBRID_SIGNATURE`] bytes instead of 64 (`docs/auth.md`,
+//! "Post-quantum signatures"). The signed messages do not change.
+//!
 //! What the client signs is the "challenge" it was given: the server's 32
 //! random bytes for version 2, for version 3 [`SIGNED`] bytes, the
 //! server's [`OFFER`] (challenge and ephemeral key) followed by the
@@ -25,11 +30,12 @@
 use alloc::vec::Vec;
 
 use purg_abi::auth::{
-    CHALLENGE, EXPIRED, FAILED, KIND_CERT, KIND_KEY, NAME_MISMATCH, PROOF, PROOF_VERSION, REVOKED,
-    UNTRUSTED,
+    CHALLENGE, EXPIRED, FAILED, KIND_CERT, KIND_HYBRID_CERT, KIND_HYBRID_KEY, KIND_KEY,
+    NAME_MISMATCH, PQSIG_REQUIRED, PROOF, PROOF_VERSION, REVOKED, UNTRUSTED,
 };
 
-use crate::cert::Cert;
+use crate::cert::{AnyCert, Cert};
+use crate::sig::{HYBRID_SIGNATURE, Id, Public, Secret};
 use crate::{PUBLIC, SEED, SIGNATURE};
 
 /// The length of a version 1 proof.
@@ -57,9 +63,20 @@ pub const OFFER_PQ: usize = purg_abi::auth::OFFER_PQ;
 pub const SIGNED_PQ: usize = purg_abi::auth::SIGNED_PQ;
 /// An ML-KEM-768 ciphertext.
 pub const CT: usize = purg_abi::auth::KEM_CIPHERTEXT;
-/// A proof is at most this long (a version 4 proof with a certificate
-/// that has every signature fits).
-pub const MAX_LEN: usize = 4096;
+/// A proof is at most this long: a version 4 proof with a `pgcert2`
+/// certificate that has every signature fits, and so does one message
+/// of the largest `msize` (64 KiB of data).
+pub const MAX_LEN: usize = 60 * 1024;
+
+/// The length of a proof's signature for `kind`: 64 bytes for an
+/// Ed25519 key or certificate, [`HYBRID_SIGNATURE`] for a hybrid one.
+pub fn signature_len(kind: u8) -> Option<usize> {
+    match kind {
+        KIND_KEY | KIND_CERT => Some(SIGNATURE),
+        KIND_HYBRID_KEY | KIND_HYBRID_CERT => Some(HYBRID_SIGNATURE),
+        _ => None,
+    }
+}
 
 /// The bytes a version 2, 3 or 4 proof signs. `challenge` is the
 /// server's challenge (version 2), [`SIGNED`] bytes (version 3) or
@@ -91,17 +108,28 @@ pub fn body(cert: Option<&Cert>, public: &[u8; PUBLIC]) -> (u8, Vec<u8>) {
     }
 }
 
+/// [`body`] for a key of either kind: kind 0 or 1 for Ed25519, 2 or 3
+/// for a hybrid key.
+pub fn body_any(cert: Option<&AnyCert>, public: &Public) -> (u8, Vec<u8>) {
+    match (cert, public) {
+        (Some(c @ AnyCert::V1(_)), _) => (KIND_CERT, c.encode().into_bytes()),
+        (Some(c @ AnyCert::V2(_)), _) => (KIND_HYBRID_CERT, c.encode().into_bytes()),
+        (None, Public::Ed25519(k)) => (KIND_KEY, k.to_vec()),
+        (None, Public::Hybrid(h)) => (KIND_HYBRID_KEY, h.0.to_vec()),
+    }
+}
+
 /// Assembles a proof from its parts: version 3 when `challenge` is
 /// [`SIGNED`] bytes (the client's key is its last 32), version 4 when it
 /// is [`SIGNED_PQ`] bytes (the client's key and ciphertext follow the
 /// [`OFFER_PQ`]), else version 2.
-pub fn assemble(challenge: &[u8], kind: u8, signature: &[u8; SIGNATURE], body: &[u8]) -> Vec<u8> {
+pub fn assemble(challenge: &[u8], kind: u8, signature: &[u8], body: &[u8]) -> Vec<u8> {
     let (version, tail) = match challenge.len() {
         SIGNED => (V3, &challenge[OFFER..]),
         SIGNED_PQ => (V4, &challenge[OFFER_PQ..]),
         _ => (PROOF_VERSION, &[][..]),
     };
-    let mut p = Vec::with_capacity(2 + SIGNATURE + tail.len() + body.len());
+    let mut p = Vec::with_capacity(2 + signature.len() + tail.len() + body.len());
     p.push(version);
     p.push(kind);
     p.extend_from_slice(signature);
@@ -125,10 +153,26 @@ pub fn make(
     assemble(challenge, kind, &sig, &body)
 }
 
+/// [`make`] with a key of either kind. A hybrid key makes a kind 2 or 3
+/// proof, which only versions 3 and 4 carry: with a bare 32-byte
+/// challenge it is signed as version 2 and no server takes it.
+pub fn make_any(
+    secret: &Secret,
+    cert: Option<&AnyCert>,
+    challenge: &[u8],
+    uname: &str,
+    aname: &str,
+) -> Vec<u8> {
+    let (kind, body) = body_any(cert, &secret.public());
+    let sig = secret.sign(&message(challenge, uname, aname, kind, &body));
+    assemble(challenge, kind, &sig, &body)
+}
+
 /// A version 3 or 4 proof taken apart.
 pub struct V3Proof<'a> {
     pub kind: u8,
-    pub signature: [u8; SIGNATURE],
+    /// 64 bytes, or [`HYBRID_SIGNATURE`] for kinds 2 and 3.
+    pub signature: &'a [u8],
     /// The client's ephemeral X25519 key.
     pub client_key: [u8; PUBLIC],
     /// The client's ML-KEM-768 ciphertext: version 4 only.
@@ -170,8 +214,9 @@ pub fn parse_session(proof: &[u8]) -> Option<V3Proof<'_>> {
         return None;
     }
     let kind = *proof.get(1)?;
-    let signature = proof.get(2..2 + SIGNATURE)?.try_into().ok()?;
-    let mut at = 2 + SIGNATURE;
+    let n = signature_len(kind)?;
+    let signature = proof.get(2..2 + n)?;
+    let mut at = 2 + n;
     let client_key = proof.get(at..at + PUBLIC)?.try_into().ok()?;
     at += PUBLIC;
     let ct = if pq {
@@ -252,17 +297,22 @@ pub fn transcript(offer: &[u8], uname: &str, aname: &str, proof: &[u8]) -> Optio
     })
 }
 
-/// What a server trusts.
+/// What a server trusts. Keys and signers are typed ([`Id`]): a listed
+/// Ed25519 key accepts only Ed25519 proofs, a listed hybrid id only
+/// hybrid ones.
 pub struct Policy<'a> {
     /// Keys the server holds directly.
-    pub keys: &'a [[u8; PUBLIC]],
+    pub keys: &'a [Id],
     /// Trusted signers.
-    pub signers: &'a [[u8; PUBLIC]],
+    pub signers: &'a [Id],
     /// Revoked keys. `None` when the list did not parse: every
     /// certificate then fails.
-    pub revoked: Option<&'a [[u8; PUBLIC]]>,
+    pub revoked: Option<&'a [Id]>,
     /// Seconds since 1970 UTC.
     pub now: u64,
+    /// Accept only hybrid keys and certificates (`-C mldsa65`): anything
+    /// else fails with [`PQSIG_REQUIRED`].
+    pub hybrid: bool,
 }
 
 impl Policy<'_> {
@@ -271,7 +321,7 @@ impl Policy<'_> {
         !self.keys.is_empty() || !self.signers.is_empty()
     }
 
-    fn revoked(&self, key: &[u8; PUBLIC]) -> bool {
+    fn revoked(&self, key: &Id) -> bool {
         self.revoked.is_some_and(|r| r.contains(key))
     }
 }
@@ -291,13 +341,17 @@ pub fn check(
 ) -> Result<(), &'static str> {
     let challenge = offer.get(..CHALLENGE).unwrap_or(offer);
     if proof.len() == V1_LEN {
+        if policy.hybrid {
+            return Err(PQSIG_REQUIRED);
+        }
         let (sig, key) = proof.split_at(SIGNATURE);
         let sig: [u8; SIGNATURE] = sig.try_into().map_err(|_| FAILED)?;
         let key: [u8; PUBLIC] = key.try_into().map_err(|_| FAILED)?;
-        if !policy.keys.contains(&key) || !crate::verify(&key, challenge, &sig) {
+        let id = Id::Ed25519(key);
+        if !policy.keys.contains(&id) || !crate::verify(&key, challenge, &sig) {
             return Err(FAILED);
         }
-        return if policy.revoked(&key) {
+        return if policy.revoked(&id) {
             Err(REVOKED)
         } else {
             Ok(())
@@ -309,11 +363,16 @@ pub fn check(
         let m = message(&s, uname, aname, p.kind, p.body);
         (p.kind, p.signature, p.body, m)
     } else {
-        if proof.len() < 2 + SIGNATURE || proof.len() > MAX_LEN || proof[0] != PROOF_VERSION {
+        // Version 2 carries Ed25519 proofs only.
+        if proof.len() < 2 + SIGNATURE
+            || proof.len() > MAX_LEN
+            || proof[0] != PROOF_VERSION
+            || !matches!(proof[1], KIND_KEY | KIND_CERT)
+        {
             return Err(FAILED);
         }
         let kind = proof[1];
-        let sig: [u8; SIGNATURE] = proof[2..2 + SIGNATURE].try_into().map_err(|_| FAILED)?;
+        let sig = &proof[2..2 + SIGNATURE];
         let body = &proof[2 + SIGNATURE..];
         (
             kind,
@@ -322,23 +381,54 @@ pub fn check(
             message(challenge, uname, aname, kind, body),
         )
     };
+    check_signed(policy, kind, sig, body, &signed, Some(uname)).map(|_| ())
+}
+
+/// Checks a proof's `kind`, `signature` and `body` over the message
+/// `signed` against `policy`: the key must be one the policy holds
+/// directly, or the body a certificate it takes (for `uname`, when
+/// given). Returns the prover's key. Shared by the client's proof and
+/// the server's ([`crate::server`]).
+pub fn check_signed(
+    policy: &Policy<'_>,
+    kind: u8,
+    signature: &[u8],
+    body: &[u8],
+    signed: &[u8],
+    uname: Option<&str>,
+) -> Result<Public, &'static str> {
     match kind {
-        KIND_KEY => {
-            let key: [u8; PUBLIC] = body.try_into().map_err(|_| FAILED)?;
-            if !policy.keys.contains(&key) || !crate::verify(&key, &signed, &sig) {
+        KIND_KEY | KIND_HYBRID_KEY => {
+            let key = Public::from_slice(body).ok_or(FAILED)?;
+            if key.is_hybrid() != (kind == KIND_HYBRID_KEY) {
                 return Err(FAILED);
             }
-            if policy.revoked(&key) {
+            if policy.hybrid && !key.is_hybrid() {
+                return Err(PQSIG_REQUIRED);
+            }
+            let id = key.id();
+            if !policy.keys.contains(&id) || !key.verify(signed, signature) {
+                return Err(FAILED);
+            }
+            if policy.revoked(&id) {
                 return Err(REVOKED);
             }
-            Ok(())
+            Ok(key)
         }
-        KIND_CERT => {
-            let cert = Cert::parse(body).map_err(|_| FAILED)?;
-            if !crate::verify(&cert.key, &signed, &sig) {
+        KIND_CERT | KIND_HYBRID_CERT => {
+            let cert = AnyCert::parse(body).map_err(|_| FAILED)?;
+            if cert.is_hybrid() != (kind == KIND_HYBRID_CERT) {
                 return Err(FAILED);
             }
-            check_cert(policy, &cert, Some(uname))
+            if policy.hybrid && !cert.is_hybrid() {
+                return Err(PQSIG_REQUIRED);
+            }
+            let key = cert.key();
+            if !key.verify(signed, signature) {
+                return Err(FAILED);
+            }
+            check_cert(policy, &cert, uname)?;
+            Ok(key)
         }
         _ => Err(FAILED),
     }
@@ -348,37 +438,41 @@ pub fn check(
 /// proof's signature verifies. `uname`, when given, must be its name.
 pub fn check_cert(
     policy: &Policy<'_>,
-    cert: &Cert,
+    cert: &AnyCert,
     uname: Option<&str>,
 ) -> Result<(), &'static str> {
-    if policy.revoked.is_none() || policy.revoked(&cert.key) {
+    if policy.hybrid && !cert.is_hybrid() {
+        return Err(PQSIG_REQUIRED);
+    }
+    let key = cert.key().id();
+    if policy.revoked.is_none() || policy.revoked(&key) {
         return Err(REVOKED);
     }
-    if policy.keys.contains(&cert.key) {
+    if policy.keys.contains(&key) {
         return Ok(());
     }
-    if uname.is_some_and(|u| u != cert.name) {
+    if uname.is_some_and(|u| u != cert.name()) {
         return Err(NAME_MISMATCH);
     }
     if cert.expired(policy.now) {
         return Err(EXPIRED);
     }
-    let trusted = |s: &[u8; PUBLIC]| policy.signers.contains(s) && cert.signed_by(s);
-    if cert
-        .sigs
-        .iter()
-        .any(|(s, _)| trusted(s) && !policy.revoked(s))
-    {
+    // `signed_by` takes only a signer of the certificate's own kind, so a
+    // listed Ed25519 key never vouches for a hybrid certificate, nor a
+    // listed hybrid id for an Ed25519 one.
+    let signers = cert.signers();
+    let trusted = |s: &Id| policy.signers.contains(s) && cert.signed_by(s);
+    if signers.iter().any(|s| trusted(s) && !policy.revoked(s)) {
         return Ok(());
     }
-    if cert.sigs.iter().any(|(s, _)| trusted(s)) {
+    if signers.iter().any(trusted) {
         return Err(REVOKED);
     }
     Err(UNTRUSTED)
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const USER: [u8; SEED] = [1; SEED];
@@ -392,16 +486,27 @@ mod tests {
         c
     }
 
-    fn policy<'a>(
-        keys: &'a [[u8; PUBLIC]],
-        signers: &'a [[u8; PUBLIC]],
-        revoked: &'a [[u8; PUBLIC]],
-    ) -> Policy<'a> {
+    /// Ed25519 keys as trust entries, leaked for the test's life.
+    pub(crate) fn ids(keys: &[[u8; PUBLIC]]) -> &'static [Id] {
+        alloc::boxed::Box::leak(
+            keys.iter()
+                .map(Id::from)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
+    }
+
+    fn policy(
+        keys: &[[u8; PUBLIC]],
+        signers: &[[u8; PUBLIC]],
+        revoked: &[[u8; PUBLIC]],
+    ) -> Policy<'static> {
         Policy {
-            keys,
-            signers,
-            revoked: Some(revoked),
+            keys: ids(keys),
+            signers: ids(signers),
+            revoked: Some(ids(revoked)),
             now: NOW,
+            hybrid: false,
         }
     }
 
@@ -504,9 +609,10 @@ mod tests {
         );
         let broken = Policy {
             keys: &[],
-            signers: &signer,
+            signers: ids(&signer),
             revoked: None,
             now: NOW,
+            hybrid: false,
         };
         assert_eq!(check(&broken, &CHAL, "alice", "", &p), Err(REVOKED));
         // A countersignature by a second trusted signer still counts.
@@ -638,6 +744,259 @@ mod tests {
         for n in [1, 2 + SIGNATURE, head - 1, head] {
             assert_eq!(check(&pol, &offer, "alice", "", &p[..n]), Err(FAILED));
         }
+    }
+
+    fn hybrid(n: u8) -> crate::sig::HybridSecret {
+        crate::sig::HybridSecret([n; crate::sig::HYBRID_SEED])
+    }
+
+    fn hcert(name: &str, user: u8, signer: u8) -> AnyCert {
+        let mut c = crate::cert::Cert2::new(name, hybrid(user).public(), NOW + 60).unwrap();
+        c.sign(&hybrid(signer)).unwrap();
+        AnyCert::V2(c)
+    }
+
+    fn typed(keys: &[Id], signers: &[Id], hybrid: bool) -> Policy<'static> {
+        Policy {
+            keys: alloc::boxed::Box::leak(keys.to_vec().into_boxed_slice()),
+            signers: alloc::boxed::Box::leak(signers.to_vec().into_boxed_slice()),
+            revoked: Some(&[]),
+            now: NOW,
+            hybrid,
+        }
+    }
+
+    /// A version 3 exchange's signed bytes.
+    fn signed3() -> Vec<u8> {
+        signed(&[7; OFFER], &[9; 32]).to_vec()
+    }
+
+    #[test]
+    fn hybrid_key_proofs() {
+        let user = Secret::Hybrid(hybrid(1));
+        let public = user.public();
+        let id = public.id();
+        let s = signed3();
+        let p = make_any(&user, None, &s, "alice", "");
+        assert_eq!(p[1], KIND_HYBRID_KEY);
+        let parsed = parse_v3(&p).unwrap();
+        assert_eq!(parsed.signature.len(), HYBRID_SIGNATURE);
+        assert_eq!(parsed.client_key, [9; 32]);
+        assert_eq!(parsed.body, public.bytes());
+        let offer = &s[..OFFER];
+        assert_eq!(
+            check(&typed(&[id], &[], false), offer, "alice", "", &p),
+            Ok(())
+        );
+        assert_eq!(
+            check(&typed(&[id], &[], true), offer, "alice", "", &p),
+            Ok(())
+        );
+        // The id's 32 bytes listed as an Ed25519 key do not take it.
+        let Id::Hybrid(raw) = id else { panic!() };
+        assert_eq!(
+            check(
+                &typed(&[Id::Ed25519(raw)], &[], false),
+                offer,
+                "alice",
+                "",
+                &p
+            ),
+            Err(FAILED)
+        );
+        // Either half of the signature changed.
+        for at in [2 + 5, 2 + SIGNATURE + 5] {
+            let mut q = p.clone();
+            q[at] ^= 1;
+            assert_eq!(
+                check(&typed(&[id], &[], false), offer, "alice", "", &q),
+                Err(FAILED)
+            );
+        }
+        // Wrong kind for the body.
+        let mut q = p.clone();
+        q[1] = KIND_KEY;
+        assert_eq!(
+            check(&typed(&[id], &[], false), offer, "alice", "", &q),
+            Err(FAILED)
+        );
+        // Version 2 does not carry hybrid proofs.
+        let p2 = make_any(&user, None, &CHAL, "alice", "");
+        assert_eq!(
+            check(&typed(&[id], &[], false), &CHAL, "alice", "", &p2),
+            Err(FAILED)
+        );
+        // Version 4 carries them too.
+        let offer4 = [5u8; OFFER_PQ];
+        let s4 = signed_pq(&offer4, &[9; 32], &[3; CT]);
+        let p4 = make_any(&user, None, &s4, "alice", "");
+        assert!(parse_v4(&p4).unwrap().pq());
+        assert_eq!(
+            check(&typed(&[id], &[], true), &offer4, "alice", "", &p4),
+            Ok(())
+        );
+    }
+
+    /// Stripping the ML-DSA half: what is left is an Ed25519 signature
+    /// over the hybrid framing, not over the proof's message, and the
+    /// listed hybrid id does not take an Ed25519 key anyway.
+    #[test]
+    fn stripped_hybrid_proofs_fail() {
+        let h = hybrid(1);
+        let user = Secret::Hybrid(h.clone());
+        let s = signed3();
+        let offer = &s[..OFFER];
+        let p = make_any(&user, None, &s, "alice", "");
+        let ed_pub = crate::public_key(&h.ed25519());
+        let mut stripped = alloc::vec![V3, KIND_KEY];
+        stripped.extend_from_slice(&p[2..2 + SIGNATURE]);
+        stripped.extend_from_slice(&[9; 32]);
+        stripped.extend_from_slice(&ed_pub);
+        // Even a server that lists the Ed25519 half refuses it: the
+        // signature is over "pghybrid1" 0x00 || message.
+        let both = [user.public().id(), Id::Ed25519(ed_pub)];
+        assert_eq!(
+            check(&typed(&both, &[], false), offer, "alice", "", &stripped),
+            Err(FAILED)
+        );
+        assert_eq!(
+            check(
+                &typed(&[user.public().id()], &[], false),
+                offer,
+                "alice",
+                "",
+                &stripped
+            ),
+            Err(FAILED)
+        );
+        // A server that requires hybrid says so.
+        assert_eq!(
+            check(&typed(&both, &[], true), offer, "alice", "", &stripped),
+            Err(PQSIG_REQUIRED)
+        );
+        // A hybrid certificate cut down to its Ed25519 parts is not a
+        // pgcert1, and a pgcert1 with the same key is signed by nobody the
+        // server trusts.
+        let c = hcert("alice", 1, 2);
+        let line = c.encode();
+        assert!(Cert::parse(line.as_bytes()).is_err());
+    }
+
+    /// The attack the typed lists stop: a quantum attacker who can find an
+    /// Ed25519 secret for any point takes a listed hybrid id as an
+    /// Ed25519 public key. Here the id is chosen to be an Ed25519 key
+    /// whose seed is known, which is what such an attacker would have.
+    #[test]
+    fn a_hybrid_id_is_never_an_ed25519_key() {
+        let attacker = [9u8; SEED];
+        let point = crate::public_key(&attacker);
+        let s = signed3();
+        let offer = &s[..OFFER];
+        let listed = [Id::Hybrid(point)];
+        let p = make(&attacker, None, &s, "alice", "");
+        assert_eq!(
+            check(&typed(&listed, &[], false), offer, "alice", "", &p),
+            Err(FAILED)
+        );
+        let v1 = {
+            let mut v = crate::sign(&attacker, &CHAL).to_vec();
+            v.extend_from_slice(&point);
+            v
+        };
+        assert_eq!(
+            check(&typed(&listed, &[], false), &CHAL, "alice", "", &v1),
+            Err(FAILED)
+        );
+        // As a signer: a pgcert1 the attacker signs for its own key.
+        let mut forged = Cert::new("alice", crate::public_key(&USER), 0).unwrap();
+        forged.sign(&attacker).unwrap();
+        let p = make(&USER, Some(&forged), &s, "alice", "");
+        assert_eq!(
+            check(&typed(&[], &listed, false), offer, "alice", "", &p),
+            Err(UNTRUSTED)
+        );
+        // And the other way round: an Ed25519 signer listed bare does not
+        // vouch for a pgcert2 whose signer's id has the same bytes.
+        let c = hcert("alice", 1, 2);
+        let raw = hybrid(2).public().id();
+        let user = Secret::Hybrid(hybrid(1));
+        let p = make_any(&user, Some(&c), &s, "alice", "");
+        assert_eq!(
+            check(
+                &typed(&[], &[Id::Ed25519(raw)], false),
+                offer,
+                "alice",
+                "",
+                &p
+            ),
+            Err(UNTRUSTED)
+        );
+    }
+
+    #[test]
+    fn hybrid_certificates() {
+        let c = hcert("alice", 1, 2);
+        let signer = [Id::Hybrid(hybrid(2).public().id())];
+        let user = Secret::Hybrid(hybrid(1));
+        let s = signed3();
+        let offer = &s[..OFFER];
+        let p = make_any(&user, Some(&c), &s, "alice", "");
+        assert_eq!(p[1], KIND_HYBRID_CERT);
+        assert!(p.len() < MAX_LEN);
+        assert_eq!(
+            check(&typed(&[], &signer, false), offer, "alice", "", &p),
+            Ok(())
+        );
+        assert_eq!(
+            check(&typed(&[], &signer, true), offer, "alice", "", &p),
+            Ok(())
+        );
+        assert_eq!(
+            check(&typed(&[], &signer, false), offer, "bob", "", &p),
+            Err(FAILED)
+        );
+        let p = make_any(&user, Some(&c), &s, "bob", "");
+        assert_eq!(
+            check(&typed(&[], &signer, false), offer, "bob", "", &p),
+            Err(NAME_MISMATCH)
+        );
+        // Revoked by id.
+        let mut pol = typed(&[], &signer, false);
+        pol.revoked = Some(alloc::boxed::Box::leak(
+            alloc::vec![signer[0]].into_boxed_slice(),
+        ));
+        let p = make_any(&user, Some(&c), &s, "alice", "");
+        assert_eq!(check(&pol, offer, "alice", "", &p), Err(REVOKED));
+        // An Ed25519 certificate where hybrid is required.
+        let e = cert("alice", NOW + 60, &SIGNER);
+        let pe = make(&USER, Some(&e), &s, "alice", "");
+        let both = [signer[0], Id::Ed25519(crate::public_key(&SIGNER))];
+        assert_eq!(
+            check(&typed(&[], &both, false), offer, "alice", "", &pe),
+            Ok(())
+        );
+        assert_eq!(
+            check(&typed(&[], &both, true), offer, "alice", "", &pe),
+            Err(PQSIG_REQUIRED)
+        );
+        // The largest certificate still fits a proof.
+        let mut big = c.clone();
+        for n in 3..3 + crate::cert::MAX_SIGS2 as u8 - 1 {
+            big.sign(&Secret::Hybrid(hybrid(n))).unwrap();
+        }
+        let s4 = signed_pq(&[5u8; OFFER_PQ], &[9; 32], &[3; CT]);
+        let p = make_any(&user, Some(&big), &s4, "alice", "");
+        assert!(p.len() <= MAX_LEN, "{}", p.len());
+        assert_eq!(
+            check(
+                &typed(&[], &signer, true),
+                &[5u8; OFFER_PQ],
+                "alice",
+                "",
+                &p
+            ),
+            Ok(())
+        );
     }
 
     #[test]

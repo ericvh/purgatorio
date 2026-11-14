@@ -13,7 +13,10 @@
 //! hybrid post-quantum exchange: any other proof, or an attach without
 //! one, fails with `post-quantum key exchange required`. Without it a
 //! client may still choose that exchange (`docs/auth.md`, "Post-quantum
-//! options").
+//! options"). `-C mldsa65` takes only proofs signed with a hybrid
+//! Ed25519 + ML-DSA-65 key or certificate; any other fails with `post-quantum
+//! signature required` (`docs/auth.md`, "Post-quantum signatures").
+//! Names are joined with `/`: `-C x25519mlkem768/mldsa65`.
 
 use purgatorio::abi::{export, mount};
 use purgatorio::arg::Arg;

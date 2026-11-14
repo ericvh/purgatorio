@@ -23,6 +23,35 @@ pub const REVOKED: &str = "/lib/keys/revoked";
 /// The keys trusted to sign modules (`docs/signing.md`).
 pub const MODULES: &str = "/lib/keys/modules";
 
+/// Parses `-a ed25519|hybrid`, the kind of key a tool makes: `true` for
+/// a hybrid Ed25519 + ML-DSA-65 key (`docs/auth.md`, "Post-quantum
+/// signatures").
+pub fn alg(s: &str) -> Result<bool, Error> {
+    match s {
+        "ed25519" => Ok(false),
+        "hybrid" => Ok(true),
+        _ => Err(Error(format!(
+            "unknown algorithm {s}: want ed25519 or hybrid"
+        ))),
+    }
+}
+
+/// A fresh key of the kind [`alg`] named.
+pub fn new_key(hybrid: bool) -> fmt::sig::Secret {
+    if hybrid {
+        let mut s = [0u8; fmt::sig::HYBRID_SEED];
+        Rng::fill(&mut s);
+        fmt::sig::Secret::Hybrid(fmt::sig::HybridSecret(s))
+    } else {
+        fmt::sig::Secret::Ed25519(Rng::seed())
+    }
+}
+
+/// The name of a key's kind, as `-a` takes it.
+pub fn kind(hybrid: bool) -> &'static str {
+    if hybrid { "hybrid" } else { "ed25519" }
+}
+
 /// Parses `-C m,t`: Argon2id memory in KiB and passes.
 pub fn cost(s: &str) -> Result<(u32, u32), Error> {
     let bad = || Error(format!("bad cost {s}: want m,t"));

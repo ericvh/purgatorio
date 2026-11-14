@@ -31,12 +31,13 @@ const HOST: [u8; 32] = [9; 32];
 /// data) it does not, nor does it check for another session's keys.
 fn server_proof(data: &[u8]) {
     let keys = Keys::derive(&[3; 32], data);
-    let host = [purg_auth::public_key(&HOST)];
+    let host = [purg_auth::sig::Id::Ed25519(purg_auth::public_key(&HOST))];
     let policy = Policy {
         keys: &host,
         signers: &host,
         revoked: Some(&[]),
         now: 0,
+        hybrid: false,
     };
     assert!(
         server::check(&policy, &keys, data).is_err(),

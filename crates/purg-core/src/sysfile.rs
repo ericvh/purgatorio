@@ -217,23 +217,27 @@ impl Prog {
     /// namespace trusts as a server (`docs/auth.md`).
     ///
     /// With `MPQ` the exchange must be the post-quantum one of a version 4
-    /// proof (`docs/auth.md`, "Post-quantum options").
+    /// proof (`docs/auth.md`, "Post-quantum options"). With `MPQSIG` the
+    /// server must prove itself with a hybrid Ed25519 + ML-DSA-65 key
+    /// (`docs/auth.md`, "Post-quantum signatures").
     pub fn mount(&self, fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<()> {
-        use purg_abi::mount::{MNOAUTH, MPQ, MSRVAUTH};
+        use purg_abi::mount::{MNOAUTH, MPQ, MPQSIG, MSRVAUTH};
         let noauth = flags & MNOAUTH != 0;
-        let srvauth = flags & MSRVAUTH != 0;
+        // A hybrid server proof is still a server proof.
+        let hybrid = flags & MPQSIG != 0;
+        let srvauth = flags & MSRVAUTH != 0 || hybrid;
         let pq = flags & MPQ != 0;
         if noauth && (srvauth || pq) {
             return Err(Error::new(error::EBADARG));
         }
-        let bind = flags & !(MNOAUTH | MSRVAUTH | MPQ);
+        let bind = flags & !(MNOAUTH | MSRVAUTH | MPQ | MPQSIG);
         let fd = self.fgrp.get(fd)?;
         let user = self.proc.user();
         let pgrp = self.pgrp.clone();
         let platform = self.kernel.platform.clone();
         let check = move |keys: &purg_auth::session::Keys, proof: &[u8]| {
             let now = platform.now_ns() / 1_000_000_000;
-            crate::auth::check_server(&pgrp, now, keys, proof)
+            crate::auth::check_server(&*platform, &pgrp, now, hybrid, keys, proof)
         };
         let server: Option<crate::devmnt::ServerCheck<'_>> =
             if srvauth { Some(&check) } else { None };
@@ -244,12 +248,13 @@ impl Prog {
                 .mount_auth(&fd, &afd, aname, &user, pq, server)?
         } else {
             let pgrp = self.pgrp.clone();
+            let platform2 = self.kernel.platform.clone();
             self.kernel.mnt.mount(
                 fd,
                 aname,
                 &user,
                 flags & (MNOAUTH | MPQ),
-                |challenge| crate::auth::client_proof(&pgrp, &user, aname, challenge),
+                |challenge| crate::auth::client_proof(&*platform2, &pgrp, &user, aname, challenge),
                 server,
             )?
         };
@@ -316,7 +321,8 @@ impl Prog {
     /// prove a key or a certificate the caller's namespace trusts, and
     /// when it trusts none nobody gets in; `export::RDONLY` refuses every change to it;
     /// `export::ENCRYPT` refuses every attach that is not encrypted, and
-    /// `mount::MPQ` every attach without the post-quantum exchange. The
+    /// `mount::MPQ` every attach without the post-quantum exchange, and
+    /// `mount::MPQSIG` every proof not signed with a hybrid key. The
     /// server's own proof is signed with the key the caller's mount would
     /// prove with.
     pub fn export(&self, fd: i32, dir: &str, flags: u32) -> Result<()> {
@@ -334,6 +340,7 @@ impl Prog {
             rdonly: flags & purg_abi::export::RDONLY != 0,
             encrypt: flags & purg_abi::export::ENCRYPT != 0,
             pq: flags & purg_abi::mount::MPQ != 0,
+            pqsig: flags & purg_abi::mount::MPQSIG != 0,
             user: self.proc.user(),
             keyfile: (!keyfile.is_empty()).then(|| absolute(keyfile, &self.dot())),
         };

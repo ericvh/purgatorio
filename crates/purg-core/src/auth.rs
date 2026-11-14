@@ -12,12 +12,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 pub use purg_abi::auth::{
-    CHALLENGE, ENCRYPTED, ENCRYPTION_REQUIRED, EXPIRED, FAILED, NAME_MISMATCH, NO_KEY, NO_PQ,
-    NO_SESSION, NO_TRUST, NOT_REQUIRED, OFFER, OFFER_PQ, PQ_REQUIRED, PROOF, PUBLIC, REQUIRED,
-    REVOKED, SEED, SERVER_FAILED, SERVER_NONE, SERVER_PROOF_OFFSET, SIGNATURE, SIGNED, SIGNED_PQ,
-    UNTRUSTED,
+    CHALLENGE, ENCRYPTED, ENCRYPTION_REQUIRED, EXPIRED, FAILED, HYBRID_PUBLIC, NAME_MISMATCH,
+    NO_KEY, NO_PQ, NO_SESSION, NO_TRUST, NOT_REQUIRED, OFFER, OFFER_PQ, PQ_REQUIRED,
+    PQSIG_REQUIRED, PROOF, PUBLIC, REQUIRED, REVOKED, SEED, SERVER_FAILED, SERVER_NONE,
+    SERVER_PROOF_OFFSET, SIGNATURE, SIGNED, SIGNED_PQ, UNTRUSTED,
 };
-pub use purg_auth::cert::Cert;
+pub use purg_auth::cert::{AnyCert, Cert};
+pub use purg_auth::sig::{Id, Public, Secret};
 pub use purg_auth::{public_key, sign, verify};
 
 use crate::pgrp::Pgrp;
@@ -30,11 +31,13 @@ pub const FIXTURE: u8 = 0x42;
 /// `true` when `proof` is a version 1 proof by one of `allowed` over
 /// `challenge`.
 pub fn accept(allowed: &[[u8; PUBLIC]], challenge: &[u8], proof: &[u8]) -> bool {
+    let keys: Vec<Id> = allowed.iter().map(Id::from).collect();
     let policy = purg_auth::proof::Policy {
-        keys: allowed,
+        keys: &keys,
         signers: &[],
         revoked: Some(&[]),
         now: 0,
+        hybrid: false,
     };
     proof.len() == PROOF && purg_auth::proof::check(&policy, challenge, "", "", proof).is_ok()
 }
@@ -58,11 +61,57 @@ pub(crate) fn read_file(pgrp: &Pgrp, path: &str, max: usize) -> Option<Vec<u8>> 
     }
 }
 
-/// Reads a 32-byte key file. Anything else, including a missing file, is
-/// `None`.
-pub(crate) fn read_key(pgrp: &Pgrp, path: &str) -> Option<[u8; PUBLIC]> {
-    read_file(pgrp, path, PUBLIC)?.try_into().ok()
+/// Reads a public key file: 32 bytes for Ed25519, [`HYBRID_PUBLIC`] for
+/// a hybrid key. Anything else, including a missing file, is `None`.
+pub(crate) fn read_public(pgrp: &Pgrp, path: &str) -> Option<Public> {
+    Public::from_slice(&read_file(pgrp, path, HYBRID_PUBLIC)?)
 }
+
+/// Reads a seed file: 32 bytes for Ed25519, 64 for a hybrid key.
+pub(crate) fn read_seed(pgrp: &Pgrp, path: &str) -> Option<Secret> {
+    Secret::from_seed_file(&read_file(pgrp, path, purg_auth::sig::HYBRID_SEED)?)
+}
+
+/// The stack ML-DSA work gets ([`deep`]): it takes about 190 KiB at its
+/// deepest natively, and a kernel thread has 256 KiB, an export worker 64.
+const DEEP_STACK: usize = 512 << 10;
+
+/// Runs `f`, which signs or verifies with a hybrid key when `hybrid`, on
+/// a stack large enough for ML-DSA (`Platform::deep`). Ed25519 work runs
+/// in place.
+pub(crate) fn deep<T: Send>(
+    platform: &dyn purg_platform::Platform,
+    hybrid: bool,
+    f: impl FnOnce() -> T + Send,
+) -> T {
+    if !hybrid {
+        return f();
+    }
+    let mut f = Some(f);
+    let mut out = None;
+    platform.deep(DEEP_STACK, &mut || {
+        if let Some(f) = f.take() {
+            out = Some(f());
+        }
+    });
+    match out {
+        Some(v) => v,
+        // `deep` returns only once `f` has run.
+        None => unreachable!("Platform::deep did not run its closure"),
+    }
+}
+
+/// Whether a proof (or a server's proof, from `at`, where its kind is)
+/// is by a hybrid key, so checking it needs [`deep`].
+pub(crate) fn hybrid_kind(proof: &[u8], at: usize) -> bool {
+    proof.get(at).is_some_and(|&k| {
+        k == purg_abi::auth::KIND_HYBRID_KEY || k == purg_abi::auth::KIND_HYBRID_CERT
+    })
+}
+
+/// The longest authinfo read: a hybrid one with a `pgcert2` that has
+/// every signature.
+const MAX_INFO: usize = 64 * 1024;
 
 /// A name that can be a path element under `usr/`.
 pub(crate) fn safe_user(user: &str) -> bool {
@@ -72,7 +121,7 @@ pub(crate) fn safe_user(user: &str) -> bool {
 /// A key the client signs with: its seed (or `#¤` holding it) and, when it
 /// has one, a certificate for its public key.
 enum Signer {
-    Seed([u8; SEED]),
+    Seed(Secret),
     Factotum([u8; PUBLIC]),
 }
 
@@ -83,25 +132,30 @@ enum Signer {
 /// `/usr/<user>/keyring/default`, or a seed file: `/usr/<user>/key`, then
 /// the public test key, which nothing trusts unless a test installs it.
 fn sign_as(
+    platform: &dyn purg_platform::Platform,
     pgrp: &Pgrp,
     user: &str,
     message: impl FnOnce(u8, &[u8]) -> Vec<u8>,
-) -> crate::error::Result<(u8, [u8; SIGNATURE], Vec<u8>)> {
+) -> crate::error::Result<(u8, Vec<u8>, Vec<u8>)> {
     let (signer, cert) = client_key(pgrp, user)?;
     let public = match &signer {
-        Signer::Seed(s) => public_key(s),
-        Signer::Factotum(p) => *p,
+        // A hybrid key's public half takes an ML-DSA key generation; the
+        // certificate holds it already.
+        Signer::Seed(s @ Secret::Hybrid(_)) => match cert.as_ref().map(AnyCert::key) {
+            Some(p @ Public::Hybrid(_)) => p,
+            _ => deep(platform, true, || s.public()),
+        },
+        Signer::Seed(s) => s.public(),
+        Signer::Factotum(p) => Public::Ed25519(*p),
     };
-    let cert = cert.filter(|c| c.key == public);
-    let (kind, body) = purg_auth::proof::body(cert.as_ref(), &public);
+    let cert = cert.filter(|c| c.key() == public);
+    let (kind, body) = purg_auth::proof::body_any(cert.as_ref(), &public);
     let msg = message(kind, &body);
     let sig = match signer {
-        Signer::Seed(s) => sign(&s, &msg),
+        Signer::Seed(s) => deep(platform, s.is_hybrid(), || s.sign(&msg)),
         Signer::Factotum(_) => {
             let p = factotum_sign(pgrp, &msg).ok_or(crate::error::Error::new(NO_KEY))?;
-            p[..SIGNATURE]
-                .try_into()
-                .map_err(|_| crate::error::Error::new(NO_KEY))?
+            p[..SIGNATURE].to_vec()
         }
     };
     Ok((kind, sig, body))
@@ -111,12 +165,13 @@ fn sign_as(
 /// the key [`sign_as`] finds. `challenge` is what the proof signs: the
 /// [`SIGNED`] bytes of a version 3 exchange.
 pub(crate) fn client_proof(
+    platform: &dyn purg_platform::Platform,
     pgrp: &Pgrp,
     user: &str,
     aname: &str,
     challenge: &[u8],
 ) -> crate::error::Result<Vec<u8>> {
-    let (kind, sig, body) = sign_as(pgrp, user, |kind, body| {
+    let (kind, sig, body) = sign_as(platform, pgrp, user, |kind, body| {
         purg_auth::proof::message(challenge, user, aname, kind, body)
     })?;
     Ok(purg_auth::proof::assemble(challenge, kind, &sig, &body))
@@ -128,20 +183,24 @@ pub(crate) fn client_proof(
 /// so the exporting prog need not be able to read the key; else the key a
 /// mount by `user` would prove with. `None` when there is no key.
 pub(crate) fn server_proof(
+    platform: &dyn purg_platform::Platform,
     pgrp: &Pgrp,
     user: &str,
     keyfile: Option<&str>,
     keys: &purg_auth::session::Keys,
+    hybrid: bool,
 ) -> Option<Vec<u8>> {
     if let Some(path) = keyfile {
-        let text = read_file(pgrp, path, 4096)?;
+        let text = read_file(pgrp, path, MAX_INFO)?;
         let info = purg_auth::keys::AuthInfo::parse(&text).ok()?;
-        return Some(purg_auth::server::make(&info.seed, Some(&info.cert), keys));
+        return Some(deep(platform, info.key.is_hybrid(), || {
+            purg_auth::server::make_any(&info.key, Some(&info.cert), keys)
+        }));
     }
-    if let Some(p) = factotum_server(pgrp, keys) {
+    if let Some(p) = factotum_server(pgrp, keys, hybrid) {
         return Some(p);
     }
-    let (kind, sig, body) = sign_as(pgrp, user, |kind, body| {
+    let (kind, sig, body) = sign_as(platform, pgrp, user, |kind, body| {
         purg_auth::server::message(keys, kind, body)
     })
     .ok()?;
@@ -152,23 +211,41 @@ pub(crate) fn server_proof(
 const FACTOTUM_RPC: &str = "/mnt/factotum/rpc";
 
 /// Asks the guest factotum for a server proof over the session's
-/// transcript and bound value (`docs/auth.md`, "Factotum"). `None` when
-/// it is not mounted, has no key, or answers anything else.
-fn factotum_server(pgrp: &Pgrp, keys: &purg_auth::session::Keys) -> Option<Vec<u8>> {
+/// transcript and bound value (`docs/auth.md`, "Factotum"): with its
+/// hybrid key first when the client proved with one (`hybrid`), else
+/// with its Ed25519 key first. `None` when it is not mounted, has no key,
+/// or answers anything else.
+fn factotum_server(pgrp: &Pgrp, keys: &purg_auth::session::Keys, hybrid: bool) -> Option<Vec<u8>> {
+    let order = if hybrid {
+        ["hybrid", "ed25519"]
+    } else {
+        ["ed25519", "hybrid"]
+    };
+    order
+        .iter()
+        .find_map(|p| factotum_server_proto(pgrp, keys, p))
+}
+
+fn factotum_server_proto(
+    pgrp: &Pgrp,
+    keys: &purg_auth::session::Keys,
+    proto: &str,
+) -> Option<Vec<u8>> {
     let c = pgrp.namec(FACTOTUM_RPC, "/").ok()?;
     let c = open(c, purg_abi::mode::ORDWR).ok()?;
     let rpc = |req: &[u8]| -> Option<Vec<u8>> {
         if c.dev.write(&c, req, 0).ok()? != req.len() {
             return None;
         }
-        let mut buf = alloc::vec![0u8; 4096];
+        let mut buf = alloc::vec![0u8; purg_auth::proof::MAX_LEN + 3];
         let n = c.dev.read(&c, &mut buf, 0).ok()?;
         buf.truncate(n);
         Some(buf)
     };
     // The key is the server's, whose certificate names the host rather
     // than the exporting user: no `user` attribute.
-    if rpc(b"start proto=ed25519 role=server")? != b"ok" {
+    let start = alloc::format!("start proto={proto} role=server");
+    if rpc(start.as_bytes())? != b"ok" {
         return None;
     }
     let mut w = b"write ".to_vec();
@@ -198,9 +275,11 @@ const SERVER_SIGNERS: &str = "/lib/keys/serversigners";
 /// What one side trusts: keys it holds directly, signers, and revoked keys
 /// (`None` when that list does not parse).
 pub(crate) struct Trust {
-    pub keys: Vec<[u8; PUBLIC]>,
-    pub signers: Vec<[u8; PUBLIC]>,
-    pub revoked: Option<Vec<[u8; PUBLIC]>>,
+    pub keys: Vec<Id>,
+    pub signers: Vec<Id>,
+    pub revoked: Option<Vec<Id>>,
+    /// Take only hybrid keys and certificates (`MPQSIG`).
+    pub hybrid: bool,
 }
 
 impl Trust {
@@ -208,7 +287,7 @@ impl Trust {
     /// with `keys` as the directly held keys. A missing revocation list
     /// revokes nothing; one that is there but cannot be read or parsed
     /// fails closed.
-    fn read(pgrp: &Pgrp, keys: Vec<[u8; PUBLIC]>) -> Trust {
+    fn read(pgrp: &Pgrp, keys: Vec<Id>) -> Trust {
         let signers = read_file(pgrp, SIGNERS_LIST, MAX_LIST)
             .map(|t| purg_auth::keys::parse_list_lenient(&t))
             .unwrap_or_default();
@@ -221,6 +300,7 @@ impl Trust {
             keys,
             signers,
             revoked,
+            hybrid: false,
         }
     }
 
@@ -234,10 +314,10 @@ impl Trust {
             .unwrap_or_default();
         let mut keys = purg_auth::keys::keys_for(&users, Some(uname));
         if safe_user(uname)
-            && let Some(key) = read_key(pgrp, &alloc::format!("/usr/{uname}/key.pub"))
-            && !keys.contains(&key)
+            && let Some(key) = read_public(pgrp, &alloc::format!("/usr/{uname}/key.pub"))
+            && !keys.contains(&key.id())
         {
-            keys.push(key);
+            keys.push(key.id());
         }
         Trust::read(pgrp, keys)
     }
@@ -267,6 +347,7 @@ impl Trust {
             signers: &self.signers,
             revoked: self.revoked.as_deref(),
             now,
+            hybrid: self.hybrid,
         }
     }
 
@@ -278,31 +359,38 @@ impl Trust {
 /// Checks a server's proof for the session `keys` against what `pgrp`
 /// trusts as a server ([`Trust::server`]).
 pub(crate) fn check_server(
+    platform: &dyn purg_platform::Platform,
     pgrp: &Pgrp,
     now: u64,
+    hybrid: bool,
     keys: &purg_auth::session::Keys,
     proof: &[u8],
 ) -> crate::error::Result<()> {
-    let t = Trust::server(pgrp);
-    purg_auth::server::check(&t.policy(now), keys, proof).map_err(crate::error::Error::new)
+    let mut t = Trust::server(pgrp);
+    t.hybrid = hybrid;
+    let policy = t.policy(now);
+    deep(platform, hybrid_kind(proof, 0), || {
+        purg_auth::server::check(&policy, keys, proof)
+    })
+    .map_err(crate::error::Error::new)
 }
 
-fn client_key(pgrp: &Pgrp, user: &str) -> crate::error::Result<(Signer, Option<Cert>)> {
+fn client_key(pgrp: &Pgrp, user: &str) -> crate::error::Result<(Signer, Option<AnyCert>)> {
     if let Some(ctl) = read_file(pgrp, "#¤/ctl", 4096)
         && let Some(hex) = ctl.strip_prefix(b"key ")
         && let Some(public) = hex
             .get(..PUBLIC * 2)
             .and_then(purg_auth::hex::array::<PUBLIC>)
     {
-        let cert = purg_auth::keys::find_cert(&ctl);
+        let cert = purg_auth::keys::find_cert(&ctl).map(AnyCert::V1);
         return Ok((Signer::Factotum(public), cert));
     }
     if safe_user(user) {
         let path = alloc::format!("/usr/{user}/keyring/default");
-        if let Some(text) = read_file(pgrp, &path, 4096)
+        if let Some(text) = read_file(pgrp, &path, MAX_INFO)
             && let Ok(info) = purg_auth::keys::AuthInfo::parse(&text)
         {
-            return Ok((Signer::Seed(info.seed), Some(info.cert)));
+            return Ok((Signer::Seed(info.key), Some(info.cert)));
         }
     }
     let mut paths = Vec::new();
@@ -311,7 +399,7 @@ fn client_key(pgrp: &Pgrp, user: &str) -> crate::error::Result<(Signer, Option<C
     }
     paths.push(String::from("/lib/test/auth.key"));
     for path in paths {
-        if let Some(key) = read_key(pgrp, &path) {
+        if let Some(key) = read_seed(pgrp, &path) {
             return Ok((Signer::Seed(key), None));
         }
     }

@@ -351,12 +351,16 @@ fn read_key(path: &Path) -> Option<[u8; 32]> {
 /// The trust for `uname`, read now from the files the options name: an
 /// edit takes effect on the next ticket.
 fn trust(o: &Options, uname: &str) -> Trust {
-    let mut keys: Vec<[u8; 32]> = o.keys.iter().filter_map(|p| read_key(p)).collect();
+    let mut keys: Vec<purg_auth::sig::Id> = o
+        .keys
+        .iter()
+        .filter_map(|p| read_key(p).map(purg_auth::sig::Id::Ed25519))
+        .collect();
     if let Some(dir) = &o.user_keys
         && purg_auth::cert::valid_name(uname)
         && let Some(k) = read_key(&dir.join(uname).join("key.pub"))
     {
-        keys.push(k);
+        keys.push(purg_auth::sig::Id::Ed25519(k));
     }
     let signers = o
         .signers

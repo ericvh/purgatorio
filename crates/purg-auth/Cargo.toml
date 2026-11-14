@@ -37,6 +37,10 @@ hkdf = { version = "0.12", default-features = false }
 # ML-KEM-768 (FIPS 203) for the hybrid key exchange of proof version 4
 # and crypt's public-key mode (docs/auth.md, "Post-quantum options").
 ml-kem = { version = "0.3.4", default-features = false }
+# ML-DSA-65 (FIPS 204) for the hybrid Ed25519 + ML-DSA-65 signatures
+# (docs/auth.md, "Post-quantum signatures"). `alloc` only: no pkcs8, no
+# getrandom; keys come from 32-byte seeds and signing is deterministic.
+ml-dsa = { version = "0.1.2", default-features = false, features = ["alloc"] }
 hmac = { version = "0.12", default-features = false, optional = true }
 ring = { version = "0.17", default-features = false, optional = true }
 

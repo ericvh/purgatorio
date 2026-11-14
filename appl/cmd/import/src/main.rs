@@ -3,8 +3,9 @@
 //! asks, with the authinfo `keyfile` if given; `-A` skips authentication.
 //! `-S` requires the server to prove itself too, as `mount -S` does: with
 //! a key or certificate trusted for the host `addr` names. `-C alg` picks
-//! the key exchange as `mount -C` does (`x25519mlkem768` requires the
-//! post-quantum one).
+//! the key exchange and the signatures as `mount -C` does
+//! (`x25519mlkem768` requires the post-quantum exchange, `mldsa65` hybrid
+//! signatures from the server).
 //!
 //! `-9 tree` (an addition) is for a Plan 9 `exportfs`, or `9export` here:
 //! before 9P, the name of the tree wanted is sent and the server's `OK`
@@ -14,7 +15,7 @@
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 
-use purgatorio::abi::mount::{MNOAUTH, MPQ, MREPL, MSRVAUTH};
+use purgatorio::abi::mount::{MNOAUTH, MPQ, MPQSIG, MREPL, MSRVAUTH};
 use purgatorio::arg::Arg;
 use purgatorio::dial;
 use purgatorio::{Context, Error};
@@ -60,7 +61,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let rest = arg.argv();
-    if rest.len() != 2 || (flags & MNOAUTH != 0 && flags & (MSRVAUTH | MPQ) != 0) {
+    if rest.len() != 2 || (flags & MNOAUTH != 0 && flags & (MSRVAUTH | MPQ | MPQSIG) != 0) {
         return Err(Error(format!("usage: {USAGE}")));
     }
     let conn = dial::dial(&rest[0])?;
