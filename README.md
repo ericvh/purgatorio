@@ -60,7 +60,7 @@ a `; ` prompt.
 | W4 archive commands: `gettar gunzip gzip lstar puttar tar` (ustar and gzip code in `appl/archive`) | done |
 | Admin commands: `cron logfile mntgen ndb/query`; `mount {command}` | done |
 | Namespace and Styx tools: `styxchat styxmon iostats nsbuild lockfs trfs fcp tarfs archfs` | done |
-| Remote commands: `rcmd cpu auxi/rstyxd auxi/cpuslave`, authenticated with the mount proof both ways (`-S` requires the server's) and encrypted after it; `rcmd host mcpd` is a remote MCP server. See [docs/rcmd.md](docs/rcmd.md) | done |
+| Remote commands: `rcmd cpu auxi/rstyxd auxi/cpuslave`, authenticated with the mount proof both ways (`-S` requires the server's) and encrypted after it; `rcmd -e x25519mlkem768`, `cpu -C x25519mlkem768` and `rstyxd -C x25519mlkem768` use and require the hybrid post-quantum key exchange; `rcmd host mcpd` is a remote MCP server. See [docs/rcmd.md](docs/rcmd.md) | done |
 | Plan 9 interop: `9export -A` and `import -9 tree` (exportfs's opening, no `p9any`) | tested against each other only |
 | `dbfs` and `rawdbfs`: the records of a text file, or of an append-only binary log, as files (dbfs(4)) | done; rawdbfs's file format is its own |
 | `fs`: trees as values, with all of fs(1)'s modules (`walk filter select merge write bundle unbundle exec pipe proto run setroot chstat compose mergewrite void log` and the gates), `@{...}` command blocks | done; `mergewrite` takes its selector as `-c` |

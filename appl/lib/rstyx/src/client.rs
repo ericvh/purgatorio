@@ -16,9 +16,9 @@ use std::fs::File;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 
-use purgatorio::abi::auth::{FAILED, NO_SESSION, SERVER_NONE};
+use purgatorio::abi::auth::{FAILED, NO_PQ, NO_SESSION, SERVER_NONE};
 use purgatorio::abi::pctl::NEWFD;
-use purgatorio::auth::fmt::proof::OFFER;
+use purgatorio::auth::fmt::proof::{OFFER, OFFER_PQ};
 use purgatorio::auth::fmt::session;
 use purgatorio::{Error, auth, dial};
 
@@ -41,21 +41,33 @@ pub struct Opts {
     pub keyfile: Option<String>,
     /// `-x`: the directory served as `/n/client` (default `/`).
     pub export: Option<String>,
+    /// `-e x25519mlkem768` (`-C` for cpu): use and require the hybrid
+    /// X25519 + ML-KEM-768 key exchange (`docs/rcmd.md`, "Encryption").
+    pub pq: bool,
 }
 
 /// The one cipher, the name `-e` and `-C` take for it.
 pub const CIPHER: &str = "chacha20poly1305";
+/// The default key exchange, also accepted by `-e` and `-C`.
+pub const KX: &str = "x25519";
+/// The hybrid post-quantum key exchange (`docs/auth.md`, "Post-quantum
+/// options"), which the records then use: the name `mount -C` takes.
+pub const KX_PQ: &str = "x25519mlkem768";
 
-/// Checks an algorithm named with `-e` or `-C`. An authenticated
-/// connection is always encrypted, so `none` (or `clear`) goes only with
-/// `-A`.
-pub fn check_alg(alg: &str, noauth: bool) -> Result<(), Error> {
+/// Checks an algorithm named with `-e` or `-C`, and says whether it asks
+/// for the hybrid key exchange. An authenticated connection is always
+/// encrypted, so `none` (or `clear`) goes only with `-A`, and the key
+/// exchanges only without it.
+pub fn check_alg(alg: &str, noauth: bool) -> Result<bool, Error> {
     match alg {
-        CIPHER => Ok(()),
-        "none" | "clear" if noauth => Ok(()),
+        CIPHER => Ok(false),
+        KX if !noauth => Ok(false),
+        KX_PQ if !noauth => Ok(true),
+        "none" | "clear" if noauth => Ok(false),
         "none" | "clear" => Err(Error::from(
             "an authenticated connection is always encrypted; use -A for none",
         )),
+        KX | KX_PQ => Err(Error::from("-A exchanges no keys")),
         _ => Err(Error(format!("unknown algorithm {alg}"))),
     }
 }
@@ -75,25 +87,37 @@ fn text(d: &[u8]) -> String {
 /// takes for `host` (`auth::check_server_host`).
 fn hello(net: &mut Fd, o: &Opts, host: Option<&str>, cmd: &str) -> Result<(Link, bool), Error> {
     let user = auth::user();
-    net.write_all(&frame(
-        kind::HELLO,
-        format!("{} {user}", proto::MAGIC).as_bytes(),
-    ))?;
+    let magic = if o.pq { proto::MAGIC_PQ } else { proto::MAGIC };
+    net.write_all(&frame(kind::HELLO, format!("{magic} {user}").as_bytes()))?;
     let challenge = match proto::read_frame(net)? {
         (kind::CHAL, d) => d,
+        // A server that does not speak pgrstyx3 refuses the HELLO.
+        (kind::ERR, d) if o.pq && d == EPROTO.as_bytes() => return Err(Error::from(NO_PQ)),
         (kind::ERR, d) => return Err(Error(text(&d))),
         _ => return Err(Error::from(EPROTO)),
     };
     let (proof, keys) = if o.noauth {
         (Vec::new(), None)
     } else {
-        let offer: &[u8; OFFER] = challenge
-            .as_slice()
-            .try_into()
-            .map_err(|_| Error::from(NO_SESSION))?;
         let mut random = [0u8; 32];
         auth::Rng::fill(&mut random);
-        let client = session::Client::new(offer, random).ok_or_else(|| Error::from(FAILED))?;
+        let client = if o.pq {
+            // Only the long offer will do: anything shorter is a server
+            // (or someone in between) leaving the ML-KEM key out.
+            if challenge.len() != OFFER_PQ {
+                return Err(Error::from(NO_PQ));
+            }
+            let mut m = [0u8; 32];
+            auth::Rng::fill(&mut m);
+            session::Client::new_pq(&challenge, random, m)
+        } else {
+            let offer: &[u8; OFFER] = challenge
+                .as_slice()
+                .try_into()
+                .map_err(|_| Error::from(NO_SESSION))?;
+            session::Client::new(offer, random)
+        }
+        .ok_or_else(|| Error::from(FAILED))?;
         let proof = auth::proof_for(&client.signed, &user, proto::ANAME, o.keyfile.as_deref())?;
         // A proof from an agent that does not make version 3 carries no
         // key: refuse rather than go on in the clear.
@@ -276,6 +300,23 @@ fn mux(
             if bytes.is_empty() {
                 stdin = None;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn algorithms() {
+        assert_eq!(check_alg(CIPHER, false).ok(), Some(false));
+        assert_eq!(check_alg(CIPHER, true).ok(), Some(false));
+        assert_eq!(check_alg(KX, false).ok(), Some(false));
+        assert_eq!(check_alg(KX_PQ, false).ok(), Some(true));
+        assert_eq!(check_alg("none", true).ok(), Some(false));
+        for (alg, noauth) in [("none", false), (KX, true), (KX_PQ, true), ("x448", false)] {
+            assert!(check_alg(alg, noauth).is_err(), "{alg} {noauth}");
         }
     }
 }

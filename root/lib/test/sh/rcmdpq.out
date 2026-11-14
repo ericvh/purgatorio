@@ -1,0 +1,13 @@
+hybrid
+client mounted
+server proved
+cpu hybrid
+classic
+rcmd: -A exchanges no keys
+rcmd: unknown algorithm x448
+rcmd: post-quantum key exchange required
+status post-quantum key exchange required
+required and used
+rcmd: no post-quantum key offered
+status no post-quantum key offered
+usage: auxi/rstyxd [-A] [-e] [-C alg] [-k keyfile]

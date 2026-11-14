@@ -16,7 +16,7 @@ an Inferno `rstyxd`.
 ```
 rcmd [-AS] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]
 cpu  [-AS] [-k keyfile] [-C alg] [net!]host [command [arg...]]
-auxi/rstyxd [-A] [-e] [-k keyfile]
+auxi/rstyxd [-A] [-e] [-C alg] [-k keyfile]
 auxi/cpuslave [command [arg...]]
 ```
 
@@ -33,9 +33,15 @@ auxi/cpuslave [command [arg...]]
   itself (see "Authentication"); it does not go with `-A`.
 - Without `-A` the connection is encrypted after the proof (see
   "Encryption"). `-e` and `-C` name the algorithm: `chacha20poly1305`,
-  the only one and the default, or `none` (or `clear`), which is accepted
-  only with `-A`. `rcmd -e none` without `-A` fails with `an
-  authenticated connection is always encrypted; use -A for none`.
+  the only cipher and the default, or `none` (or `clear`), which is
+  accepted only with `-A`. `rcmd -e none` without `-A` fails with `an
+  authenticated connection is always encrypted; use -A for none`. They
+  also take a key exchange, as `mount -C` does: `x25519`, the default,
+  or `x25519mlkem768`, which uses and requires the hybrid post-quantum
+  exchange (see "Post-quantum key exchange"). Neither goes with `-A`
+  (`-A exchanges no keys`).
+- `auxi/rstyxd -C x25519mlkem768` requires the hybrid exchange of every
+  client; `-C x25519` names the default. It does not go with `-A`.
 - `auxi/rstyxd` serves one client on fd 0. `-k` is the authinfo it
   proves itself with. With nothing trusted it cannot ask for a proof, so
   it refuses every client with `server trusts no keys` (`docs/auth.md`,
@@ -163,6 +169,40 @@ refused (`server trusts no keys`) until keys are set up
 `/lib/keys` at both ends, which trusts the public test key for any user
 and any host.
 
+### Post-quantum key exchange
+
+`rcmd -e x25519mlkem768` (`cpu -C x25519mlkem768`) asks for the hybrid
+X25519 + ML-KEM-768 exchange of the mount handshake's version 4
+(`docs/auth.md`, "Hybrid key exchange (version 4)"). The client says
+`pgrstyx3` in HELLO instead of `pgrstyx2`. The server answers with the
+long offer in CHAL, `challenge[32] || S[32] || ek[1184]`, with a fresh
+ephemeral ML-KEM-768 key, and takes only a version 4 proof, which
+carries the client's ciphertext and signs the whole long offer. The
+keys, the records and the server's proof are then version 4's;
+everything else is as in version 2.
+
+There is no "use it if the other end can" mode, so there is no quiet
+downgrade:
+
+- A client that asked for it refuses a CHAL that is not the long offer
+  with `no post-quantum key offered`, so rewriting HELLO to `pgrstyx2`,
+  or cutting the ML-KEM key off the offer, ends the session. A server
+  that does not know `pgrstyx3` (one built before this) refuses the
+  HELLO with `rstyx protocol botch`, which the client reports as `no
+  post-quantum key offered`; an `rstyxd -A` refuses it with the same.
+- A server that was asked for it refuses a version 3 proof with
+  `post-quantum key exchange required`. Taking the ciphertext out of a
+  version 4 proof does not make a version 3 proof either: the signature
+  is over the `pgauth4` message and the whole offer.
+- `rstyxd -C x25519mlkem768` refuses a `pgrstyx2` client with
+  `post-quantum key exchange required`.
+
+A client and a server that both could, but neither asks, use version 3,
+as before. The exchange adds 2.3 KB on the wire, as on a mount
+(`docs/auth.md`, "Cost of the post-quantum options"). Here both ends are
+guests, so the ML-KEM work runs in WASM: the client's encapsulation in
+`rcmd`, the server's key generation and decapsulation in `rstyxd`.
+
 ## Protocol
 
 Everything on the connection is a frame: `kind u8 | length u32 LE |
@@ -170,9 +210,9 @@ data`, with at most 64 KiB of data.
 
 | kind | name | direction | data |
 |---|---|---|---|
-| 1 | HELLO | C to S | `pgrstyx2 <user>` |
-| 2 | CHAL | S to C | `challenge[32] || S[32]`, or empty when no proof is wanted |
-| 3 | PROOF | C to S | a version 3 proof, or empty |
+| 1 | HELLO | C to S | `pgrstyx2 <user>`, or `pgrstyx3 <user>` for the hybrid exchange |
+| 2 | CHAL | S to C | `challenge[32] || S[32]` (for `pgrstyx3` followed by `ek[1184]`), or empty when no proof is wanted |
+| 3 | PROOF | C to S | a version 3 proof (version 4 for `pgrstyx3`), or empty |
 | 4 | OK | S to C | the server's proof, or empty when it has none |
 | 5 | ERR | S to C | the reason the client is refused |
 | 6 | EXEC | C to S | `flags u8`, then the command line |

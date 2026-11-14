@@ -1,4 +1,4 @@
-//! auxi/rstyxd [-A] [-e] [-k keyfile]: serve one `rcmd` or `cpu` client on file descriptor
+//! auxi/rstyxd [-A] [-e] [-C alg] [-k keyfile]: serve one `rcmd` or `cpu` client on file descriptor
 //! 0, a connection `listen` accepted:
 //!
 //! ```text
@@ -14,7 +14,10 @@
 //! (`rstyx::link`); with `-A` it stays in the clear, and a client that did
 //! not ask for that with `-A` itself goes away. `-e` is kept from before,
 //! when an rstyxd that trusted nothing served in the clear: it now changes
-//! nothing. A version 1 or 2 proof, which carries no key, is refused. After the client's
+//! nothing. A version 1 or 2 proof, which carries no key, is refused.
+//! A client that says `pgrstyx3` gets the hybrid X25519 + ML-KEM-768
+//! exchange (a version 4 proof); `-C x25519mlkem768` requires it of every
+//! client (`docs/rcmd.md`, "Encryption"). After the client's
 //! proof this side proves itself in the OK frame, with the authinfo
 //! `keyfile`, or else with this user's default keys. The client's export
 //! in turn asks this side for a proof when the client's namespace trusts
@@ -38,12 +41,12 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 
-use purgatorio::abi::auth::{NO_SESSION, NO_TRUST};
+use purgatorio::abi::auth::{NO_PQ, NO_SESSION, NO_TRUST, PQ_REQUIRED};
 use purgatorio::abi::mode::OWRITE;
 use purgatorio::abi::pctl::{FORKENV, FORKNS, NEWFD, NEWPGRP};
 use purgatorio::arg::Arg;
 use purgatorio::auth::fmt::keys::{keys_for, parse_list, parse_list_lenient, parse_named};
-use purgatorio::auth::fmt::proof::{Policy, check};
+use purgatorio::auth::fmt::proof::{Policy, V4, check};
 use purgatorio::auth::fmt::session::Server as Offer;
 use purgatorio::{Context, Error, auth};
 use rstyx::io::{Children, Fd, kill, read_some, wait_readable};
@@ -51,7 +54,7 @@ use rstyx::link::Link;
 use rstyx::proto::{self, EPROTO, frame, kind};
 
 const SELF: &str = "/bin/auxi/rstyxd.wasm";
-const USAGE: &str = "auxi/rstyxd [-A] [-e] [-k keyfile]";
+const USAGE: &str = "auxi/rstyxd [-A] [-e] [-C alg] [-k keyfile]";
 /// How long output may still arrive once the command has exited: a prog
 /// it left behind may hold the pipes open for ever.
 const DRAIN_MS: i32 = 300;
@@ -104,6 +107,9 @@ struct Hello<'a> {
     noauth: bool,
     /// `-k`: the authinfo this side proves itself with.
     keyfile: Option<&'a str>,
+    /// `-C x25519mlkem768`: refuse a client that does not use the hybrid
+    /// key exchange.
+    pq: bool,
 }
 
 /// The opening exchange. Returns the EXEC flags, the command and the link
@@ -117,10 +123,18 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
     };
     let (k, d) = proto::read_frame(net)?;
     let hello = String::from_utf8_lossy(&d).into_owned();
-    let uname = match hello.split_once(' ') {
-        Some((proto::MAGIC, u)) if k == kind::HELLO => u,
+    let (uname, pq) = match hello.split_once(' ') {
+        Some((proto::MAGIC, u)) if k == kind::HELLO => (u, false),
+        Some((proto::MAGIC_PQ, u)) if k == kind::HELLO => (u, true),
         _ => return Err(refuse(net, EPROTO)),
     };
+    // -A asks for no proof, and so exchanges no keys at all.
+    if pq && noauth {
+        return Err(refuse(net, NO_PQ));
+    }
+    if h.pq && !pq {
+        return Err(refuse(net, PQ_REQUIRED));
+    }
     let t = trust(uname);
     let policy = Policy {
         keys: &t.keys,
@@ -128,18 +142,25 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
         revoked: t.revoked.as_deref(),
         now: auth::now(),
     };
-    // The offer: a challenge and an ephemeral X25519 key.
+    // The offer: a challenge and an ephemeral X25519 key, and for
+    // pgrstyx3 an ephemeral ML-KEM-768 key as well.
     let offer = (!noauth && policy.requires_auth()).then(|| {
         let (mut challenge, mut random) = ([0u8; 32], [0u8; 32]);
         auth::Rng::fill(&mut challenge);
         auth::Rng::fill(&mut random);
-        Offer::new(challenge, random)
+        let mut o = Offer::new(challenge, random);
+        if pq {
+            let mut seed = [0u8; 64];
+            auth::Rng::fill(&mut seed);
+            o.make_pq(&seed);
+        }
+        o
     });
     // Nothing trusted: nobody can prove anything, and nobody gets in.
     if offer.is_none() && !noauth {
         return Err(refuse(net, NO_TRUST));
     }
-    let chal = offer.as_ref().map_or(&[][..], |o| &o.offer[..]);
+    let chal = offer.as_ref().map_or(&[][..], |o| o.offered());
     net.write_all(&frame(kind::CHAL, chal))
         .map_err(|_| String::from(proto::EHUNGUP))?;
     let (k, proof) = proto::read_frame(net)?;
@@ -153,7 +174,12 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
         if proof.is_empty() {
             return Err(refuse(net, purgatorio::abi::auth::REQUIRED));
         }
-        if let Err(e) = check(&policy, &offer.offer, uname, proto::ANAME, &proof) {
+        // A pgrstyx3 client must send a version 4 proof: one that left
+        // the ML-KEM-768 ciphertext out is refused, whatever it signs.
+        if pq && proof.first() != Some(&V4) {
+            return Err(refuse(net, PQ_REQUIRED));
+        }
+        if let Err(e) = check(&policy, offer.offered(), uname, proto::ANAME, &proof) {
             return Err(refuse(net, e));
         }
         // Only a version 3 proof carries the client's key.
@@ -211,21 +237,30 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let mut arg = Arg::new(args, USAGE);
     let (mut noauth, mut encrypt, mut keyfile) = (false, false, String::new());
+    let mut pq = false;
     while let Some(c) = arg.opt() {
         match c {
             'A' => noauth = true,
             'e' => encrypt = true,
+            'C' => {
+                pq = match arg.earg()?.as_str() {
+                    rstyx::client::KX => false,
+                    rstyx::client::KX_PQ => true,
+                    alg => return Err(Error(format!("unknown algorithm {alg}"))),
+                }
+            }
             'k' | 'f' => keyfile = arg.earg()?,
             _ => return Err(arg.usage()),
         }
     }
-    if !arg.argv().is_empty() || (noauth && encrypt) {
+    if !arg.argv().is_empty() || (noauth && (encrypt || pq)) {
         return Err(Error(format!("usage: {USAGE}")));
     }
     let mut net = Fd(0);
     let h = Hello {
         noauth,
         keyfile: Some(keyfile.as_str()).filter(|k| !k.is_empty()),
+        pq,
     };
     let Ok((flags, cmd, mut link)) = hello(&mut net, &h) else {
         // The client has the reason; a refused client is not an error here.
