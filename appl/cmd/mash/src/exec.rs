@@ -154,13 +154,13 @@ pub struct Shell {
     keep: Vec<OwnedFd>,
 }
 
-/// mash's `fail:` status for a child's status.
-fn fail_status(s: &str) -> String {
-    if s.starts_with("fail:") {
-        String::from(s)
-    } else {
-        format!("fail:{s}")
-    }
+/// Under `-e`, the status mash ends with when a command it waited for
+/// failed, or `None` to go on. As in Inferno's mash (mkprog and waitfor
+/// in exec.b), only a `fail:` exit counts, and mash ends with it as it is.
+/// A prog that died otherwise (a trap, a panic, `killed`) has had its wait
+/// message printed, and mash goes on.
+fn fail_status(s: &str) -> Option<String> {
+    s.starts_with("fail:").then(|| String::from(s))
 }
 
 /// A null list: no words, or one empty word.
@@ -745,9 +745,11 @@ impl Shell {
         };
         let pid = started.pid;
         self.finish(started);
-        let status = self.wait_for(&[pid]).pop().unwrap_or_default();
-        if self.flags.raise && !status.is_empty() {
-            return Err(Stop::Fail(fail_status(&status)));
+        let status = self.wait_for(&[pid], &io.err).pop().unwrap_or_default();
+        if self.flags.raise
+            && let Some(s) = fail_status(&status)
+        {
+            return Err(Stop::Fail(s));
         }
         Ok(())
     }
@@ -940,12 +942,14 @@ impl Shell {
             pids.push(s.pid);
             self.finish(s);
         }
-        let statuses = self.wait_for(&pids);
+        let statuses = self.wait_for(&pids, &io.err);
         result?;
+        // Inferno's mash waits for a pipeline's last command only, so only
+        // its failure ends mash under `-e`.
         if self.flags.raise
-            && let Some(s) = statuses.iter().rev().find(|s| !s.is_empty())
+            && let Some(s) = statuses.last().and_then(|s| fail_status(s))
         {
-            return Err(Stop::Fail(fail_status(s)));
+            return Err(Stop::Fail(s));
         }
         Ok(())
     }
@@ -972,10 +976,17 @@ impl Shell {
 
     /// Waits until every prog in `pids` has exited and returns their
     /// statuses in order. Background progs are reaped along the way.
-    pub fn wait_for(&mut self, pids: &[u32]) -> Vec<String> {
+    ///
+    /// As Inferno's mash (waiter in exec.b), it prints on `err` the wait
+    /// message of each prog that died other than by exiting or failing
+    /// with `fail:`, background ones included: `pid "name":status`.
+    pub fn wait_for(&mut self, pids: &[u32], err: &Sink) -> Vec<String> {
         while !pids.iter().all(|p| self.exited.contains_key(p)) {
             match purgatorio::wait() {
-                Ok(Waitmsg { pid, status, .. }) => {
+                Ok(Waitmsg { pid, name, status }) => {
+                    if !status.is_empty() && !status.starts_with("fail:") {
+                        err.print(&format!("{pid} \"{name}\":{status}\n"));
+                    }
                     if !self.background.remove(&pid) {
                         self.exited.insert(pid, status);
                     }

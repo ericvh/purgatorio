@@ -23,6 +23,14 @@ mash -e -c 'echo $nope; echo not reached' >[2=1]
 echo $status
 mash -c 'load make; make nosuch' >[2=1]
 echo $status
+# Under -e only a pipeline's last command ends mash, and only by failing:
+# a prog that traps has its wait message printed, as any prog that dies
+# other than by exiting or failing.
+mash -e -c 'test -f /nonexistent | echo piped; echo reached' >[2=1]
+echo $status
+mash -e -c 'echo x | test -f /nonexistent; echo not reached' >[2=1]
+echo $status
+mash -e -c 'test/debug trap; echo reached' >[2=1] | sed 's/^[0-9]+ /PID /' | sed 's/trap: .*unreachable.*/trap: unreachable/'
 echo '# modules'
 mash -c 'load mashcase; upper hello world; lower ABC; whatis upper; x = `{upper q r}; echo $x'
 mash -c 'load make; whatis make; load tk' >[2=1]
