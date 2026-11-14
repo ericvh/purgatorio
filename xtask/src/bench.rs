@@ -255,6 +255,8 @@ fn run_emu(ws: &Path, vm: &str, rounds: usize, s: &mut Samples) -> Result<()> {
         .arg("-r")
         .arg(ws.join("root"))
         .arg(format!("--vm={vm}"))
+        // The script's status, as the emu's.
+        .arg("-x")
         .args(["sh", "/lib/bench/bench.sh"])
         .args(round_args(rounds))
         .output()

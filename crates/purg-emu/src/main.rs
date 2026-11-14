@@ -1,15 +1,21 @@
 //! `emu`: Purgatorio hosted on Linux or macOS.
 //!
-//! Usage: `emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi]
+//! Usage: `emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [-x] [--vm=wasmtime|wasmi]
 //! [--modules=none|warn|require] [cmd [args...]]`
 //!
 //! Boots a namespace like Inferno's emu (`#/` with the host root `#U` unioned
 //! after it and taking creates, `#c` before `/dev`, `#e` on `/env` and `#p`
 //! on `/prog`), then runs `/bin/<cmd>.wasm` as the first prog, or
-//! `/bin/emuinit.wasm` when no command is given. The emu exits when the first
-//! prog does: with 0 when its exit status is empty and 1 otherwise. Other
-//! progs may still be running then, so the process ends without the C
-//! library's exit handlers (`host::exit`).
+//! `/bin/emuinit.wasm` when no command is given. As in Inferno's emu
+//! (`progexit` in emu/port/dis.c), the emu exits when the last prog does,
+//! with status 0. A broken prog stays in the prog table until it is
+//! killed, so it keeps the emu running.
+//!
+//! `-x` is not Inferno's: the emu exits when the first prog does, with 0
+//! when its exit status is empty and 1 otherwise, whatever the other progs
+//! are doing. Tests and scripts on the host use it to get a command's
+//! status. Other progs may still be running then, so the process ends
+//! without the C library's exit handlers (`host::exit`).
 //!
 //! A panic is reported with its thread, its prog and a backtrace, whatever
 //! `RUST_BACKTRACE` says, and an abort from C with its thread and prog
@@ -19,7 +25,7 @@
 //! `-g` opens a window of `W` by `H` pixels (800x600 by default) and
 //! shows the draw device's screen in it (docs/graphics.md); the main
 //! thread then runs the window's event loop, and closing the window ends
-//! the emu. Resizing the window resizes the screen. `-2` shows each
+//! the emu and the progs still running, as in Inferno. Resizing the window resizes the screen. `-2` shows each
 //! screen pixel as 2×2 window pixels and `-1` never does; by default the
 //! emu doubles on a display whose scale factor is 1.5 or more. `-w`
 //! serves the screen to a web browser instead (docs/graphics.md,
@@ -59,6 +65,8 @@ struct Options {
     web: Option<String>,
     /// The screen's size, from `-s` or `-g WxH`.
     size: Option<(u32, u32)>,
+    /// `-x`: exit when the first prog does, with its status.
+    first: bool,
     argv: Vec<String>,
 }
 
@@ -74,7 +82,7 @@ fn geometry(s: &str) -> Option<(u32, u32)> {
 
 fn usage() -> u8 {
     eprintln!(
-        "usage: emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
+        "usage: emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [-x] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
     );
     2
 }
@@ -91,6 +99,7 @@ fn parse_args() -> Option<Options> {
         scale: None,
         web: None,
         size: None,
+        first: false,
         argv: Vec::new(),
     };
     let mut args = args.peekable();
@@ -126,6 +135,8 @@ fn parse_args() -> Option<Options> {
             opts.size = Some(geometry(&args.next()?)?);
         } else if let Some(g) = a.strip_prefix("-s") {
             opts.size = Some(geometry(g)?);
+        } else if a == "-x" {
+            opts.first = true;
         } else if let Some(vm) = a.strip_prefix("--vm=") {
             opts.vm = String::from(vm);
         } else if let Some(level) = a.strip_prefix("--modules=") {
@@ -282,13 +293,20 @@ fn run() -> u8 {
             return 1;
         }
     };
+    let procs = prog.kernel.procs.clone();
+    let first = opts.first;
     let ctx = Ctx::new(prog, argv, engine);
     let exit = window.as_ref().map(|(el, _)| el.create_proxy());
     let runner = std::thread::Builder::new()
         .name(String::from(purg_vm::module_name(&path)))
         .stack_size(platform::KPROC_STACK)
         .spawn(move || {
-            let status = status(Ok(purg_vm::run_command(ctx, &path).1));
+            let mut status = status(Ok(purg_vm::run_command(ctx, &path).1));
+            if !first {
+                // Inferno's emu: on until the last prog has gone, then 0.
+                procs.wait_empty();
+                status = 0;
+            }
             if let Some(p) = exit {
                 let _ = p.send_event(window::Event::Exit(status));
             }
@@ -313,8 +331,8 @@ fn run() -> u8 {
     status
 }
 
-/// The emu's exit status for the first prog's result: 0 when its exit
-/// status is empty, 1 otherwise or when it failed to run.
+/// The emu's exit status with `-x` for the first prog's result: 0 when
+/// its exit status is empty, 1 otherwise or when it failed to run.
 fn status(res: Result<Result<String, Error>, Error>) -> u8 {
     match res.and_then(|r| r) {
         Ok(status) if status.is_empty() => 0,

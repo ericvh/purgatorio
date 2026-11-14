@@ -157,8 +157,8 @@ joining:
 3. The loop copies damaged rectangles into the softbuffer buffer on
    `RedrawRequested` and presents them. Input events go into queues
    that `#m` and the keyboard read, through `purg-platform`'s `Rendez`.
-4. When the first prog exits, its thread sends a user event and the
-   loop exits with its status.
+4. When the last prog exits (the first with `-x`), the first prog's
+   thread sends a user event and the loop exits with the emu's status.
 
 Doing this on Linux too keeps one code path, with no `cfg(target_os)`
 outside `host/`. Without graphics (no `-g`, as in Inferno's emu, or no
@@ -646,8 +646,8 @@ else, starts the first prog on its own thread, and runs the loop. A
 flush copies the damaged pixels into a frame and wakes the loop through
 an `EventLoopProxy`; the loop copies only the damage into the softbuffer
 0.4.8 buffer (and the previous frame's damage when the buffer is two
-frames old) and presents it with `present_with_damage`. The first prog's
-exit and closing the window end the emu. winit is built without
+frames old) and presents it with `present_with_damage`. The last prog's
+exit (the first's with `-x`) and closing the window end the emu. winit is built without
 client-side decorations (no font renderer) and loads X11 and Wayland at
 run time, so the emu needs neither to start; without a display, `-g`
 fails with `emu: cannot open display: ...`. The window is in physical
@@ -741,7 +741,7 @@ Nothing in the device, memdraw or the programs changed for it.
   page cannot hold up a prog. The writer sends the union of what was
   damaged since its last send, read from the screen as it is then, so
   a page that falls behind skips frames instead of queueing them. When
-  the first prog exits the emu sends every page a close frame and waits
+  the emu exits it sends every page a close frame and waits
   up to a second for them to close before it exits; the page then says
   "disconnected".
 - **HTTP and WebSocket.** Written in the emu, a few hundred lines: one GET

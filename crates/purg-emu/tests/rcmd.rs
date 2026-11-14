@@ -74,6 +74,8 @@ fn mcp_session_over_rcmd() {
                 .arg("-r")
                 .arg(root())
                 .arg(format!("--vm={vm}"))
+                // The command's status, as the emu's.
+                .arg("-x")
                 .args(["sh", "-c", &script(vm, "mcp", "", "mcpd")])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped()),
@@ -166,6 +168,8 @@ fn status_namespace_and_refusal() {
                     .arg("-r")
                     .arg(root())
                     .arg(format!("--vm={vm}"))
+                    // The command's status, as the emu's.
+                    .arg("-x")
                     .args(["sh", "-c", &script(vm, "st", flags, cmd)]),
                 input.as_bytes(),
             );
@@ -290,6 +294,8 @@ exit $s
             .arg("-r")
             .arg(root())
             .arg(format!("--vm={vm}"))
+            // The command's status, as the emu's.
+            .arg("-x")
             .args(["sh", "-c", &script]),
         b"",
     );
@@ -390,6 +396,8 @@ exit $s
                 .arg("-r")
                 .arg(root())
                 .arg(format!("--vm={vm}"))
+                // The command's status, as the emu's.
+                .arg("-x")
                 .args(["sh", "-c", &script]),
             b"",
         );
@@ -413,6 +421,8 @@ fn an_mcp_client_reaches_another_system() {
                 .arg("-r")
                 .arg(root())
                 .arg(format!("--vm={vm}"))
+                // The command's status, as the emu's.
+                .arg("-x")
                 .args([
                     "sh",
                     "-c",
@@ -434,6 +444,8 @@ fn an_mcp_client_reaches_another_system() {
                 .arg("-r")
                 .arg(root())
                 .arg(format!("--vm={vm}"))
+                // The command's status, as the emu's.
+                .arg("-x")
                 .args(["sh", "-c", &format!("{TEST_KEYS}; rcmd tcp!{addr} mcpd")])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped()),
@@ -521,6 +533,8 @@ rm -rf $d
                 .arg("-r")
                 .arg(root())
                 .arg(format!("--vm={vm}"))
+                // The command's status, as the emu's.
+                .arg("-x")
                 .args(["sh", "-c", &script]),
             b"",
         );

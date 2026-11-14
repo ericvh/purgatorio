@@ -169,8 +169,8 @@ pub fn entropy(buf: &mut [u8]) {
 /// Ends the process with `code`, without running the C library's exit
 /// handlers and library destructors.
 ///
-/// The emu exits when its first prog does, while other progs' threads
-/// still run, and `exit` is not safe then. libgcc's destructor frees its
+/// With `-x` or a closed window the emu exits while progs' threads still
+/// run, and `exit` is not safe then. libgcc's destructor frees its
 /// table of registered unwind frames; a prog thread that is dropping a
 /// compiled module at that moment calls `__deregister_frame`, finds the
 /// table gone, and aborts the process (issue #145). Nothing the emu owns

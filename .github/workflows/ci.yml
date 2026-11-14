@@ -117,7 +117,8 @@ jobs:
             test "$out" = "hello world"
             out=$(echo hi | cargo xtask run-emu -- --vm=$vm cat 2>/dev/null)
             test "$out" = "hi"
-            if cargo xtask run-emu -- --vm=$vm cat /nonexistent >/tmp/out 2>/dev/null; then
+            # -x: the emu's status is cat's (by default it is 0, as in Inferno).
+            if cargo xtask run-emu -- --vm=$vm -x cat /nonexistent >/tmp/out 2>/dev/null; then
               echo "cat /nonexistent succeeded"; exit 1
             fi
             grep -qx 'cat: /nonexistent: file does not exist' /tmp/out
@@ -130,7 +131,7 @@ jobs:
           hdiutil attach /tmp/cs.dmg -mountpoint /tmp/cs
           cp -R root /tmp/cs/root
           test "$(target/debug/emu -r /tmp/cs/root cat /lib/probe/hello.txt)" = "hello from the probe root"
-          if target/debug/emu -r /tmp/cs/root cat /LIB/probe/hello.txt; then exit 1; fi
+          if target/debug/emu -r /tmp/cs/root -x cat /LIB/probe/hello.txt; then exit 1; fi
           # A fresh volume can still be busy (Spotlight, disk arbitration)
           # just after the checks; give it a moment, then force it.
           hdiutil detach /tmp/cs || { sleep 3; hdiutil detach -force /tmp/cs; }

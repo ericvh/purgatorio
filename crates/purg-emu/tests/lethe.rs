@@ -162,6 +162,8 @@ fn emu(vm: &str, script: &str) -> (String, bool) {
         .arg("-r")
         .arg(root())
         .arg(format!("--vm={vm}"))
+        // The script's status, as the emu's.
+        .arg("-x")
         .args(["sh", "-c", script])
         .stdin(Stdio::null())
         .output()

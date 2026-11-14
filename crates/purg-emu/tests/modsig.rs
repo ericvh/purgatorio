@@ -26,6 +26,8 @@ fn emu(root: &Path, vm: &str, args: &[&str]) -> Output {
             .arg("-r")
             .arg(root)
             .arg(format!("--vm={vm}"))
+            // The command's status, as the emu's.
+            .arg("-x")
             .args(args),
         b"",
     )

@@ -42,7 +42,8 @@ pub enum Event {
     Redraw,
     /// A program moved the pointer.
     Warp(i32, i32),
-    /// The first prog ended with this exit status.
+    /// The emu ends with this exit status: the last prog has exited, or
+    /// with `-x` the first.
     Exit(u8),
 }
 
@@ -175,7 +176,7 @@ pub fn event_loop() -> Result<EventLoop<Event>, String> {
         .map_err(|e| format!("cannot open display: {e}"))
 }
 
-/// Runs the window until the first prog exits ([`Event::Exit`]) or the
+/// Runs the window until the emu's progs are done ([`Event::Exit`]) or the
 /// window is closed; returns the emu's exit status.
 pub fn run(event_loop: EventLoop<Event>, screen: Arc<WindowScreen>) -> u8 {
     let mut app = App {
