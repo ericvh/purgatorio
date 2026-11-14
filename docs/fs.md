@@ -261,14 +261,19 @@ image on the host, and the first TCG run and the KVM run boot a second
 time (`diskcheck` in the boot arguments) to check that the files the
 first boot left are there.
 
-It could be the root, and should be able to: bind `#K` on `/` where the
-RAM tree from the initrd is now (or union it before the RAM tree, so the
-initrd still supplies `/bin` when the disk lacks it). What that takes: an
-image holding `/bin` and `/lib` (`cargo xtask diskimg OUT root` already
-makes one, about 14 MiB), a boot argument to choose it, and a decision on
-`/tmp` (on disk, or a RAM tree bound over it). Modules would then load
-from the disk; wasmi needs each whole module in memory anyway, so the cost
-is one read per `exec`, not resident memory.
+With `root=disk` in the boot arguments the file system is the root as
+well. The kernel binds `#K` before `/` with `MCREATE`, so the disk's
+files come first and new names at the top go to the disk, while the RAM
+tree from the initrd stays after it and supplies what the disk lacks
+(`/bin`, `/lib`). `/tmp` is the RAM tree's whatever the disk holds there
+(`#U/tmp` is bound over it), so scratch files neither wear nor fill the
+disk. Modules on the disk load from it: wasmi needs each whole module in
+memory anyway, so the cost is one read per `exec`, not resident memory. A
+disk with the whole root on it is `cargo xtask diskimg OUT root` (about
+14 MiB). The second boot of `xtask kernel` boots with `root=disk` and
+checks a file the first boot left, read through `/`; a create at the top,
+which lands on the disk; a file in `/tmp`, which does not; the initrd's
+files; and a module copied to the disk and run from `/`.
 
 ## Tools
 
