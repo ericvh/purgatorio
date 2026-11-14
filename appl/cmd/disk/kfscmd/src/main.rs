@@ -15,6 +15,11 @@ const USAGE: &str = "disk/kfscmd [-n fsname] cmd ...";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // As Inferno's kfscmd: any failure is `fail:error`.
+    run(args).map_err(|e| e.fails_as("fail:error"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let mut fs = String::from("main");
     while let Some(c) = arg.opt() {

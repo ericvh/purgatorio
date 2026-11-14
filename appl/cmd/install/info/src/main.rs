@@ -51,6 +51,11 @@ fn from_archive(path: &str) -> Result<(String, Vec<Unit>), String> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's info prints its usage and fails with `fail:error`.
+    run(args).map_err(|e| e.usage_exits("usage: ", "fail:error"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let mut root = String::from("/");
     while let Some(c) = arg.opt() {

@@ -29,19 +29,16 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() < 2 {
         return Err(Error::from("usage: auth/getpk file ..."));
     }
-    let mut failed = false;
+    // As Inferno's getpk: a file it cannot read is reported and skipped,
+    // with no status.
     for path in &args[1..] {
         match public(path) {
             Ok(k) if args.len() > 2 => println!("{} {path}", hex::encode(&k)),
             Ok(k) => println!("{}", hex::encode(&k)),
             Err(e) => {
                 eprintln!("auth/getpk: {e}");
-                failed = true;
             }
         }
-    }
-    if failed {
-        purgatorio::exits("fail:errors");
     }
     Ok(())
 }

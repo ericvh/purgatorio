@@ -116,6 +116,11 @@ fn base(path: &str) -> &str {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // As Inferno's format: any failure is `fail:error`.
+    run(args).map_err(|e| e.fails_as("fail:error"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let (mut dos, mut verbose, mut force) = (false, false, false);
     let mut boot = None;

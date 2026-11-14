@@ -251,6 +251,11 @@ fn auto(ed: &mut Edit, scheme: &Fdisk) -> Result<(), String> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // As Inferno's fdisk: any failure is `fail:error`.
+    run(args).map_err(|e| e.fails_as("fail:error"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let (mut auto_, mut blank, mut print, mut read_only, mut write) =
         (false, false, false, false, false);

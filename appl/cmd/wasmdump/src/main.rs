@@ -81,7 +81,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     match failed {
         // The message is already printed.
-        Some(_) => purgatorio::exits("error"),
+        Some(_) => purgatorio::exits("fail:errors"),
         None => Ok(()),
     }
 }
