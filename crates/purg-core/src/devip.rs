@@ -1,7 +1,8 @@
 //! `#I`, the IP device. It serves `/net/tcp`, `/net/udp`, `/net/icmp`,
 //! `/net/ipifc`, `/net/iproute` and `/net/cs` the way Inferno's `devip` and
 //! connection server do, and asks the platform's
-//! [`purg_platform::net::Net`] to open the sockets.
+//! [`purg_platform::net::Net`] to open the sockets. It keeps the route
+//! table itself (`route`) and has the platform apply each change.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -12,13 +13,17 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use purg_abi::{error, mode};
 use purg_platform::net::{Conn, IPV4_HEADER, Ifc, Listener, Net};
-use purg_platform::sync::Mutex;
+use purg_platform::sync::{Mutex, MutexGuard};
 use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 
 use crate::Platform;
 use crate::chan::Chan;
 use crate::dev::{Dev, Walked, read_str};
 use crate::error::{Error, Result};
+
+mod route;
+
+use route::{Route, class_mask, ip, network, parse_ip, prefix_mask};
 
 const QROOT: u64 = 0;
 const QTCP: u64 = 1;
@@ -114,6 +119,19 @@ pub struct DevIp {
     platform: Arc<dyn Platform>,
     convs: Mutex<Vec<Arc<Conv>>>,
     next: Mutex<u32>,
+    /// The routes written to `/net/iproute`; `None` until first used.
+    routes: Mutex<Option<Vec<Route>>>,
+}
+
+/// The tag a file descriptor on `/net/iproute` gives the routes it adds.
+struct RouteTag(String);
+
+fn route_tag(c: &Chan) -> String {
+    c.state
+        .lock()
+        .as_ref()
+        .and_then(|s| s.downcast_ref::<RouteTag>())
+        .map_or_else(|| String::from(route::DEFAULT_TAG), |t| t.0.clone())
 }
 
 impl DevIp {
@@ -122,6 +140,7 @@ impl DevIp {
             platform,
             convs: Mutex::new(Vec::new()),
             next: Mutex::new(0),
+            routes: Mutex::new(None),
         }
     }
 
@@ -416,7 +435,7 @@ impl Dev for DevIp {
         }
         if c.qid.path == QIPROUTE {
             let cmd = core::str::from_utf8(buf).unwrap_or("").trim();
-            self.route_ctl(cmd)?;
+            self.route_ctl(c, cmd)?;
             return Ok(buf.len());
         }
         if is_ifc(c.qid.path) && conv_file(c.qid.path) == FCTL {
@@ -597,41 +616,109 @@ impl DevIp {
             .unwrap_or_default()
     }
 
-    /// `/net/iproute`: each interface's network, then the default route.
-    fn routes(&self) -> String {
-        let mut out = String::new();
-        for (n, i) in self.interfaces().iter().enumerate() {
-            let mask = prefix_mask(i.prefix);
-            out.push_str(&format!(
-                "{} {} {} 4i none {n}\n",
-                ip(network(i.addr, mask)),
-                ip(mask),
-                ip(i.addr)
-            ));
+    /// The route table, taking in the platform's starting default route
+    /// the first time.
+    fn route_table(&self) -> MutexGuard<'_, Option<Vec<Route>>> {
+        let mut table = self.routes.lock();
+        if table.is_none() {
+            let seeded = self
+                .interfaces()
+                .iter()
+                .filter_map(|i| i.gateway)
+                .take(1)
+                .map(|gw| Route {
+                    target: [0; 4],
+                    mask: [0; 4],
+                    gateway: gw,
+                    tag: String::from(route::DEFAULT_TAG),
+                })
+                .collect();
+            *table = Some(seeded);
         }
-        for (n, i) in self.interfaces().iter().enumerate() {
-            if let Some(gw) = i.gateway {
-                out.push_str(&format!("0.0.0.0 0.0.0.0 {} 4u none {n}\n", ip(gw)));
-            }
-        }
-        out
+        table
     }
 
-    /// `add 0.0.0.0 0.0.0.0 gw` and `remove 0.0.0.0 0.0.0.0`: only the
-    /// default route can be changed.
-    fn route_ctl(&self, cmd: &str) -> Result<()> {
+    /// `/net/iproute`, in ip(3)'s format.
+    fn routes(&self) -> String {
+        let ifcs = self.interfaces();
+        let table = self.route_table();
+        route::text(&ifcs, table.as_deref().unwrap_or_default())
+    }
+
+    /// A write to `/net/iproute` (ip(3)): `add target mask gateway`,
+    /// `remove target mask`, `flush [tag]` and `tag tag`. As in Inferno, a
+    /// verb it does not know is ignored, `add` keeps the tag of a route it
+    /// replaces, and `flush` leaves the interfaces' routes alone.
+    /// Purgatorio also refuses addresses it cannot parse.
+    fn route_ctl(&self, c: &Chan, cmd: &str) -> Result<()> {
         let f: Vec<&str> = cmd.split_whitespace().collect();
-        let default = |a: &str, m: &str| parse_ip(a) == Some([0; 4]) && parse_ip(m) == Some([0; 4]);
+        let bad = || Error::new(error::EBADARG);
+        let parse = |a: &str, m: &str| -> Result<([u8; 4], [u8; 4])> {
+            let mask = route::parse_mask(m).ok_or_else(bad)?;
+            Ok((network(parse_ip(a).ok_or_else(bad)?, mask), mask))
+        };
         match f.as_slice() {
-            ["add", a, m, gw, ..] if default(a, m) => {
-                let gw = parse_ip(gw).ok_or(Error::new(error::EBADARG))?;
-                self.net()?.set_gateway(Some(gw)).map_err(Error::from)
+            ["add", a, m, g, ..] => {
+                let (target, mask) = parse(a, m)?;
+                let gateway = parse_ip(g).ok_or_else(bad)?;
+                let mut guard = self.route_table();
+                let table = guard.get_or_insert_default();
+                self.net()?
+                    .add_route(target, mask, gateway)
+                    .map_err(Error::from)?;
+                match table
+                    .iter_mut()
+                    .find(|r| r.target == target && r.mask == mask)
+                {
+                    Some(r) => r.gateway = gateway,
+                    None => table.push(Route {
+                        target,
+                        mask,
+                        gateway,
+                        tag: route_tag(c),
+                    }),
+                }
+                Ok(())
             }
-            ["remove", a, m, ..] if default(a, m) => {
-                self.net()?.set_gateway(None).map_err(Error::from)
+            ["remove", a, m, ..] => {
+                let (target, mask) = parse(a, m)?;
+                let mut guard = self.route_table();
+                let table = guard.get_or_insert_default();
+                if let Some(i) = table
+                    .iter()
+                    .position(|r| r.target == target && r.mask == mask)
+                {
+                    self.net()?
+                        .remove_route(target, mask)
+                        .map_err(Error::from)?;
+                    table.remove(i);
+                }
+                Ok(())
             }
-            ["flush", ..] => self.net()?.set_gateway(None).map_err(Error::from),
-            _ => Err(Error::new(error::EBADARG)),
+            ["add" | "remove", ..] | ["tag"] => Err(bad()),
+            ["flush", rest @ ..] => {
+                let tag = rest.first().copied();
+                let net = self.net()?;
+                let mut guard = self.route_table();
+                let table = guard.get_or_insert_default();
+                let mut kept = Vec::new();
+                let mut failed = None;
+                for r in table.drain(..) {
+                    if tag.is_some_and(|t| !route::tag_matches(&r.tag, t)) {
+                        kept.push(r);
+                    } else if let Err(e) = net.remove_route(r.target, r.mask) {
+                        failed.get_or_insert(Error::from(e));
+                        kept.push(r);
+                    }
+                }
+                *table = kept;
+                failed.map_or(Ok(()), Err)
+            }
+            ["tag", t, ..] => {
+                c.state.lock().replace(Box::new(RouteTag(route::tag(t))));
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
 
@@ -686,38 +773,6 @@ fn ifc_status(i: &Ifc) -> String {
         ip(mask),
         ip(network(i.addr, mask))
     )
-}
-
-fn prefix_mask(prefix: u8) -> [u8; 4] {
-    let bits = u32::MAX
-        .checked_shl(32 - u32::from(prefix.min(32)))
-        .unwrap_or(0);
-    bits.to_be_bytes()
-}
-
-fn network(addr: [u8; 4], mask: [u8; 4]) -> [u8; 4] {
-    (u32::from_be_bytes(addr) & u32::from_be_bytes(mask)).to_be_bytes()
-}
-
-fn class_mask(a: [u8; 4]) -> [u8; 4] {
-    match a[0] {
-        0..=127 => [255, 0, 0, 0],
-        128..=191 => [255, 255, 0, 0],
-        _ => [255, 255, 255, 0],
-    }
-}
-
-fn parse_ip(s: &str) -> Option<[u8; 4]> {
-    let mut out = [0u8; 4];
-    let mut parts = s.split('.');
-    for b in &mut out {
-        *b = parts.next()?.parse().ok()?;
-    }
-    parts.next().is_none().then_some(out)
-}
-
-fn ip(a: [u8; 4]) -> String {
-    format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3])
 }
 
 fn is_ifc(path: u64) -> bool {

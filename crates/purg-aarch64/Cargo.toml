@@ -27,7 +27,7 @@ loom = "0.7"
 
 # Only the bare-metal modules use these.
 [target.aarch64-unknown-none.dependencies]
-smoltcp = { version = "0.14", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-raw", "socket-tcp", "socket-udp", "proto-ipv4-fragmentation", "fragmentation-buffer-size-8192", "reassembly-buffer-size-8192", "reassembly-buffer-count-2"], optional = true }
+smoltcp = { version = "0.14", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-raw", "socket-tcp", "socket-udp", "proto-ipv4-fragmentation", "fragmentation-buffer-size-8192", "reassembly-buffer-size-8192", "reassembly-buffer-count-2", "iface-max-route-count-64"], optional = true }
 
 [lints]
 workspace = true

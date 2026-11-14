@@ -17,8 +17,10 @@
 //!
 //! The interface has one IPv4 address and a default route ([`Ipv4Config`]),
 //! static at boot; `/net/ipifc/0/ctl` and `/net/iproute` replace them, as
-//! `ip/dhcp` does. ARP for the gateway is smoltcp's. UDP `headers` mode is
-//! one smoltcp socket whose datagrams all go to one conversation.
+//! `ip/dhcp` does, and `/net/iproute` adds routes to other networks through
+//! gateways (`ip/rip`), up to 64 in all. ARP for the gateway is smoltcp's.
+//! UDP `headers` mode is one smoltcp socket whose datagrams all go to one
+//! conversation.
 //!
 //! UDP follows Inferno: a dialed conversation reads and writes datagrams
 //! with one remote, and an announced port starts a conversation for each
@@ -44,7 +46,7 @@ use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use purg_platform::Result;
 use purg_platform::net::{self, Conn, Listener, Net, UdpDemux};
 use purg_platform::sync::{Mutex, MutexGuard, Rendez};
-use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
+use smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet};
 use smoltcp::socket::tcp::{self, State};
 use smoltcp::socket::{raw, udp};
 use smoltcp::time::Instant;
@@ -229,8 +231,18 @@ impl Net for NetStack {
         Ok(())
     }
 
-    fn set_gateway(&self, gateway: Option<[u8; 4]>) -> Result<()> {
-        self.stack()?.set_gateway(gateway)
+    fn add_route(&self, target: [u8; 4], mask: [u8; 4], gateway: [u8; 4]) -> Result<()> {
+        // Without a card there is only loopback, which routes nothing:
+        // `#I` keeps the table, as on the hosted emu.
+        self.smol
+            .as_ref()
+            .map_or(Ok(()), |s| s.route(target, mask, Some(gateway)))
+    }
+
+    fn remove_route(&self, target: [u8; 4], mask: [u8; 4]) -> Result<()> {
+        self.smol
+            .as_ref()
+            .map_or(Ok(()), |s| s.route(target, mask, None))
     }
 
     fn dial_icmp(&self, host: &str) -> Result<Arc<dyn Conn>> {
@@ -410,16 +422,38 @@ impl Smol {
         cfg.prefix = prefix;
     }
 
-    fn set_gateway(&self, gateway: Option<[u8; 4]>) -> Result<()> {
-        let mut stack = self.lock();
-        let routes = stack.iface.routes_mut();
-        routes.remove_default_ipv4_route();
-        if let Some(gw) = gateway {
-            routes
-                .add_default_ipv4_route(Ipv4Address::from(gw))
-                .map_err(|_| Cow::Borrowed("no route"))?;
+    /// Routes `target`/`mask` through `gateway`, or with `None` stops
+    /// routing it (`/net/iproute`). smoltcp sends to the gateway of the
+    /// longest prefix that holds an address off the interface's network;
+    /// the default route is the interface's gateway.
+    fn route(&self, target: [u8; 4], mask: [u8; 4], gateway: Option<[u8; 4]>) -> Result<()> {
+        let bits = u32::from_be_bytes(mask);
+        let prefix = bits.leading_ones() as u8;
+        if bits.count_ones() != u32::from(prefix) {
+            // smoltcp routes prefixes only.
+            return Err(Cow::Borrowed("bad arg in system call"));
         }
-        self.cfg.lock().gateway = gateway.unwrap_or([0; 4]);
+        let cidr = IpCidr::new(IpAddress::Ipv4(Ipv4Address::from(target)), prefix);
+        let mut stack = self.lock();
+        let mut full = false;
+        stack.iface.routes_mut().update(|routes| {
+            routes.retain(|r| r.cidr != cidr);
+            if let Some(gw) = gateway {
+                let route = Route {
+                    cidr,
+                    via_router: IpAddress::Ipv4(Ipv4Address::from(gw)),
+                    preferred_until: None,
+                    expires_at: None,
+                };
+                full = routes.push(route).is_err();
+            }
+        });
+        if full {
+            return Err(Cow::Borrowed("route table full"));
+        }
+        if prefix == 0 {
+            self.cfg.lock().gateway = gateway.unwrap_or([0; 4]);
+        }
         Ok(())
     }
 

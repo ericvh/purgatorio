@@ -1,7 +1,7 @@
 # ip/rip learns routes from RIP responses that test/netsrv rip sends to
 # its announced loopback port. -n says what it would change; without it,
-# #I refuses routes other than the default, and -d says so. The lines
-# about the host's own networks (Existing) vary and are left out.
+# the routes go into /net/iproute. The lines about the host's own
+# networks (Existing) vary and are left out.
 load std
 d=/tmp/sh-rip
 rm -rf $d
@@ -29,13 +29,21 @@ test/netsrv rip $ra 1 192.0.2.0/0.0.0.0/0.0.0.0/14
 waitfor 'add 192'
 kill $rp
 grep -v 'Existing|announced' $d/rl
-# Without -n the change is written to iproute, which refuses it.
+# Without -n the change is written to iproute, which lists it until the
+# gateway says the network is unreachable (metric 16) and rip removes it.
+fn inroute {
+	grep -s '^203\.0\.113\.' /net/iproute
+}
 ip/rip -d -a udp!127.0.0.1!0 > $d/rl &
 rp=$apid
 waitfor announced
 ra=udp!`{sed -n 's/rip: announced //p' $d/rl}
 test/netsrv rip $ra 1 203.0.113.0/0.0.0.0/0.0.0.0/3
-waitfor 'can.t'
+while {! inroute} {sleep 0}
+grep '^203\.0\.113\.' /net/iproute
+test/netsrv rip $ra 1 203.0.113.0/0.0.0.0/0.0.0.0/16
+while {inroute} {sleep 0}
+echo withdrawn
 kill $rp
 grep -v 'Existing|announced|started' $d/rl
 ip/rip 1.2.3

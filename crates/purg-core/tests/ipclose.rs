@@ -1,5 +1,6 @@
 //! `#I` hangs a conversation up and forgets it at the last close, and
-//! `/net/ipifc` and `/net/iproute` configure the platform's interface.
+//! `/net/ipifc` and `/net/iproute` configure the platform's interface and
+//! routes.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -27,7 +28,12 @@ struct MockNet {
     dialed: AtomicUsize,
     hungup: Arc<AtomicUsize>,
     ifc: std::sync::Mutex<Option<Ifc>>,
+    /// The routes the platform was asked to apply.
+    routes: std::sync::Mutex<Vec<MockRoute>>,
 }
+
+/// Target, mask and gateway.
+type MockRoute = ([u8; 4], [u8; 4], [u8; 4]);
 
 struct MockConn(Arc<AtomicUsize>);
 
@@ -76,9 +82,20 @@ impl Net for MockNet {
         (i.addr, i.prefix) = (addr, prefix);
         Ok(())
     }
-    fn set_gateway(&self, gateway: Option<[u8; 4]>) -> purg_platform::Result<()> {
-        let mut ifc = self.ifc.lock().unwrap();
-        ifc.as_mut().ok_or("no interface")?.gateway = gateway;
+    fn add_route(&self, target: [u8; 4], mask: [u8; 4], gw: [u8; 4]) -> purg_platform::Result<()> {
+        if gw == [10, 9, 9, 9] {
+            return Err("too many routes".into());
+        }
+        let mut routes = self.routes.lock().unwrap();
+        routes.retain(|r| (r.0, r.1) != (target, mask));
+        routes.push((target, mask, gw));
+        Ok(())
+    }
+    fn remove_route(&self, target: [u8; 4], mask: [u8; 4]) -> purg_platform::Result<()> {
+        self.routes
+            .lock()
+            .unwrap()
+            .retain(|r| (r.0, r.1) != (target, mask));
         Ok(())
     }
 }
@@ -102,7 +119,7 @@ fn write_file(p: &mut Prog, path: &str, text: &str) -> Result<(), String> {
 }
 
 #[test]
-fn ipifc_and_iproute_set_the_address_and_gateway() {
+fn ipifc_and_iproute_set_the_address_and_routes() {
     let (mut p, mock) = setup();
     assert_eq!(read_file(&mut p, "#I/iproute"), "");
     *mock.net.ifc.lock().unwrap() = Some(Ifc {
@@ -123,15 +140,67 @@ fn ipifc_and_iproute_set_the_address_and_gateway() {
         read_file(&mut p, "#I/ipifc/0/local"),
         "192.168.7.9 -> 192.168.255.255 192.168.0.0\n"
     );
+    let ifc = concat!(
+        "192.168.0.0     /112 192.168.0.0     4i   ifc    0\n",
+        "192.168.7.9     /128 192.168.7.9     4u   ifc    0\n",
+        "192.168.255.255 /128 192.168.255.255 4b   ifc    0\n",
+        "192.168.0.0     /128 192.168.0.0     4b   ifc    0\n",
+        "192.168.7.255   /128 192.168.7.255   4b   ifc    0\n",
+        "192.168.7.0     /128 192.168.7.0     4b   ifc    0\n",
+        "255.255.255.255 /128 255.255.255.255 4b   ifc    0\n",
+    );
     assert_eq!(
         read_file(&mut p, "#I/iproute"),
-        "192.168.0.0 255.255.0.0 192.168.7.9 4i none 0\n0.0.0.0 0.0.0.0 192.168.0.1 4u none 0\n"
+        format!("{ifc}0.0.0.0         /96  192.168.0.1     4    none   0\n")
     );
-    // A mask that is not a prefix, and routes other than the default one.
     assert!(write_file(&mut p, "#I/ipifc/0/ctl", "add 10.0.0.1 255.0.255.0").is_err());
-    assert!(write_file(&mut p, "#I/iproute", "add 10.1.0.0 255.255.0.0 10.0.0.1").is_err());
+
+    // Any route, with the tag of the descriptor that adds it; the target
+    // is masked, and adding it again replaces the gateway and keeps the tag.
+    let fd = p.open("#I/iproute", mode::OWRITE).unwrap();
+    for cmd in [
+        "tag rip",
+        "add 10.1.2.3 255.255.0.0 192.168.0.2",
+        "add 172.16.0.0 /108 10.0.0.1",
+        "frob",
+    ] {
+        p.write(fd, cmd.as_bytes()).unwrap();
+    }
+    p.close(fd).unwrap();
+    write_file(&mut p, "#I/iproute", "add 10.1.0.0 255.255.0.0 192.168.0.3").unwrap();
+    assert_eq!(
+        read_file(&mut p, "#I/iproute"),
+        format!(
+            "{ifc}0.0.0.0         /96  192.168.0.1     4    none   0\n\
+             10.1.0.0        /112 192.168.0.3     4     rip   0\n\
+             172.16.0.0      /108 10.0.0.1        4     rip   -\n"
+        )
+    );
+    assert_eq!(mock.net.routes.lock().unwrap().len(), 3);
+    for bad in [
+        "add 10.1.0.0 255.255.0.0",
+        "add 10.1.0.0 255.255.0.0 10.9.9.9",
+        "add 10.1.0 255.255.0.0 10.0.0.1",
+        "remove 10.1.0.0",
+        "tag",
+    ] {
+        assert!(write_file(&mut p, "#I/iproute", bad).is_err(), "{bad}");
+    }
+
+    // flush with a tag removes only those routes; remove of a route that
+    // is not there is not an error; flush removes the rest.
+    write_file(&mut p, "#I/iproute", "flush rip").unwrap();
+    write_file(&mut p, "#I/iproute", "remove 10.1.0.0 255.255.0.0").unwrap();
+    assert_eq!(
+        read_file(&mut p, "#I/iproute"),
+        format!("{ifc}0.0.0.0         /96  192.168.0.1     4    none   0\n")
+    );
     write_file(&mut p, "#I/iproute", "remove 0.0.0.0 0.0.0.0").unwrap();
-    assert_eq!(mock.net.ifc.lock().unwrap().as_ref().unwrap().gateway, None);
+    assert!(mock.net.routes.lock().unwrap().is_empty());
+    write_file(&mut p, "#I/iproute", "add 0.0.0.0 0.0.0.0 192.168.0.1").unwrap();
+    write_file(&mut p, "#I/iproute", "flush").unwrap();
+    assert_eq!(read_file(&mut p, "#I/iproute"), ifc);
+    assert!(mock.net.routes.lock().unwrap().is_empty());
     assert!(p.open("#I/ipifc/1", mode::OREAD).is_err());
 }
 
