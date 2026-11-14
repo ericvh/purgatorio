@@ -353,7 +353,7 @@ fn handshake_discovery_and_tools_list() {
         assert_eq!(str_of(r.get("serverInfo").unwrap(), "name"), "mcpd");
         assert_eq!(
             r.get("capabilities").unwrap().encode(),
-            r#"{"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false}}"#
+            r#"{"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false},"prompts":{"listChanged":false}}"#
         );
         assert_eq!(str_of(&r, "instructions"), PRIMER, "{vm}");
         // A notification gets no reply: the next line answers the ping.
@@ -1061,7 +1061,7 @@ fn malformed_and_unknown_requests() {
         m.send("");
         m.send(r#"{"jsonrpc":"2.0","method":"notifications/nosuch"}"#);
         m.send(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":99}}"#);
-        for method in ["prompts/get", "resources/subscribe", "nosuch"] {
+        for method in ["completion/complete", "resources/subscribe", "nosuch"] {
             let v = m.exchange(method, "{}");
             assert_eq!(error_code(&v), -32601, "{vm}: {method}");
         }
