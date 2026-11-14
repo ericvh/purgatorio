@@ -26,7 +26,7 @@ usage: logfile [-size] file
 	logfile usage
 Usage: install/inst [-chtuvF] [-r root] package [prefix ...]
 	install/inst usage
-usage: crypt [-d] [-C m,t] (-k secret | -f secretfile)
+usage: crypt [-d] [-C m,t] [-k secret | -f secretfile | -r pubkey | -s keyfile | -g keyfile]
 	crypt bad usage
 Usage: mk [-f file] [-n] [-a] [-e] [-t] [-k] [-i] [-d[egp]] [-wtarget,...] [targets ...]
 	mk error

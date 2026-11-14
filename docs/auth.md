@@ -669,6 +669,10 @@ defaults do not change, and old and new peers keep talking as before.
   proof version, 4. `mount -C x25519mlkem768` uses it and requires it;
   `export -C x25519mlkem768` requires it of every client. Every export
   offers it to a client that asks.
+- **Files:** `crypt -r` encrypts to a recipient's hybrid X25519 +
+  ML-KEM-768 key (see "crypt's public-key mode"). The password mode was
+  already a 256-bit-key AEAD under Argon2id, which a quantum computer does
+  not break.
 
 ChaCha20-Poly1305 with a 256-bit key, SHA-256 and HKDF stay: Grover's
 algorithm at best halves their security in bits, which leaves 128.
@@ -811,6 +815,96 @@ Not covered yet: `rcmd`/`rstyxd` and Lethe have their own exchanges
   ephemeral, made per auth fid and dropped with the exchange.
 - **Side channels.** ML-KEM is RustCrypto's `ml-kem`, whose decapsulation
   compares and selects in constant time; X25519 is `curve25519-dalek`'s.
+
+### crypt's password mode
+
+Inferno's `crypt -k secret` derives a key from the secret with a digest
+and encrypts with the algorithm `-a` names. Ours (`crypt [-d] [-C m,t]
+(-k secret | -f secretfile)`, since before this work) keeps the
+interface without `-a`: the key is Argon2id of the secret (19456 KiB, 2
+passes by default, the OWASP baseline; `-C m,t` sets the cost, and the
+file records it), and the data is ChaCha20-Poly1305 in 64 KiB chunks
+whose nonces number them and mark the last one, so a reordered, cut or
+damaged file fails. A 256-bit key and a memory-hard KDF are what a
+post-quantum file encryption needs: Grover's search over the key is
+2^128 work, and over the password no cheaper than Argon2id lets it be.
+Nothing changes in this mode.
+
+```
+pgcrypt1 file = "pgcrypt1" || m u32 LE || t u32 LE || p u32 LE || salt[16] || prefix[7]
+                || chunks
+chunk         = len u32 LE || ChaCha20-Poly1305(key, nonce, data)    data at most 64 KiB
+nonce         = prefix[7] || i u32 BE || last u8
+key           = Argon2id(secret, salt, m KiB, t passes, p lanes) -> 32 bytes
+```
+
+### crypt's public-key mode
+
+An extension of ours: files encrypted to a recipient's public key, which
+only the matching secret key opens. The key pair is a hybrid of X25519
+and ML-KEM-768, so a file stays closed as long as either holds.
+
+```sh
+crypt -g /usr/alice/keyring/crypt > alice.pub    # make a key pair; prints the public key
+crypt -r alice.pub < plan > plan.c               # encrypt to it
+crypt -d -s /usr/alice/keyring/crypt < plan.c    # decrypt with the secret key file
+auth/factotum /usr/alice/keyring/crypt            # or load it into factotum
+crypt -d < plan.c                                 # and decrypt through factotum
+```
+
+- `crypt -g keyfile` writes a new secret key to `keyfile` (mode 0600)
+  and prints its public key line. `auth/getpk keyfile` prints the same
+  line again.
+- `crypt -r pubkey` encrypts standard input to the public key in the
+  file `pubkey` (its public key line, or the secret key file itself).
+- `crypt -d -s keyfile` decrypts with the secret key in `keyfile`.
+  `crypt -d` with no key decrypts a public-key file with the key loaded
+  into the guest factotum (`/mnt/factotum`): factotum turns the file's
+  header into the file's key and never hands out the secret key.
+- A public-key file decrypted with `-k` fails with `file is encrypted to
+  a key, not a secret`; a password file decrypted with `-s` or through
+  factotum with `file is encrypted with a secret`; a file for another key
+  with `file is not for this key`; a damaged one with `wrong secret or
+  damaged file`, as in the password mode.
+
+Formats (`purg_auth::hybrid`), one text line each:
+
+```
+secret key  = "pgkemkey1 " hex(x25519 secret[32] || ml-kem-768 seed d || z [64])
+public key  = "pgkempub1 " hex(x25519 public[32] || ml-kem-768 encapsulation key[1184])
+```
+
+A file is a header, then the chunks of the password mode under a key
+from the header:
+
+```
+pgcrypt2 file = header || chunks
+header = "pgcrypt2" || suite u8 || id[8] || eph[32] || ct[1088] || prefix[7]   (1144 bytes)
+suite  = 1: X25519 with ML-KEM-768; the only one, and any other is refused
+id     = SHA-256(public key)[..8]                     which key the file is for
+eph    = X25519(e, base)                              e: the sender's ephemeral secret
+x      = X25519(e, recipient's X25519 key)            all zeros is refused
+(ct, k)= ML-KEM-768.Encaps(recipient's encapsulation key)
+key    = HKDF-SHA256(salt = SHA-256(header || public key), ikm = k || x,
+                     info = "pgcrypt2 key", 32 bytes)
+```
+
+The magic's last character is the format's version, and the suite byte
+leaves room for another key exchange. The salt binds the whole header
+(the version, the suite, both ephemeral values and the nonce prefix) and
+the recipient's public key, as X-Wing's combiner binds the X25519 keys;
+`k` comes first, as there. Each file has fresh ephemeral values, so its
+key is used once. The sender is not authenticated: anyone with the
+public key can make a file for it, as with any public-key encryption.
+Sign the file (or its digest) separately to say who made it.
+
+Factotum holds such a key as `key proto=mlkem768x25519 !secret=<hex>`
+(the hex of the secret key line); `auth/factotum keyfile` loads a `crypt
+-g` file so. Its rpc is `start proto=mlkem768x25519`, `write <header>`,
+`read`, which answers `ok <key>`, the 32-byte key of that file. It
+answers only for a well-formed `pgcrypt2` header for its own key, so it
+is no general decapsulation service: what it gives is an HKDF output
+bound to that header.
 
 ## Password scheme
 
@@ -973,7 +1067,7 @@ The Inferno page each one takes its role from is in brackets.
 | tool | role |
 |---|---|
 | `auth/createsignerkey [-f keyfile] [name]` | [createsignerkey(8)] Makes a signer seed (default `/keydb/signerkey`) and prints its public key as a key-list line `<hex> <name>`, ready to append to `/lib/keys/signers`. |
-| `auth/getpk file ...` | [getpk(8)] Prints the public key of a seed file, a public key file (named `*.pub`), an authinfo or a certificate, in hex. |
+| `auth/getpk file ...` | [getpk(8)] Prints the public key of a seed file, a public key file (named `*.pub`), an authinfo or a certificate, in hex, and the public key line of a `crypt -g` key file. |
 | `auth/verify [-s signers] [-r revoked] [-u name] [-t time] file` | [verify(8)] Checks the certificate in a file (a certificate or an authinfo) against a signer list and a revocation list, and prints its name, key, expiry and signers. Exits with the error a server would give. With `-m` it checks a module's signatures instead (`docs/signing.md`). |
 | `auth/sign`, `auth/modpolicy` | Sign a module, and run a command under a module policy. See `docs/signing.md`. |
 | `auth/mkauthinfo [-f signerkey] [-e expires] user keyfile` | [mkauthinfo(8)] Makes a user key and a certificate on the signer's machine and writes an authinfo. |
@@ -987,7 +1081,7 @@ The Inferno page each one takes its role from is in brackets.
 | `auth/factotum [-m mntpt] [-s authinfo] [authinfo ...]` | [factotum(4)] A guest agent with Plan 9's `ctl` and `rpc` files (below). `-s` loads the key for server proofs. |
 | `runas user cmd [arg ...]` | [runas(1)] Runs `cmd` as `user`, in a namespace, environment and process group of its own. Only the host owner may (see "Users"). |
 | `auth/secstore [-s dir] [-C m,t] [-g file \| -G file \| -p file \| -r file]` | [secstore(1)] Files encrypted under a password, kept in a store directory (default `/usr/<user>/secstore`, which can be an authenticated import). `-g` gets a file into the current directory, `-G` prints it, `-p` puts one, `-r` removes one, and no option lists the store. |
-| `crypt [-d] [-C m,t] (-k secret \| -f secretfile)` | [crypt(1)] Encrypts or decrypts standard input to standard output with ChaCha20-Poly1305 in 64 KiB chunks, under an Argon2id key. |
+| `crypt [-d] [-C m,t] [-k secret \| -f secretfile \| -r pubkey \| -s keyfile \| -g keyfile]` | [crypt(1)] Encrypts or decrypts standard input to standard output with ChaCha20-Poly1305 in 64 KiB chunks, under an Argon2id key. An addition: `-g` makes a hybrid X25519 + ML-KEM-768 key pair, `-r` encrypts to its public key, and `-d -s` (or `-d` with the key in factotum) decrypts (see "crypt's public-key mode"). |
 | `auth/aescbc -e\|-d [-k key] [-f keyfile]` | [secstore(1)] Encrypts or decrypts standard input in the file format of Plan 9's and Inferno's secstore, for files shared with them (below). Without `-k` or `-f` the key is read from `/dev/cons`. |
 | `auth/ai2key [-t tag] keyfile ...` | [ai2key(8)] Prints each authinfo as the `key proto=ed25519 [tag] user=... !seed=... cert=...` line that loads it into `auth/factotum`'s `ctl`, so keys can be kept in a store and loaded later. |
 | `netkey` | [netkey(1)] Reads a password, then challenges, and prints each response: the first 8 hex digits of HMAC-SHA256 keyed with SHA-256 of the password. It replaces the DES SecureNet calculator; it is only useful with a server that computes the same. |
@@ -1063,6 +1157,7 @@ with `!` is secret and is never read back. Values may be quoted with `'`.
 ```
 key proto=ed25519 [user=<name>] [role=<role>] !seed=<hex> [cert='<pgcert1 line>']
 key proto=pass server=<addr> user=<name> !password=<password>
+key proto=mlkem768x25519 !secret=<hex>
 delkey proto=<proto> [attr=value ...]
 ```
 
@@ -1105,6 +1200,10 @@ the reply (`ok [data]`, `done`, `needkey <attrs>`, `error <message>`).
   one kept for `role=server`, else the first with no role (above).
 - `pass`: `start proto=pass server=<s> [user=<u>]`, then `read` returns
   `ok <user> <password>`, both quoted.
+- `mlkem768x25519`: `start proto=mlkem768x25519`, then `write <header>`
+  (a `pgcrypt2` header), then `read` returns `ok <key>`, the file's key
+  (see "crypt's public-key mode"). `auth/factotum keyfile` loads a `crypt
+  -g` key file as such a key; `ctl` shows it with its `id`.
 
 `#¤` keeps working for existing callers: `ctl` still takes `key <hex>`, a
 bare 32-byte seed or `delkey`, and now also `cert <pgcert1 line>`; `rpc`
@@ -1253,6 +1352,13 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   `pqmount.sh` (`mount -C`, `import -C`, `export -C`, a classical client
   of a plain export and of a post-quantum-only one, a server that asks
   for no proof), in the emu, the probe and the kernel.
+- `crypt`'s public-key mode: `hybrid`'s tests (a round trip, the wrong
+  key, every changed header byte changing the key or refused, key file
+  parsing, unusable recipient keys, and a known file key computed
+  separately with `kyber-py`, Python's `cryptography` and `hmac`); the
+  corpus's `pqcrypt.sh` (`crypt -g`, `-r`, `-d -s`, `auth/getpk`, the
+  wrong key, a secret for a key file and the reverse, a cut file, and
+  decryption through factotum), everywhere the corpus runs.
 - Fuzzing: the `record` fuzz target also feeds its input to the server
   proof's check, and its smoke test (`cargo test -p purg-auth --test
   fuzz_smoke`) adds genuine server proofs, with keys and certificates,

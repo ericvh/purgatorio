@@ -17,6 +17,8 @@
 //!   client checks to know it reached the server it trusts.
 //! - [`login`] (feature `login`): the `pglogin1` password exchange (SPAKE2
 //!   over an Argon2id-hardened password) and password-sealed blobs.
+//! - [`hybrid`] (feature `login`): `crypt`'s public-key mode, files
+//!   encrypted to a hybrid X25519 + ML-KEM-768 key.
 //!
 //! The crate is `no_std` + `alloc`. The kernel uses only the always-built
 //! modules; the guests use all of it.
@@ -27,6 +29,8 @@ extern crate alloc;
 pub mod attr;
 pub mod cert;
 pub mod hex;
+#[cfg(feature = "login")]
+pub mod hybrid;
 pub mod kem;
 pub mod keys;
 #[cfg(feature = "login")]

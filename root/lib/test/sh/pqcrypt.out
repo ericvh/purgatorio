@@ -1,0 +1,16 @@
+pgkempub1
+   2443
+getpk agrees
+attack at dawn
+to the secret key file
+crypt: file is not for this key
+crypt: file is encrypted to a key, not a secret
+crypt: file is encrypted with a secret
+a secret
+crypt: wrong secret or damaged file
+usage: crypt [-d] [-C m,t] [-k secret | -f secretfile | -r pubkey | -s keyfile | -g keyfile]
+factotum
+key proto=mlkem768x25519 !secret?
+attack at dawn
+crypt: file is not for this key
+crypt: no key
