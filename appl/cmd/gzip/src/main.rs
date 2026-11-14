@@ -66,15 +66,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         out.flush()?;
         return Ok(());
     }
-    let mut failed = false;
+    // As Inferno's gzip: each failure is reported, the status stays empty.
     for f in &files {
         if let Err(e) = gzip_file(f, level, verbose) {
             warn("gzip", &e);
-            failed = true;
         }
-    }
-    if failed {
-        purgatorio::exits("fail:errors");
     }
     Ok(())
 }

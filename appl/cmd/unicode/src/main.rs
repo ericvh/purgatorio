@@ -21,6 +21,11 @@ fn value(s: &str) -> Option<char> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's unicode prints its usage and exits with no status.
+    run(args).map_err(|e| e.usage_exits("usage: ", ""))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let (mut numout, mut text) = (false, false);
     let mut i = 1;
     while let Some(a) = args.get(i).filter(|a| a.starts_with('-')) {

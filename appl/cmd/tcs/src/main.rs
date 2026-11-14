@@ -164,15 +164,23 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         out.flush()?;
         return Ok(());
     }
-    let from = &find(&sets, &ics)?.conv;
-    let to = &find(&sets, &ocs)?.conv;
+    let charset = |name: &str| {
+        find(&sets, name).unwrap_or_else(|e| {
+            eprintln!("tcs: {e}");
+            purgatorio::exits("fail:badarg");
+        })
+    };
+    let from = &charset(&ics).conv;
+    let to = &charset(&ocs).conv;
     let mut data = Vec::new();
     if files.is_empty() {
         io::stdin().lock().read_to_end(&mut data)?;
     }
     for f in &files {
-        let mut file = std::fs::File::open(f)
-            .map_err(|_| Error(format!("cannot open {f}: {}", purgatorio::errstr())))?;
+        let Ok(mut file) = std::fs::File::open(f) else {
+            eprintln!("tcs: cannot open {f}: {}", purgatorio::errstr());
+            purgatorio::exits("fail:open");
+        };
         file.read_to_end(&mut data)?;
     }
     out.write_all(&encode(to, &decode(from, &data)?)?)?;

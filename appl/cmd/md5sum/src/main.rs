@@ -10,9 +10,28 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         println!("{}  -", hex(&md5(&data)));
         return Ok(());
     }
+    // As Inferno's md5sum: report a file it cannot open or read, go on,
+    // and fail with `fail:error` at the end.
+    let mut failed = false;
     for path in &args[1..] {
-        let data = std::fs::read(path).map_err(|_| Error::last())?;
+        let mut f = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(_) => {
+                eprintln!("md5sum: cannot open {path}: {}", purgatorio::errstr());
+                failed = true;
+                continue;
+            }
+        };
+        let mut data = Vec::new();
+        if let Err(e) = std::io::Read::read_to_end(&mut f, &mut data) {
+            eprintln!("md5sum: error reading {path}: {}", Error::from(e));
+            failed = true;
+            continue;
+        }
         println!("{}  {path}", hex(&md5(&data)));
+    }
+    if failed {
+        purgatorio::exits("fail:error");
     }
     Ok(())
 }

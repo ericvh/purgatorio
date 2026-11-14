@@ -43,7 +43,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             }
         }
     };
-    let mut failed = false;
     if i >= args.len() {
         let mut data = Vec::new();
         io::stdin().lock().read_to_end(&mut data)?;
@@ -53,8 +52,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         match std::fs::read(f) {
             Ok(data) => add(&data),
             Err(_) => {
-                eprintln!("freq: cannot open {f}: {}", purgatorio::errstr());
-                failed = true;
+                // As Inferno's freq: no prefix, no error, no status.
+                eprintln!("cannot open {f}");
             }
         }
     }
@@ -79,8 +78,5 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         writeln!(out, "{n:8}")?;
     }
     out.flush()?;
-    if failed {
-        purgatorio::exits("fail:errors");
-    }
     Ok(())
 }

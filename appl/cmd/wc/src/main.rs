@@ -70,9 +70,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         return Ok(());
     }
     let mut total = Counts::default();
-    let mut failed = false;
+    // As Inferno's wc: a file it cannot open or read is reported, and
+    // the status stays empty.
     for f in &files {
-        match File::open(f).and_then(|mut r| count(&mut r)) {
+        let mut r = match File::open(f) {
+            Ok(r) => r,
+            Err(_) => {
+                eprintln!("wc: can't open {f}: {}", purgatorio::errstr());
+                continue;
+            }
+        };
+        match count(&mut r) {
             Ok(c) => {
                 total.lines += c.lines;
                 total.words += c.words;
@@ -80,16 +88,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                 println!("{}", line(c, which, f));
             }
             Err(e) => {
-                eprintln!("wc: {f}: {}", Error::from(e));
-                failed = true;
+                eprintln!("wc: error reading {f}: {}", Error::from(e));
             }
         }
     }
     if files.len() > 1 {
         println!("{}", line(total, which, "total"));
-    }
-    if failed {
-        purgatorio::exits("fail:errors");
     }
     Ok(())
 }
