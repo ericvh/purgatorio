@@ -219,7 +219,9 @@ half changed. `disk/mkdisk` and `disk/chkdisk` make and check images (also
 builds (files, a rename, a large file, the disk filled to `file system
 full`, `disk/chkdisk` on the raw disk), kills a reader of a throttled disk
 in the middle of a request, and `xtask` checks the image on the host and
-boots a second time to check that the files persist.
+boots a second time to check that the files persist. With `root=disk` at
+boot the disk is the root too, before the initrd's tree, with `/tmp` kept
+in RAM; the second boot runs that way.
 
 K4 SMP: the kernel starts every CPU the DTB lists (PSCI `CPU_ON`, under
 TCG and KVM) and runs kernel threads, and so progs, on all of them from

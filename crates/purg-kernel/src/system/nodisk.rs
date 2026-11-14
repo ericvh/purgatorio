@@ -29,6 +29,9 @@ pub fn open(_blks: Blks, _platform: &Arc<dyn Platform>) -> Disks {
     Disks
 }
 
+/// No disks, so no disk root.
+pub fn set_root(_on: bool) {}
+
 pub fn devs(_disks: &Disks, _user: &str) -> Vec<Arc<dyn Dev>> {
     Vec::new()
 }

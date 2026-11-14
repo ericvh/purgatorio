@@ -18,6 +18,12 @@
 //! filled to `file system full`, a kill during a virtio-blk wait on a
 //! throttled disk, and the files a second boot finds again
 //! ([`System::disk_persist`]).
+//!
+//! With `root=disk` in the boot arguments the file system is also the
+//! root: it is bound before `/` and takes creates, so its files come
+//! first and new names at the top go to the disk, while the initrd's tree
+//! after it still supplies what the disk lacks (`/bin`, `/lib`). `/tmp`
+//! stays the RAM tree's. The second boot checks this ([`ROOT_STEPS`]).
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -25,6 +31,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use purg_aarch64::blk::{Blk, SECTOR, Wait};
 use purg_abi::{error, mode};
@@ -41,6 +48,18 @@ type Check<'a> = dyn Fn() -> core::result::Result<String, String> + 'a;
 
 /// Where the kernel binds the file system.
 pub const MOUNT_POINT: &str = "/n/disk";
+
+/// `root=disk`: the file system is the root as well.
+static AS_ROOT: AtomicBool = AtomicBool::new(false);
+
+/// Makes the file system the root too when it is bound (`root=disk`).
+pub fn set_root(on: bool) {
+    AS_ROOT.store(on, Ordering::Release);
+}
+
+fn as_root() -> bool {
+    AS_ROOT.load(Ordering::Acquire)
+}
 
 /// A virtio-blk disk as a purgfs [`purg_fs::Disk`].
 pub struct BlkDisk(Arc<Blk>);
@@ -538,13 +557,35 @@ pub fn bind(prog: &mut Prog) -> Result<()> {
             prog.close(fd)?;
         }
     }
-    prog.bind(
-        "#K",
-        MOUNT_POINT,
-        purg_abi::mount::MREPL | purg_abi::mount::MCREATE,
-    )
-    .map(drop)
+    use purg_abi::mount::{MBEFORE, MCREATE, MREPL};
+    prog.bind("#K", MOUNT_POINT, MREPL | MCREATE)?;
+    if as_root() {
+        // Before the root and the initrd's tree, taking creates; /tmp
+        // stays in RAM whatever the disk holds there.
+        prog.bind("#K", "/", MBEFORE | MCREATE)?;
+        prog.bind("#U/tmp", "/tmp", MREPL | MCREATE)?;
+    }
+    Ok(())
 }
+
+/// What the second boot runs when the file system is the root, and
+/// whether each must succeed: a file the first boot left, read through
+/// `/`; a create at the top, which lands on the disk; a file in `/tmp`,
+/// which does not; the initrd's files still there; and a module run from
+/// the disk.
+const ROOT_STEPS: &[(&[&str], bool)] = &[
+    (&["cat", "/persist.txt"], true),
+    (&["sh", "-c", "echo made at the root > /rootmade.txt"], true),
+    (&["cat", "/n/disk/rootmade.txt"], true),
+    (&["sh", "-c", "echo scratch > /tmp/scratch"], true),
+    (&["cat", "/tmp/scratch"], true),
+    (&["cat", "/n/disk/tmp/scratch"], false),
+    (&["cat", "/lib/probe/hello.txt"], true),
+    (&["cp", "/bin/echo.wasm", "/n/disk/diskecho.wasm"], true),
+    (&["/diskecho.wasm", "run", "from", "the", "disk"], true),
+    (&["rm", "/diskecho.wasm", "/rootmade.txt"], true),
+    (&["ls", "/n/disk/diskecho.wasm"], false),
+];
 
 /// What the kernel writes and the second boot reads back.
 pub const PERSIST: &str = "written by the first boot\n";
@@ -673,6 +714,11 @@ impl System {
         match bind(&mut prog) {
             Ok(()) => {
                 self.say(&format!("kernel: sdV{u} mounted on {MOUNT_POINT}"));
+                if as_root() {
+                    self.say(&format!(
+                        "kernel: sdV{u} is the root, before the initrd's tree"
+                    ));
+                }
                 Some(true)
             }
             Err(e) => {
@@ -910,6 +956,18 @@ impl System {
                 (Err(e), _) => Err(format!("error: {e}")),
             };
             self.verdict(&mut failed, v);
+        }
+        if as_root() {
+            for &(argv, ok) in ROOT_STEPS {
+                self.say(&format!("kernel: run {}", argv.join(" ")));
+                let v = match (self.run(argv, None), ok) {
+                    (Ok(s), true) if s.is_empty() => Ok(String::from("ok")),
+                    (Ok(s), false) if !s.is_empty() => Ok(format!("failed as expected: {s}")),
+                    (Ok(s), _) => Err(format!("status {s:?}")),
+                    (Err(e), _) => Err(format!("error: {e}")),
+                };
+                self.verdict(&mut failed, v);
+            }
         }
         self.say("kernel: disk: check it");
         let r = fs.check();

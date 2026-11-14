@@ -455,6 +455,7 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
     let net = system::net::open(&fdt, &info);
     let host = system::host9p::find(&fdt);
     let blks = system::disk::find(&fdt);
+    system::disk::set_root(bootarg(&info, "root") == Some("disk"));
     let rtc = info.rtc.map(|r| r.base as usize);
     let (failed, what) = system::start(archive, cons, rtc, net, host, blks, mode);
     if failed != 0 {

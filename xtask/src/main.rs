@@ -1426,11 +1426,18 @@ const DISK_REBOOT_LINES: &[&str] = &[
     "kernel: run cat /n/disk/kept.txt",
     "written by the kernel",
     "kernel: disk: check it",
+    // root=disk: the file system is the root too.
+    "kernel: sdV1 is the root, before the initrd's tree",
+    "kernel: run cat /persist.txt",
+    "made at the root",
+    "scratch",
+    "run from the disk",
 ];
 
 /// Boots run `k` again on its disk (`disk_args`), with `diskcheck`: the
 /// kernel mounts the file system and checks that it holds what the first
-/// boot left, which a first boot cannot do across its own reboot.
+/// boot left, which a first boot cannot do across its own reboot. With
+/// `root=disk` it is the root as well, and the boot checks that too.
 fn disk_reboot(
     k: &KernelRun,
     opts: &KernelOpts,
@@ -1451,9 +1458,9 @@ fn disk_reboot(
     args.extend([
         "-append",
         if kvm {
-            "exit=psci diskcheck"
+            "exit=psci diskcheck root=disk"
         } else {
-            "diskcheck"
+            "diskcheck root=disk"
         },
     ]);
     args.extend(disk_args.iter().map(String::as_str));
