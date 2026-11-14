@@ -1319,7 +1319,7 @@ fn namespace_tools() {
         assert!(e.starts_with("unmount: /n: "), "{vm}: {e}");
         let e = m.fails("bind", r#"{"from":"/nonexistent","to":"/n"}"#);
         assert_eq!(
-            e, "bind: cannot bind /nonexistent onto /n: file does not exist",
+            e, "bind: cannot bind /nonexistent on /n: file does not exist",
             "{vm}"
         );
 
