@@ -18,6 +18,11 @@ const ATOMICIO: usize = 8192;
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's stream prints `Usage:`.
+    run(args).map_err(|e| e.usage_exits("Usage: ", "fail:usage"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     if args.get(1).map(String::as_str) == Some("--copy") {
         let bufsiz = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(ATOMICIO);
         purgatorio::stream(0, 1, bufsiz)?;
@@ -41,11 +46,15 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let files = arg.argv();
     let open = |name: &str, m: u8| {
-        purgatorio::open(name, m).map_err(|e| Error(format!("cannot open {name}: {e}")))
+        purgatorio::open(name, m).unwrap_or_else(|e| {
+            // As Inferno's stream: `fail:open`.
+            eprintln!("stream: can't open {name}: {e}");
+            purgatorio::exits("fail:open")
+        })
     };
     let (f1, f2) = match files.as_slice() {
-        [a] => (open(a, mode::OREAD)?, None),
-        [a, b] => (open(a, mode::ORDWR)?, Some(open(b, mode::ORDWR)?)),
+        [a] => (open(a, mode::OREAD), None),
+        [a, b] => (open(a, mode::ORDWR), Some(open(b, mode::ORDWR))),
         _ => return Err(Error(format!("usage: {USAGE}"))),
     };
     let mut jobs = match &f2 {

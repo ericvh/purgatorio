@@ -1,6 +1,7 @@
 //! ramfile path: create `path` with file2chan and serve it in the background.
 //! `ramfile --serve path` is the server; it writes one ready byte to fd 1
-//! before accepting I/O.
+//! before accepting I/O. As in Inferno's ramfile, a bad command line or a
+//! failure is reported with no status.
 
 use std::os::fd::AsRawFd;
 
@@ -16,9 +17,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             .ok_or_else(|| Error::from("usage: ramfile path"))?;
         return serve(path);
     }
-    let path = args
-        .get(1)
-        .ok_or_else(|| Error::from("usage: ramfile path"))?;
+    let Some(path) = args.get(1) else {
+        eprintln!("usage: ramfile path");
+        return Ok(());
+    };
     let [r, w] = purgatorio::pipe()?;
     purgatorio::spawn(
         "/bin/ramfile.wasm",
@@ -28,12 +30,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             path.clone(),
         ],
         pctl::NEWFD,
-        &[(w.as_raw_fd(), 1)],
+        &[(w.as_raw_fd(), 1), (2, 2)],
     )?;
     drop(w);
     let mut f = std::fs::File::from(r);
     let mut b = [0u8; 1];
-    std::io::Read::read_exact(&mut f, &mut b)?;
+    // A server that fails has printed why on fd 2 before the pipe closes.
+    let _ = std::io::Read::read_exact(&mut f, &mut b);
     Ok(())
 }
 

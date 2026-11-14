@@ -20,6 +20,12 @@ fn remove_all(path: &str) -> Result<(), Error> {
     purgatorio::remove(path).map_err(at)
 }
 
+/// Inferno's rm prints `Usage:` and raises `fail: usage`, with a space.
+fn usage() -> ! {
+    eprintln!("Usage: rm [-fr] file ...");
+    purgatorio::exits("fail: usage");
+}
+
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, "rm [-fr] name ...");
@@ -28,7 +34,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         match c {
             'f' => force = true,
             'r' => recursive = true,
-            _ => return Err(arg.usage()),
+            _ => usage(),
         }
     }
     let mut failed = false;

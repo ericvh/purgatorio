@@ -9,18 +9,20 @@ use purgatorio::{Context, Error};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // As Inferno's xargs: a bad command line or a command it cannot load
+    // is reported with no status.
     if args.len() < 2 {
-        return Err(Error::from(
-            "usage: xargs command [command args] <[list of last command arg]",
-        ));
+        eprintln!("Usage: xargs command [command args] <[list of last command arg]");
+        return Ok(());
     }
     let cmd = &args[1];
-    let path = purgatorio::find_command(cmd).map_err(|_| {
-        Error(format!(
-            "can't load {cmd}: {}",
+    let Ok(path) = purgatorio::find_command(cmd) else {
+        eprintln!(
+            "xargs: can't load {cmd}: {}",
             purgatorio::abi::error::ENONEXIST
-        ))
-    })?;
+        );
+        return Ok(());
+    };
     let mut status = String::new();
     let mut input = io::stdin().lock();
     let mut line = Vec::new();

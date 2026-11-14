@@ -14,6 +14,12 @@ use purgatorio::{Context, Error};
 
 const USAGE: &str = "usage: logfile [-size] file";
 
+/// Inferno's logfile raises `fail: usage`, with a space.
+fn usage() -> ! {
+    eprintln!("{USAGE}");
+    purgatorio::exits("fail: usage");
+}
+
 /// Inferno's default: four times `Sys->ATOMICIO`.
 const DEFAULT_SIZE: usize = 4 * 8192;
 
@@ -35,13 +41,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             size = flag.parse().unwrap_or(0);
             if size == 0 {
                 eprintln!("logfile: can't have a zero buffer size");
-                return Err(Error::from(USAGE));
+                usage();
             }
             rest = &rest[1..];
         }
     }
     let [path] = rest else {
-        return Err(Error::from(USAGE));
+        usage();
     };
     let [r, w] = purgatorio::pipe()?;
     purgatorio::spawn(
