@@ -44,4 +44,4 @@ login
 User: Password: in home
 errors
 User: Password: ftpfs: login failed: Login incorrect.
-ftpfs: usage: ftpfs [-/dpq] [-m mountpoint] [-a password] ftphost
+usage: ftpfs [-/dpq] [-m mountpoint] [-a password] ftphost

@@ -8,11 +8,11 @@ twice
 auth/aescbc: decrypted file failed to authenticate
 auth/aescbc: unexpectedly short read
       0
-auth/aescbc: usage: auth/aescbc -d|-e [-k key] [-f keyfile]
-auth/aescbc: usage: auth/aescbc -d|-e [-k key] [-f keyfile]
+usage: auth/aescbc -d|-e [-k key] [-f keyfile]
+usage: auth/aescbc -d|-e [-k key] [-f keyfile]
 auth/aescbc: can't open nosuch: file does not exist
 ai2key
 key proto=ed25519 note=test user=glenda !seed=HEX cert=CERT
 1
 auth/ai2key: /tmp/sh-aescbc/nosuch: file does not exist
-auth/ai2key: usage: auth/ai2key [-t tag] keyfile ...
+usage: auth/ai2key [-t tag] keyfile ...

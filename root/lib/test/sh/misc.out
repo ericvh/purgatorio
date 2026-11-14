@@ -2,18 +2,18 @@ a
 b
 c
 d
-tokenize: usage: tokenize string delimiters
+Usage: tokenize string delimiters
 00000000  00 00 00 00 00 00 00 00                          ........
 AAA
-zeros: usage: zeros [-r] [-v value] blocksize [number]
+usage: zeros [-r] [-v value] blocksize [number]
 begin 666 remote
 45&AE('%U:6-K(&)R;W=N(&9O> H 
  
 end
 The quick brown fox
 The quick brown fox
-uudecode: no begin line
-fail:no begin line
+no begin line
+
 el
 hX	Ylo
 lo

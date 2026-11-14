@@ -8,7 +8,7 @@ h??
 00000000  68 00 e9 00                                      h...
 hé
 tcs: foo: unknown character set
-fail:foo: unknown character set
+fail:badarg
 tcs: cannot open /tmp/sh-convert/nonexistent: file does not exist
 you have: you want: 	* 2.54
 	/ 0.3937008

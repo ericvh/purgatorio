@@ -23,4 +23,4 @@ many
 same keys
 a value long enough to fill blocks soon
 dbm/fetch: nodb: file does not exist
-dbm/fetch: usage: dbm/fetch dbfile key
+usage: dbm/fetch dbfile key

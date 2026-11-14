@@ -13,14 +13,14 @@ rm: n/dir: remove -- directory not empty
 n/adm
 n/ls
 sh: n/a-name-much-longer-than-27-bytes: name too long
-mkdir: n/adm: file already exists
+mkdir: n/adm already exists
 checking file system: main
 check free list
 lo = 6; hi = 399
        4 files
      399 blocks in the file system
-     209 used blocks
-     190 free blocks
+     186 used blocks
+     213 free blocks
       15 maximum qid path
 /adm/users
 /ls
@@ -31,7 +31,7 @@ disk/kfscmd: 'check z': illegal check flag: z
 again
 same
 d-rwxrwxrwx 0 n/adm
---rw-r--r-- 101202 n/ls
+--rw-r--r-- 89505 n/ls
 check free list
 lo = 6; hi = 399
 read only
@@ -44,5 +44,5 @@ errors
 disk/kfs: can't open nosuch: file does not exist
 disk/kfs: kfs magic in trouble
 disk/kfs: invalid block size 1000
-disk/kfs: usage: disk/kfs [-r [-b bufsize]] [-cADPRW] [-n name] kfsfile
+usage: disk/kfs [-r [-b bufsize]] [-cADPRW] [-n name] kfsfile
 disk/kfscmd: can't open /chan/kfs.no.such.kfs.cmd: file does not exist

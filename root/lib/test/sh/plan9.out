@@ -7,4 +7,4 @@ import: bad remote tree: not a directory
 more
 sh: /tmp/sh-plan9/n/sub/h: permission denied
 9export: Plan 9 authentication (p9any) is not implemented; use -A
-9export: usage: 9export -A [-r]
+usage: 9export -A [-r]

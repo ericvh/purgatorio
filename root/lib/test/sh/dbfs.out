@@ -30,7 +30,7 @@ echo: write error: empty line in record
 third
 cat: n/nosuch: file does not exist
 rm: n/new: permission denied
-mkdir: n/dir: mounted directory forbids creation
+mkdir: can't create n/dir: mounted directory forbids creation
 third
 
 a new one
@@ -45,4 +45,4 @@ rm: n/0: permission denied
 dbfs: /tmp/sh-dbfs/nodb: file does not exist
 n/new
 made
-dbfs: usage: dbfs [-abcer] file mountpoint
+usage: dbfs [-abcer] file mountpoint

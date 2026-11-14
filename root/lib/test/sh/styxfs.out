@@ -24,5 +24,5 @@ new
 more
 one
 two
-lockfs: usage: lockfs [-A] [-a alg]... [-p addr] dir [mountpoint]
+usage: lockfs [-A] [-a alg]... [-p addr] dir [mountpoint]
 lockfs: cannot stat /tmp/sh-styxfs/l/x: file does not exist

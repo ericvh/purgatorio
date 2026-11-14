@@ -35,7 +35,7 @@ mergelog: note: app/x contents but no entry
 200 3 d app/a - 664 inferno inf 20 5
 mergelog: can't open nosuch: file does not exist
 mergelog: bad log entry: bad entry
-install/mergelog: usage: install/mergelog [-dv] oldlog <newlog
+usage: install/mergelog [-dv] oldlog <newlog
 0 a src/app - 20000000775 inferno inf 1000000 0
 1 a src/app/keep - 664 inferno inf 1000000 5
 2 a src/app/lib - 20000000775 inferno inf 1000000 0
