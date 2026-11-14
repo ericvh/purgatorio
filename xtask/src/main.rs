@@ -85,6 +85,8 @@
 //! - `fonts [--check] [--vm=wasmtime|wasmi]`: make `root/fonts` from
 //!   `fonts/` with the `fontgen` guest in the emu (`fonts.rs`); `--check`
 //!   compares instead of writing.
+//! - `timezones [--check]`: make `root/locale` from the IANA time zone
+//!   database in `tzdata/` (`tz.rs`); `--check` compares instead.
 //! - `check-wasm <file.wasm>...`: check modules without building.
 //! - `clippy-guests`: run clippy on every guest crate and the SDK for
 //!   `wasm32-wasip1`, and on the experimental guests in `appl/small`,
@@ -99,6 +101,7 @@ mod letheperf;
 mod phases;
 mod size;
 mod tar;
+mod tz;
 mod wasm;
 
 use sha2::Digest as _;
@@ -1004,11 +1007,11 @@ impl Drop for Monitor {
 }
 
 /// Directories under `root/` packed into the initrd.
-const INITRD_DIRS: &[&str] = &["bin", "lib"];
+const INITRD_DIRS: &[&str] = &["bin", "lib", "locale"];
 
-/// Runs `build-root` and writes `target/initrd/root.tar` from `root/bin` and
-/// `root/lib`, returning its path. The archive is byte-identical for the
-/// same `root/`.
+/// Runs `build-root` and writes `target/initrd/root.tar` from `root/bin`,
+/// `root/lib` and `root/locale`, returning its path. The archive is
+/// byte-identical for the same `root/`.
 fn initrd() -> Result<PathBuf> {
     build_root()?;
     let ws = workspace();
@@ -2714,12 +2717,13 @@ fn main() -> ExitCode {
             )),
         },
         Some("fonts") => fonts::cmd(&rest).map(|()| ExitCode::SUCCESS),
+        Some("timezones") => tz::cmd(&rest).map(|()| ExitCode::SUCCESS),
         Some("clippy-guests") => clippy_guests().map(|()| ExitCode::SUCCESS),
         Some("size") => size_report(&rest).map(|()| ExitCode::SUCCESS),
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         Some("bench") => bench::cmd(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] [--aot] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | fonts [--check] [--vm=...] | clippy-guests | check-wasm file.wasm... | sign module --key seed | aot [--kind native|pulley]",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] [--aot] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | fonts [--check] [--vm=...] | timezones [--check] | clippy-guests | check-wasm file.wasm... | sign module --key seed | aot [--kind native|pulley]",
         )),
     };
     match res {

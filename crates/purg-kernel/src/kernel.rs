@@ -22,7 +22,7 @@ use crate::system::{self, Mode};
 use crate::{irq, selftest};
 
 /// The root file system compiled into the image: a ustar archive of
-/// `root/bin` and `root/lib` (see build.rs).
+/// `root/bin`, `root/lib` and `root/locale` (see build.rs).
 static ROOT_TAR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/root.tar"));
 
 #[global_allocator]
