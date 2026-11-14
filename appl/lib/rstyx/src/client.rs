@@ -18,6 +18,7 @@ use std::os::fd::AsRawFd;
 
 use purgatorio::abi::auth::{FAILED, NO_PQ, NO_SESSION, SERVER_NONE};
 use purgatorio::abi::pctl::NEWFD;
+pub use purgatorio::auth::Kx;
 use purgatorio::auth::fmt::proof::{OFFER, OFFER_PQ};
 use purgatorio::auth::fmt::session;
 use purgatorio::{Error, auth, dial};
@@ -41,39 +42,77 @@ pub struct Opts {
     pub keyfile: Option<String>,
     /// `-x`: the directory served as `/n/client` (default `/`).
     pub export: Option<String>,
-    /// `-e x25519mlkem768` (`-C` for cpu): use and require the hybrid
-    /// X25519 + ML-KEM-768 key exchange (`docs/rcmd.md`, "Encryption").
-    pub pq: bool,
+    /// The key exchange: by default the hybrid X25519 + ML-KEM-768 one
+    /// when the server can do it; `-e x25519mlkem768` (`-C` for cpu)
+    /// requires it and `-e x25519` asks for X25519 alone (`docs/rcmd.md`,
+    /// "Post-quantum key exchange").
+    pub kx: Kx,
+    /// `-e mldsa65`: prove with factotum's hybrid Ed25519 + ML-DSA-65 key
+    /// and require the server to prove itself with a hybrid key or
+    /// certificate, as `-S` does (`docs/rcmd.md`, "Post-quantum
+    /// signatures").
+    pub pqsig: bool,
+}
+
+/// What `-e` or `-C` names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Alg {
+    /// The key exchange named, if one was.
+    pub kx: Option<Kx>,
+    /// `mldsa65`.
+    pub pqsig: bool,
 }
 
 /// The one cipher, the name `-e` and `-C` take for it.
 pub const CIPHER: &str = "chacha20poly1305";
-/// The default key exchange, also accepted by `-e` and `-C`.
+/// The classical key exchange, X25519 alone, as `-e` and `-C` name it.
 pub const KX: &str = "x25519";
 /// The hybrid post-quantum key exchange (`docs/auth.md`, "Post-quantum
 /// options"), which the records then use: the name `mount -C` takes.
 pub const KX_PQ: &str = "x25519mlkem768";
+/// Hybrid Ed25519 + ML-DSA-65 signatures, and Ed25519 ones (the default).
+pub const SIG_PQ: &str = "mldsa65";
+pub const SIG: &str = "ed25519";
 
-/// Checks an algorithm named with `-e` or `-C`, and says whether it asks
-/// for the hybrid key exchange. An authenticated connection is always
-/// encrypted, so `none` (or `clear`) goes only with `-A`, and the key
-/// exchanges only without it.
-pub fn check_alg(alg: &str, noauth: bool) -> Result<bool, Error> {
-    match alg {
-        CIPHER => Ok(false),
-        KX if !noauth => Ok(false),
-        KX_PQ if !noauth => Ok(true),
-        "none" | "clear" if noauth => Ok(false),
-        "none" | "clear" => Err(Error::from(
-            "an authenticated connection is always encrypted; use -A for none",
-        )),
-        KX | KX_PQ => Err(Error::from("-A exchanges no keys")),
-        _ => Err(Error(format!("unknown algorithm {alg}"))),
+/// Checks the algorithms named with `-e` or `-C`, one name or several
+/// joined with `/`, as `mount -C` takes them. An authenticated connection
+/// is always encrypted, so `none` (or `clear`) goes only with `-A`, and
+/// the key exchanges and signatures only without it.
+pub fn check_alg(alg: &str, noauth: bool) -> Result<Alg, Error> {
+    let mut a = Alg::default();
+    for name in alg.split('/') {
+        match name {
+            CIPHER => {}
+            KX if !noauth => a.kx = Some(Kx::Classical),
+            KX_PQ if !noauth => a.kx = Some(Kx::Require),
+            SIG if !noauth => {}
+            SIG_PQ if !noauth => a.pqsig = true,
+            "none" | "clear" if noauth => {}
+            "none" | "clear" => {
+                return Err(Error::from(
+                    "an authenticated connection is always encrypted; use -A for none",
+                ));
+            }
+            KX | KX_PQ => return Err(Error::from("-A exchanges no keys")),
+            SIG | SIG_PQ => return Err(Error::from("-A makes no signatures")),
+            _ => return Err(Error(format!("unknown algorithm {name}"))),
+        }
     }
+    Ok(a)
 }
 
 fn text(d: &[u8]) -> String {
     String::from_utf8_lossy(d).into_owned()
+}
+
+/// How the opening went.
+enum Opening {
+    /// The link the rest of the session goes over, and whether the
+    /// server proved it is the host dialled.
+    Done(Box<Link>, bool),
+    /// A server that does not know `pgrstyx3` refused the HELLO: dial
+    /// again with `pgrstyx2`.
+    Old,
 }
 
 /// Runs the opening exchange on `net`, sends `cmd`, and returns the link
@@ -85,14 +124,33 @@ fn text(d: &[u8]) -> String {
 /// with `no session key offered` rather than spoken to in the clear.
 /// With `-S` its OK must carry a proof of its own that this namespace
 /// takes for `host` (`auth::check_server_host`).
-fn hello(net: &mut Fd, o: &Opts, host: Option<&str>, cmd: &str) -> Result<(Link, bool), Error> {
+///
+/// The default key exchange asks for the hybrid one (`pgrstyx3`). A
+/// server that refuses that HELLO is dialled again with `pgrstyx2`
+/// (`fallback`), and then its offer must not say that it could have done
+/// the hybrid exchange ([`session::offers_pq`]): if it does, the refusal
+/// was not the server's, and the session ends with `no post-quantum key
+/// offered` (`docs/rcmd.md`, "Post-quantum key exchange").
+fn hello(
+    net: &mut Fd,
+    o: &Opts,
+    host: Option<&str>,
+    cmd: &str,
+    fallback: bool,
+) -> Result<Opening, Error> {
     let user = auth::user();
-    let magic = if o.pq { proto::MAGIC_PQ } else { proto::MAGIC };
+    let pq = !o.noauth && !fallback && o.kx != Kx::Classical;
+    let magic = if pq { proto::MAGIC_PQ } else { proto::MAGIC };
     net.write_all(&frame(kind::HELLO, format!("{magic} {user}").as_bytes()))?;
     let challenge = match proto::read_frame(net)? {
         (kind::CHAL, d) => d,
         // A server that does not speak pgrstyx3 refuses the HELLO.
-        (kind::ERR, d) if o.pq && d == EPROTO.as_bytes() => return Err(Error::from(NO_PQ)),
+        (kind::ERR, d) if pq && d == EPROTO.as_bytes() => {
+            return match o.kx {
+                Kx::Auto => Ok(Opening::Old),
+                _ => Err(Error::from(NO_PQ)),
+            };
+        }
         (kind::ERR, d) => return Err(Error(text(&d))),
         _ => return Err(Error::from(EPROTO)),
     };
@@ -101,9 +159,16 @@ fn hello(net: &mut Fd, o: &Opts, host: Option<&str>, cmd: &str) -> Result<(Link,
     } else {
         let mut random = [0u8; 32];
         auth::Rng::fill(&mut random);
-        let client = if o.pq {
-            // Only the long offer will do: anything shorter is a server
-            // (or someone in between) leaving the ML-KEM key out.
+        if fallback && session::offers_pq(&challenge) {
+            return Err(Error::from(NO_PQ));
+        }
+        let client = if pq {
+            // A server that asks for no proof offers no key at all.
+            if challenge.is_empty() && o.kx == Kx::Auto {
+                return Err(Error::from(NO_SESSION));
+            }
+            // Otherwise only the long offer will do: anything shorter is a
+            // server (or someone in between) leaving the ML-KEM key out.
             if challenge.len() != OFFER_PQ {
                 return Err(Error::from(NO_PQ));
             }
@@ -118,7 +183,13 @@ fn hello(net: &mut Fd, o: &Opts, host: Option<&str>, cmd: &str) -> Result<(Link,
             session::Client::new(offer, random)
         }
         .ok_or_else(|| Error::from(FAILED))?;
-        let proof = auth::proof_for(&client.signed, &user, proto::ANAME, o.keyfile.as_deref())?;
+        let proof = auth::proof_with(
+            &client.signed,
+            &user,
+            proto::ANAME,
+            o.keyfile.as_deref(),
+            o.pqsig,
+        )?;
         // A proof from an agent that does not make version 3 carries no
         // key: refuse rather than go on in the clear.
         let keys = client
@@ -137,10 +208,10 @@ fn hello(net: &mut Fd, o: &Opts, host: Option<&str>, cmd: &str) -> Result<(Link,
     // and it must be for the host dialled, so a server certified for
     // another name does not pass.
     let proved = match &keys {
-        Some(k) => auth::check_server_host(k, &server, host),
+        Some(k) => auth::check_server_host_with(k, &server, host, o.pqsig),
         None => Err(Error::from(SERVER_NONE)),
     };
-    if o.srvauth {
+    if o.srvauth || o.pqsig {
         proved.clone()?;
     }
     // Without a host to have proved, nothing skips the export's own check.
@@ -151,7 +222,7 @@ fn hello(net: &mut Fd, o: &Opts, host: Option<&str>, cmd: &str) -> Result<(Link,
     let mut exec = vec![if o.noauth || proved { proto::NOAUTH } else { 0 }];
     exec.extend_from_slice(cmd.as_bytes());
     net.write_all(&link.wire(kind::EXEC, &exec).map_err(Error::from)?)?;
-    Ok((link, proved))
+    Ok(Opening::Done(Box::new(link), proved))
 }
 
 /// Runs `cmd` at `host` and returns its exit status (empty for success).
@@ -160,14 +231,21 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
         return Err(Error::from("command too long"));
     }
     let addr = proto::mkaddr(host);
-    let conn = dial::dial(&addr)?;
-    let data = conn
-        .data
-        .as_ref()
-        .ok_or_else(|| Error::from("no connection"))?
-        .as_raw_fd();
-    let mut net = Fd(data);
-    let (mut link, proved) = hello(&mut net, o, dial::host(&addr).as_deref(), cmd)?;
+    let mut fallback = false;
+    let (conn, data, mut net, mut link, proved) = loop {
+        let conn = dial::dial(&addr)?;
+        let data = conn
+            .data
+            .as_ref()
+            .ok_or_else(|| Error::from("no connection"))?
+            .as_raw_fd();
+        let mut net = Fd(data);
+        match hello(&mut net, o, dial::host(&addr).as_deref(), cmd, fallback)? {
+            Opening::Done(link, proved) => break (conn, data, net, *link, proved),
+            Opening::Old if !fallback => fallback = true,
+            Opening::Old => return Err(Error::from(EPROTO)),
+        }
+    };
 
     let mut children = Children::new();
     let pump = [String::from("pump"), String::from(crate::io::PUMP)];
@@ -310,12 +388,34 @@ mod tests {
 
     #[test]
     fn algorithms() {
-        assert_eq!(check_alg(CIPHER, false).ok(), Some(false));
-        assert_eq!(check_alg(CIPHER, true).ok(), Some(false));
-        assert_eq!(check_alg(KX, false).ok(), Some(false));
-        assert_eq!(check_alg(KX_PQ, false).ok(), Some(true));
-        assert_eq!(check_alg("none", true).ok(), Some(false));
-        for (alg, noauth) in [("none", false), (KX, true), (KX_PQ, true), ("x448", false)] {
+        let none = Some(Alg::default());
+        let kx = |k| {
+            Some(Alg {
+                kx: Some(k),
+                pqsig: false,
+            })
+        };
+        assert_eq!(check_alg(CIPHER, false).ok(), none);
+        assert_eq!(check_alg(CIPHER, true).ok(), none);
+        assert_eq!(check_alg(KX, false).ok(), kx(Kx::Classical));
+        assert_eq!(check_alg(KX_PQ, false).ok(), kx(Kx::Require));
+        assert_eq!(check_alg("none", true).ok(), none);
+        assert_eq!(
+            check_alg("x25519mlkem768/mldsa65", false).ok(),
+            Some(Alg {
+                kx: Some(Kx::Require),
+                pqsig: true
+            })
+        );
+        assert_eq!(check_alg("ed25519", false).ok(), none);
+        for (alg, noauth) in [
+            ("none", false),
+            (KX, true),
+            (KX_PQ, true),
+            (SIG_PQ, true),
+            ("x448", false),
+            ("mldsa65/x448", false),
+        ] {
             assert!(check_alg(alg, noauth).is_err(), "{alg} {noauth}");
         }
     }

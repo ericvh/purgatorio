@@ -1,0 +1,11 @@
+hybrid user
+test key
+hybrid both ways
+all post-quantum
+cpu hybrid
+rcmd: post-quantum signature required
+status post-quantum signature required
+rcmd: post-quantum signature required
+status post-quantum signature required
+rcmd: -A makes no signatures
+usage: auxi/rstyxd [-A] [-e] [-C alg] [-k keyfile]

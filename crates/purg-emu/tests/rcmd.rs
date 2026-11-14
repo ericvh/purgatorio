@@ -259,6 +259,34 @@ fn relay(l: TcpListener, portfile: PathBuf, flip: Option<usize>) -> Arc<Mutex<Se
     out
 }
 
+/// The long offer: CHAL's data for the hybrid exchange.
+const OFFER_PQ: usize = 32 + 32 + 1184;
+
+/// Answers the first connection's HELLO as a server built before
+/// `pgrstyx3` would (`rstyx protocol botch`), then relays the next one:
+/// someone in between trying to talk the client down to the classical
+/// exchange.
+fn forge_old(l: TcpListener, portfile: PathBuf, _: Option<usize>) -> Arc<Mutex<Seen>> {
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    std::thread::spawn(move || {
+        if let Ok((mut c, _)) = l.accept() {
+            let mut hdr = [0u8; 5];
+            if c.read_exact(&mut hdr).is_ok() {
+                let n = u32::from_le_bytes([hdr[1], hdr[2], hdr[3], hdr[4]]) as usize;
+                let mut hello = vec![0u8; n];
+                let _ = c.read_exact(&mut hello);
+                let why = b"rstyx protocol botch";
+                let mut err = vec![5u8];
+                err.extend_from_slice(&(why.len() as u32).to_le_bytes());
+                err.extend_from_slice(why);
+                let _ = c.write_all(&err);
+            }
+        }
+        drop(relay(l, portfile, None));
+    });
+    seen
+}
+
 /// Runs `cmd` with `rcmd` through a relay this test holds, so that it can
 /// see the bytes on the connection. Returns the emu's output and status.
 fn relayed(
@@ -268,13 +296,25 @@ fn relayed(
     cmd: &str,
     flip: Option<usize>,
 ) -> (bool, String, Arc<Mutex<Seen>>) {
+    relayed_by(vm, tag, flags, cmd, flip, relay)
+}
+
+/// [`relayed`] through the relay `mk` makes.
+fn relayed_by(
+    vm: &str,
+    tag: &str,
+    flags: &str,
+    cmd: &str,
+    flip: Option<usize>,
+    mk: fn(TcpListener, PathBuf, Option<usize>) -> Arc<Mutex<Seen>>,
+) -> (bool, String, Arc<Mutex<Seen>>) {
     let name = format!("rcmd-relay-{tag}-{vm}-{}", std::process::id());
     let host_dir = root().join("tmp").join(&name);
     let _ = std::fs::remove_dir_all(&host_dir);
     std::fs::create_dir_all(&host_dir).unwrap();
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let relay_port = l.local_addr().unwrap().port();
-    let seen = relay(l, host_dir.join("l"), flip);
+    let seen = mk(l, host_dir.join("l"), flip);
     let script = format!(
         "load std
 {TEST_KEYS}
@@ -323,8 +363,9 @@ fn the_connection_is_encrypted() {
             "{vm}"
         );
         let s = seen.lock().unwrap();
-        // The opening is in the clear: HELLO names the protocol and user.
-        assert!(contains(&s.to_server, b"pgrstyx2 "), "{vm}");
+        // The opening is in the clear: HELLO names the protocol and user,
+        // the hybrid exchange's by default.
+        assert!(contains(&s.to_server, b"pgrstyx3 "), "{vm}");
         for (what, marker) in [
             ("command", &b"the-output-marker"[..]),
             ("9P walk", b"hello.txt"),
@@ -339,10 +380,10 @@ fn the_connection_is_encrypted() {
                 "{vm}: {what} in the clear to the client"
             );
         }
-        // CHAL (5 + 64 bytes) and OK (5, and the server's proof: a kind,
-        // a signature and the test key) open the server's stream; the
-        // first record follows. Change a byte inside it.
-        let first_record = 5 + 64 + 5 + 1 + 64 + 32;
+        // CHAL (5 + the long offer) and OK (5, and the server's proof: a
+        // kind, a signature and the test key) open the server's stream;
+        // the first record follows. Change a byte inside it.
+        let first_record = 5 + OFFER_PQ + 5 + 1 + 64 + 32;
         assert!(s.to_client.len() > first_record + 20, "{vm}");
         drop(s);
         let (ok, out, _) = relayed(vm, "flip", "", "'echo never'", Some(first_record + 8));
@@ -359,9 +400,9 @@ fn the_connection_is_encrypted() {
 /// refused under `-S`.
 #[test]
 fn the_server_proves_itself() {
-    // The signature in the server's proof: after CHAL (5 + 64), OK's
-    // header (5) and the proof's kind byte.
-    let in_proof = 5 + 64 + 5 + 1 + 10;
+    // The signature in the server's proof: after CHAL (5 + the long
+    // offer), OK's header (5) and the proof's kind byte.
+    let in_proof = 5 + OFFER_PQ + 5 + 1 + 10;
     for vm in VMS {
         let cmd = "'cat /n/client/lib/probe/hello.txt'";
         let (ok, out, _) = relayed(vm, "srv", "-S", cmd, None);
@@ -557,5 +598,30 @@ rm -rf $d
             Some("over rcmd\n"),
             "{vm}: {text}"
         );
+    }
+}
+
+/// The default key exchange is not talked down (`docs/rcmd.md`,
+/// "Post-quantum key exchange"): a refusal of the `pgrstyx3` HELLO that
+/// the server did not send makes the client dial again with `pgrstyx2`,
+/// and the server's offer then says it can do the hybrid exchange, so the
+/// client refuses it. A client that requires the hybrid exchange does not
+/// dial again at all.
+#[test]
+fn a_forged_refusal_is_not_a_downgrade() {
+    for vm in VMS {
+        let (ok, out, _) = relayed_by(vm, "forge", "", "'echo never'", None, forge_old);
+        assert!(!ok, "{vm}: {out}");
+        assert_eq!(out, "rcmd: no post-quantum key offered\n", "{vm}");
+        let (ok, out, _) = relayed_by(
+            vm,
+            "forgepq",
+            "-e x25519mlkem768",
+            "'echo never'",
+            None,
+            forge_old,
+        );
+        assert!(!ok, "{vm}: {out}");
+        assert_eq!(out, "rcmd: no post-quantum key offered\n", "{vm}");
     }
 }

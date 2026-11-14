@@ -5,6 +5,7 @@ cpu hybrid
 classic
 rcmd: -A exchanges no keys
 rcmd: unknown algorithm x448
+default
 rcmd: post-quantum key exchange required
 status post-quantum key exchange required
 required and used

@@ -7,8 +7,9 @@
 //! and the exit status are carried as `rcmd` carries them.
 //!
 //! `-A`, `-S` and `-k` are as for `rcmd`, and the connection is encrypted as
-//! `rcmd`'s is. `-C` names the algorithm: `chacha20poly1305`, or `none`
-//! with `-A`.
+//! `rcmd`'s is. `-C` names the algorithms as `rcmd -e` does:
+//! `chacha20poly1305`, or `none` with `-A`; `x25519` or `x25519mlkem768`;
+//! `mldsa65`.
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
@@ -39,7 +40,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     if let Some(alg) = alg {
-        o.pq = client::check_alg(&alg, o.noauth)?;
+        let a = client::check_alg(&alg, o.noauth)?;
+        o.kx = a.kx.unwrap_or_default();
+        o.pqsig = a.pqsig;
     }
     let rest = arg.argv();
     if o.noauth && o.srvauth {

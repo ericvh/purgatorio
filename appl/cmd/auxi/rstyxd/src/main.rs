@@ -17,7 +17,11 @@
 //! nothing. A version 1 or 2 proof, which carries no key, is refused.
 //! A client that says `pgrstyx3` gets the hybrid X25519 + ML-KEM-768
 //! exchange (a version 4 proof); `-C x25519mlkem768` requires it of every
-//! client (`docs/rcmd.md`, "Encryption"). After the client's
+//! client (`docs/rcmd.md`, "Encryption"), and `-C mldsa65` a proof
+//! signed with a hybrid Ed25519 + ML-DSA-65 key or certificate; names
+//! join with `/`. Every offer says that this side can do the hybrid
+//! exchange, so a client that fell back to `pgrstyx2` can tell a forged
+//! refusal (`docs/rcmd.md`, "Post-quantum key exchange"). After the client's
 //! proof this side proves itself in the OK frame, with the authinfo
 //! `keyfile`, or else with this user's default keys. The client's export
 //! in turn asks this side for a proof when the client's namespace trusts
@@ -41,7 +45,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 
-use purgatorio::abi::auth::{KIND_HYBRID_KEY, NO_PQ, NO_SESSION, NO_TRUST, PQ_REQUIRED};
+use purgatorio::abi::auth::{KIND_HYBRID_KEY, NO_SESSION, NO_TRUST, PQ_REQUIRED};
 use purgatorio::abi::mode::OWRITE;
 use purgatorio::abi::pctl::{FORKENV, FORKNS, NEWFD, NEWPGRP};
 use purgatorio::arg::Arg;
@@ -111,6 +115,9 @@ struct Hello<'a> {
     /// `-C x25519mlkem768`: refuse a client that does not use the hybrid
     /// key exchange.
     pq: bool,
+    /// `-C mldsa65`: refuse a client that does not prove with a hybrid
+    /// Ed25519 + ML-DSA-65 key or certificate.
+    pqsig: bool,
 }
 
 /// The opening exchange. Returns the EXEC flags, the command and the link
@@ -129,10 +136,8 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
         Some((proto::MAGIC_PQ, u)) if k == kind::HELLO => (u, true),
         _ => return Err(refuse(net, EPROTO)),
     };
-    // -A asks for no proof, and so exchanges no keys at all.
-    if pq && noauth {
-        return Err(refuse(net, NO_PQ));
-    }
+    // -A asks for no proof, and so exchanges no keys at all: it offers
+    // nothing, and a client that requires the hybrid exchange says so.
     if h.pq && !pq {
         return Err(refuse(net, PQ_REQUIRED));
     }
@@ -142,7 +147,7 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
         signers: &t.signers,
         revoked: t.revoked.as_deref(),
         now: auth::now(),
-        hybrid: false,
+        hybrid: h.pqsig,
     };
     // The offer: a challenge and an ephemeral X25519 key, and for
     // pgrstyx3 an ephemeral ML-KEM-768 key as well.
@@ -242,23 +247,26 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let mut arg = Arg::new(args, USAGE);
     let (mut noauth, mut encrypt, mut keyfile) = (false, false, String::new());
-    let mut pq = false;
+    let (mut pq, mut pqsig) = (false, false);
     while let Some(c) = arg.opt() {
         match c {
             'A' => noauth = true,
             'e' => encrypt = true,
             'C' => {
-                pq = match arg.earg()?.as_str() {
-                    rstyx::client::KX => false,
-                    rstyx::client::KX_PQ => true,
-                    alg => return Err(Error(format!("unknown algorithm {alg}"))),
+                for alg in arg.earg()?.split('/') {
+                    match alg {
+                        rstyx::client::KX | rstyx::client::SIG => {}
+                        rstyx::client::KX_PQ => pq = true,
+                        rstyx::client::SIG_PQ => pqsig = true,
+                        alg => return Err(Error(format!("unknown algorithm {alg}"))),
+                    }
                 }
             }
             'k' | 'f' => keyfile = arg.earg()?,
             _ => return Err(arg.usage()),
         }
     }
-    if !arg.argv().is_empty() || (noauth && (encrypt || pq)) {
+    if !arg.argv().is_empty() || (noauth && (encrypt || pq || pqsig)) {
         return Err(Error(format!("usage: {USAGE}")));
     }
     let mut net = Fd(0);
@@ -266,6 +274,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         noauth,
         keyfile: Some(keyfile.as_str()).filter(|k| !k.is_empty()),
         pq,
+        pqsig,
     };
     let Ok((flags, cmd, mut link)) = hello(&mut net, &h) else {
         // The client has the reason; a refused client is not an error here.

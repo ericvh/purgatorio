@@ -36,12 +36,17 @@ auxi/cpuslave [command [arg...]]
   the only cipher and the default, or `none` (or `clear`), which is
   accepted only with `-A`. `rcmd -e none` without `-A` fails with `an
   authenticated connection is always encrypted; use -A for none`. They
-  also take a key exchange, as `mount -C` does: `x25519`, the default,
-  or `x25519mlkem768`, which uses and requires the hybrid post-quantum
-  exchange (see "Post-quantum key exchange"). Neither goes with `-A`
-  (`-A exchanges no keys`).
+  also take a key exchange, as `mount -C` does. By default the client
+  uses the hybrid post-quantum exchange with a server that can do it and
+  X25519 alone with one that cannot; `x25519mlkem768` requires the hybrid
+  exchange and `x25519` asks for X25519 alone (see "Post-quantum key
+  exchange"). And they take `mldsa65` (or `ed25519`, the default), for
+  hybrid signatures (see "Post-quantum signatures"). Names join with
+  `/`: `-e x25519mlkem768/mldsa65`. None of these goes with `-A` (`-A
+  exchanges no keys`, `-A makes no signatures`).
 - `auxi/rstyxd -C x25519mlkem768` requires the hybrid exchange of every
-  client; `-C x25519` names the default. It does not go with `-A`.
+  client, and `-C mldsa65` a hybrid proof; `-C x25519` names the
+  default, which takes either exchange. It does not go with `-A`.
 - `auxi/rstyxd` serves one client on fd 0. `-k` is the authinfo it
   proves itself with. With nothing trusted it cannot ask for a proof, so
   it refuses every client with `server trusts no keys` (`docs/auth.md`,
@@ -171,25 +176,43 @@ and any host.
 
 ### Post-quantum key exchange
 
-`rcmd -e x25519mlkem768` (`cpu -C x25519mlkem768`) asks for the hybrid
-X25519 + ML-KEM-768 exchange of the mount handshake's version 4
-(`docs/auth.md`, "Hybrid key exchange (version 4)"). The client says
-`pgrstyx3` in HELLO instead of `pgrstyx2`. The server answers with the
+`rcmd` (and `cpu`) asks for the hybrid X25519 + ML-KEM-768 exchange of
+the mount handshake's version 4 by default (`docs/auth.md`, "Hybrid key
+exchange (version 4)"), and `rcmd -e x25519mlkem768` (`cpu -C
+x25519mlkem768`) requires it. The client says `pgrstyx3` in HELLO
+instead of `pgrstyx2`. The server answers with the
 long offer in CHAL, `challenge[32] || S[32] || ek[1184]`, with a fresh
 ephemeral ML-KEM-768 key, and takes only a version 4 proof, which
 carries the client's ciphertext and signs the whole long offer. The
 keys, the records and the server's proof are then version 4's;
 everything else is as in version 2.
 
-There is no "use it if the other end can" mode, so there is no quiet
-downgrade:
+**The default.** A server built before `pgrstyx3` refuses that HELLO
+with `rstyx protocol botch`. A default client then dials again and says
+`pgrstyx2`, and takes the short offer, unless the offer's challenge
+carries the mark every current server puts there (`docs/auth.md`, "The
+default exchange"): then the refusal was not the server's, and the
+session ends with `no post-quantum key offered`. The ERR is in the
+clear, so anyone in between can forge it; the mark is in the challenge,
+which the client's proof signs, so taking it out makes the server
+refuse the proof. Against a current server the attacker gets the hybrid
+exchange or no session; against an old one the client gets the classical
+exchange after one more dial, which is all that server can do. The
+residual risks are those of the mount ("The default exchange" there):
+an old server is classical, and someone who can forge the user's
+signature while the exchange runs could strip it. `-e x25519` says
+`pgrstyx2` from the start and does not check the mark.
 
-- A client that asked for it refuses a CHAL that is not the long offer
+A client that requires it gets nothing else:
+
+- A client that requires it refuses a CHAL that is not the long offer
   with `no post-quantum key offered`, so rewriting HELLO to `pgrstyx2`,
   or cutting the ML-KEM key off the offer, ends the session. A server
   that does not know `pgrstyx3` (one built before this) refuses the
   HELLO with `rstyx protocol botch`, which the client reports as `no
-  post-quantum key offered`; an `rstyxd -A` refuses it with the same.
+  post-quantum key offered` without dialling again; an `rstyxd -A`
+  answers with an empty CHAL, which the client refuses the same way (a
+  default client: `no session key offered`).
 - A server that was asked for it refuses a version 3 proof with
   `post-quantum key exchange required`. Taking the ciphertext out of a
   version 4 proof does not make a version 3 proof either: the signature
@@ -197,11 +220,28 @@ downgrade:
 - `rstyxd -C x25519mlkem768` refuses a `pgrstyx2` client with
   `post-quantum key exchange required`.
 
-A client and a server that both could, but neither asks, use version 3,
-as before. The exchange adds 2.3 KB on the wire, as on a mount
+A client and a server that both can use version 4 by default. The exchange adds 2.3 KB on the wire, as on a mount
 (`docs/auth.md`, "Cost of the post-quantum options"). Here both ends are
 guests, so the ML-KEM work runs in WASM: the client's encapsulation in
 `rcmd`, the server's key generation and decapsulation in `rstyxd`.
+
+### Post-quantum signatures
+
+`rcmd -e mldsa65` (`cpu -C mldsa65`) is `mount -C mldsa65` on rstyx
+(`docs/auth.md`, "Post-quantum signatures"): the client proves with
+factotum's hybrid Ed25519 + ML-DSA-65 key when it has one (a `-k`
+authinfo or the default sources are used whatever their kind), and
+requires the server to prove itself in OK with a hybrid key or
+certificate, as `-S` does. An Ed25519 server proof fails the session
+with `post-quantum signature required`. `rstyxd -C mldsa65` takes only
+hybrid proofs (kinds 2 and 3) from clients and refuses any other with
+`post-quantum signature required`, as `export -C mldsa65` does; it
+proves itself to a client that proved with a hybrid key with its own
+hybrid key, when it has one, as before. Both go with the key exchange
+names: `-e x25519mlkem768/mldsa65`. A hybrid proof with one `pgcert2`
+is about 18 KB, inside a frame's 64 KiB; the ML-DSA work is the guests'
+(`rcmd` signs, `rstyxd` checks), about 1.7 ms to sign and 0.2 ms to
+check natively, more under the interpreter.
 
 ## Protocol
 
