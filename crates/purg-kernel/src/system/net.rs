@@ -8,8 +8,11 @@
 //!   and list it.
 //! - `udpecho=PORT`: send a datagram to the host's UDP echo server at
 //!   `udp!10.0.2.2!PORT` and check the echo.
-//!   Then route `127.0.0.2` through 10.0.2.2 with `/net/iproute` and
-//!   check QEMU passes a dial there to the host, which refuses it.
+//!   Then shrink the interface's network so that 10.0.2.200, which QEMU
+//!   passes to the export, is off it, route it through 10.0.2.2 with
+//!   `/net/iproute` and check a dial reaches it only then, and route
+//!   127/8 through 10.0.2.2 too and check a dial to `127.0.0.1` stays on
+//!   the loopback.
 //! - `ping`: `ip/ping` QEMU's gateway, 10.0.2.2, which answers ICMP echo
 //!   itself (through `/net/icmp`, a raw smoltcp socket).
 //! - `dhcp`: `ip/dhcp` the interface from QEMU's DHCP server, which hands
@@ -48,6 +51,10 @@ use crate::kernel::println;
 
 /// The host as QEMU user networking shows it to the guest.
 const HOST: &str = "10.0.2.2";
+
+/// An address on QEMU's network that `xtask kernel` has QEMU pass to the
+/// host's export (its `GUEST_ROUTED`).
+const ROUTED: &str = "10.0.2.200";
 
 /// The port the kernel exports `/` on.
 pub const EXPORT_PORT: u16 = 6666;
@@ -132,7 +139,7 @@ impl System {
             self.verdict(&mut failed, v);
         }
         if let Some(port) = checks.host_export {
-            self.say("kernel: route 127.0.0.2 through the QEMU gateway");
+            self.say("kernel: route through the QEMU gateway, and not 127/8");
             let v = self.route_host(port);
             self.verdict(&mut failed, v);
         }
@@ -220,27 +227,32 @@ impl System {
         Ok(String::from("ok"))
     }
 
-    /// Shows that `/net/iproute` routes reach smoltcp. `127.0.0.2` is off
-    /// the interface's network (and not the kernel's loopback, which is
-    /// `127.0.0.1` alone); QEMU passes a connection to it to the host's
-    /// `127.0.0.2`, where nothing listens on the export's `port`. With no
-    /// default route a dial sends nothing and times out; with a host route
-    /// through 10.0.2.2 the SYN goes to QEMU and the host refuses it.
+    /// Shows that `/net/iproute` routes reach smoltcp, and that 127/8
+    /// never does. The interface is 10.0.2.15/25 for the while, so
+    /// [`ROUTED`] is off its network; `xtask kernel` has QEMU pass a
+    /// connection to `ROUTED!port` to the host's export (a `guestfwd`).
+    /// With no default route a dial there sends nothing and times out;
+    /// with a host route through 10.0.2.2 it connects. Then 127/8 is
+    /// routed through 10.0.2.2 too, and a dial to `127.0.0.1!port` must
+    /// still stay on the kernel's loopback, where nothing listens on
+    /// `port`, and be refused, rather than go to QEMU, which would pass
+    /// it to the host's `127.0.0.1!port`, the export.
     fn route_host(&self, port: u16) -> core::result::Result<String, String> {
         let mut prog = Prog::new(self.kernel.clone(), self.pgrp.clone());
         self.kernel.platform.set_current_pid(prog.pid);
-        let route = |prog: &mut Prog, cmd: &str| -> core::result::Result<(), String> {
+        let write = |prog: &mut Prog, file: &str, cmd: &str| -> core::result::Result<(), String> {
             let fd = prog
-                .open("/net/iproute", mode::OWRITE)
-                .map_err(|e| format!("iproute: {e}"))?;
+                .open(file, mode::OWRITE)
+                .map_err(|e| format!("{file}: {e}"))?;
             let r = prog.write(fd, cmd.as_bytes());
             prog.close(fd).ok();
             r.map(|_| ()).map_err(|e| format!("{cmd}: {e}"))
         };
-        let dial = |prog: &mut Prog| -> String {
+        let route = |prog: &mut Prog, cmd: &str| write(prog, "/net/iproute", cmd);
+        let dial = |prog: &mut Prog, host: &str| -> String {
             let r = (|| -> Result<(), Error> {
                 let ctl = prog.open("/net/tcp/clone", mode::ORDWR)?;
-                let r = prog.write(ctl, format!("connect 127.0.0.2!{port}").as_bytes());
+                let r = prog.write(ctl, format!("connect {host}!{port}").as_bytes());
                 prog.close(ctl).ok();
                 r.map(|_| ())
             })();
@@ -249,18 +261,33 @@ impl System {
                 Err(e) => format!("{e}"),
             }
         };
-        let gateway = format!("add 0.0.0.0 0.0.0.0 {HOST}");
-        route(&mut prog, "remove 0.0.0.0 0.0.0.0")?;
-        let without = dial(&mut prog);
-        route(&mut prog, &format!("add 127.0.0.2 255.255.255.255 {HOST}"))?;
-        let with = dial(&mut prog);
-        route(&mut prog, "remove 127.0.0.2 255.255.255.255")?;
-        route(&mut prog, &gateway)?;
+        let ifc = "/net/ipifc/0/ctl";
+        let steps = |prog: &mut Prog| -> core::result::Result<[String; 3], String> {
+            write(prog, ifc, "add 10.0.2.15 255.255.255.128")?;
+            route(prog, "remove 0.0.0.0 0.0.0.0")?;
+            let without = dial(prog, ROUTED);
+            route(prog, &format!("add {ROUTED} 255.255.255.255 {HOST}"))?;
+            let with = dial(prog, ROUTED);
+            route(prog, &format!("remove {ROUTED} 255.255.255.255"))?;
+            route(prog, &format!("add 127.0.0.0 255.0.0.0 {HOST}"))?;
+            let lo = dial(prog, "127.0.0.1");
+            Ok([without, with, lo])
+        };
+        let got = steps(&mut prog);
+        // Put everything back whatever happened.
+        let restored = route(&mut prog, "remove 127.0.0.0 255.0.0.0")
+            .and(write(&mut prog, ifc, "add 10.0.2.15 255.255.255.0"))
+            .and(route(&mut prog, &format!("add 0.0.0.0 0.0.0.0 {HOST}")));
+        let [without, with, lo] = got?;
+        restored?;
         if without != "connection timed out" {
             return Err(format!("without a route: {without}"));
         }
-        if with != "connection refused" {
+        if with != "connected" {
             return Err(format!("through {HOST}: {with}"));
+        }
+        if lo != "connection refused" {
+            return Err(format!("127.0.0.1 routed through {HOST}: {lo}"));
         }
         Ok(String::from("ok"))
     }

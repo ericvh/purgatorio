@@ -26,6 +26,12 @@
 //!
 //! `netsrv rip addr version route ...` sends one RIP response to `ip/rip`
 //! at `addr`, a route being `dest/mask/nexthop/metric`.
+//!
+//! `netsrv echo tcp|udp host` starts, as the servers above, an echo
+//! server announced on `host` (`*` or `127.0.0.1`): each connection, or
+//! each new UDP remote, gets back the first message it sends, then
+//! `from` and the remote's address. `netsrv ask addr text` dials `addr`,
+//! sends `text` and prints the reply.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -37,7 +43,7 @@ use purgatorio::dial::{self, Connection};
 use purgatorio::{Context, Error};
 
 const SELF: &str = "/bin/test/netsrv.wasm";
-const USAGE: &str = "usage: netsrv dns|ntp|http|whois|telnet | netsrv smtp log | netsrv tftp get|put addr file [text] | netsrv virgil addr query | netsrv bootp addr ether [type [ip]] | netsrv rip addr version route ...";
+const USAGE: &str = "usage: netsrv dns|ntp|http|whois|telnet | netsrv smtp log | netsrv tftp get|put addr file [text] | netsrv virgil addr query | netsrv bootp addr ether [type [ip]] | netsrv rip addr version route ... | netsrv echo tcp|udp host | netsrv ask addr text";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -56,11 +62,15 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if kind == "rip" {
         return rip(&argv[2..]);
     }
+    if kind == "ask" {
+        return ask(&argv[2..]);
+    }
     let extra: Vec<String> = argv[2..].to_vec();
     let proto = match kind.as_str() {
         "dns" | "ntp" => "udp",
         "http" | "whois" | "telnet" => "tcp",
         "smtp" if extra.len() == 1 => "tcp",
+        "echo" if extra.len() == 2 && (extra[0] == "tcp" || extra[0] == "udp") => extra[0].as_str(),
         _ => return Err(Error::from(USAGE)),
     };
     if !serving {
@@ -87,7 +97,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         println!("{port} {pid}");
         return Ok(());
     }
-    let ann = match dial::announce(&format!("{proto}!127.0.0.1!0")) {
+    let host = if kind == "echo" {
+        &extra[1]
+    } else {
+        "127.0.0.1"
+    };
+    let ann = match dial::announce(&format!("{proto}!{host}!0")) {
         Ok(a) => a,
         Err(e) => {
             daemon::ready(Err(&e.0));
@@ -106,6 +121,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             "http" => http(&mut f),
             "whois" => whois(&mut f),
             "smtp" => smtp(&mut f, &extra[0]),
+            "echo" => echo(&mut f, &conn.dir),
             _ => telnet(&mut f),
         };
         drop(f);
@@ -281,6 +297,36 @@ fn telnet(f: &mut File) -> std::io::Result<()> {
 
 /// The TFTP client.
 /// A virgil client: one query to `addr`, a few tries, and the answer.
+/// Sends back the first message, saying whom from.
+fn echo(f: &mut File, dir: &str) -> std::io::Result<()> {
+    let mut buf = [0u8; 512];
+    let n = f.read(&mut buf)?;
+    let remote = std::fs::read_to_string(format!("{dir}/remote")).unwrap_or_default();
+    let host = remote.trim().rsplit_once('!').map_or("", |(h, _)| h);
+    let text = String::from_utf8_lossy(&buf[..n]);
+    f.write_all(format!("{} from {host}\n", text.trim_end()).as_bytes())
+}
+
+/// Dials `addr`, sends `text` and prints the reply. A UDP datagram is
+/// sent again if no reply comes in a second, up to three times.
+fn ask(args: &[String]) -> Result<(), Error> {
+    let [addr, text] = args else {
+        return Err(Error::from(USAGE));
+    };
+    let mut conn = dial::dial(addr)?;
+    let mut f = data(&mut conn)?;
+    let fd = f.as_raw_fd();
+    for _ in 0..3 {
+        f.write_all(text.as_bytes())?;
+        if let Some(r) = dial::read_timeout(fd, 512, 1000)? {
+            print!("{}", String::from_utf8_lossy(&r));
+            return Ok(());
+        }
+    }
+    println!("no answer");
+    Ok(())
+}
+
 fn virgil(args: &[String]) -> Result<(), Error> {
     let [addr, query] = args else {
         return Err(Error::from(USAGE));

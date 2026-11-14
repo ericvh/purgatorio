@@ -28,7 +28,9 @@
 //!   virtio-9p, which the kernel mounts on `/n/host` and works on, and
 //!   whose final contents are checked here. The whole sh corpus runs on
 //!   GICv2 and on `-cpu max`, and a smoke subset on the other two
-//!   (`KERNEL_CORPUS=full` runs it on all). The runs boot side by side,
+//!   (`KERNEL_CORPUS=full` runs it on all). The GICv2 run and the KVM run
+//!   boot again with no network card and run the scripts that use only
+//!   the loopback (`corpus` mode). The runs boot side by side,
 //!   one per two CPUs (`KERNEL_JOBS=N` sets how many), and each prints
 //!   where its time went; `target/qemu-times/` has each console with the
 //!   time each line arrived.
@@ -562,16 +564,27 @@ const HOSTFWD_REFUSED: &str = "Could not set up host forwarding rule";
 /// [`HOSTFWD_REFUSED`].
 const HOSTFWD_RETRIES: usize = 3;
 
+/// The address in QEMU's network that a `guestfwd` passes to the host's
+/// export: the kernel's route check makes it off the interface's network
+/// and routes it through the gateway (`crates/purg-kernel/src/system/net.rs`).
+const GUEST_ROUTED: &str = "10.0.2.200";
+
 /// QEMU arguments for a virtio-net card on user networking, with host port
-/// `fwd` forwarded to the guest's export port, and `rstyx`, when given, to
-/// its rstyx port.
-fn net_args(fwd: u16, rstyx: Option<u16>, udp: Option<u16>) -> Vec<String> {
+/// `fwd` forwarded to the guest's export port, `rstyx`, when given, to
+/// its rstyx port, and `udp` to its UDP port; and with `export`, when
+/// given, a host port the guest reaches at [`GUEST_ROUTED`].
+fn net_args(fwd: u16, rstyx: Option<u16>, udp: Option<u16>, export: Option<u16>) -> Vec<String> {
     let mut netdev = format!("user,id=net0,hostfwd=tcp:127.0.0.1:{fwd}-:{GUEST_EXPORT_PORT}");
     if let Some(r) = rstyx {
         netdev.push_str(&format!(",hostfwd=tcp:127.0.0.1:{r}-:{GUEST_RSTYX_PORT}"));
     }
     if let Some(u) = udp {
         netdev.push_str(&format!(",hostfwd=udp:127.0.0.1:{u}-:{GUEST_UDP_PORT}"));
+    }
+    if let Some(e) = export {
+        netdev.push_str(&format!(
+            ",guestfwd=tcp:{GUEST_ROUTED}:{e}-tcp:127.0.0.1:{e}"
+        ));
     }
     [
         "-netdev",
@@ -1211,7 +1224,7 @@ fn probe(kvm: bool) -> Result<()> {
     let image = elf.with_extension("img");
     fs::write(&image, elf_to_image(&bytes)?).map_err(|e| format!("{}: {e}", image.display()))?;
     let fwd = free_port()?;
-    let net = net_args(fwd, None, None);
+    let net = net_args(fwd, None, None, None);
     let mut args: Vec<&str> = if kvm {
         vec!["-accel", "kvm", "-cpu", "host", "-M", "virt,gic-version=3"]
     } else {
@@ -1326,7 +1339,13 @@ struct KernelRun {
     disk_reboot: bool,
     /// Run only the [`KERNEL_SMOKE`] scripts of the sh corpus.
     smoke: bool,
+    /// Boot a second time with no network card ([`nonet_boot`]).
+    nonet: bool,
 }
+
+/// The sh scripts the boot with no network card runs: the loopback's,
+/// and others that use only 127.0.0.1.
+const KERNEL_NONET: &[&str] = &["loopback", "nsnet", "ping", "rip"];
 
 /// The sh scripts the smoke runs keep: timers and sleeps, kills of
 /// progs and process groups, pipes and streams, file2chan, and a
@@ -1349,6 +1368,7 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         initrd: true,
         disk_reboot: true,
         smoke: false,
+        nonet: true,
     },
     KernelRun {
         name: "tcg max gicv3 el2",
@@ -1357,6 +1377,7 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         initrd: false,
         disk_reboot: false,
         smoke: false,
+        nonet: false,
     },
     KernelRun {
         name: "tcg cortex-a72 gicv3",
@@ -1365,6 +1386,7 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         initrd: false,
         disk_reboot: false,
         smoke: true,
+        nonet: false,
     },
     KernelRun {
         name: "tcg cortex-a72 gicv3 el2",
@@ -1378,6 +1400,7 @@ const KERNEL_TCG_RUNS: &[KernelRun] = &[
         initrd: false,
         disk_reboot: false,
         smoke: true,
+        nonet: false,
     },
 ];
 
@@ -1392,6 +1415,7 @@ const KERNEL_KVM_RUN: KernelRun = KernelRun {
     initrd: true,
     disk_reboot: true,
     smoke: false,
+    nonet: true,
 };
 
 /// What the second boot on a run's disk (`diskcheck`) must print, besides
@@ -1466,6 +1490,72 @@ fn disk_reboot(
         None => {
             eprintln!(
                 "kernel: {}: second boot passed in {:.2}s",
+                k.name,
+                r.elapsed.as_secs_f64()
+            );
+            Ok(())
+        }
+    }
+}
+
+/// Boots run `k` again with no network card, in the kernel's `corpus`
+/// mode with the [`KERNEL_NONET`] scripts: the loopback must carry them
+/// alone. Passes if the kernel says it has no network, runs each script
+/// and ends with `kernel: ok` and no failure.
+fn nonet_boot(k: &KernelRun, opts: &KernelOpts, image: &Path, initrd: &str) -> Result<()> {
+    let kvm = opts.kvm;
+    let smp = opts.smp.to_string();
+    let bootargs = format!(
+        "{}corpus sh={}",
+        if kvm { "exit=psci " } else { "" },
+        KERNEL_NONET.join(",")
+    );
+    let mut args: Vec<&str> = k.args.to_vec();
+    args.extend(["-m", &opts.mem, "-smp", &smp, "-nographic"]);
+    if k.initrd {
+        args.extend(["-initrd", initrd]);
+    }
+    if !kvm {
+        args.push("-semihosting");
+    }
+    args.extend(["-append", &bootargs, "-kernel"]);
+    eprintln!(
+        "kernel: {}: boot with no network card: qemu-system-aarch64 {}",
+        k.name,
+        args.join(" ")
+    );
+    let r = run_qemu(&args, image, opts.scale(KERNEL_SMOKE_TIMEOUT), &[], |_| {
+        Ok(())
+    })?;
+    let lines: Vec<&str> = r.serial.lines().collect();
+    let scripts: Vec<String> = KERNEL_NONET
+        .iter()
+        .map(|s| format!("kernel: sh /lib/test/sh/{s}.sh"))
+        .collect();
+    let problem = if let Some(e) = &r.killed {
+        Some(e.clone())
+    } else if let Some(p) = r.exit_problem() {
+        Some(p)
+    } else if let Some(l) = lines.iter().find(|l| l.starts_with("kernel: FAIL")) {
+        Some(String::from(*l))
+    } else if lines.last() != Some(&"kernel: ok") {
+        Some(String::from("no final `kernel: ok`"))
+    } else {
+        ["kernel: no network: no virtio-net device"]
+            .iter()
+            .copied()
+            .chain(scripts.iter().map(String::as_str))
+            .find(|want| !lines.contains(want))
+            .map(|want| format!("no `{want}` line"))
+    };
+    match problem {
+        Some(p) => Err(format!(
+            "the boot with no network card: {p}; its console:\n{}",
+            r.serial.trim_end()
+        )),
+        None => {
+            eprintln!(
+                "kernel: {}: boot with no network card passed in {:.2}s",
                 k.name,
                 r.elapsed.as_secs_f64()
             );
@@ -1829,7 +1919,7 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
                 Ok(p) => p,
                 Err(e) => return KernelOutcome::setup(e),
             };
-            let net = net_args(fwd, Some(rstyx), Some(udp));
+            let net = net_args(fwd, Some(rstyx), Some(udp), Some(host.port));
             let mut args = head.clone();
             args.extend(net.iter().map(String::as_str));
             args.extend(shared.1.iter().map(String::as_str));
@@ -1953,8 +2043,14 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
             Some(format!("the shared directory: {e}"))
         } else if let Err(e) = disks.0.check() {
             Some(format!("the disk: {e}"))
-        } else if k.disk_reboot {
-            disk_reboot(k, opts, &image, &initrd, &disks.1).err()
+        } else if let Some(e) = k
+            .disk_reboot
+            .then(|| disk_reboot(k, opts, &image, &initrd, &disks.1).err())
+            .flatten()
+        {
+            Some(e)
+        } else if k.nonet {
+            nonet_boot(k, opts, &image, &initrd).err()
         } else {
             None
         };
