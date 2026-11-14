@@ -11,9 +11,10 @@ use sha2::{Digest, Sha256};
 use crate::aead;
 use crate::error::MAC;
 use crate::msg;
-use crate::{EPH, HEADER, NONCE, TAG, kind};
+use crate::{EPH, HEADER, KEM_CT, NONCE, TAG, kind};
 
 const MASTER: &[u8] = b"lethe1 master";
+const MASTER2: &[u8] = b"lethe2 master";
 const C2S: &[u8] = b"lethe1 c2s";
 const S2C: &[u8] = b"lethe1 s2c";
 
@@ -27,6 +28,32 @@ pub fn master(shared: &[u8; 32], transcript: &[u8]) -> [u8; 32] {
     // 32 bytes is always a valid HKDF-SHA256 output length.
     let _ = hk.expand(MASTER, &mut m);
     m
+}
+
+/// The master secret of a ticket from the hybrid exchange (`Tauth2`):
+/// HKDF-SHA256 of the ML-KEM-768 secret and then the X25519 secret, as
+/// the mount's version 4 orders them, salted with the SHA-256 of the
+/// transcript ([`transcript2`]).
+pub fn master2(ml_kem: &[u8; 32], x25519: &[u8; 32], transcript: &[u8]) -> [u8; 32] {
+    let salt = Sha256::digest(transcript);
+    let mut ikm = [0u8; 64];
+    ikm[..32].copy_from_slice(ml_kem);
+    ikm[32..].copy_from_slice(x25519);
+    let hk = Hkdf::<Sha256>::new(Some(&salt), &ikm);
+    let mut m = [0u8; 32];
+    let _ = hk.expand(MASTER2, &mut m);
+    m
+}
+
+/// The transcript of a hybrid exchange: the `Tauth2` signed message (which
+/// holds the client's X25519 and ML-KEM keys), the server's X25519 key
+/// and its ML-KEM ciphertext.
+pub fn transcript2(signed: &[u8], server_eph: &[u8; EPH], ct: &[u8; KEM_CT]) -> Vec<u8> {
+    let mut t = Vec::with_capacity(signed.len() + EPH + KEM_CT);
+    t.extend_from_slice(signed);
+    t.extend_from_slice(server_eph);
+    t.extend_from_slice(ct);
+    t
 }
 
 /// The transcript of an exchange.
@@ -171,6 +198,40 @@ pub fn open_rreq(
 /// server's ephemeral key as associated data.
 pub fn rauth(keys: &Keys, id: u32, eph: &[u8; EPH], nonce: &[u8; NONCE], grant: &[u8]) -> Vec<u8> {
     sealed_frame(kind::RAUTH, id, &[eph, nonce], &keys.s2c, nonce, eph, grant)
+}
+
+/// An `Rauth2` frame: `grant` sealed under `s2c`, with the header, the
+/// server's ephemeral key and its ciphertext as associated data.
+pub fn rauth2(
+    keys: &Keys,
+    id: u32,
+    eph: &[u8; EPH],
+    ct: &[u8; KEM_CT],
+    nonce: &[u8; NONCE],
+    grant: &[u8],
+) -> Vec<u8> {
+    sealed_frame(
+        kind::RAUTH2,
+        id,
+        &[eph, ct, nonce],
+        &keys.s2c,
+        nonce,
+        &concat(eph, ct),
+        grant,
+    )
+}
+
+/// Opens an `Rauth2`'s grant.
+pub fn open_rauth2(
+    keys: &Keys,
+    frame: &[u8],
+    eph: &[u8; EPH],
+    ct: &[u8; KEM_CT],
+    nonce: &[u8; NONCE],
+    sealed: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    let h = frame.get(..HEADER).ok_or(MAC)?;
+    open(&keys.s2c, nonce, &concat(&concat(h, eph), ct), sealed)
 }
 
 /// Opens an `Rauth`'s grant.

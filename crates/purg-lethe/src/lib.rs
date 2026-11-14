@@ -42,6 +42,10 @@ pub const NONCE: usize = 24;
 pub const TAG: usize = 16;
 /// An X25519 public key.
 pub const EPH: usize = 32;
+/// An ML-KEM-768 encapsulation key.
+pub const KEM_PUBLIC: usize = purg_abi::auth::KEM_PUBLIC;
+/// An ML-KEM-768 ciphertext.
+pub const KEM_CT: usize = purg_abi::auth::KEM_CIPHERTEXT;
 
 /// The user a clear request runs as: Inferno's unauthenticated identity.
 pub const NONE: &str = "none";
@@ -53,6 +57,10 @@ pub mod rights {
     pub const STREAM: u8 = 4;
     /// Reserved: asks for the server's proof in `Rauth` (later).
     pub const SERVER_PROOF: u8 = 0x80;
+    /// In a ticket only: it came from the hybrid X25519 + ML-KEM-768
+    /// exchange (`Tauth2`). A server that requires that exchange refuses
+    /// tickets without it. Never granted on request.
+    pub const PQ: u8 = 0x40;
     /// The bits a server may grant.
     pub const GRANTABLE: u8 = READ | WRITE | STREAM;
 }
@@ -69,8 +77,14 @@ pub mod kind {
     pub const TCLEAR: u8 = 9;
     /// A reply, not sealed.
     pub const RCLEAR: u8 = 10;
-    /// Reserved for streams and later frames: 6 to 15, less the two
-    /// clear frames above.
+    /// `Tauth` with the client's ephemeral ML-KEM-768 key: the hybrid
+    /// post-quantum exchange (`docs/lethe.md`, "The post-quantum
+    /// exchange").
+    pub const TAUTH2: u8 = 11;
+    /// `Rauth` with the server's ML-KEM-768 ciphertext.
+    pub const RAUTH2: u8 = 12;
+    /// Reserved for streams and later frames: 6 to 15, less the clear
+    /// and the post-quantum frames above.
     pub const RESERVED: core::ops::RangeInclusive<u8> = 6..=15;
 }
 

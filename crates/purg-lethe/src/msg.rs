@@ -10,10 +10,14 @@ use purg_styx::{Dir, Qid};
 
 use crate::error::{MESSAGE, VERSION as EVERSION};
 use crate::wire::{Reader, Writer};
-use crate::{EPH, HEADER, MAX_COUNT, MAX_FRAME, MAX_WALK, NONCE, TAG, VERSION, kind, op};
+use crate::{
+    EPH, HEADER, KEM_CT, KEM_PUBLIC, MAX_COUNT, MAX_FRAME, MAX_WALK, NONCE, TAG, VERSION, kind, op,
+};
 
 /// The context string of a `Tauth` signature.
 pub const AUTH_CONTEXT: &[u8] = b"lethe1 auth\0";
+/// The context string of a `Tauth2` signature: the hybrid exchange.
+pub const AUTH2_CONTEXT: &[u8] = b"lethe2 auth\0";
 
 /// The size of the frame whose first four bytes are `size`, checked
 /// before anything else is read.
@@ -93,10 +97,50 @@ pub fn auth_message(
     m
 }
 
+/// The signed message of a `Tauth2`: as [`auth_message`] under its own
+/// context, with the client's ML-KEM-768 key after its X25519 key.
+pub fn auth2_message(
+    eph: &[u8; EPH],
+    ek: &[u8; KEM_PUBLIC],
+    rights: u8,
+    prefix: &str,
+    uname: &str,
+    kind: u8,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut m = Vec::with_capacity(
+        AUTH2_CONTEXT.len() + EPH + KEM_PUBLIC + 8 + prefix.len() + body.len() + 64,
+    );
+    let mut w = Writer { buf: &mut m };
+    w.bytes(AUTH2_CONTEXT);
+    w.bytes(eph);
+    w.bytes(ek);
+    w.u8(rights);
+    w.data16(prefix.as_bytes());
+    w.data16(uname.as_bytes());
+    w.u8(kind);
+    w.data16(body);
+    m
+}
+
 /// An outer frame's body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frame<'a> {
     Tauth(Tauth<'a>),
+    /// A `Tauth` with the client's ephemeral ML-KEM-768 encapsulation key,
+    /// signed over [`auth2_message`].
+    Tauth2 {
+        t: Tauth<'a>,
+        ek: &'a [u8; KEM_PUBLIC],
+    },
+    /// The server's ephemeral key, its ML-KEM-768 ciphertext and the
+    /// sealed [`Grant`].
+    Rauth2 {
+        eph: [u8; EPH],
+        ct: &'a [u8; KEM_CT],
+        nonce: [u8; NONCE],
+        sealed: &'a [u8],
+    },
     /// The server's ephemeral key and the sealed [`Grant`].
     Rauth {
         eph: [u8; EPH],
@@ -174,6 +218,26 @@ impl<'a> Msg<'a> {
                 nonce: r.array()?,
                 sealed: sealed(&mut r)?,
             },
+            kind::TAUTH2 => {
+                let eph = r.array()?;
+                let ek = r.bytes(KEM_PUBLIC)?.try_into().map_err(|_| MESSAGE)?;
+                let t = Tauth {
+                    eph,
+                    rights: r.u8()?,
+                    prefix: r.str16()?,
+                    uname: r.str16()?,
+                    kind: r.u8()?,
+                    body: r.data16()?,
+                    signature: r.array()?,
+                };
+                Frame::Tauth2 { t, ek }
+            }
+            kind::RAUTH2 => Frame::Rauth2 {
+                eph: r.array()?,
+                ct: r.bytes(KEM_CT)?.try_into().map_err(|_| MESSAGE)?,
+                nonce: r.array()?,
+                sealed: sealed(&mut r)?,
+            },
             kind::TREQ => Frame::Treq {
                 ticket: r.data16()?,
                 nonce: r.array()?,
@@ -197,6 +261,8 @@ impl<'a> Msg<'a> {
         match self.frame {
             Frame::Tauth(_) => kind::TAUTH,
             Frame::Rauth { .. } => kind::RAUTH,
+            Frame::Tauth2 { .. } => kind::TAUTH2,
+            Frame::Rauth2 { .. } => kind::RAUTH2,
             Frame::Treq { .. } => kind::TREQ,
             Frame::Rreq { .. } => kind::RREQ,
             Frame::Rerror { .. } => kind::RERROR,
@@ -221,6 +287,27 @@ impl<'a> Msg<'a> {
             }
             Frame::Rauth { eph, nonce, sealed } => {
                 w.bytes(eph);
+                w.bytes(nonce);
+                w.bytes(sealed);
+            }
+            Frame::Tauth2 { t, ek } => {
+                w.bytes(&t.eph);
+                w.bytes(&ek[..]);
+                w.u8(t.rights);
+                w.data16(t.prefix.as_bytes());
+                w.data16(t.uname.as_bytes());
+                w.u8(t.kind);
+                w.data16(t.body);
+                w.bytes(&t.signature);
+            }
+            Frame::Rauth2 {
+                eph,
+                ct,
+                nonce,
+                sealed,
+            } => {
+                w.bytes(eph);
+                w.bytes(&ct[..]);
                 w.bytes(nonce);
                 w.bytes(sealed);
             }

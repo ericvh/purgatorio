@@ -459,6 +459,7 @@ fn renewal_window_tampering_and_replicas() {
         lifetime: 30,
         window: 10,
         allow: rights::READ,
+        pq: false,
     };
     let server = Server::new(cfg.clone(), [9; 32]);
     let t = tree();
@@ -982,4 +983,99 @@ fn walks() {
         (qids.len(), error.as_deref()),
         (1, Some("permission denied"))
     );
+}
+
+/// The hybrid X25519 + ML-KEM-768 exchange (`docs/lethe.md`, "The
+/// post-quantum exchange"): a client that asks gets a ticket from it and
+/// reads; a server that requires it refuses a `Tauth`, and a ticket from
+/// one; a client that requires it refuses a server that answers with a
+/// plain `Rauth`, or does not know `Tauth2`; and a `Tauth2` changed on the
+/// way, or turned into a `Tauth`, does not verify.
+#[test]
+fn post_quantum_exchange() {
+    let t = tree();
+    let now = Cell::new(T0);
+    let server = Server::new(Config::default(), [9; 32]);
+    let mut r = rig(&server, &t, &now, direct());
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    c.pq = true;
+    assert!(read(&mut c, &mut r, "/hello", None).is_ok());
+    assert_eq!(r.sent[0][5], purg_lethe::kind::TAUTH2);
+    // A ticket from it carries the mark, which the grant does not.
+    let s = c.session.clone().unwrap();
+    assert_eq!(s.rights, rights::READ);
+
+    let strict = Server::new(
+        Config {
+            pq: true,
+            ..Config::default()
+        },
+        [9; 32],
+    );
+    let mut r = rig(&strict, &t, &now, direct());
+    let mut plain = Client::new(creds(None), rights::READ, "/");
+    assert_eq!(
+        read(&mut plain, &mut r, "/hello", None),
+        remote("post-quantum key exchange required")
+    );
+    assert!(read(&mut c, &mut r, "/hello", None).is_ok());
+    // A classic ticket from a server with the same key is refused.
+    let mut lax = rig(&server, &t, &now, direct());
+    let mut plain = Client::new(creds(None), rights::READ, "/");
+    assert!(read(&mut plain, &mut lax, "/hello", None).is_ok());
+    assert_eq!(
+        read(&mut plain, &mut r, "/hello", None),
+        remote("post-quantum key exchange required")
+    );
+
+    // A server that answers Tauth2 with a plain Rauth, as one would that
+    // took the frame for a Tauth: the client refuses it.
+    let mut kem = [0u8; 64];
+    random(&mut kem);
+    let (frame, pending) =
+        purg_lethe::client::auth_pq(&creds(None), 7, rights::READ, "/", [1; 32], &kem);
+    let (classic, _) = purg_lethe::client::auth(&creds(None), 7, rights::READ, "/", [1; 32]);
+    let mut lr = rig(&server, &t, &now, direct());
+    let reply = lr.send(&classic);
+    assert_eq!(
+        pending.finish(&reply, T0).err().as_deref(),
+        Some("no post-quantum key offered")
+    );
+    // An old server's answer to a frame type it does not know.
+    let (_, pending) =
+        purg_lethe::client::auth_pq(&creds(None), 7, rights::READ, "/", [1; 32], &kem);
+    let old = purg_lethe::msg::rerror(7, purg_lethe::error::MESSAGE);
+    assert_eq!(
+        pending.finish(&old, T0).err().as_deref(),
+        Some("no post-quantum key offered")
+    );
+
+    // The Tauth2 stripped of its ML-KEM key and sent as a Tauth: the
+    // signature is over the lethe2 message, so it fails.
+    let m = Msg::decode(&frame).unwrap();
+    let Frame::Tauth2 { t: ta, .. } = m.frame else {
+        panic!()
+    };
+    let stripped = Msg {
+        id: 7,
+        frame: Frame::Tauth(ta),
+    }
+    .encode();
+    let reply = lr.send(&stripped);
+    assert!(matches!(
+        Msg::decode(&reply).unwrap().frame,
+        Frame::Rerror {
+            ename: "authentication failed"
+        }
+    ));
+    // The ML-KEM key changed on the way.
+    let mut changed = frame.clone();
+    changed[purg_lethe::HEADER + 32 + 100] ^= 1;
+    let reply = lr.send(&changed);
+    assert!(matches!(
+        Msg::decode(&reply).unwrap().frame,
+        Frame::Rerror {
+            ename: "authentication failed"
+        }
+    ));
 }
