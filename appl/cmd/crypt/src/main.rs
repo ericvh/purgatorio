@@ -4,6 +4,10 @@
 //! sealed with ChaCha20-Poly1305 in 64 KiB chunks, so a damaged, truncated
 //! or reordered file fails to decrypt (`docs/auth.md`).
 //!
+//! The file records its cost, so `crypt -d` would spend whatever memory a
+//! file asks for. It refuses a file that asks for more than 65536 KiB or
+//! 8 passes ([`MAX_DECRYPT`]); with `-d`, `-C m,t` sets that limit instead.
+//!
 //! Public-key mode (an addition; `docs/auth.md`, "crypt's public-key
 //! mode"): `crypt -g keyfile` makes a hybrid X25519 + ML-KEM-768 key pair,
 //! writes the secret key to `keyfile` and prints the public key line.
@@ -19,6 +23,12 @@ use authlib::fmt::hybrid;
 use authlib::fmt::login::{DEFAULT_M, DEFAULT_T, stream};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
+
+/// The most memory (KiB) and passes `crypt -d` spends on a password file
+/// without `-C`: a hostile file could otherwise ask for 256 MiB. This is
+/// three times the default cost and above OWASP's largest Argon2id
+/// setting (46 MiB).
+const MAX_DECRYPT: (u32, u32) = (65536, 8);
 
 const USAGE: &str =
     "crypt [-d] [-C m,t] [-k secret | -f secretfile | -r pubkey | -s keyfile | -g keyfile]";
@@ -115,7 +125,7 @@ enum Key {
     Factotum,
 }
 
-fn decrypt(key: Option<Key>) -> Result<(), Error> {
+fn decrypt(key: Option<Key>, max: (u32, u32)) -> Result<(), Error> {
     let mut input = std::io::stdin().lock();
     let mut magic = [0u8; 8];
     if fill(&mut input, &mut magic)? != magic.len() {
@@ -146,6 +156,16 @@ fn decrypt(key: Option<Key>) -> Result<(), Error> {
     header[..8].copy_from_slice(&magic);
     if fill(&mut input, &mut header[8..])? != header.len() - 8 {
         return Err(Error::from(stream::EBAD));
+    }
+    // The cost follows the magic: m, t and p, each u32 LE.
+    let word =
+        |i: usize| u32::from_le_bytes([header[i], header[i + 1], header[i + 2], header[i + 3]]);
+    let (fm, ft) = (word(8), word(12));
+    if fm > max.0 || ft > max.1 {
+        return Err(Error(format!(
+            "file cost {fm},{ft} is above the limit {},{}; use -C m,t",
+            max.0, max.1
+        )));
     }
     let c = stream::Cipher::decrypt(&secret, &header).map_err(Error::from)?;
     open_all(c, &mut input)
@@ -226,7 +246,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     let mut key = None;
     let mut to = None;
     let mut make = None;
-    let (mut m, mut t) = (DEFAULT_M, DEFAULT_T);
+    let mut cost = None;
     let usage = || Error(format!("usage: {USAGE}"));
     while let Some(c) = arg.opt() {
         let set = |slot: &mut Option<Key>, k: Key| {
@@ -255,7 +275,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
             }
             'r' => to = Some(arg.earg()?),
             'g' => make = Some(arg.earg()?),
-            'C' => (m, t) = authlib::cost(&arg.earg()?)?,
+            'C' => cost = Some(authlib::cost(&arg.earg()?)?),
             _ => return Err(arg.usage()),
         }
     }
@@ -265,8 +285,13 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     match (decrypting, key, to, make) {
         (false, None, None, Some(path)) => generate(&path),
         (false, None, Some(path), None) => encrypt_to(&recipient(&path)?),
-        (false, Some(Key::Secret(s)), None, None) => encrypt(&s, m, t),
-        (true, key, None, None) => decrypt(key.or(Some(Key::Factotum))),
+        (false, Some(Key::Secret(s)), None, None) => {
+            let (m, t) = cost.unwrap_or((DEFAULT_M, DEFAULT_T));
+            encrypt(&s, m, t)
+        }
+        (true, key, None, None) => {
+            decrypt(key.or(Some(Key::Factotum)), cost.unwrap_or(MAX_DECRYPT))
+        }
         _ => Err(usage()),
     }
 }
