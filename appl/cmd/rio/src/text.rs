@@ -9,6 +9,11 @@
 //! place where `^D` was typed. `^D` with nothing waiting makes the next
 //! read return nothing, an end of file. Typing after `ready` can be
 //! erased.
+//!
+//! The selection `q0..q1` is where typing goes, as in rio: a rune typed
+//! replaces the selection and the selection becomes the point after it.
+//! When the selection is before the text that may still be changed,
+//! typing goes at the end instead. Cut and paste work anywhere.
 
 use std::collections::HashMap;
 
@@ -32,6 +37,14 @@ pub struct Text {
     pub eof: u32,
     /// The first rune shown.
     pub org: usize,
+    /// The selection.
+    pub q0: usize,
+    pub q1: usize,
+}
+
+/// Whether `c` is part of a word, for a double click.
+fn wordch(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// Rune widths in the window's font, remembered.
@@ -76,43 +89,171 @@ impl Text {
         self.qh.max(self.ready)
     }
 
-    /// Output from a program, inserted at the output point.
+    /// Inserts `add` at `q`. The output point, `ready`, the origin and
+    /// the selection move when they are after `q`.
+    pub fn insert(&mut self, q: usize, add: &[char]) {
+        let n = add.len();
+        let q = q.min(self.s.len());
+        self.s.splice(q..q, add.iter().copied());
+        for m in [
+            &mut self.qh,
+            &mut self.ready,
+            &mut self.org,
+            &mut self.q0,
+            &mut self.q1,
+        ] {
+            if *m > q {
+                *m += n;
+            }
+        }
+    }
+
+    /// Deletes `q0..q1`; marks inside it go to its start.
+    pub fn delete(&mut self, q0: usize, q1: usize) {
+        let q1 = q1.min(self.s.len());
+        if q0 >= q1 {
+            return;
+        }
+        let n = q1 - q0;
+        self.s.drain(q0..q1);
+        for m in [
+            &mut self.qh,
+            &mut self.ready,
+            &mut self.org,
+            &mut self.q0,
+            &mut self.q1,
+        ] {
+            if *m >= q1 {
+                *m -= n;
+            } else if *m > q0 {
+                *m = q0;
+            }
+        }
+    }
+
+    /// The selected text.
+    pub fn selected(&self) -> String {
+        let n = self.s.len();
+        self.s[self.q0.min(n)..self.q1.min(n)].iter().collect()
+    }
+
+    /// Selects from `a` to `b`, either way round.
+    pub fn select(&mut self, a: usize, b: usize) {
+        let n = self.s.len();
+        self.q0 = a.min(b).min(n);
+        self.q1 = a.max(b).min(n);
+    }
+
+    /// What a double click at `q` selects: the line when `q` is at its
+    /// start or its end, else the word around `q`.
+    pub fn double(&self, q: usize) -> (usize, usize) {
+        let q = q.min(self.s.len());
+        let ls = self.line_start(q);
+        let le = self.line_end(q);
+        if q == ls || q == le {
+            return (ls, (le + 1).min(self.s.len()));
+        }
+        let mut a = q;
+        while a > ls && wordch(self.s[a - 1]) {
+            a -= 1;
+        }
+        let mut b = q;
+        while b < le && wordch(self.s[b]) {
+            b += 1;
+        }
+        (a, b)
+    }
+
+    /// Output from a program, inserted at the output point, before any
+    /// typing; a selection at or after the output point moves on.
     pub fn output(&mut self, s: &str) {
         let add: Vec<char> = s.chars().filter(|&c| c != '\0').collect();
         let n = add.len();
-        self.s.splice(self.qh..self.qh, add);
+        let q = self.qh;
+        self.s.splice(q..q, add);
         self.qh += n;
         self.ready += n;
-        if self.org > self.qh - n {
+        if self.org > q {
             self.org += n;
+        }
+        if self.q0 >= q {
+            self.q0 += n;
+        }
+        if self.q1 >= q {
+            self.q1 += n;
         }
         self.trim();
     }
 
-    /// A rune typed at the end.
+    /// Text added at the end as if typed, with a newline if it has none,
+    /// and made readable: rio's `send`.
+    pub fn send(&mut self, s: &str) {
+        let mut add: Vec<char> = s.chars().collect();
+        if add.last() != Some(&'\n') {
+            add.push('\n');
+        }
+        let end = self.s.len();
+        self.insert(end, &add);
+        self.ready = self.s.len();
+        self.q0 = self.s.len();
+        self.q1 = self.q0;
+        self.trim();
+    }
+
+    /// `s` in place of the selection, selected: rio's `paste`. Pasted
+    /// into what is typed, it may be read up to its last newline, as if
+    /// typed.
+    pub fn paste(&mut self, s: &str) {
+        let add: Vec<char> = s.chars().collect();
+        self.delete(self.q0, self.q1);
+        let q = self.q0;
+        let typing = q >= self.fixed();
+        self.insert(q, &add);
+        if typing && let Some(nl) = add.iter().rposition(|&c| c == '\n') {
+            self.ready = self.ready.max(q + nl + 1);
+        }
+        self.q0 = q;
+        self.q1 = q + add.len();
+        self.trim();
+    }
+
+    /// A rune typed at the selection, or at the end when the selection
+    /// is in text typing may not change.
     pub fn typed(&mut self, c: char) {
+        let floor = self.fixed();
+        if self.q0 < floor {
+            self.q0 = self.s.len();
+            self.q1 = self.q0;
+        }
+        let erase = matches!(c, '\x08' | '\x15' | '\x17');
+        if self.q1 > self.q0 && c != '\x04' {
+            self.delete(self.q0, self.q1);
+            if erase {
+                return;
+            }
+        }
+        let q = self.q0;
         match c {
             '\x08' => {
-                if self.s.len() > self.fixed() {
-                    self.s.pop();
+                if q > floor {
+                    self.delete(q - 1, q);
                 }
             }
             // ^U: back to the start of the line or what can be erased.
             '\x15' => {
-                let floor = self.fixed();
-                while self.s.len() > floor && self.s.last() != Some(&'\n') {
-                    self.s.pop();
-                }
+                let a = self.line_start(q).max(floor);
+                self.delete(a, q);
             }
             // ^W: the word before.
             '\x17' => {
-                let floor = self.fixed();
-                while self.s.len() > floor && self.s.last().is_some_and(|c| c.is_whitespace()) {
-                    self.s.pop();
+                let mut a = q;
+                while a > floor && self.s[a - 1].is_whitespace() {
+                    a -= 1;
                 }
-                while self.s.len() > floor && self.s.last().is_some_and(|c| !c.is_whitespace()) {
-                    self.s.pop();
+                while a > floor && !self.s[a - 1].is_whitespace() {
+                    a -= 1;
                 }
+                self.delete(a, q);
             }
             // ^D: what is typed may be read without a newline; alone, it
             // is an end of file.
@@ -123,10 +264,16 @@ impl Text {
                 self.ready = self.s.len();
             }
             '\n' | '\r' => {
-                self.s.push('\n');
-                self.ready = self.s.len();
+                self.insert(q, &['\n']);
+                self.ready = self.ready.max(q + 1);
+                self.q0 = q + 1;
+                self.q1 = q + 1;
             }
-            c => self.s.push(c),
+            c => {
+                self.insert(q, &[c]);
+                self.q0 = q + 1;
+                self.q1 = q + 1;
+            }
         }
         self.trim();
     }
@@ -170,6 +317,8 @@ impl Text {
         self.ready = self.qh;
         self.eof = 0;
         self.org = self.org.min(self.s.len());
+        self.q0 = self.q0.min(self.s.len());
+        self.q1 = self.q1.min(self.s.len());
     }
 
     /// Drops the oldest runes once there are too many.
@@ -182,6 +331,8 @@ impl Text {
         self.qh -= n;
         self.ready = self.ready.saturating_sub(n);
         self.org = self.org.saturating_sub(n);
+        self.q0 = self.q0.saturating_sub(n);
+        self.q1 = self.q1.saturating_sub(n);
     }
 
     pub fn all(&self) -> String {
@@ -324,16 +475,59 @@ impl Text {
     /// Where the end of the text is drawn, from the top left of the
     /// lines `h` high, when it shows.
     pub fn end_point(&self, lines: &[(usize, usize)], h: i32, f: &mut Widths) -> Option<Point> {
-        let n = self.s.len();
+        self.point_of(self.s.len(), lines, h, f)
+    }
+
+    /// Where the point before rune `q` is drawn, from the top left of
+    /// the lines `h` high, when it shows.
+    pub fn point_of(
+        &self,
+        q: usize,
+        lines: &[(usize, usize)],
+        h: i32,
+        f: &mut Widths,
+    ) -> Option<Point> {
         let (i, &(s, _)) = lines
             .iter()
             .enumerate()
-            .find(|(_, (s, e))| *e == n && (s == e || self.s[e - 1] != '\n'))?;
+            .find(|(_, (s, e))| *s <= q && q < *e)
+            .or_else(|| {
+                lines
+                    .iter()
+                    .enumerate()
+                    .find(|(_, (s, e))| *e == q && (s == e || self.s[e - 1] != '\n'))
+            })?;
+        Some(Point::new(self.x_of(s, q, f), i as i32 * h))
+    }
+
+    /// How far from the start of the line at `s` rune `q` is drawn.
+    pub fn x_of(&self, s: usize, q: usize, f: &mut Widths) -> i32 {
         let mut x = 0;
-        for &c in &self.s[s..n] {
+        for &c in &self.s[s..q.min(self.s.len())] {
+            if c == '\n' {
+                break;
+            }
             x += f.advance(c, x);
         }
-        Some(Point::new(x, i as i32 * h))
+        x
+    }
+
+    /// The rune at `x` in the line `(s, e)`: the one whose cell holds
+    /// `x`, or the line's end (its newline) past the last.
+    pub fn at_x(&self, s: usize, e: usize, x: i32, f: &mut Widths) -> usize {
+        let mut cx = 0;
+        for q in s..e {
+            let c = self.s[q];
+            if c == '\n' {
+                return q;
+            }
+            let a = f.advance(c, cx);
+            if x < cx + a {
+                return q;
+            }
+            cx += a;
+        }
+        e
     }
 
     /// The rectangle of the text area of a window `r` drawn with border
@@ -392,5 +586,58 @@ mod tests {
         t.typed('\x04');
         assert_eq!(t.read(100).unwrap(), b"");
         assert!(t.read(100).is_none());
+    }
+
+    #[test]
+    fn typing_at_the_selection() {
+        let mut t = text("; ");
+        for c in "echo hi".chars() {
+            t.typed(c);
+        }
+        // Select "hi" and type over it.
+        t.select(7, 9);
+        assert_eq!(t.selected(), "hi");
+        t.typed('x');
+        assert_eq!(t.all(), "; echo x");
+        // Output goes before the typing and the point moves with it.
+        t.output("out\n");
+        assert_eq!(t.all(), "; out\necho x");
+        assert_eq!((t.q0, t.q1), (12, 12));
+        // A selection in the output: typing goes at the end.
+        t.select(2, 5);
+        t.typed('!');
+        assert_eq!(t.all(), "; out\necho x!");
+        t.typed('\n');
+        assert_eq!(t.read(100).unwrap(), b"echo x!\n");
+    }
+
+    #[test]
+    fn cut_paste_and_send() {
+        let mut t = text("; hello\n; ");
+        t.select(2, 7);
+        let s = t.selected();
+        t.delete(t.q0, t.q1);
+        assert_eq!((t.all().as_str(), t.qh), ("; \n; ", 5));
+        let chars: Vec<char> = s.chars().collect();
+        let q = t.s.len();
+        t.insert(q, &chars);
+        assert_eq!(t.all(), "; \n; hello");
+        assert!(t.read(100).is_none());
+        t.send("echo hi");
+        assert_eq!(t.read(100).unwrap(), b"helloecho hi\n");
+        // Pasted typing with a newline may be read.
+        t.paste("ls\nx");
+        assert_eq!(t.selected(), "ls\nx");
+        assert_eq!(t.read(100).unwrap(), b"ls\n");
+    }
+
+    #[test]
+    fn double_clicks() {
+        let t = text("; echo hello_there\nnext\n");
+        assert_eq!(t.double(10), (7, 18));
+        // At a line's start or end: the line.
+        assert_eq!(t.double(0), (0, 19));
+        assert_eq!(t.double(18), (0, 19));
+        assert_eq!(t.double(19), (19, 24));
     }
 }

@@ -1851,8 +1851,8 @@ files; no Plan 9 or Inferno code was used, and the look is its own.
 `emu -g rio` (or `-w rio`) runs it on the emu's screen. `-i cmd` runs
 `cmd` in a first window.
 
-- **The menu.** Button 3 on the background, on a window's border, or in
-  a window no program draws in brings up `New`, `Resize`, `Move`,
+- **The menu.** Button 3 on the background, or in a window no program
+  draws in, brings up `New`, `Resize`, `Move`,
   `Delete`, `Hide`, `Exit`, then the labels of hidden windows. The last
   item chosen comes up under the pointer, as in rio. `New` asks for a
   rectangle swept with button 3 (smaller than 50 pixels each way
@@ -1864,21 +1864,49 @@ files; no Plan 9 or Inferno code was used, and the look is its own.
 - **Focus.** Button 1 on a window that is not current makes it current
   and raises it; the click goes no further. The current window has a
   dark border, the others a light one. Keys go to the current window.
+- **Borders.** Button 1 or 3 on a window's border drags the edge or
+  corner nearest the pointer (within 20 pixels of a corner along an
+  edge, the corner), with an outline, as in rio; the window takes the
+  rectangle when the button is released, if it is at least 50 pixels
+  each way. The window becomes current first.
 - **Text windows.** A window runs `sh -i` on its `/dev/cons`. Without a
   program drawing in it, rio shows its text: what is written to `cons`
-  goes in at the output point, before any typing not yet read, and
-  typing goes at the end. A newline makes the line readable; `^D` makes
-  what is typed readable without one, or alone gives an end of file.
-  Backspace, `^U` and `^W` erase typing that has not been sent.
-  Delete throws away unread typing and sends `interruptgrp` to the
-  window's processes. The view follows the end; the wheel scrolls three
-  lines. Text beyond 256K runes is dropped from the front.
+  goes in at the output point, before any typing not yet read. Typing
+  goes at the selection, replacing it, when the selection is in what
+  has not been sent; otherwise at the end. A newline makes the text up
+  to it readable; `^D` makes what is typed readable without one, or
+  alone gives an end of file. Backspace, `^U` and `^W` erase typing
+  that has not been sent. Delete throws away unread typing and sends
+  `interruptgrp` to the window's processes. Output scrolls the view to
+  the end unless the window is in `noscroll` mode; the wheel scrolls
+  three lines. Text beyond 256K runes is dropped from the front.
+- **Selection.** Button 1 in the current text window sweeps a selection
+  from the rune pressed on to the rune released on; the selection has a
+  pale yellow background, and an empty one shows as the tick. A second
+  click on the same rune within half a second selects the word there
+  (letters, digits and `_`), or the whole line, newline included, when
+  the rune is at the line's start or end. While button 1 is still held,
+  button 2 cuts the selection and button 3 pastes over it (rio's
+  chords).
+- **Button 2.** In the current text window button 2 brings up `cut`,
+  `paste`, `snarf`, `plumb` (only while `/chan/plumb.input` exists),
+  `send` and `scroll` or `noscroll`. `cut` and `snarf` put the selection
+  in `/dev/snarf`, and `cut` deletes it, wherever it is. `paste` puts
+  the snarf buffer in place of the selection and selects it; pasted
+  into what has not been sent, it is readable up to its last newline,
+  as if typed. `plumb` sends the selection, or the word at the point, to
+  the plumber, from `rio`, in rio's directory. `send` snarfs the
+  selection, if there is one, and adds the snarf buffer at the end as
+  typed text, with a newline if it has none, so the shell reads it.
+  `scroll` and `noscroll` (and the same `wctl` messages) turn following
+  the output on and off.
 - **Graphical programs.** A program that opens `/dev/draw` in a window
   draws in the window (Section 12.2). While it has `/dev/pointer` open,
   pointer events in the current window, and every event while a button
   pressed in it is held, go to it, and rio does not draw the text; when
   it closes the file, the text comes back. Button 3 in such a window is
-  the program's; rio's menu is on the background and the borders.
+  the program's; rio's menu is on the background, and the borders are
+rio's.
 
 ### 12.2 Sharing the draw device
 
@@ -1936,6 +1964,33 @@ and each drawing message on a window copies its damaged rectangle once
 per level. For a text window that is a few small rectangles per
 keystroke.
 
+**When a program goes.** A program in a window draws on a window of its
+own, on a screen of its own made on rio's window image. When its
+connection closed, the device used to free that window like any other,
+painting its place from its screen's fill, which is white: a program
+that drew a picture and exited left a blank window, and one that exited
+just after rio drew its text again could blank the text too. Now, when
+a connection closes, its windows on its own screens leave without
+painting (those screens go with them), so the image under them keeps
+what was last drawn: the picture stays until rio next draws the
+window's text, on output or typing. A window freed with `f` still paints
+its place from the fill. rio owns the window's image; the program's
+screen on it was only its way of drawing there.
+
+**Hidden windows and resizes.** A hidden window gets an ordinary image,
+on no screen, with its pixels and a new name, as rio gives it one; its
+program hears of it with an `r` event and draws on that, unseen. Showing
+it again makes a window on rio's screen and copies the pixels back. When
+rio's own screen changes size, every window is given the same place
+scaled to the new screen, at least 50 pixels each way and on the
+screen, as rio's `resized` does. On the emu's display the screen image
+keeps its id, and rio finds the change by asking `ctl` with
+`check_resize` on each pointer event; in a rio window the image is new,
+so rio makes a new public screen on it, moves every window there and
+frees the old screen. Running rio in a rio window and resizing that
+window is how the test checks it, since the browser backend's screen
+has a fixed size.
+
 **In the SDK** (`purgatorio::draw`). `Display::open` reads
 `/dev/winname` when it exists, looks the image up with `n`, makes a
 screen on it filled white and a window on that screen inside a border
@@ -1971,14 +2026,19 @@ So each window's process group sees, before the rest of `/dev`:
 | `keyboard` | while open, keys typed in the window come here as UTF-8 instead |
 | `pointer` | pointer(3)'s 49-byte `m` records for the window, `r` after a resize or move; writing `m x y` moves the pointer |
 | `label` | the window's label, which the menu shows when it is hidden |
+| `screen` | rio's screen, as an uncompressed image(6) file: a 60-byte header (channels and rectangle) and the pixels |
 | `text` | everything in the window's text |
 | `wctl` | reads `x0 y0 x1 y1 visible\|hidden current\|notcurrent` in 12-character fields; takes `new [-r x0 y0 x1 y1] [cmd]`, `resize [-r ...] [-dx n] [-dy n]`, `move [-minx n] [-miny n]`, `top`, `bottom`, `current`, `hide`, `unhide`, `delete`, `scroll`, `noscroll` |
+| `window` | the window's image, border included, as an image(6) file like `screen` |
 | `winid` | the window's number |
 | `winname` | the name of the window's image, for `n` |
 | `wsys/<id>/` | the same files for every window |
 
 `/dev/draw` is the device's own, not rio's: the window comes through
-`winname` (Section 12.2). Reads of `cons`, `pointer` and `keyboard`
+`winname` (Section 12.2). So is `/dev/snarf` (Section 12.4): rio has no
+buffer of its own, and its windows see the one under `/dev`. `screen`
+and `window` are read from the draw device with `r` when a read at
+offset 0 comes, and reads further on take the rest of that copy. Reads of `cons`, `pointer` and `keyboard`
 with nothing to read wait in rio, with their tags, until there is
 something; a `Tflush` or a clunk takes them away.
 
@@ -2002,25 +2062,68 @@ mux wakes the watchers with each reply. This is a change to `purg-core`
 (`devmnt.rs`, `mux.rs`) that any served file benefits from;
 `crates/purg-core/tests/mntready.rs` checks it.
 
-### 12.4 Differences from Plan 9's rio
+### 12.4 The snarf buffer: `#^`
 
-- No snarf buffer (`/dev/snarf`), no button 2 menu (cut, paste, snarf,
-  plumb, send, scroll), and no selection with button 1 in text windows:
-  typing goes at the end only.
-- No hold mode (`holdon` is accepted and ignored), no `/dev/screen`,
-  `/dev/window` or `/dev/kbdin`, and no `/srv/rio` or `window(1)`
-  command: `echo new ... > /dev/wctl` in a window makes one.
-- No sweeping with buttons other than 3, no resizing by dragging a
-  border or corner, and no minimum-size window made from a click.
-- Hidden windows are moved off the screen with `o`; their programs keep
-  drawing into them.
-- Resizing rio's own screen (the emu's window) repaints it but does not
-  rearrange the windows; rio in a rio window does not follow a resize of
-  its own window.
+`#^` is the snarf device of Inferno's emu (`devsnarf`), in `purg-core`
+(`devsnarf.rs`), so the emu and the kernel both have it; both bind it
+after `#c` on `/dev`. It has one file, `snarf`, mode 0666. Its
+behaviour follows Inferno's:
+
+- A read at offset 0 takes a copy of the buffer into the open file, and
+  reads further on read that copy, so one reader sees one buffer even
+  if another program replaces it meanwhile.
+- Writes are kept by the open file, appended whatever their offset.
+  When a file opened for writing is closed, what was written replaces
+  the buffer, all at once; a file opened for writing and closed with
+  nothing written empties it. One opened to read and write, without
+  `OTRUNC`, that nothing was written to leaves it alone (in Inferno such
+  a file writes back what it read, which comes to the same).
+- More than 1 MiB written to one open is `read or write too large`
+  (Inferno's `Etoobig`; the limit is ours). The qid's version changes
+  each time the buffer is replaced.
+
+rio's text windows, `draw/sh` and acme read and write `/dev/snarf`
+(acme still keeps its own copy for when the file is missing). Plan 9's
+rio serves a `snarf` per window, backed by rio's buffer; ours does not
+need to, since every window sees the same `#^` through its `/dev`.
+
+**The host's clipboard.** The device reaches the host through the
+platform's `Screen`, as Inferno's emu reaches the X11 clipboard from its
+window code: `Screen::snarf_get` and `Screen::snarf_put` default to
+none, and `#^` keeps its own buffer when the screen has no clipboard (or
+there is no screen, as in the kernel). With one, a read at offset 0
+takes the clipboard's text and a close after writing puts the text
+there too. No backend implements them yet. The obvious crate,
+`arboard` (MIT or Apache-2.0), depends on Windows on `clipboard-win`,
+which is BSL-1.0: `deny.toml` checks every target and does not allow
+that licence, and adding it is a decision for the owner. Its current
+version also brings a second version of the `objc2` crates. Doing it
+without a new crate means the selection protocol over `x11rb` on X11
+(with a thread to answer requests for the selection we own), the data
+device protocol on Wayland, and `NSPasteboard` through `objc2-app-kit`
+on macOS, all in `crates/purg-emu/src/window.rs` and `host/`, for
+`emu -g` only (the browser backend and the in-memory screen should not
+touch the host's clipboard, so tests do not either). That is left for
+later.
+
+### 12.5 Differences from Plan 9's rio
+
+- No hold mode (`holdon` is accepted and ignored), no `/dev/kbdin`, no
+  `/srv/rio` and no `window(1)` command: `echo new ... > /dev/wctl` in a
+  window makes one.
+- Typing goes at the selection only when the selection is in typing not
+  yet sent; rio also lets typing go into text before the output point.
+  The view does not scroll while sweeping a selection past the window's
+  edge.
+- No sweeping with buttons other than 3, no button 2 on a border, and
+  no minimum-size window made from a click.
+- `plumb` sends from rio's directory: rio does not know the shell's.
 - The pointer's cursor does not change while sweeping or dragging (the
   emu does not show cursors yet).
+- No `/dev/snarf` of rio's own, and no host clipboard yet (Section
+  12.4).
 
-### 12.5 Tests
+### 12.6 Tests
 
 - `purg-core`: windows show in stacking order and keep their pixels
   under others, `t` raises and lowers them, freeing one shows the fill
@@ -2034,8 +2137,15 @@ mux wakes the watchers with each reply. This is a change to `purg-core`
   rest, and a close flushes an outstanding read.
 - `/bin/test/draw.wasm`, on both VMs (`windows`): the same through the
   SDK, with pixels read back from the screen.
+- `purg-core`: a client's window on a window manager's window keeps
+  its pixels there when the client's connection closes, and shows its
+  screen's fill when freed with `f`. `#^`: a write replaces the buffer
+  on close, readers keep their copy, the size limit, names and errors,
+  and a screen with a clipboard. `root/lib/test/sh/snarf.sh` runs in
+  the emu, the probe and the kernel.
 - `appl/cmd/rio`: the text window's output point, erasing and end of
-  file; wctl parsing.
+  file; typing at the selection, cut, paste and send, double clicks;
+  wctl parsing; scaling windows to a new screen.
 - `crates/purg-emu/tests/rio.rs`, on wasmtime and wasmi: the emu runs
   `rio` with `-w` on an 800×600 screen and the test is the browser,
   keeping a copy of the screen from the frames. It sweeps a window with
@@ -2053,17 +2163,32 @@ mux wakes the watchers with each reply. This is a change to `purg-core`
   pixel or a file, with a bound. Keys and pointer events reach rio on
   separate queues, so the test waits to see a window current before it
   types into it.
+- `crates/purg-emu/tests/rio.rs`, a second run (`editing`): two
+  commands whose output is a command; a double click on the start of an
+  output line and button 2's `snarf`; a second window, where `send`
+  runs the line (a file appears) and `cat /dev/snarf` shows it; a sweep
+  with button 1 over the fourth line and its newline, `snarf`, and
+  `paste` in the second window, which runs it; dragging the first
+  window's bottom right corner with button 1 (the border, the old place
+  and `wctl`); `/dev/window` and `/dev/screen` read with `cat`, their
+  headers, sizes and a pixel each; `Hide` and the hidden window's label
+  in the menu; `test/draw -c dd22dd` in a window made with `wctl new`,
+  whose colour is still there after it exits and rio draws again; and
+  rio in the second window with a window of its own, which stays inside
+  the scaled screen when the second window is resized.
 
 Nothing here was seen on a real display: the tests run on the in-memory
 screen through the browser backend's input path, and the screen was
-checked by eye from dumped images. Checked that way by hand, not in a
+checked by eye from dumped images. That includes the selection, the
+button 2 menu, border drags and the resize of a rio in a rio window;
+the emu's own window (`emu -g`) being resized was not tried. Checked that way by hand, not in a
 test: `wctl` `new`, `hide`, `unhide`, `move` and its errors, `acme`
 showing a file in a window, and rio running in a rio window with a
 window of its own.
 
-### 12.6 Not done
+### 12.7 Not done
 
-- The items listed in Section 12.4.
+- The items listed in Section 12.5, and the host clipboard (12.4).
 - Typing into acme in a rio window is not in the acceptance test (only
   starting it and its pointer); keys and pointer events reach rio on
   separate queues, so a test cannot tell when acme has seen where the

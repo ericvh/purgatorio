@@ -1335,6 +1335,7 @@ dependencies = [
 name = "appl-cmd-rio"
 version = "0.1.0"
 dependencies = [
+ "appl-lib-plumbmsg",
  "purg-styx",
  "purgatorio",
 ]
