@@ -13,7 +13,7 @@ rm: n/dir: remove -- directory not empty
 n/adm
 n/ls
 sh: n/a-name-much-longer-than-27-bytes: name too long
-mkdir: n/adm: file already exists
+mkdir: n/adm already exists
 checking file system: main
 check free list
 lo = 6; hi = 399
@@ -44,5 +44,5 @@ errors
 disk/kfs: can't open nosuch: file does not exist
 disk/kfs: kfs magic in trouble
 disk/kfs: invalid block size 1000
-disk/kfs: usage: disk/kfs [-r [-b bufsize]] [-cADPRW] [-n name] kfsfile
+usage: disk/kfs [-r [-b bufsize]] [-cADPRW] [-n name] kfsfile
 disk/kfscmd: can't open /chan/kfs.no.such.kfs.cmd: file does not exist
