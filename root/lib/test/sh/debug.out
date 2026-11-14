@@ -34,5 +34,5 @@ module /bin/test/debug.wasm samples N
 debug::burn
 prof: PID "test/debug": broken: trap: unreachable
 broken 0
-prof: usage: prof [-n lines] command [arg ...]
+usage: prof [-n lines] command [arg ...]
 done

@@ -65,7 +65,7 @@ hello
 bad
 x
 1
-iostats: usage: iostats [-d] [-f debugfile] cmds [args ...]
+usage: iostats [-d] [-f debugfile] cmds [args ...]
 in a
 in a
 nsbuild: error building namespace: bind: bad option -z
@@ -83,5 +83,5 @@ newtree/sub/2
 fcp: src is a directory
 fcp: copy  not a directory
 fcp: src/1 and src/1 are the same file
-fcp: usage: 	fcp [-r] [-R nproc] [-W nproc] src target
+usage: 	fcp [-r] [-R nproc] [-W nproc] src target
 	fcp [-r] [-R nproc] [-W nproc] src ... directory

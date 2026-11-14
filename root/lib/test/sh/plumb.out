@@ -43,6 +43,6 @@ text
 
 28
 too long for a ten byte read
-plumb: usage: plumb [-s src] [-d dest] [-w wdir] [-t type] [-a name value] [-i] data ...
+usage: plumb [-s src] [-d dest] [-w wdir] [-t type] [-a name value] [-i] data ...
 plumber: can't read /tmp/plumbtest/nosuch: file does not exist
 plumber: bad:1: rule must have "plumb to" action

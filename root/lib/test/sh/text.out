@@ -17,9 +17,9 @@ x
 10
 2
 1
-sort: /tmp/sh-text/nonexistent: file does not exist
-fail:/tmp/sh-text/nonexistent: file does not exist
-sort: usage: sort [-nr] [file]
+sort: cannot open /tmp/sh-text/nonexistent: file does not exist
+fail:open file
+usage: sort [-nr] [file]
 apple
 banana
 fig
@@ -41,8 +41,8 @@ b
 d
 a
 	c
-comm: usage: comm [-123] file1 file2
-fail:usage: comm [-123] file1 file2
+usage: comm [-123] file1 file2
+fail:usage
 HELLO WORLD
 heo
 a bbb
@@ -68,5 +68,5 @@ y
 a9993e364706816aba3e25717850c26c9cd0d89d
 d73bae1a37aeaf9cd79b9366d3c56d73d2ad1d17	/tmp/sh-text/one
 sha1sum: cannot open /tmp/sh-text/nonexistent: file does not exist
-fail:errors
+fail:error
 87a16d5c      6 /tmp/sh-text/one

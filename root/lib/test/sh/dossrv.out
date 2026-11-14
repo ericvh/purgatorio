@@ -46,11 +46,11 @@ cp: m/c: file system full
 m/a
 m/b
 m/c
-mkdir: m/x: file system full
+mkdir: can't create m/x: file system full
 errors
 sh: m/bad:name: file name syntax
-mkdir: m/Docs: file already exists
+mkdir: m/Docs already exists
 rm: m/Docs: permission denied
 dossrv: cannot open /tmp/sh-dossrv/nosuch: file does not exist
 dossrv: /tmp/sh-dossrv/junk: not a FAT file system
-dossrv: usage: dossrv [-s] [-vFc] [-f devicefile] [-m mountpoint] [-S secs]
+usage: dossrv [-s] [-vFc] [-f devicefile] [-m mountpoint] [-S secs]

@@ -12,5 +12,5 @@ permission denied
 status
 nope
 runas: nonesuch: file does not exist
-runas: usage: runas user cmd [arg ...]
+usage: runas user cmd [arg ...]
 done

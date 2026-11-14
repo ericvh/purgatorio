@@ -64,7 +64,7 @@ gunzip: src/a: no .gz suffix
 tar: missing.tar: file does not exist
 fail:missing.tar: file does not exist
 tar: unexpected end of archive
-tar: usage: tar {ctx}[fkmpRTvz] [archive] [file ...]
-tar: usage: tar {ctx}[fkmpRTvz] [archive] [file ...]
+usage: tar {ctx}[fkmpRTvz] [archive] [file ...]
+usage: tar {ctx}[fkmpRTvz] [archive] [file ...]
 tar: missing: file does not exist
 fail:errors

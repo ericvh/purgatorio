@@ -19,4 +19,4 @@ disk/format: 9fat: a 9fat partition needs -r 2 or more for its partition table
 disk/format: unknown disk type 8inch
 FAT16   
 disk/format: can't open nosuch: file does not exist
-disk/format: usage: disk/format [-dfvx] [-b bootblock] [-c csize] [-l label] [-r nresrv] [-t type] disk [file ...]
+usage: disk/format [-dfvx] [-b bootblock] [-c csize] [-l label] [-r nresrv] [-t type] disk [file ...]
