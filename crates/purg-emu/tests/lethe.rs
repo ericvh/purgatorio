@@ -847,8 +847,8 @@ echo end",
     );
     let want = "lethe: authentication required
 lethe: authentication not required
-usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
-usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
+usage: lethe [-abc] [-A] [-C alg] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
+usage: lethe [-abc] [-A] [-C alg] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
 echo: write error: bad arg in system call
 end
 ";
@@ -1004,5 +1004,51 @@ echo done",
         let second = second.unwrap();
         assert!(second.count("none read /big") > 0, "{}", second.log());
         assert_eq!(second.count("ticket for"), 0, "{}", second.log());
+    }
+}
+
+/// `lethe -C x25519mlkem768` gets its tickets from the hybrid exchange,
+/// on the emu here and in the kernel's `#λ` alike; `lethed -C
+/// x25519mlkem768` refuses a client that does not ask for it, and the
+/// client that asks refuses a server that will not give it (`lethed -A`
+/// answers clear requests only).
+#[test]
+fn post_quantum_exchange() {
+    let s = Scratch::new("pq");
+    let lax = Lethed::start(&["-a", "127.0.0.1:0", "-k", &test_key()], &s.srv());
+    let strict = Lethed::start(
+        &[
+            "-a",
+            "127.0.0.1:0",
+            "-C",
+            "x25519mlkem768",
+            "-k",
+            &test_key(),
+        ],
+        &s.srv(),
+    );
+    let clear = Lethed::start(&["-a", "127.0.0.1:0", "-A"], &s.srv());
+    let g = &s.guest;
+    let script = format!(
+        "lethe -C x25519mlkem768 {lax} {g}/n && cat {g}/n/hello.txt && unmount {g}/n
+lethe -C x25519mlkem768 {strict} {g}/n && cat {g}/n/hello.txt && unmount {g}/n
+lethe {strict} {g}/n
+lethe -C x25519mlkem768 {clear} {g}/n
+lethe -A -C x25519mlkem768 {lax} {g}/n
+lethe -C x448 {lax} {g}/n",
+        lax = lax.addr(),
+        strict = strict.addr(),
+        clear = clear.addr(),
+    );
+    let want = format!(
+        "{HELLO}{HELLO}lethe: post-quantum key exchange required
+lethe: authentication not required
+usage: lethe [-abc] [-A] [-C alg] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
+lethe: unknown algorithm: x448
+"
+    );
+    for vm in VMS {
+        let (out, _) = emu(vm, &script);
+        assert_eq!(out, want, "{vm}");
     }
 }

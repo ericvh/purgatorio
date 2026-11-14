@@ -337,6 +337,52 @@ grant would gain a trailing `kind u8 signature[64] body s[2]` over
 bit 7 of `rights`, which is reserved for this, so an old client, whose
 strict decoder would refuse the longer grant, never receives it.
 
+### The post-quantum exchange
+
+`lethe -C x25519mlkem768` asks for a hybrid X25519 + ML-KEM-768 exchange,
+as `mount -C x25519mlkem768` does (`docs/auth.md`, "Hybrid key exchange
+(version 4)"), so a recorded `Tauth` and its traffic stay closed to
+someone who later breaks X25519, as long as ML-KEM-768 holds. Lethe has
+no server challenge, so the client makes the ephemeral ML-KEM key and the
+server encapsulates to it, in the same one round trip:
+
+```
+C -> S  Tauth2 = eph_c[32] ek[1184] rights u8 prefix s[2] uname s[2]
+                 kind u8 body s[2] signature[64]
+S -> C  Rauth2 = eph_s[32] ct[1088] nonce[24] sealed_s2c(grant)
+signed     = "lethe2 auth" 0x00 || eph_c || ek || rights || prefix s[2]
+                            || uname s[2] || kind || body s[2]
+(ct, k)    = ML-KEM-768.Encaps(ek)                 the server
+x          = X25519(eph_s, eph_c)                  all zeros is refused
+transcript = signed || eph_s || ct
+prk        = HKDF-Extract(salt = SHA-256(transcript), ikm = k || x)
+master     = HKDF-Expand(prk, "lethe2 master", 32)
+```
+
+`c2s`, `s2c`, the grant and the ticket are as for `Tauth`; the grant's
+associated data is the header, `eph_s` and `ct`. `Tauth2` and `Rauth2`
+are frame types 11 and 12, from the reserved range. The ticket's rights
+byte gets bit 6 (`rights::PQ`), which no client can ask for, so a server
+can tell a ticket from the hybrid exchange from one that is not.
+
+There is no "use it if the other end can" mode:
+
+- A client that asked takes only an `Rauth2`. An `Rauth` fails with `no
+  post-quantum key offered`, and so does `bad lethe message`, which is
+  what a server built before this answers a frame type it does not know.
+- `lethed -C x25519mlkem768` refuses a `Tauth`, and a request on a ticket
+  without `rights::PQ`, with `post-quantum key exchange required`.
+  Without it a server takes either exchange.
+- Turning a `Tauth2` into a `Tauth` (dropping `ek`) does not verify: the
+  signature is over the `lethe2 auth` message. A changed `ek` or `ct`
+  fails the signature or the grant's seal.
+
+The kernel's `#λ` does the client's side (`kx x25519mlkem768` in the
+`clone` write). The cost is one ML-KEM key generation and decapsulation
+for the client and one encapsulation for the server per ticket, about 0.1
+ms natively, and 2.3 KB more on the wire per ticket; requests do not
+change.
+
 ### The ticket
 
 The ticket is opaque to the client:
@@ -685,7 +731,7 @@ writes would take Venti's content addressing.
 ### `lethed`
 
 ```
-lethed [-v] [-A] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
+lethed [-v] [-A] [-C alg] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
        [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root
 ```
 
@@ -709,6 +755,9 @@ lethed [-v] [-A] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
   clear requests are answered as `none`.
 - `-t`, `-e`, `-w`: the ticket key file, the ticket lifetime and the
   request window, in seconds.
+- `-C x25519mlkem768`: issue tickets only from the hybrid exchange and
+  take requests only on such tickets ("The post-quantum exchange");
+  `-C x25519` names the default.
 - `-u`: the name host files are owned by in stat entries and permission
   checks; by default each file's host owner, as `#U` shows it.
 - `-v`: log each ticket issued and each request on standard error. Clear
@@ -727,7 +776,7 @@ changed by someone untrusted should not be served.
 ### The device and the command
 
 ```
-lethe [-A] [-k keyfile] [-t ms] [-u user] [-abc] addr mtpt [path]
+lethe [-A] [-C alg] [-k keyfile] [-t ms] [-u user] [-abc] addr mtpt [path]
 ```
 
 `lethe` resolves `addr` with `/net/cs`, finds a key as `mount` does (`-k`
@@ -742,6 +791,10 @@ cert <pgcert1 line>       (with an authinfo)
 path /lib                 (optional: the subtree, which is also the ticket's prefix)
 cache 1000                (optional: the attribute lifetime in ms, from -t)
 ```
+
+`lethe -C x25519mlkem768` adds `kx x25519mlkem768`: every ticket comes
+from the hybrid exchange ("The post-quantum exchange"). It does not go
+with `-A`.
 
 `lethe -A` asks for the clear mode. It reads no key and writes
 

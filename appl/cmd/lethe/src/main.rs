@@ -1,4 +1,4 @@
-//! lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]: attach the
+//! lethe [-abc] [-A] [-C alg] [-k keyfile] [-t ms] [-u user] addr mtpt [path]: attach the
 //! Lethe tree served at `addr` (`docs/lethe.md`) on `mtpt`, in the style
 //! of `mount`. `path` is the subtree to attach (default `/`); the ticket
 //! is limited to it. The key is the authinfo `keyfile` if given, else
@@ -7,6 +7,11 @@
 //! `-A` asks for no authentication and no encryption, as `mount -A`
 //! does: requests go in the clear to a server started with `-A`, which
 //! answers them as the user `none`. It takes no key and no user.
+//!
+//! `-C x25519mlkem768` uses and requires the hybrid X25519 + ML-KEM-768
+//! exchange for the ticket (`docs/lethe.md`, "The post-quantum
+//! exchange"), as `mount -C` does; a server that does not offer it fails
+//! with `no post-quantum key offered`. `-C x25519` names the default.
 //!
 //! `-t ms` sets how long the device trusts what it learnt about a file
 //! (its stat, and that cached data is current) before asking the server
@@ -22,7 +27,8 @@ use purgatorio::arg::Arg;
 use purgatorio::auth::{self, fmt};
 use purgatorio::{Context, Error, dial};
 
-const USAGE: &str = "usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]";
+const USAGE: &str =
+    "usage: lethe [-abc] [-A] [-C alg] [-k keyfile] [-t ms] [-u user] addr mtpt [path]";
 
 /// The seed and certificate to authenticate with.
 fn key(keyfile: Option<&str>, user: &str) -> Result<([u8; 32], Option<fmt::cert::Cert>), Error> {
@@ -78,6 +84,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let (mut order, mut create) = (mount::MREPL, 0);
     let (mut keyfile, mut user) = (None, None);
     let mut noauth = false;
+    let mut pq = false;
     let mut cache = None;
     while let Some(c) = arg.opt() {
         match c {
@@ -85,6 +92,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'b' => order = mount::MBEFORE,
             'c' => create = mount::MCREATE,
             'A' => noauth = true,
+            'C' => {
+                pq = match arg.earg()?.as_str() {
+                    "x25519" => false,
+                    "x25519mlkem768" => true,
+                    a => return Err(Error(format!("unknown algorithm: {a}"))),
+                }
+            }
             'k' => keyfile = Some(arg.earg()?),
             'u' => user = Some(arg.earg()?),
             't' => {
@@ -96,7 +110,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let rest = arg.argv();
     // -A is a mode of its own: a key or a user with it is a mistake.
-    if rest.len() < 2 || rest.len() > 3 || (noauth && (keyfile.is_some() || user.is_some())) {
+    if rest.len() < 2 || rest.len() > 3 || (noauth && (keyfile.is_some() || user.is_some() || pq)) {
         return Err(Error::from(USAGE));
     }
     let mut settings = if noauth {
@@ -119,6 +133,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     if let Some(ms) = cache {
         settings.push_str(&format!("cache {ms}\n"));
+    }
+    if pq {
+        settings.push_str("kx x25519mlkem768\n");
     }
     let mut clone = purgatorio::open("#λ/clone", mode::ORDWR)
         .map(std::fs::File::from)

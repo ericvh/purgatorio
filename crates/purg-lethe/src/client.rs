@@ -13,7 +13,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use purg_abi::auth::FAILED;
+use purg_abi::auth::{FAILED, NO_PQ};
 use purg_auth::cert::Cert;
 use purg_auth::session::Ephemeral;
 
@@ -47,11 +47,14 @@ pub struct Session {
     pub prefix: String,
 }
 
-/// An exchange waiting for its `Rauth`.
+/// An exchange waiting for its `Rauth` (or for the hybrid exchange, its
+/// `Rauth2`).
 pub struct AuthPending {
     id: u32,
     eph: Ephemeral,
     signed: Vec<u8>,
+    /// The ephemeral ML-KEM-768 key of a hybrid exchange.
+    kem: Option<alloc::boxed::Box<purg_auth::kem::Secret>>,
 }
 
 /// Starts the ticket exchange: the `Tauth` frame and what its reply needs.
@@ -82,7 +85,62 @@ pub fn auth(
         }),
     }
     .encode();
-    (frame, AuthPending { id, eph, signed })
+    (
+        frame,
+        AuthPending {
+            id,
+            eph,
+            signed,
+            kem: None,
+        },
+    )
+}
+
+/// [`auth`] for the hybrid X25519 + ML-KEM-768 exchange: a `Tauth2`
+/// that also carries an ephemeral ML-KEM-768 key made from `kem_seed`,
+/// whose reply must be an `Rauth2` (`docs/lethe.md`, "The post-quantum
+/// exchange").
+pub fn auth_pq(
+    creds: &Creds,
+    id: u32,
+    rights: u8,
+    prefix: &str,
+    random: [u8; 32],
+    kem_seed: &[u8; purg_auth::kem::SEED],
+) -> (Vec<u8>, AuthPending) {
+    let eph = Ephemeral::new(random);
+    let kem = purg_auth::kem::Secret::from_seed(kem_seed);
+    let ek = kem.public();
+    let public = purg_auth::public_key(&creds.seed);
+    let cert = creds.cert.as_ref().filter(|c| c.key == public);
+    let (kind, body) = purg_auth::proof::body(cert, &public);
+    let signed = msg::auth2_message(&eph.public, &ek, rights, prefix, &creds.user, kind, &body);
+    let signature = purg_auth::sign(&creds.seed, &signed);
+    let frame = Msg {
+        id,
+        frame: Frame::Tauth2 {
+            t: Tauth {
+                eph: eph.public,
+                rights,
+                prefix,
+                uname: &creds.user,
+                kind,
+                body: &body,
+                signature,
+            },
+            ek: &ek,
+        },
+    }
+    .encode();
+    (
+        frame,
+        AuthPending {
+            id,
+            eph,
+            signed,
+            kem: Some(alloc::boxed::Box::new(kem)),
+        },
+    )
 }
 
 impl AuthPending {
@@ -93,15 +151,40 @@ impl AuthPending {
         if m.id != self.id {
             return Err(String::from(MESSAGE));
         }
-        let (eph, nonce, sealed) = match m.frame {
-            Frame::Rauth { eph, nonce, sealed } => (eph, nonce, sealed),
-            Frame::Rerror { ename } => return Err(String::from(ename)),
+        let plain = match (m.frame, &self.kem) {
+            (Frame::Rauth { eph, nonce, sealed }, None) => {
+                let shared = self.eph.shared(&eph).ok_or(FAILED)?;
+                let master = crypto::master(&shared, &crypto::transcript(&self.signed, &eph));
+                let keys = Keys::from_master(&master);
+                let plain = crypto::open_rauth(&keys, frame, &eph, &nonce, sealed)?;
+                (keys, plain)
+            }
+            (
+                Frame::Rauth2 {
+                    eph,
+                    ct,
+                    nonce,
+                    sealed,
+                },
+                Some(kem),
+            ) => {
+                let shared = self.eph.shared(&eph).ok_or(FAILED)?;
+                let k = kem.decapsulate(ct);
+                let t = crypto::transcript2(&self.signed, &eph, ct);
+                let keys = Keys::from_master(&crypto::master2(&k, &shared, &t));
+                let plain = crypto::open_rauth2(&keys, frame, &eph, ct, &nonce, sealed)?;
+                (keys, plain)
+            }
+            // Asked for the hybrid exchange and answered without it: a
+            // server that does not know Tauth2 calls it a bad message.
+            (Frame::Rauth { .. }, Some(_)) => return Err(String::from(NO_PQ)),
+            (Frame::Rerror { ename }, Some(_)) if ename == MESSAGE => {
+                return Err(String::from(NO_PQ));
+            }
+            (Frame::Rerror { ename }, _) => return Err(String::from(ename)),
             _ => return Err(String::from(MESSAGE)),
         };
-        let shared = self.eph.shared(&eph).ok_or(FAILED)?;
-        let master = crypto::master(&shared, &crypto::transcript(&self.signed, &eph));
-        let keys = Keys::from_master(&master);
-        let plain = crypto::open_rauth(&keys, frame, &eph, &nonce, sealed)?;
+        let (keys, plain) = plain;
         let g = Grant::decode(&plain)?;
         if !path::valid(g.prefix) {
             return Err(String::from(MESSAGE));
@@ -267,6 +350,8 @@ pub struct Client {
     pub session: Option<Session>,
     /// Tickets obtained, renewals included.
     pub tickets: u32,
+    /// Use and require the hybrid exchange ([`auth_pq`]).
+    pub pq: bool,
     next: u32,
 }
 
@@ -278,6 +363,7 @@ impl Client {
             prefix: String::from(prefix),
             session: None,
             tickets: 0,
+            pq: false,
             next: 1,
         }
     }
@@ -297,7 +383,13 @@ impl Client {
         let mut r = [0u8; 32];
         random(&mut r);
         let id = self.id();
-        let (frame, pending) = auth(&self.creds, id, self.rights, &self.prefix, r);
+        let (frame, pending) = if self.pq {
+            let mut seed = [0u8; purg_auth::kem::SEED];
+            random(&mut seed);
+            auth_pq(&self.creds, id, self.rights, &self.prefix, r, &seed)
+        } else {
+            auth(&self.creds, id, self.rights, &self.prefix, r)
+        };
         let reply = t.exchange(&frame).map_err(CallError::Transport)?;
         self.session = Some(pending.finish(&reply, local).map_err(CallError::Remote)?);
         self.tickets += 1;

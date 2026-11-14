@@ -10,7 +10,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use purg_abi::auth::{FAILED, KIND_CERT, KIND_KEY, NO_TRUST, NOT_REQUIRED, REQUIRED};
+use purg_abi::auth::{FAILED, KIND_CERT, KIND_KEY, NO_TRUST, NOT_REQUIRED, PQ_REQUIRED, REQUIRED};
 use purg_abi::error::{EISDIR, ENOTDIR, ENOTIMPL, EPERM, ESHORTSTAT};
 use purg_auth::proof::{Policy, check_signed};
 use purg_auth::session::Ephemeral;
@@ -21,7 +21,7 @@ use crate::crypto::{self, Keys};
 use crate::error::{MESSAGE, REQUEST_EXPIRED, TICKET_EXPIRED};
 use crate::msg::{self, Frame, Grant, Msg, Op, Reply, Request, Tauth, Undecoded};
 use crate::ticket::{self, Ticket, TicketKey};
-use crate::{MAX_COUNT, NONCE, NONE, path, rights};
+use crate::{KEM_PUBLIC, MAX_COUNT, NONCE, NONE, path, rights};
 
 /// The tree a server serves. Paths are valid Lethe paths. Errors are
 /// Inferno strings. Permission checks are the server's, from the modes
@@ -58,6 +58,10 @@ pub struct Config {
     pub window: u64,
     /// The rights this server grants.
     pub allow: u8,
+    /// Require the hybrid X25519 + ML-KEM-768 exchange (`lethed -C
+    /// x25519mlkem768`): a `Tauth`, and a request on a ticket from one,
+    /// fail with `post-quantum key exchange required`.
+    pub pq: bool,
 }
 
 impl Default for Config {
@@ -66,6 +70,7 @@ impl Default for Config {
             lifetime: 3600,
             window: 60,
             allow: rights::READ,
+            pq: false,
         }
     }
 }
@@ -207,7 +212,12 @@ impl Server {
             Err(e) => return refuse(e),
         };
         match m.frame {
-            Frame::Tauth(t) => match self.auth(env, id, &t) {
+            Frame::Tauth(_) if self.config.pq => refuse(PQ_REQUIRED),
+            Frame::Tauth(t) => match self.auth(env, id, &t, None) {
+                Ok(r) => r,
+                Err(e) => refuse(e),
+            },
+            Frame::Tauth2 { t, ek } => match self.auth(env, id, &t, Some(ek)) {
                 Ok(r) => r,
                 Err(e) => refuse(e),
             },
@@ -279,6 +289,7 @@ impl Server {
         env: &mut Env<'_>,
         id: u32,
         t: &Tauth<'_>,
+        ek: Option<&[u8; KEM_PUBLIC]>,
     ) -> Result<(Vec<u8>, Event), &'static str> {
         if !path::valid(t.prefix) || !purg_auth::cert::valid_name(t.uname) {
             return Err(FAILED);
@@ -299,7 +310,10 @@ impl Server {
         if !policy.requires_auth() {
             return Err(if self.clear { NOT_REQUIRED } else { NO_TRUST });
         }
-        let signed = t.message();
+        let signed = match ek {
+            None => t.message(),
+            Some(ek) => msg::auth2_message(&t.eph, ek, t.rights, t.prefix, t.uname, t.kind, t.body),
+        };
         // Lethe's Tauth carries an Ed25519 signature, so only Ed25519 keys
         // and `pgcert1` certificates (`docs/lethe.md`, Section 6).
         if !matches!(t.kind, KIND_KEY | KIND_CERT) {
@@ -324,13 +338,29 @@ impl Server {
         (env.random)(&mut random);
         let eph = Ephemeral::new(random);
         let shared = eph.shared(&t.eph).ok_or(FAILED)?;
-        let master = crypto::master(&shared, &crypto::transcript(&signed, &eph.public));
+        // The hybrid exchange: encapsulate to the client's ML-KEM key, and
+        // mark the ticket as made by it.
+        let kem = match ek {
+            None => None,
+            Some(ek) => {
+                let mut m = [0u8; 32];
+                (env.random)(&mut m);
+                Some(purg_auth::kem::encapsulate(ek, &m).ok_or(FAILED)?)
+            }
+        };
+        let master = match &kem {
+            None => crypto::master(&shared, &crypto::transcript(&signed, &eph.public)),
+            Some((ct, k)) => {
+                crypto::master2(k, &shared, &crypto::transcript2(&signed, &eph.public, ct))
+            }
+        };
+        let pq = if kem.is_some() { rights::PQ } else { 0 };
         let expires = env.now.saturating_add(self.config.lifetime);
         let tk = Ticket {
             master,
             issued: env.now,
             expires,
-            rights: granted,
+            rights: granted | pq,
             uname: String::from(t.uname),
             prefix: String::from(t.prefix),
         };
@@ -347,7 +377,10 @@ impl Server {
         .encode();
         (env.random)(&mut n);
         let keys = Keys::from_master(&master);
-        let reply = crypto::rauth(&keys, id, &eph.public, &n, &grant);
+        let reply = match &kem {
+            None => crypto::rauth(&keys, id, &eph.public, &n, &grant),
+            Some((ct, _)) => crypto::rauth2(&keys, id, &eph.public, ct, &n, &grant),
+        };
         Ok((
             reply,
             Event::Issued {
@@ -372,6 +405,9 @@ impl Server {
         let tk = ticket::open(&self.keys, ticket)?;
         if env.now >= tk.expires {
             return Err(TICKET_EXPIRED);
+        }
+        if self.config.pq && tk.rights & rights::PQ == 0 {
+            return Err(PQ_REQUIRED);
         }
         let keys = Keys::from_master(&tk.master);
         let plain = crypto::open_treq(&keys, frame, ticket, nonce, sealed)?;

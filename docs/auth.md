@@ -801,7 +801,9 @@ offer, so it keeps talking version 3 to a 0.10 server.
 `rcmd -e x25519mlkem768`, `cpu -C x25519mlkem768` and `rstyxd -C
 x25519mlkem768` use the same exchange on an rstyx connection, with the
 same rules (`docs/rcmd.md`, "Post-quantum key exchange"). Lethe has its
-own exchange (`docs/lethe.md`).
+own one-round-trip exchange, with the client's ephemeral ML-KEM key:
+`lethe -C x25519mlkem768` and `lethed -C x25519mlkem768`
+(`docs/lethe.md`, "The post-quantum exchange").
 
 ### Threat model
 
@@ -1687,8 +1689,6 @@ Still open:
    can be hybrid Ed25519 + ML-DSA-65 ("Post-quantum signatures"); module
    signatures and Lethe's `Tauth` are still Ed25519 only. `#¤` holds only
    an Ed25519 seed.
-6. **Post-quantum Lethe.** Its exchange is X25519 only; `rcmd` has the
-   hybrid exchange (`docs/rcmd.md`).
-7. **A post-quantum default.** Should a later release make
+6. **A post-quantum default.** Should a later release make
    `x25519mlkem768` the default for `mount` and `export`, once both ends
    in the field speak version 4?

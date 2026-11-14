@@ -298,12 +298,15 @@ struct Settings {
     prefix: String,
     /// How long attributes and data are trusted, in nanoseconds.
     life: u64,
+    /// `kx x25519mlkem768`: the hybrid post-quantum exchange, required.
+    pq: bool,
 }
 
 fn parse(text: &str) -> Result<Settings> {
     let bad = || Error::new(EBADARG);
     let (mut dial, mut user, mut seed, mut cert, mut prefix) = (None, None, None, None, None);
     let mut noauth = false;
+    let mut pq = false;
     let mut life = DEFAULT_CACHE_MS * 1_000_000;
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if line == "noauth" {
@@ -321,6 +324,13 @@ fn parse(text: &str) -> Result<Settings> {
                 cert = Some(purg_auth::cert::Cert::parse(v.as_bytes()).map_err(|_| bad())?);
             }
             "path" => prefix = Some(String::from(v)),
+            "kx" => {
+                pq = match v {
+                    "x25519" => false,
+                    "x25519mlkem768" => true,
+                    _ => return Err(bad()),
+                }
+            }
             "cache" => {
                 let ms: u64 = v.parse().map_err(|_| bad())?;
                 life = ms.checked_mul(1_000_000).ok_or_else(bad)?;
@@ -340,7 +350,7 @@ fn parse(text: &str) -> Result<Settings> {
     // The mode is one or the other: `noauth` with a user or a key is a
     // mistake, not a request to try both.
     let creds = if noauth {
-        if user.is_some() || seed.is_some() || cert.is_some() {
+        if user.is_some() || seed.is_some() || cert.is_some() || pq {
             return Err(bad());
         }
         None
@@ -357,6 +367,7 @@ fn parse(text: &str) -> Result<Settings> {
         creds,
         prefix,
         life,
+        pq,
     })
 }
 
@@ -476,13 +487,26 @@ impl Remote {
         }
         let mut random = [0u8; 32];
         self.platform.entropy(&mut random);
-        let (frame, pending) = client::auth(
-            creds,
-            self.tag(),
-            rights::READ,
-            &self.settings.prefix,
-            random,
-        );
+        let (frame, pending) = if self.settings.pq {
+            let mut seed = [0u8; purg_auth::kem::SEED];
+            self.platform.entropy(&mut seed);
+            client::auth_pq(
+                creds,
+                self.tag(),
+                rights::READ,
+                &self.settings.prefix,
+                random,
+                &seed,
+            )
+        } else {
+            client::auth(
+                creds,
+                self.tag(),
+                rights::READ,
+                &self.settings.prefix,
+                random,
+            )
+        };
         let reply =
             exchange(c, &frame).map_err(|e| alloc::boxed::Box::new(Attempt::Transport(e)))?;
         let s = pending

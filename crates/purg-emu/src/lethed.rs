@@ -2,9 +2,14 @@
 //! (`docs/lethe.md`).
 //!
 //! ```text
-//! lethed [-v] [-A] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
+//! lethed [-v] [-A] [-C alg] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window]
 //!        [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root
 //! ```
+//!
+//! `-C x25519mlkem768` issues tickets only from the hybrid X25519 +
+//! ML-KEM-768 exchange (`Tauth2`), and refuses a `Tauth` and a request on
+//! a ticket from one with `post-quantum key exchange required`. Without it
+//! a client may still ask for the hybrid exchange.
 //!
 //! `-A` also answers requests with no authentication and no encryption,
 //! as the user `none`. Without it, and without a key to trust, `lethed`
@@ -76,6 +81,13 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         match a.as_str() {
             "-v" => o.verbose = true,
             "-A" => o.clear = true,
+            "-C" => {
+                o.config.pq = match val()?.as_str() {
+                    "x25519" => false,
+                    "x25519mlkem768" => true,
+                    a => return Err(format!("lethed: unknown algorithm: {a}")),
+                }
+            }
             "-a" => o.addr = val()?,
             "-u" => o.owner = Some(val()?),
             "-t" => o.ticket_key = Some(PathBuf::from(val()?)),
