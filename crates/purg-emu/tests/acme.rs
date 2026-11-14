@@ -889,3 +889,61 @@ fn mouse_wasmtime() {
 fn mouse_wasmi() {
     mouse("wasmi");
 }
+
+/// What `test/acmefs` reports of commands run from `Edit` while acme
+/// goes on (see `pipe` in `appl/test/acmefs`).
+const PIPE_WANT: &str = r#"Zerox event: ["EI0 1 0 1 x"]
+"|{tr a-z A-Z; echo; sed -n 2p /mnt/acme/$winid/body}": "one TWO\nthree four\n\nthree four\nfive\n" 4 19
+Undo: "one two\nthree four\nfive\n" 4 7
+index while it runs: 1
+body read while it runs: "one two\nthree four\nfive\n"
+body write while it runs: Err("locked by Edit")
+another window: "free\n"
+a second Edit: "free\n" "Edit: an Edit is running\n"
+New while it runs: made
+after Kill: " two\nthree four\nfive\n" 0 0
+end
+"#;
+
+/// `Edit` commands that run commands: acme serves acme(4), takes the
+/// mouse and holds the body until the command ends. One command reads
+/// the window's body through `/mnt/acme`; another sleeps until `Kill`,
+/// and while it runs the test clicks `New` in the right column's tag.
+fn edit_pipes(vm: &str) {
+    let root = Root::new(vm);
+    let tmp = root.0.join("tmp/acme");
+    let (w, out, mut p) = start(&root, vm, "");
+    const FH: i32 = 19;
+    let row_end = (SIZE.0 - 6, FH / 2);
+    // `New` is the first word of the right column's tag.
+    let col_new = (SIZE.0 / 2 + 16 + 10, FH + 1 + FH / 2);
+    std::fs::write(tmp.join("mode"), "pipe").unwrap();
+    p.hover(row_end.0, row_end.1);
+    p.typed("test/acmefs", "typing test/acmefs");
+    p.click(row_end.0, row_end.1, 2, "test/acmefs");
+    let start = Instant::now();
+    while !tmp.join("ready").exists() {
+        if let Ok(o) = std::fs::read_to_string(tmp.join("out")) {
+            panic!("{vm}: test/acmefs ended early:\n{o}");
+        }
+        assert!(
+            start.elapsed() < WAIT,
+            "{vm}: test/acmefs did not get ready"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    p.click(col_new.0, col_new.1, 2, "New while the command runs");
+    let got = results(&tmp, "pipe", &out);
+    assert_eq!(got, PIPE_WANT, "{vm}: commands run from Edit");
+    exit(w, out, p, "test/acmefs".len(), false, vm);
+}
+
+#[test]
+fn edit_pipes_wasmtime() {
+    edit_pipes("wasmtime");
+}
+
+#[test]
+fn edit_pipes_wasmi() {
+    edit_pipes("wasmi");
+}

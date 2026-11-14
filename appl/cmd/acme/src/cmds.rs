@@ -303,6 +303,7 @@ impl Acme {
             ci,
             touched: Vec::new(),
             marked: Vec::new(),
+            win: Acme::win_of(t),
         };
         let _ = edit::run(&mut h, cur, s);
         let touched = h.touched;
@@ -317,11 +318,69 @@ impl Acme {
 
     /// Runs command line `cmd` with sh in `dir`, with `input` on its
     /// standard input, and returns its output when it has finished.
-    pub(crate) fn run_sync(&mut self, dir: &str, cmd: &str, input: Option<&str>) -> String {
-        match run_sync(dir, cmd, input) {
-            Ok(s) => s,
-            Err(e) => format!("{cmd}: {e}\n"),
+    /// Meanwhile acme goes on: it serves `/mnt/acme`, draws, and takes
+    /// the mouse and keyboard, so the command may use acme's files and
+    /// `Kill` can stop it. The texts with keys in `locked` are the ones
+    /// the `Edit` holds positions in: until the command ends nothing
+    /// but the `Edit` changes them (see [`Acme::locked`]).
+    pub(crate) fn run_edit(
+        &mut self,
+        dir: &str,
+        cmd: &str,
+        input: Option<&str>,
+        win: Option<u64>,
+        locked: Vec<usize>,
+    ) -> String {
+        let (pid, mut r) = match spawn_edit(dir, cmd, input, win) {
+            Ok(x) => x,
+            Err(e) => return format!("{cmd}: {e}\n"),
+        };
+        self.edit_run = Some(EditRun {
+            pid,
+            win,
+            name: cmd.split_whitespace().next().unwrap_or("").to_string(),
+            locked,
+        });
+        let mut out = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            match self.step(Some(r.as_raw_fd())) {
+                Ok(true) => match r.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => out.extend_from_slice(&buf[..n]),
+                },
+                Ok(false) => {}
+                Err(_) => {
+                    // The screen or the keyboard went: just wait for the
+                    // command; the main loop sees the error again.
+                    let _ = r.read_to_end(&mut out);
+                    break;
+                }
+            }
         }
+        self.edit_run = None;
+        for (dir, s) in std::mem::take(&mut self.held) {
+            self.append(&dir, &s);
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// Whether `t` is a text an `Edit` holds positions in while its
+    /// command runs. Such a text changes only through the `Edit`:
+    /// typing, cut and paste, `Undo`, `Redo` and `Get` leave it alone,
+    /// acme(4) writes that would change it fail, and output for it waits
+    /// until the command ends.
+    pub(crate) fn locked(&self, t: Tid) -> bool {
+        let (Some(r), Tid::Body(id)) = (&self.edit_run, t) else {
+            return false;
+        };
+        self.win(id)
+            .is_some_and(|w| r.locked.contains(&w.body.b.key()))
+    }
+
+    /// Whether an `Edit` is waiting for a command.
+    pub(crate) fn editing(&self) -> bool {
+        self.edit_run.is_some()
     }
 
     // ---- Window commands.
@@ -356,16 +415,27 @@ impl Acme {
     pub(crate) fn kill(&mut self, t: Tid, arg: &str) {
         let win = Acme::win_of(t);
         let names: Vec<&str> = arg.split_whitespace().collect();
-        for c in &self.children {
+        // The commands started from tags, and the one an `Edit` waits
+        // for.
+        let running = self
+            .children
+            .iter()
+            .map(|c| (c.pid, c.win, c.name.as_str()))
+            .chain(
+                self.edit_run
+                    .iter()
+                    .map(|r| (r.pid, r.win, r.name.as_str())),
+            );
+        for (pid, cwin, name) in running {
             let hit = if names.is_empty() {
-                win.is_none() || c.win == win
+                win.is_none() || cwin == win
             } else {
-                names.contains(&c.name.as_str())
+                names.contains(&name)
             };
             if hit
                 && let Ok(mut f) = OpenOptions::new()
                     .write(true)
-                    .open(format!("/prog/{}/ctl", c.pid))
+                    .open(format!("/prog/{pid}/ctl"))
             {
                 let _ = f.write_all(b"killgrp");
             }
@@ -501,13 +571,32 @@ impl Acme {
     }
 }
 
-/// Runs `cmd` and collects its output; see [`Acme::run_sync`].
-fn run_sync(dir: &str, cmd: &str, input: Option<&str>) -> Result<String, Error> {
+/// The command an `Edit` waits for while acme goes on.
+pub struct EditRun {
+    pid: u32,
+    /// The window the `Edit` ran from, for `Kill`.
+    win: Option<u64>,
+    /// The command's name, for `Kill name`.
+    name: String,
+    /// The keys of the texts it holds.
+    locked: Vec<usize>,
+}
+
+/// Starts `cmd` for [`Acme::run_edit`]: its pid and the pipe its
+/// standard output and error come on.
+fn spawn_edit(
+    dir: &str,
+    cmd: &str,
+    input: Option<&str>,
+    win: Option<u64>,
+) -> Result<(u32, File), Error> {
     let [r, w] = purgatorio::pipe()?;
+    // As for other commands, $winid names the window.
+    let winid = win.map_or_else(String::new, |id| format!("winid={id}; "));
     let argv = vec![
         String::from("sh"),
         String::from("-c"),
-        format!("cd {}; {}", crate::quote(dir), cmd),
+        format!("{winid}cd {}; {}", crate::quote(dir), cmd),
     ];
     let mut feeder = None;
     let stdin = match input {
@@ -540,10 +629,7 @@ fn run_sync(dir: &str, cmd: &str, input: Option<&str>) -> Result<String, Error> 
     if let (Some(mut f), Some(s)) = (feeder, input) {
         let _ = f.write_all(s.as_bytes());
     }
-    spawned?;
-    let mut out = Vec::new();
-    File::from(r).read_to_end(&mut out)?;
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    Ok((spawned?, File::from(r)))
 }
 
 /// acme as `Edit` sees it.
@@ -557,6 +643,8 @@ struct EditHost<'a> {
     touched: Vec<u64>,
     /// Windows whose undo log has a new sequence for this `Edit`.
     marked: Vec<u64>,
+    /// The window the `Edit` ran from, for `Kill`.
+    win: Option<u64>,
 }
 
 impl EditHost<'_> {
@@ -691,8 +779,14 @@ impl edit::Host for EditHost<'_> {
         std::fs::write(path, s.as_bytes()).map_err(|_| format!("{path}: {}", purgatorio::errstr()))
     }
 
-    fn run(&mut self, dir: &str, cmd: &str, input: Option<&str>) -> String {
-        self.a.run_sync(dir, cmd, input)
+    fn run(&mut self, dir: &str, cmd: &str, input: Option<&str>, busy: &[u64]) -> String {
+        let locked = busy
+            .iter()
+            .filter_map(|id| self.a.win(*id))
+            .map(|w| w.body.b.key())
+            .collect();
+        let win = self.win;
+        self.a.run_edit(dir, cmd, input, win, locked)
     }
 
     fn print(&mut self, s: &str) {

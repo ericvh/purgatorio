@@ -1429,7 +1429,8 @@ window is clunked, the window acts on its own mouse actions again.
 Changes are found by the buffers: while `event` is open, `text.rs`
 records each insert and delete (undo and redo included), and acme turns
 them into events after each key, mouse action or file request, with
-that origin. acme's own rewrites of a tag (the `Undo` and `Put` words)
+that origin. The views of a `Zerox`ed text share its changes: each view
+with `event` open gets them, whichever view made them. acme's own rewrites of a tag (the `Undo` and `Put` words)
 are not reported.
 
 **win.** `win` opens `new/ctl`, names the window `dir/-sysname`, and
@@ -1533,12 +1534,38 @@ in `+Errors`, and the commands after one are not run.
 `<cmd`, `|cmd` and `>cmd` typed in a tag and executed with button 2
 run as `Edit` commands on the selection: `|` replaces it with the
 command's output, `<` with the output of the command alone, and `>`
-sends it to the command and prints the output in `+Errors`. Such a
-command runs to the end before acme goes on, as in acme. Its input
+sends it to the command and prints the output in `+Errors`. Its input
 goes through `acme --feed`, a copy of acme that reads all of it before
 writing any, so acme never waits on a command that waits for acme to
-read its output. A command run from `Edit` must not use `/mnt/acme`:
-acme answers no file requests until it ends.
+read its output. The command knows its window as `$winid`.
+
+**While the command runs.** acme is one prog, and `Edit` waits for the
+command's output in the middle of a command line, so the wait is a
+loop of its own: `run_edit` (`cmds.rs`) runs the main loop's `step`
+with the command's pipe as one more fd until the pipe closes. So acme
+goes on serving `/mnt/acme`, drawing, and taking the mouse, the
+keyboard, plumbed files and other commands' output, and a command may
+read and write acme's files (a script that reads `/mnt/acme/$winid/body`
+works). The `Edit` resumes with the output once the command has ended.
+A write of `event` that executes something is answered when that is
+done, as before; acme now reads the messages that came with it first
+and does the command with its file system in place, so the command can
+use it.
+
+The `Edit` holds positions in the texts it has changes or marks pending
+in, and in the current one. Until the command ends nothing but the
+`Edit` changes those texts (all views of each): typing in them, cut and
+paste, `Undo`, `Redo` and `Get` do nothing; acme(4) writes to their
+`body`, `data` and `xdata` and the `get` and `mark` messages fail with
+`locked by Edit`; output for a held `+Errors` window waits until the
+command ends. Their selection may still move and they may be deleted
+(the changes then go nowhere). Another `Edit`, `<`, `|`, `>` or `Load`
+prints `Edit: an Edit is running` (or `Load: ...`). Everything else
+works, `Kill` included: the command an `Edit` waits for counts as one
+started from the `Edit`'s window, and named by its first word. A killed
+command's output so far is what the `Edit` gets. So each `Edit` stays
+one change to undo, and its changes are still checked against the text
+they were made on.
 
 `appl/lib/regexp` now decodes the text only as far as a search goes,
 so the many searches of an `x` loop over a long body cost no more than
@@ -1597,7 +1624,10 @@ can be opened, and keep acme's own copy; `Paste` reads `/dev/snarf`
 when it can, else the copy. So acme shares the buffer with rio's
 windows once `#^` is bound there, and works alone without it.
 
-**Differences from Inferno's acme.** The dump file's format is acme's
+**Differences from Inferno's acme.** While an `Edit` waits for a
+command, Inferno's acme serves its files but leaves the mouse and
+keyboard waiting; this acme takes them too, and holds the texts the
+`Edit` works on instead, as above. The dump file's format is acme's
 own. `q` in `Edit` does nothing. `Edit` errors are prefixed `Edit:`.
 `X` and `Y` see one file per text, so two views of one text are one
 file. A window's box clicked with button 1 doubles it rather than
@@ -1615,10 +1645,19 @@ null matches, `g` and `v`, groups, changes out of sequence, the errors,
 and the pipes against a stand-in host), and tests for printing (`p`,
 `=`, `=#`, `>`, `!`), files (`X` and `Y` over three files, `"re"`
 addresses, `b`, `B`, `D`, `w`, `e`, `r`, `f`), undo of a multi-command
-`Edit` and the mark. `text.rs` checks shared views, `dump.rs` a round
+`Edit`, the mark, and the files a command run holds. `text.rs` checks shared views, `dump.rs` a round
 trip and bad files, and `appl/lib/regexp` keeps its tests.
 `crates/purg-emu/tests/acme.rs`, on both VMs:
 
+- `edit_pipes` runs `test/acmefs` in `pipe` mode: `|` with a command
+  that reads the window's `body` through `$winid` and `/mnt/acme` (and
+  `Undo` of it), then `|{sleep 1000; tr a-z A-Z}` from another prog.
+  While it runs the guest reads `index` and the body, checks that a
+  write to the body fails and another window takes one, that a second
+  `Edit` is refused, and waits for the test to click `New` in a column's
+  tag; then `Kill` ends the command. It also checks that an insert
+  through one view of a `Zerox`ed text reaches the other view's
+  `event`. Before this change the first command hung acme.
 - `edit_commands` runs `test/acmefs` in `edit` mode, which makes
   windows through acme(4) and executes commands by writing them to a
   tag and an `x` event for them: sixteen `Edit` and selection commands
