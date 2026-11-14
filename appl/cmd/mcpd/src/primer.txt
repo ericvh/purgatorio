@@ -22,7 +22,7 @@ A variable holds a list of words. `$#x` is the length, `$"x` joins with spaces, 
 The exit status is a string in `$status`: empty for success, otherwise a message. `&&`, `||` and `!` work on it.
 ; cat /nonexistent; echo status is $status
   cat: /nonexistent: file does not exist
-  status is fail:errors
+  status is errors
 ; test -d /tmp && echo yes; test -f /tmp || echo no
   yes
   no
