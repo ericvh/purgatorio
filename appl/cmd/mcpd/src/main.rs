@@ -232,6 +232,18 @@ impl Front {
             acc: Vec::new(),
             inflight: 0,
         };
+        if let Err(e) = Front::ready(&mut w) {
+            // The file servers a half-built session started would
+            // otherwise outlive it, and keep the emu running.
+            drop(w);
+            kill_domain(pid);
+            return Err(e);
+        }
+        Ok(w)
+    }
+
+    /// Reads the session prog's first line: `ready`, or why it failed.
+    fn ready(w: &mut Worker) -> Result<(), String> {
         let mut buf = [0u8; 4096];
         while !w.acc.contains(&b'\n') {
             match w.from.read(&mut buf) {
@@ -242,7 +254,7 @@ impl Front {
         let i = w.acc.iter().position(|&b| b == b'\n').unwrap_or(0);
         let line: Vec<u8> = w.acc.drain(..=i).collect();
         match json::parse(&String::from_utf8_lossy(&line)) {
-            Ok(v) if v.get("ready").is_some() => Ok(w),
+            Ok(v) if v.get("ready").is_some() => Ok(()),
             Ok(v) => Err(format!(
                 "cannot build the session namespace: {}",
                 v.get("fatal")
