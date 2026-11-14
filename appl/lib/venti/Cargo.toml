@@ -1,0 +1,19 @@
+[package]
+name = "appl-lib-venti"
+description = "venti: the Venti protocol client (venti(2)) and the vac archive format, for vacput, vacget and vacfs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# A plain library linked into the commands that use it, not a reactor
+# module: xtask installs only the cdylib crates in appl/lib.
+[lib]
+name = "venti"
+path = "src/lib.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
