@@ -178,10 +178,3 @@ pub fn fault_registers(uc: *mut libc::c_void) -> super::unix::FaultRegisters {
     let _ = uc;
     regs
 }
-
-/// Whether a signal's `si_code` says a process sent it (`kill`,
-/// `sigqueue`, `tgkill`) rather than the CPU raising it: Linux's codes
-/// for those are 0 and below.
-pub fn sent_by_kill(code: libc::c_int) -> bool {
-    code <= 0
-}
