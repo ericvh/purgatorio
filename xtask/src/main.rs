@@ -475,8 +475,9 @@ impl Drop for HostLethed {
 
 const PROBE_TARGET: &str = "aarch64-unknown-none";
 /// A limit against hangs, not a performance target: a run takes about 80 s
-/// under TCG on a busy machine, and it grows with the sh corpus.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(300);
+/// under TCG on an idle machine, it grows with the sh corpus, and on a
+/// busy one it has taken 300 s. As long as the kernel's limit.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(600);
 /// The port the probe and the kernel export `/` on; QEMU forwards a free
 /// host port to it.
 const GUEST_EXPORT_PORT: u16 = 6666;
