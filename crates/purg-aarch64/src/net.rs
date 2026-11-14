@@ -57,6 +57,8 @@ use purg_platform::Result;
 use purg_platform::net::{self, Conn, Listener, Net, UdpDemux};
 use purg_platform::sync::{Mutex, MutexGuard, Rendez};
 use smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet};
+
+use crate::ports::FIRST_EPHEMERAL;
 use smoltcp::socket::tcp::{self, State};
 use smoltcp::socket::{raw, udp};
 use smoltcp::time::Instant;
@@ -77,7 +79,6 @@ pub const MAX_WAIT_MS: u64 = 10;
 /// TCP sockets made up front; more are added as needed.
 const SOCKETS: usize = 6;
 const SOCKET_BUF: usize = 8192;
-const FIRST_EPHEMERAL: u16 = 49152;
 /// Datagrams each UDP socket buffers each way.
 const UDP_PACKETS: usize = 16;
 /// The largest UDP payload: smoltcp's 8 KiB IPv4 fragmentation and
@@ -464,10 +465,23 @@ impl Stack {
             .map_or(MAX_WAIT_MS, |d| d.total_millis().clamp(1, MAX_WAIT_MS))
     }
 
+    /// A local port for a dial or an announce of port 0: the next
+    /// ephemeral one that no socket is bound to. A TCP socket in
+    /// TIME-WAIT still holds its port, so a new conversation cannot be
+    /// taken for the old one.
     fn ephemeral(&mut self) -> u16 {
-        let port = self.next_port;
-        self.next_port = self.next_port.checked_add(1).unwrap_or(FIRST_EPHEMERAL);
-        port
+        let sockets = &self.sockets;
+        crate::ports::next_free(&mut self.next_port, |port| {
+            sockets.iter().any(|(_, s)| match s {
+                smoltcp::socket::Socket::Tcp(t) => {
+                    t.state() != State::Closed
+                        && (t.listen_endpoint().port == port
+                            || t.local_endpoint().is_some_and(|e| e.port == port))
+                }
+                smoltcp::socket::Socket::Udp(u) => u.is_open() && u.endpoint().port == port,
+                _ => false,
+            })
+        })
     }
 
     fn alloc(&mut self) -> SocketHandle {

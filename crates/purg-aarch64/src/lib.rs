@@ -52,6 +52,7 @@ pub mod pl011;
 pub mod pl031;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod platform;
+pub mod ports;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod sched;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
