@@ -12,7 +12,7 @@ modules are WebAssembly, so the tools are new, but the roles and the
 | `wasmdep file ...` | `disdep` | prints what a module needs: its ABI version and its imports |
 | `trace command [arg ...]` | | runs a command with call stacks kept |
 | `stack [-v] pid ...` | `stack`, `stackv` | prints a prog's call stack |
-| `broke [user]` | `broke` | kills the broken progs |
+| `broke [user]` | `broke` | prints commands that kill the broken progs |
 | `prof [-n lines] command [arg ...]` | `prof` | runs a command and prints its hot functions |
 | `cprof [-u] [-n lines] command [arg ...]` | `cprof` | runs a command and prints how often each function was called |
 | `mprof [-n lines] command [arg ...]` | `mprof` | runs a command and prints which functions grew its memory |
@@ -163,8 +163,13 @@ traps does the same:
 - its files, namespace and environment are released at once;
 - it stays in `/prog` with state `broken`, keeping its `stack` and
   `exception`;
-- `kill` on its `ctl` (the `kill` command, or `broke` for all of them)
-  removes it.
+- `kill` on its `ctl` (the `kill` command, or `broke | sh` for all of
+  them) removes it.
+
+`broke [user]` kills nothing itself. As in Inferno, it prints a shell
+command for each broken prog of `user` (default: the current user):
+`echo kill>/prog/<pid>/ctl # ` and the prog's line from `ps`. Pipe the
+lines to `sh`, or run the ones you want.
 
 Like any prog, a broken one keeps the emu running until it is killed:
 the emu exits when the last prog has gone, as Inferno's does (`emu -x`
@@ -210,7 +215,8 @@ debug::main
 ...
 _start
 % broke
-7
+echo kill>/prog/7/ctl #     7     1     1 inferno    broken   debug
+% broke | sh
 ```
 
 ## Profiles

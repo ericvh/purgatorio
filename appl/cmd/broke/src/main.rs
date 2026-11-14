@@ -1,5 +1,10 @@
-//! broke [user]: kill the broken progs of `user` (default: the current
-//! user) and print the pid of each, as Inferno's `broke` does.
+//! broke [user]: print sh(1) commands that kill the broken progs of
+//! `user` (default: the current user), as Inferno's `broke` does. It
+//! kills nothing itself: `broke | sh` does that.
+//!
+//! Inferno's broke is a script that edits ps(1)'s output into one line
+//! per broken prog: `echo kill>/prog/pid/ctl # ` and the prog's ps line.
+//! This prints the same, from our ps's line.
 //!
 //! A prog is broken when it trapped while traced (`docs/debug.md`): it
 //! stays in `/prog`, holding only its last stack, until it is killed.
@@ -32,8 +37,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
         let trapped =
             std::fs::read_to_string(format!("/prog/{pid}/exception")).is_ok_and(|e| !e.is_empty());
-        if trapped && std::fs::write(format!("/prog/{pid}/ctl"), "kill").is_ok() {
-            println!("{pid}");
+        if trapped {
+            // The line as ps prints it.
+            println!(
+                "echo kill>/prog/{pid}/ctl # {:>5} {:>5} {:>5} {:<10} {:<8} {}",
+                f[0],
+                f[1],
+                f[2],
+                f[3],
+                f[4],
+                f[5..].join(" ")
+            );
         }
     }
     Ok(())

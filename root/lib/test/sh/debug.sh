@@ -31,9 +31,13 @@ sed 's/trap: .*unreachable.*/trap: unreachable/' /prog/$pid/exception
 # A broken prog keeps its stack, not its files.
 cat /prog/$pid/fd
 sed 's/^[0-9]+ [0-9]+ [0-9]+ [^ ]+ /PID PPID PGRP USER /' /prog/$pid/status
-broke | sed 's/[0-9]+/PID/'
+# broke prints the commands that kill broken progs and kills nothing.
+broke | sed 's/^echo kill>\/prog\/[0-9]+\/ctl # +[0-9]+ +[0-9]+ +[0-9]+ [^ ]+ +broken +debug$/echo kill>\/prog\/PID\/ctl # PS LINE/'
+echo broken `{ps | grep -c ' broken +debug$'}
+broke | sh
 echo broken `{ps | grep -c ' broken +debug$'}
 broke
+broke a b >[2=1]
 
 echo running
 # The stack of a prog blocked in the system is the one it called with.
