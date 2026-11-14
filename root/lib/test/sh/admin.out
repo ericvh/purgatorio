@@ -1,7 +1,7 @@
 /tmp/admin/n/held
 d-r-xr-xr-x M n inferno inferno 0 Jan  1  1970 /tmp/admin/n/anything
 ls: /tmp/admin/n/anything/below: file does not exist
-mkdir: /tmp/admin/n/new: file already exists
+mkdir: /tmp/admin/n/new already exists
 in memfs
 /tmp/admin/n/x
 sys=fs dom=fs.example.org ip=10.0.0.2 ether=00a0c9e1b2c3 tcp=styx port=6666

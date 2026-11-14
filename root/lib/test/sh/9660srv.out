@@ -46,4 +46,4 @@ sh: m/deep/er/x: permission denied
 chmod: cannot wstat m/deep/er/x: permission denied
 9660srv: /tmp/sh-9660srv/junk: CD format not recognised
 9660srv: cannot open /tmp/sh-9660srv/nosuch: file does not exist
-9660srv: usage: 9660srv [-rab] [-RJ] cdfile dir
+usage: 9660srv [-rab] [-RJ] cdfile dir

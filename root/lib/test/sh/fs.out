@@ -115,8 +115,8 @@ got t/src/util.c
      15 total
 t/README
 errors
-fs: usage: fs verb arg...
-fs: usage: print entries
+usage: fs verb arg...
+usage: print entries
 t/obj
 t/obj/main.o
 fs: the expression yields a gate, which is not printed

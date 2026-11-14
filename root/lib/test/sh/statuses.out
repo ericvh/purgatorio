@@ -1,0 +1,123 @@
+usage: wc [-lwc] [file ...]
+	wc fail:usage
+usage: sort [-nr] [file]
+	sort fail:usage
+usage: ls [-dlp] [name ...]
+	ls fail:usage
+usage: cmp a b
+	cmp fail:usage
+usage: mv file ... target
+	mv fail:usage
+usage: sleep seconds
+	sleep fail:usage
+usage: sleep seconds
+	sleep fail:usage
+usage: stack [-v] pid ...
+	stack fail:usage
+Usage: nsbuild [nsfile]
+	nsbuild fail:usage
+Usage: rm [-fr] file ...
+	rm fail: usage
+Usage: tr [-cds] [string1 [string2]]
+	tr fail: usage
+Usage: tokenize string delimiters
+	tokenize fail: usage
+usage: logfile [-size] file
+	logfile fail: usage
+Usage: install/inst [-chtuvF] [-r root] package [prefix ...]
+	install/inst fail: usage
+usage: crypt [-d] [-C m,t] (-k secret | -f secretfile)
+	crypt fail: bad usage
+Usage: mk [-f file] [-n] [-a] [-e] [-t] [-k] [-i] [-d[egp]] [-wtarget,...] [targets ...]
+	mk fail:error
+Usage: stream [-a] [-b bufsize] file1 [file2]
+	stream fail:usage
+usage: install/info [-r root] package
+	install/info fail:error
+usage: uudecode [-p] [encodedfile...]
+	uudecode 
+usage: unicode { [-t] hex hex ... | hexmin-hexmax ... | [-n] char ... }
+	unicode 
+usage: install/create [-uvxo] [-p proto] [-r root] [-s source] [-N uid] [-G gid] [-d description] [-t time] name
+	install/create 
+Usage: install/wrap2list [-i] [-r root] [file ...]
+	install/wrap2list 
+fatal: usage: install/ckproto [-o] [-v] [-m] [-r root] protofile ...
+	install/ckproto 
+Usage: unmount [source] target
+	unmount 
+Usage: xargs command [command args] <[list of last command arg]
+	xargs 
+usage: ramfile path
+	ramfile 
+	mkdir 
+wc: can't open /tmp/sh-statuses/missing: file does not exist
+	wc 
+md5sum: cannot open /tmp/sh-statuses/missing: file does not exist
+	md5sum fail:error
+sha1sum: cannot open /tmp/sh-statuses/missing: file does not exist
+	sha1sum fail:error
+sum: cannot get status of /tmp/sh-statuses/missing: file does not exist
+	sum fail:error
+du: can't stat /tmp/sh-statuses/missing: file does not exist
+	du 
+tail: /tmp/sh-statuses/missing: file does not exist
+	tail 
+xd: cannot open /tmp/sh-statuses/missing: file does not exist
+	xd fail:cannot open
+sort: cannot open /tmp/sh-statuses/missing: file does not exist
+	sort fail:open file
+uniq: cannot open /tmp/sh-statuses/missing: file does not exist
+	uniq fail:open file
+cannot open /tmp/sh-statuses/missing
+	strings 
+cannot open /tmp/sh-statuses/missing
+	freq 
+fmt: can't open /tmp/sh-statuses/missing: file does not exist
+	fmt fail:open
+gzip: /tmp/sh-statuses/missing: file does not exist
+	gzip 
+units: cannot open /tmp/sh-statuses/missing: file does not exist
+	units fail:open
+tcs: cannot open /tmp/sh-statuses/missing: file does not exist
+	tcs fail:open
+p: can't open /tmp/sh-statuses/missing: file does not exist
+	p 
+mc: can't open /tmp/sh-statuses/missing: file does not exist
+	mc 
+stream: can't open /tmp/sh-statuses/missing: file does not exist
+	stream fail:open
+auth/getpk: /tmp/sh-statuses/missing: file does not exist
+	auth/getpk 
+auth/ai2key: /tmp/sh-statuses/missing: file does not exist
+	auth/ai2key fail:error
+disk/mbr: /tmp/sh-statuses/missing: file does not exist
+	disk/mbr fail:error
+disk/fdisk: /tmp/sh-statuses/missing: file does not exist
+	disk/fdisk fail:error
+wasmdump: /tmp/sh-statuses/missing: file does not exist
+	wasmdump fail:errors
+xargs: can't load /tmp/sh-statuses/nosuchcmd: file does not exist
+	xargs 
+ns: can't open /prog/999999/ns: file does not exist
+	ns fail:open
+	stack 
+	unmount 
+cp: /tmp/sh-statuses/missing: file does not exist
+	cp fail:error
+mv: /tmp/sh-statuses/missing: file does not exist
+	mv fail:error
+chmod: cannot stat /tmp/sh-statuses/missing: file does not exist
+	chmod 
+chgrp: can't change /tmp/sh-statuses/missing: file does not exist
+	chgrp fail:error
+mkdir: /tmp/sh-statuses already exists
+	mkdir fail:error
+mkdir: can't create /tmp/sh-statuses/missing/a: file does not exist
+	mkdir fail:error
+tee: cannot open /tmp/sh-statuses/missing/a: file does not exist
+	tee fail:error
+bind: cannot bind /tmp/sh-statuses/missing onto /tmp/sh-statuses: file does not exist
+	bind fail:bind
+comm: cannot open /tmp/sh-statuses/missing: file does not exist
+	comm fail:open

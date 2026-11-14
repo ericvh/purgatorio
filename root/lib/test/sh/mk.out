@@ -23,7 +23,7 @@ b.txt
 dir
 mkfile
 mk: don't know how to make 'nosuch'
-error
+fail:error
 mk: nofile: file does not exist
 fail:nofile: file does not exist
 amp x x.lo
@@ -41,7 +41,7 @@ mk: echo partial > f; cat /nonexistent: exit status=fail:errors, deleting 'f'
 cat /nonexistent >[2] /dev/null
 mk: cat /nonexistent >[2] /dev/null: exit status=fail:errors
 touch(h)
-error
+fail:error
 h
 echo from-include piped second one two $#L
 echo Q $Q flags -f mk4
@@ -68,4 +68,4 @@ mk: ambiguous recipes for a:
 	a <-(mk7:3)- c
 mk: cycle in graph detected at target loop
 mk: mk9:1: syntax error; expected : or =
-mk: usage: mk [-f file] [-n] [-a] [-e] [-t] [-k] [-i] [-d[egp]] [-wtarget,...] [targets ...]
+Usage: mk [-f file] [-n] [-a] [-e] [-t] [-k] [-i] [-d[egp]] [-wtarget,...] [targets ...]

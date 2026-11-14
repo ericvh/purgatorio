@@ -37,7 +37,7 @@ read: stat buffer too small
 dd read error 
 calc: syntax error: unexpected end of input
 calc error 
-disk/chkdisk: usage: disk/chkdisk [-v] image
+usage: disk/chkdisk [-v] image
 ndb/query: can't open /tmp/sh-exitstatus/missing: file does not exist
 --rw-rw-rw- M n inferno inferno 3 Jan  1  1970 /tmp/sh-exitstatus/m/f
 d-rwxrwxrwx M n inferno inferno 0 Jan  1  1970 /tmp/sh-exitstatus/m/sub

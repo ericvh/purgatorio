@@ -22,9 +22,10 @@ executable
 --rwx------
 --r--r--r--
 --rw-r-----
-chmod: bad mode: q
+chmod: bad mode 'q'
+usage: chmod [8r]777 file ... or chmod [augo][+-=][rwxalt] file ...
 chmod: cannot stat /tmp/sh-filetools/nonexistent: file does not exist
-fail:errors
+
 chgrp ok
 dir
 not dir

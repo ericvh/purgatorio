@@ -1,7 +1,7 @@
 a mount made with -c binds with -c
-bind: cannot bind /tmp/sh-bindc/x on /tmp/sh-bindc/y: inconsistent mount
+bind: cannot bind /tmp/sh-bindc/x onto /tmp/sh-bindc/y: inconsistent mount
 it binds without -c
-bind: cannot bind /tmp/sh-bindc/u on /tmp/sh-bindc/y: inconsistent mount
-bind: cannot bind /tmp/sh-bindc/g on /tmp/sh-bindc/f: inconsistent mount
-bind: cannot bind /tmp/sh-bindc/a on /tmp/sh-bindc/f: inconsistent mount
+bind: cannot bind /tmp/sh-bindc/u onto /tmp/sh-bindc/y: inconsistent mount
+bind: cannot bind /tmp/sh-bindc/g onto /tmp/sh-bindc/f: inconsistent mount
+bind: cannot bind /tmp/sh-bindc/a onto /tmp/sh-bindc/f: inconsistent mount
 a file binds on a file

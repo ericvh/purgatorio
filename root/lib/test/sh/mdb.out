@@ -28,5 +28,5 @@ PID PPID PGRP USER running debug
 kill
 stopped
 debug 0
-mdb: usage: mdb pid
+usage: mdb pid
 done

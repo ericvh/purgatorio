@@ -14,7 +14,7 @@ bind -b /n/client/dev /dev
 a  b
 rcmd: authentication required
 rcmd: unknown algorithm rc4
-rcmd: usage: rcmd [-AS] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]
+usage: rcmd [-AS] [-k keyfile] [-e alg] [-x dir] host [cmd [arg...]]
 local
 rcmd: untrusted signer
 rcmd: authentication required

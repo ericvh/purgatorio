@@ -8,6 +8,6 @@ sending 1 64 byte messages 10 ms apart
 sending 2 64 byte messages 10 ms apart
 sending 1 1000 byte messages 1000 ms apart
 status 
-ip/ping: usage: ip/ping [-alq] [-s msgsize] [-i millisecs] [-n #pings] destination
-status fail:usage: ip/ping [-alq] [-s msgsize] [-i millisecs] [-n #pings] destination
+usage: ip/ping [-alq] [-s msgsize] [-i millisecs] [-n #pings] destination
+status fail:usage
 protocol not supported
