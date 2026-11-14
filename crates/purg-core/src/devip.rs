@@ -760,15 +760,19 @@ fn ifc_local(i: &Ifc) -> String {
 }
 
 /// `ipifc/n/status`: the device and MTU, and (Purgatorio's addition, for
-/// `ip/dhcp`) the hardware address; then the address, mask and network,
-/// and packet counts, which are not kept.
+/// `ip/dhcp`) the hardware address, which the loopback has none of; then
+/// the address, mask and network, and packet counts, which are not kept.
 fn ifc_status(i: &Ifc) -> String {
-    let mac: String = i.mac.iter().map(|b| format!("{b:02x}")).collect();
+    let mut head = format!("{} {}", i.device, i.mtu);
+    if !i.is_loopback() {
+        head.push(' ');
+        for b in i.mac {
+            head.push_str(&format!("{b:02x}"));
+        }
+    }
     let mask = prefix_mask(i.prefix);
     format!(
-        "{} {} {mac}\n{} {} {} 0 0 0 0\n",
-        i.device,
-        i.mtu,
+        "{head}\n{} {} {} 0 0 0 0\n",
         ip(i.addr),
         ip(mask),
         ip(network(i.addr, mask))

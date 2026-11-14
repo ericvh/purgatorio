@@ -79,6 +79,12 @@ impl net::Net for HostNet {
         dial_icmp(host)
     }
 
+    /// Only the loopback: the host's own loopback carries 127.0.0.1, and
+    /// its other interfaces are the host's to configure.
+    fn interfaces(&self) -> Vec<net::Ifc> {
+        vec![net::Ifc::loopback()]
+    }
+
     fn announce_udp_headers(&self, host: &str, port: u16) -> Result<Arc<dyn Conn>> {
         let sock = if host.is_empty() || host == "*" {
             UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).map_err(io_err)?
