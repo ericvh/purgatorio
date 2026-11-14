@@ -402,7 +402,10 @@ and a security review.
   X25519 + ML-KEM-768 exchange of a version 4 proof (`docs/auth.md`,
   "Post-quantum options"). On `mount` with `afd = -1` the kernel reads
   the long offer and fails with `no post-quantum key offered` when the
-  server gives none or asks for no proof; with an `afd` the mount fails
+  server gives none or asks for no proof. Without `MPQ` the kernel reads
+  the long offer too and uses version 4 when the server gives it, and
+  version 3 with a server whose challenge has no version 4 mark (one
+  built before it), with no new flag; with an `afd` the mount fails
   with `post-quantum key exchange required` unless its proof was version
   4. On `export` it refuses every proof but version 4, and every attach
   not on one, with `post-quantum key exchange required`, and implies
@@ -495,7 +498,12 @@ proof cannot change the key under it. Since v0.10 a read of at least
 version 4 exchange: it gives the server's long offer followed by the
 kernel's ephemeral X25519 key and its ML-KEM-768 ciphertext, the bytes a
 version 4 proof signs, and fails with `no post-quantum key offered` (and
-keeps nothing) when the server offers no ML-KEM key. The first read that
+keeps nothing) when the server offers no ML-KEM key. A short offer whose
+challenge carries the mark of a server that can do version 4 (its last
+8 bytes `"pgauth4" 0x01`; `docs/auth.md`, "The default exchange") means
+the long one was cut on the way: then every later read of the offer on
+that auth fd fails the same way, so a caller that falls back to 96
+bytes is not talked into version 3. The first read that
 makes a key decides the exchange; a later read too short for its bytes
 fails with `bad arg in system call`. Writing a proof
 (above) completes the exchange. A wrong proof fails that write. The
