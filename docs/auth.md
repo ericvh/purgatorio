@@ -809,8 +809,7 @@ Not covered yet: `rcmd`/`rstyxd` and Lethe have their own exchanges
 - **Authentication** is still Ed25519. A quantum attacker who can forge
   Ed25519 signatures in real time can pose as a user or a server; that is
   an active attack at the time of the conversation, not a later
-  decryption. Post-quantum signatures are listed under "Decisions and
-  open questions".
+  decryption. See "Post-quantum signatures (proposed, not built)".
 - **Forward secrecy** is as in version 3: both ML-KEM and X25519 keys are
   ephemeral, made per auth fid and dropped with the exchange.
 - **Side channels.** ML-KEM is RustCrypto's `ml-kem`, whose decapsulation
@@ -905,6 +904,80 @@ Factotum holds such a key as `key proto=mlkem768x25519 !secret=<hex>`
 answers only for a well-formed `pgcrypt2` header for its own key, so it
 is no general decapsulation service: what it gives is an HKDF output
 bound to that header.
+
+### Cost of the post-quantum options
+
+Measured on an Apple Silicon host under Linux (8 CPUs, a load average of
+about 8 from other work), release builds:
+
+- **Kernel size.** ML-KEM-768 and the Keccak it uses add about 19 KiB
+  of `.text` to the kernel (`--profile kernel`; `xtask size` puts
+  `ml_kem` at 10.2 KiB, and the symbols of `ml_kem`, `module_lattice`,
+  `keccak` and `shake` sum to 19 KiB), 1.3% of its 1,523 KiB. Both the
+  client and the server side are in the kernel, which does every ML-KEM
+  operation of a mount.
+- **Guests.** A guest that mounts carries no ML-KEM: the kernel makes
+  the long offer, the ciphertext and the keys, and the guest only signs.
+  `mount.wasm` grows by 0.8 KB (the `-C` flag). The guests that hold a
+  hybrid key do: `crypt` grows from 101.7 KB to 182.4 KB,
+  `auth/factotum` from 207.1 KB to 236.5 KB and `auth/getpk` from
+  129.5 KB to 140.8 KB.
+- **The exchange.** Natively, one whole version 3 exchange (both sides'
+  key pairs, the Ed25519 signature and its check, both derivations) takes
+  0.34 ms and a version 4 one 0.42 ms: ML-KEM-768 key generation is
+  38 µs, encapsulation 42 µs and decapsulation 54 µs. The wire carries
+  2.3 KB more: 1,184 bytes of offer and 1,088 of proof.
+- **A mount.** `xtask bench`'s `mount-sealed-10` and `mount-pq-10` (ten
+  `mount -k info {export ...}` each, `-C x25519mlkem768` on both ends
+  for the second): on the kernel under KVM, 4.3 ms against 5.0 ms a
+  mount (spread 1 to 2%), so the hybrid exchange costs 0.7 ms, most of
+  it the guest's Ed25519 signature over a 2.4 KB message under the
+  interpreter; on the emu with wasmtime, 6.3 ms against 5.8 ms, within
+  that run's noise (±200%). A debug emu takes 41 ms against 47 ms.
+- **Records** after the handshake are the same ChaCha20-Poly1305
+  records as version 3, so throughput does not change.
+
+### Post-quantum signatures (proposed, not built)
+
+Signatures stay Ed25519 for now. A quantum attacker who can forge Ed25519
+signatures must do it while the conversation happens, so this is less
+urgent than the key exchange, and it touches every format above:
+certificates, authinfo, the key lists, proofs of both sides, factotum,
+the signer's protocol and module signatures. The design, for review:
+
+- **A hybrid key**, ML-DSA-65 (FIPS 204) beside Ed25519, both of which
+  must verify: `public = ed25519[32] || ml-dsa-65[1952]`, kept as two
+  32-byte seeds (ML-DSA's `xi`). A signature is `ed25519[64] ||
+  ml-dsa-65[3309]`, both over the same message with a context string
+  that names the hybrid (`"pghybrid1" 0x00 || message`), so neither half
+  can be lifted into an Ed25519-only or ML-DSA-only signature of the same
+  message.
+- **Naming it in trust files.** The key lists hold 32-byte keys. A hybrid
+  key would be listed by its id, `SHA-256("pghybrid1 key" 0x00 ||
+  public)`, behind a marker: `mldsa65:<64 hex>`. The marker is needed.
+  Without it, a quantum attacker could take a trusted hybrid key's id,
+  which decodes as an Ed25519 point about half the time, compute an
+  Ed25519 secret for that point, and prove with an Ed25519-only proof
+  "for" the listed key. A listed hybrid id must accept only hybrid
+  proofs, and a listed Ed25519 key only Ed25519 ones.
+- **Certificates:** `pgcert2 <name> <key> <expires> <signer>:<sig> ...`,
+  where a key or signer is either 64 hex digits (Ed25519) or `mldsa65:`
+  and the hex of a full hybrid public key, and the signature has the
+  matching form. A hybrid certificate is about 11 KB of text, which a
+  64 KiB msize carries in one proof but Inferno's 8 KiB default does not.
+- **Proofs:** new kinds 2 (a hybrid key) and 3 (a `pgcert2` line) in
+  versions 3 and 4 and in the server's proof. The signed messages do not
+  change, so they bind the same things.
+- **Tools:** `-a ed25519|hybrid` on `auth/createsignerkey`,
+  `auth/mkauthinfo` and `getauthinfo` (the signer certifies a hybrid key
+  only with a hybrid signer key); factotum keys `proto=hybrid`;
+  `auth/getpk`, `auth/verify` and `auth/ai2key` for the new forms; module
+  signature entries of a new kind (`docs/signing.md`).
+- **Cost:** RustCrypto's `ml-dsa` 0.1.2 (Apache-2.0 OR MIT, `no_std`)
+  adds its code to the kernel and to every guest that signs or checks.
+  Signing is a few milliseconds natively and slower under an
+  interpreter; a hybrid authinfo grows from about 300 bytes to about
+  11 KB.
 
 ## Password scheme
 
@@ -1266,7 +1339,13 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   unknown user uses the default Argon2id cost, so an account made with
   another `-C` cost can be told apart from a missing one. The stored verifier is
   password-equivalent (see the scheme above); keyfs is the defence.
-- **Secrets in memory.** Seeds and verifiers are not zeroised after use.
+- **Post-quantum.** Version 4 and `crypt -r` are hybrids: each is as
+  strong as the stronger of X25519 and ML-KEM-768. A party that requires
+  version 4 refuses everything else, and nothing can be cut out of a
+  version 4 exchange without failing it (see "Requiring it, and
+  downgrade"). Signatures are still Ed25519 only.
+- **Secrets in memory.** Seeds and verifiers are not zeroised after use,
+  nor are the ML-KEM secrets. A `crypt` key's `Debug` shows only its id.
 
 ## Implementation and tests
 
@@ -1431,8 +1510,8 @@ Still open:
    them; Inferno makes them the poster's.
 5. **Post-quantum signatures.** Certificates, proofs and module
    signatures are Ed25519 only. ML-DSA-65 (FIPS 204) beside Ed25519 would
-   protect authentication against a quantum attacker in real time; see
-   "Post-quantum options".
+   protect authentication against a quantum attacker in real time; the
+   design is in "Post-quantum signatures (proposed, not built)".
 6. **Post-quantum `rcmd` and Lethe.** Their exchanges are X25519 only.
 7. **A post-quantum default.** Should a later release make
    `x25519mlkem768` the default for `mount` and `export`, once both ends
