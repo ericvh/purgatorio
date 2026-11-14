@@ -97,6 +97,7 @@ start are not in the numbers.
 | `cat-disk` | a 100 MiB file in purgfs on virtio-blk (`/n/disk`; the kernel only) |
 | `mount-sealed-10` | ten `mount -k info {export -e dir}` and `unmount`: each spawns an export and runs the version 3 handshake |
 | `mount-pq-10` | the same with `-C x25519mlkem768` on both: the hybrid post-quantum handshake (`docs/auth.md`); the difference to `mount-sealed-10` is its cost |
+| `mount-pqsig-10` | the same with `-C mldsa65` on both and hybrid Ed25519 + ML-DSA-65 authinfos: hybrid proofs both ways (`docs/auth.md`, "Post-quantum signatures"); the difference to `mount-sealed-10` is their cost |
 | `sha1-pipe-16m` | `zeros 1024 16384 \| sha1sum`, the CPU-bound guest `docs/footprint.md` uses |
 | `sha1-file-16m` | `sha1sum` of a 16 MiB file in `/tmp` |
 | `sh-builtin-10k` | `sh -c` with four nested `for` loops over ten words, 10,000 assignments |

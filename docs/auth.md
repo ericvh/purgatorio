@@ -808,10 +808,11 @@ own exchange (`docs/lethe.md`).
 - **Harvest now, decrypt later:** a conversation on version 4 cannot be
   read by someone who records it and later breaks X25519, as long as
   ML-KEM-768 holds. This is what the option is for.
-- **Authentication** is still Ed25519. A quantum attacker who can forge
+- **Authentication** is Ed25519 by default. A quantum attacker who can forge
   Ed25519 signatures in real time can pose as a user or a server; that is
   an active attack at the time of the conversation, not a later
-  decryption. See "Post-quantum signatures (proposed, not built)".
+  decryption. Hybrid Ed25519 + ML-DSA-65 keys close that, opt-in (see
+  "Post-quantum signatures").
 - **Forward secrecy** is as in version 3: both ML-KEM and X25519 keys are
   ephemeral, made per auth fid and dropped with the exchange.
 - **Side channels.** ML-KEM is RustCrypto's `ml-kem`, whose decapsulation
@@ -950,47 +951,203 @@ about 8 from other work), release builds:
 - **Records** after the handshake are the same ChaCha20-Poly1305
   records as version 3, so throughput does not change.
 
-### Post-quantum signatures (proposed, not built)
+### Post-quantum signatures
 
-Signatures stay Ed25519 for now. A quantum attacker who can forge Ed25519
-signatures must do it while the conversation happens, so this is less
-urgent than the key exchange, and it touches every format above:
-certificates, authinfo, the key lists, proofs of both sides, factotum,
-the signer's protocol and module signatures. The design, for review:
+Proofs, certificates and authinfo can use a hybrid key of Ed25519 and
+ML-DSA-65 (FIPS 204), whose signatures are good only when both halves
+verify: a quantum attacker who can forge Ed25519 still has to forge
+ML-DSA-65, and a flaw found in the young ML-DSA leaves Ed25519's
+protection. It is opt-in. Ed25519 stays the default everywhere, and an
+Ed25519 user, server and signer keep working beside hybrid ones.
 
-- **A hybrid key**, ML-DSA-65 (FIPS 204) beside Ed25519, both of which
-  must verify: `public = ed25519[32] || ml-dsa-65[1952]`, kept as two
-  32-byte seeds (ML-DSA's `xi`). A signature is `ed25519[64] ||
-  ml-dsa-65[3309]`, both over the same message with a context string
-  that names the hybrid (`"pghybrid1" 0x00 || message`), so neither half
-  can be lifted into an Ed25519-only or ML-DSA-only signature of the same
-  message.
-- **Naming it in trust files.** The key lists hold 32-byte keys. A hybrid
-  key would be listed by its id, `SHA-256("pghybrid1 key" 0x00 ||
-  public)`, behind a marker: `mldsa65:<64 hex>`. The marker is needed.
-  Without it, a quantum attacker could take a trusted hybrid key's id,
-  which decodes as an Ed25519 point about half the time, compute an
-  Ed25519 secret for that point, and prove with an Ed25519-only proof
-  "for" the listed key. A listed hybrid id must accept only hybrid
-  proofs, and a listed Ed25519 key only Ed25519 ones.
-- **Certificates:** `pgcert2 <name> <key> <expires> <signer>:<sig> ...`,
-  where a key or signer is either 64 hex digits (Ed25519) or `mldsa65:`
-  and the hex of a full hybrid public key, and the signature has the
-  matching form. A hybrid certificate is about 11 KB of text, which a
-  64 KiB msize carries in one proof but Inferno's 8 KiB default does not.
-- **Proofs:** new kinds 2 (a hybrid key) and 3 (a `pgcert2` line) in
-  versions 3 and 4 and in the server's proof. The signed messages do not
-  change, so they bind the same things.
-- **Tools:** `-a ed25519|hybrid` on `auth/createsignerkey`,
-  `auth/mkauthinfo` and `getauthinfo` (the signer certifies a hybrid key
-  only with a hybrid signer key); factotum keys `proto=hybrid`;
-  `auth/getpk`, `auth/verify` and `auth/ai2key` for the new forms; module
-  signature entries of a new kind (`docs/signing.md`).
-- **Cost:** RustCrypto's `ml-dsa` 0.1.2 (Apache-2.0 OR MIT, `no_std`)
-  adds its code to the kernel and to every guest that signs or checks.
-  Signing is a few milliseconds natively and slower under an
-  interpreter; a hybrid authinfo grows from about 300 bytes to about
-  11 KB.
+**Keys and signatures** (`purg_auth::sig`):
+
+```
+hybrid secret    = ed25519 seed[32] || ml-dsa-65 seed xi[32]      (64 bytes)
+hybrid public    = ed25519 public[32] || ml-dsa-65 public[1952]   (1984 bytes)
+hybrid signature = ed25519 sig[64] || ml-dsa-65 sig[3309]         (3373 bytes)
+both halves sign   "pghybrid1" 0x00 || message
+hybrid id        = SHA-256("pghybrid1 key" 0x00 || hybrid public)
+```
+
+ML-DSA signs deterministically, FIPS 204's optional variant with an
+empty context string, so no random source is needed where a signature
+is made (the kernel signs too). The context string in front of the
+message means neither half is an Ed25519-only or ML-DSA-only signature
+of the message itself: an Ed25519 signature cut out of a hybrid one does
+not verify as an Ed25519 proof. The crate is RustCrypto's `ml-dsa` 0.1.2
+(Apache-2.0 OR MIT), `no_std` with `alloc` only. Its key generation is
+checked against the IETF LAMPS example key (`draft-ietf-lamps-dilithium-
+certificates`, seed `00 01 .. 1f`) and a deterministic signature against
+`dilithium-py` 1.5.1, an independent implementation.
+
+In text a hybrid key, secret or public, is `mldsa65:` and its hex. A
+hybrid seed file (`/keydb/signerkey`, `/usr/<user>/key`) is the 64 raw
+bytes, an Ed25519 one stays 32; a hybrid `key.pub` is the 1984 raw
+bytes.
+
+**Typed trust lists.** The key lists hold 32-byte keys, and a hybrid key
+is listed by its id behind the marker: `mldsa65:<64 hex digits>`, in
+`/lib/keys/signers`, `users`, `servers`, `serversigners` and `revoked`
+alike (`auth/getpk` and `auth/createsignerkey -a hybrid` print it).
+The marker is what makes it safe. Without it a quantum attacker could
+take a listed hybrid id, which decodes as an Ed25519 point about half the
+time, compute an Ed25519 secret for that point, and prove "for" the
+listed key with an Ed25519-only proof or certificate. So a listed entry
+has a kind (`purg_auth::sig::Id`): a hybrid id accepts only hybrid
+proofs and certificates, an Ed25519 key only Ed25519 ones, and the same
+32 bytes listed the other way match nothing. A server built before this
+skips `mldsa65:` lines in its signer and key lists (they grant nothing),
+and fails closed on one in `/lib/keys/revoked`, as for any line it
+cannot parse.
+
+**Certificates** (`pgcert2`, `purg_auth::cert::Cert2`):
+
+```
+pgcert2 <name> mldsa65:<key> <expires> mldsa65:<signer>:<signature> [...]
+body = "pgcert2" 0x00 || len(name) u8 || name || key[1984] || expires u64 LE
+```
+
+The key and every signer are hybrid keys, written whole (a verifier needs
+the signer's whole key, and a trust list holds only its id), and every
+signature is a hybrid one over the body. At most 4 signatures. This is
+narrower than the proposal, which allowed either kind for the key and
+each signer: a certificate has one kind throughout, so a hybrid key is
+never vouched for by an Ed25519 signature that a quantum attacker could
+forge. A hybrid signer certifies only hybrid keys and an Ed25519 signer
+only Ed25519 ones. Parsing is as strict as for `pgcert1`, and each
+parser refuses the other's lines. A certificate with one signature is
+14.7 KB of text against 275 bytes for `pgcert1`.
+
+**Authinfo.** The same three lines, of one kind:
+
+```
+key mldsa65:<128 hex digits: both seeds>
+signer mldsa65:<the signer's id>
+pgcert2 ...
+```
+
+Reading one checks that the certificate is for the key by its Ed25519
+half only: the ML-DSA half would take a key generation (below, "Stack").
+A file whose ML-DSA half does not match makes proofs nobody accepts.
+
+**Proofs.** Kinds 2 (a hybrid key, the 1984 bytes as the body) and 3 (a
+`pgcert2` line) in versions 3 and 4 and in the server's proof
+(`purg_abi::auth::KIND_HYBRID_KEY`, `KIND_HYBRID_CERT`). Their signature
+field is a hybrid signature, 3373 bytes, where kinds 0 and 1 have 64:
+
+```
+proof v3 = 0x03 || kind u8 || signature[64 or 3373] || C[32] || body
+proof v4 = 0x04 || kind u8 || signature[64 or 3373] || C[32] || ct[1088] || body
+server proof = kind u8 || signature[64 or 3373] || body
+```
+
+The signed messages do not change, so they bind the same things;
+`kind` is in each of them. Version 1 and 2 proofs stay Ed25519 only. A
+proof is at most 60 KiB (`purg_auth::proof::MAX_LEN`, up from 4 KiB): a
+version 4 proof with a `pgcert2` that has every signature fits, and so
+does one message at our largest `msize` (64 KiB of data). A hybrid
+certificate proof with one signature is 18.1 KB, which Inferno's
+default 8 KiB `msize` would not carry; ours offers 64 KiB.
+
+**Requiring it.** `-C mldsa65` names the hybrid signatures, beside the
+key exchanges `-C` already names; several names are joined with `/`, as
+Inferno's `-C` joins its algorithms (`-C x25519mlkem768/mldsa65`), and
+`-C ed25519` names the default.
+
+- `export -C mldsa65` (`purg_abi::mount::MPQSIG` on `sys->export`)
+  refuses every proof that is not kind 2 or 3, and every certificate that
+  is not a `pgcert2`, with `post-quantum signature required`.
+- `mount -C mldsa65` and `import -C mldsa65` (`MPQSIG` on `sys->mount`)
+  require the server to prove itself with a hybrid key or certificate:
+  they imply `-S`, and an Ed25519 server proof fails with `post-quantum
+  signature required`. The mount proves with factotum's hybrid key, when
+  it holds one; a `-k` authinfo or the default authinfo is used whatever
+  its kind.
+- `auth/verify -a hybrid` refuses an Ed25519 certificate the same way.
+- With typed lists, a party whose lists hold only `mldsa65:` entries
+  takes only hybrid proofs even without the flag.
+
+What an attacker can do against it:
+
+- **Strip the ML-DSA half** of a kind 2 proof and send the rest as kind
+  0 with the Ed25519 public key: the Ed25519 half signed `"pghybrid1"
+  0x00 || message`, not the message, so it does not verify, and the
+  listed hybrid id does not take an Ed25519 key anyway. A server that
+  requires hybrid says `post-quantum signature required`.
+- **Cut a `pgcert2` down** to a `pgcert1`: there is no Ed25519 signature
+  over a `pgcert1` body in it to keep.
+- **Use a listed hybrid id as an Ed25519 key**, as user, server or
+  signer: the id is a hybrid entry and matches no Ed25519 key, whatever
+  its bytes (the corpus script `pqsig.sh` lists a hybrid signer's id
+  without its marker and gets `untrusted signer`).
+
+**Which key a side uses.** There is no negotiation, so:
+
+- A client proves with the key it finds, as before (`-k`, factotum, `#¤`,
+  the default authinfo, the seed file); factotum is asked for its
+  Ed25519 key first and its hybrid key second, or for its hybrid key
+  only under `-C mldsa65`.
+- A server that holds both kinds in factotum (`role=server`) answers a
+  client that proved with a hybrid key with a hybrid proof, and any other
+  client with an Ed25519 one, so a client that has not opted in never
+  sees a kind it may not parse. An `export -k` authinfo or the default
+  sources give the one key they hold. `rstyxd` does the same.
+- `#¤` holds an Ed25519 seed only.
+
+**Tools.** `auth/createsignerkey -a ed25519|hybrid` (default `ed25519`)
+makes the signer key and prints its list line. `auth/mkauthinfo [-a
+ed25519|hybrid]` makes a key of the signer key's kind; `-a` of the other
+kind is refused (`the signer key is hybrid; it certifies only hybrid
+keys`). `getauthinfo -a hybrid` sends `mldsa65:<hex>` to `auth/signer`,
+which certifies a key only of its own kind (`this signer certifies only
+hybrid keys`); the reply's signer line is the signer's id. `auth/getpk`
+prints a hybrid key's id, and `-x` the whole key. `auth/ai2key` and
+`auth/factotum` write and load `key proto=hybrid ... !seed=<128 hex>
+cert=<pgcert2>`. `auth/countersigner` takes a key of the certificate's
+kind. `auth/verify` prints `pgcert2` keys and signers by their ids.
+`keyfs` and `keysrv` are not involved: the signer's key file and the
+certificates are what change. Module signatures and Lethe stay Ed25519
+(`docs/signing.md`, `docs/lethe.md`); `auth/factotum` refuses
+`role=modsign` with a hybrid key.
+
+**Stack.** ML-DSA-65 keeps its keys and vectors on the stack while it
+works: about 190 KiB at its deepest natively at `opt-level=3`, 128 KiB
+at the kernel's `z`. A kernel thread has 256 KiB and an export worker
+64, so the kernel does every hybrid signature, check and key generation
+on a kernel thread made for it with 512 KiB (`Platform::deep`, which the
+hosted emu, whose threads have 64 MiB, runs in place). Ed25519 work stays
+where it was. Guests have a 256 KiB shadow stack, which is enough.
+
+**Cost.** Natively, on an Apple Silicon host under Linux with other work
+running, release builds: a hybrid signature takes 1.7 ms (Ed25519: 38
+µs) and its check 0.19 ms (Ed25519: 49 µs); deriving a hybrid public key
+from its seed 0.3 ms. A whole version 3 exchange with a hybrid
+certificate and a hybrid server proof (two signatures, four checks) takes
+4.8 ms, against 0.38 ms with Ed25519, and the client's proof grows from
+373 bytes to 18.1 KB.
+
+- **Kernel size.** The kernel's `.text` (`--profile kernel`) grows from
+  1,523.3 KiB to 1,597.5 KiB, 74 KiB or 4.9%: `xtask size` puts `ml_dsa`
+  at 13.4 KiB and `module_lattice` at 4.6 KiB, and `purg_auth`, where the
+  generic ML-DSA code is instantiated (at `opt-level=3`, as for the
+  record layer), grows from 20.6 KiB to 70.1 KiB. The kernel verifies
+  hybrid proofs on an export and signs with a hybrid authinfo.
+- **Guests.** Every guest that can make or check a proof carries
+  ML-DSA: `mount.wasm` grows from 192.4 KB to 231.9 KB, `import` from
+  190.7 KB to 230.4 KB, `rcmd` from 229.3 KB to 265.4 KB,
+  `auxi/rstyxd` from 237.9 KB to 272.6 KB, `auth/factotum` from
+  236.5 KB to 265.5 KB, `getauthinfo` from 215.4 KB to 242.4 KB and
+  `auth/mkauthinfo` from 145.9 KB to 180.5 KB. `export.wasm` (the
+  kernel does the work) grows by 0.6 KB.
+- **A mount.** `xtask bench`'s `mount-pqsig-10` (ten `mount -C mldsa65
+  -k hinfo {export -C mldsa65 -k hinfo ...}`, a hybrid certificate each
+  way): on the kernel under KVM, 74.5 ms a mount (spread 10%) against
+  3.8 ms for `mount-sealed-10` and 4.4 ms for `mount-pq-10` (1%). Nearly
+  all of the difference is the guest's hybrid signature under the
+  interpreter; the kernel's own check and signature are native. On the
+  emu with wasmtime, 27.1 ms against 4.1 ms and 4.5 ms (spreads 25%,
+  136% and 11%).
 
 ## Password scheme
 
@@ -1242,6 +1399,7 @@ with `!` is secret and is never read back. Values may be quoted with `'`.
 
 ```
 key proto=ed25519 [user=<name>] [role=<role>] !seed=<hex> [cert='<pgcert1 line>']
+key proto=hybrid [user=<name>] [role=<role>] !seed=<hex> [cert='<pgcert2 line>']
 key proto=pass server=<addr> user=<name> !password=<password>
 key proto=mlkem768x25519 !secret=<hex>
 delkey proto=<proto> [attr=value ...]
@@ -1284,6 +1442,10 @@ the reply (`ok [data]`, `done`, `needkey <attrs>`, `error <message>`).
   readable by the exporting prog. Whoever can open factotum's `rpc` can
   make server proofs with it, as for client proofs. The key is the first
   one kept for `role=server`, else the first with no role (above).
+- `hybrid`: as `ed25519`, with a hybrid Ed25519 + ML-DSA-65 key (128
+  hex digits of `!seed`, both seeds) and a `pgcert2`, for `role=client`
+  (kind 2 or 3 proofs) and `role=server`. Not for `role=modsign`. An
+  authinfo of that kind loads as one (see "Post-quantum signatures").
 - `pass`: `start proto=pass server=<s> [user=<u>]`, then `read` returns
   `ok <user> <password>`, both quoted.
 - `mlkem768x25519`: `start proto=mlkem768x25519`, then `write <header>`
@@ -1521,10 +1683,10 @@ Still open:
    exists, so it acts as the host owner for everyone (see "Users").
 4. **`/chan` files** (`#s`) are owned by the host owner, whoever posts
    them; Inferno makes them the poster's.
-5. **Post-quantum signatures.** Certificates, proofs and module
-   signatures are Ed25519 only. ML-DSA-65 (FIPS 204) beside Ed25519 would
-   protect authentication against a quantum attacker in real time; the
-   design is in "Post-quantum signatures (proposed, not built)".
+5. **Post-quantum module signatures.** Proofs, certificates and authinfo
+   can be hybrid Ed25519 + ML-DSA-65 ("Post-quantum signatures"); module
+   signatures and Lethe's `Tauth` are still Ed25519 only. `#¤` holds only
+   an Ed25519 seed.
 6. **Post-quantum Lethe.** Its exchange is X25519 only; `rcmd` has the
    hybrid exchange (`docs/rcmd.md`).
 7. **A post-quantum default.** Should a later release make

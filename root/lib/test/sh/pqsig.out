@@ -1,0 +1,36 @@
+mldsa65
+ed25519 classic
+     64
+auth/mkauthinfo: /tmp/sh-pqsig/hsk: the signer key is hybrid; it certifies only hybrid keys
+key mldsa65
+signer mldsa65
+pgcert2 mldsa65
+mldsa65
+   3977
+key
+expires
+signer trusted
+auth/verify: post-quantum signature required
+auth/countersigner: signer and key are of different kinds
+hybrid user
+hybrid server
+hybrid required
+all post-quantum
+classic user
+test key
+mount: post-quantum signature required
+mount: post-quantum signature required
+classic server
+mount: post-quantum signature required
+mount: post-quantum signature required
+mount: untrusted signer
+classic still
+factotum
+key proto=hybrid cert=...
+factotum hybrid
+signer
+key mldsa65
+signer mldsa65
+pgcert2 mldsa65
+getauthinfo: this signer certifies only hybrid keys
+verified
