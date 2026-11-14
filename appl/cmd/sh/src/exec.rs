@@ -221,8 +221,13 @@ impl Shell {
 
     /// Runs a whole script, stopping only for `exit`.
     pub fn run_src(&mut self, src: &str) -> Flow<()> {
+        self.run_src_in(src, &Io::std())
+    }
+
+    /// Runs `src` with its standard files as `io` has them.
+    fn run_src_in(&mut self, src: &str, io: &Io) -> Flow<()> {
         match parse::parse(src) {
-            Ok(items) => self.run_items(&items, &Io::std()),
+            Ok(items) => self.run_items(&items, io),
             Err(crate::lex::SyntaxError::Incomplete) => {
                 self.fail("syntax error: unexpected end of input");
                 Ok(())
@@ -594,7 +599,7 @@ impl Shell {
     /// Runs a function, a module's command or a builtin.
     pub(crate) fn run_argv(&mut self, argv: &[String], io: &Io) -> Flow<String> {
         if let Some(body) = self.fns.get(&argv[0]).cloned() {
-            return self.call_fn(&body, argv);
+            return self.call_fn(&body, argv, io);
         }
         if let Some(m) = self.cmd_module(&argv[0]) {
             return self.mod_cmd(m, argv, io);
@@ -906,14 +911,14 @@ impl Shell {
         }
     }
 
-    pub(crate) fn std_cmd(&mut self, argv: &[String]) -> Flow<String> {
+    pub(crate) fn std_cmd(&mut self, argv: &[String], io: &Io) -> Flow<String> {
         match argv[0].as_str() {
-            "if" => self.std_if(argv),
-            "while" => self.std_while(argv),
-            "for" => self.std_for(argv),
-            "and" => self.std_and(argv),
-            "or" => self.std_or(argv),
-            "not" => self.std_not(argv),
+            "if" => self.std_if(argv, io),
+            "while" => self.std_while(argv, io),
+            "for" => self.std_for(argv, io),
+            "and" => self.std_and(argv, io),
+            "or" => self.std_or(argv, io),
+            "not" => self.std_not(argv, io),
             "~" => self.std_tilde(argv),
             "fn" => self.std_fn(argv),
             "raise" => Err(Stop::Raise(if argv.len() == 1 {
@@ -925,39 +930,39 @@ impl Shell {
         }
     }
 
-    fn std_if(&mut self, argv: &[String]) -> Flow<String> {
+    fn std_if(&mut self, argv: &[String], io: &Io) -> Flow<String> {
         if argv.len() < 3 || argv.len() > 4 {
             self.status = String::from("usage: if cond then [else]");
             return Ok(self.status.clone());
         }
-        self.run_block(&argv[1])?;
+        self.run_block_in(&argv[1], io)?;
         if self.status.is_empty() {
-            self.run_block(&argv[2])?;
+            self.run_block_in(&argv[2], io)?;
         } else if argv.len() == 4 {
-            self.run_block(&argv[3])?;
+            self.run_block_in(&argv[3], io)?;
         } else {
             self.status.clear();
         }
         Ok(self.status.clone())
     }
 
-    fn std_while(&mut self, argv: &[String]) -> Flow<String> {
+    fn std_while(&mut self, argv: &[String], io: &Io) -> Flow<String> {
         if argv.len() != 3 {
             self.status = String::from("usage: while cond body");
             return Ok(self.status.clone());
         }
         loop {
-            self.run_block(&argv[1])?;
+            self.run_block_in(&argv[1], io)?;
             if !self.status.is_empty() {
                 self.status.clear();
                 break;
             }
-            self.run_block(&argv[2])?;
+            self.run_block_in(&argv[2], io)?;
         }
         Ok(self.status.clone())
     }
 
-    fn std_for(&mut self, argv: &[String]) -> Flow<String> {
+    fn std_for(&mut self, argv: &[String], io: &Io) -> Flow<String> {
         if argv.len() < 4 || argv[2] != "in" || !argv.last().is_some_and(|s| s.starts_with('{')) {
             self.status = String::from("usage: for var in list body");
             return Ok(self.status.clone());
@@ -967,18 +972,18 @@ impl Shell {
         let values: Vec<String> = argv[3..argv.len() - 1].to_vec();
         for value in values {
             self.set_var(&var, vec![value], false);
-            self.run_block(&body)?;
+            self.run_block_in(&body, io)?;
         }
         Ok(self.status.clone())
     }
 
-    fn std_and(&mut self, argv: &[String]) -> Flow<String> {
+    fn std_and(&mut self, argv: &[String], io: &Io) -> Flow<String> {
         if argv.len() < 3 {
             self.status = String::from("usage: and cmd ...");
             return Ok(self.status.clone());
         }
         for cmd in &argv[1..] {
-            self.run_block(cmd)?;
+            self.run_block_in(cmd, io)?;
             if !self.status.is_empty() {
                 break;
             }
@@ -986,13 +991,13 @@ impl Shell {
         Ok(self.status.clone())
     }
 
-    fn std_or(&mut self, argv: &[String]) -> Flow<String> {
+    fn std_or(&mut self, argv: &[String], io: &Io) -> Flow<String> {
         if argv.len() < 3 {
             self.status = String::from("usage: or cmd ...");
             return Ok(self.status.clone());
         }
         for cmd in &argv[1..] {
-            self.run_block(cmd)?;
+            self.run_block_in(cmd, io)?;
             if self.status.is_empty() {
                 break;
             }
@@ -1000,12 +1005,12 @@ impl Shell {
         Ok(self.status.clone())
     }
 
-    fn std_not(&mut self, argv: &[String]) -> Flow<String> {
+    fn std_not(&mut self, argv: &[String], io: &Io) -> Flow<String> {
         if argv.len() != 2 {
             self.status = String::from("usage: not cmd");
             return Ok(self.status.clone());
         }
-        self.run_block(&argv[1])?;
+        self.run_block_in(&argv[1], io)?;
         self.status = if self.status.is_empty() {
             String::from("false")
         } else {
@@ -1038,10 +1043,10 @@ impl Shell {
         Ok(String::new())
     }
 
-    fn call_fn(&mut self, body: &str, argv: &[String]) -> Flow<String> {
+    fn call_fn(&mut self, body: &str, argv: &[String], io: &Io) -> Flow<String> {
         let saved = self.vars.get("*").cloned();
         self.set_var("*", argv[1..].to_vec(), false);
-        let result = self.run_block(body);
+        let result = self.run_block_in(body, io);
         match saved {
             Some(v) => {
                 self.vars.insert(String::from("*"), v);
@@ -1055,12 +1060,18 @@ impl Shell {
     }
 
     pub(crate) fn run_block(&mut self, src: &str) -> Flow<()> {
+        self.run_block_in(src, &Io::std())
+    }
+
+    /// Runs a `{...}` block with the redirections of the command that ran
+    /// it: `f > file` sends what function `f` writes to `file`.
+    fn run_block_in(&mut self, src: &str, io: &Io) -> Flow<()> {
         let inner = src.trim();
         let inner = inner
             .strip_prefix('{')
             .and_then(|s| s.strip_suffix('}'))
             .unwrap_or(inner);
-        self.run_src(inner)
+        self.run_src_in(inner, io)
     }
 }
 
