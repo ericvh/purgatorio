@@ -19,8 +19,7 @@
 //! snarf buffer, as input); the wheel scrolls three lines; in the scroll
 //! bar, button 1 scrolls back by the lines above the pointer, button 3
 //! forward, and button 2 jumps to that point in the text. The snarf
-//! buffer is `/dev/snarf` when the namespace has one, and the window's
-//! own otherwise.
+//! buffer is `/dev/snarf` (`#^`), shared with rio, acme and the host.
 //!
 //! The window ends when the shell does, killing the shell's process
 //! group. When the window itself is killed, a watcher (`draw/sh -W pid`,
@@ -62,14 +61,14 @@ fn progctl(pid: u32, msg: &str) {
     }
 }
 
-/// The snarf buffer: `/dev/snarf` if there is one, else a local copy.
-struct Snarf {
-    local: String,
-}
+/// The snarf buffer, `/dev/snarf`.
+struct Snarf;
 
 impl Snarf {
     fn get(&self) -> String {
-        std::fs::read_to_string("/dev/snarf").unwrap_or_else(|_| self.local.clone())
+        std::fs::read("/dev/snarf")
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
     }
 
     fn put(&mut self, s: String) {
@@ -80,7 +79,6 @@ impl Snarf {
         {
             let _ = f.write_all(s.as_bytes());
         }
-        self.local = s;
     }
 }
 
@@ -703,9 +701,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         q: 0,
         org: 0,
         sel: (0, 0),
-        snarf: Snarf {
-            local: String::new(),
-        },
+        snarf: Snarf,
         sh,
         to_sh: Some(File::from(in_w)),
         from_sh: File::from(out_r),
