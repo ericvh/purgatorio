@@ -107,6 +107,11 @@ struct Mk {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's mk prints `Usage:` and fails with `fail:error`.
+    run(args).map_err(|e| e.usage_exits("Usage: ", "fail:error"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let usage = || {
         Error::from(
             "usage: mk [-f file] [-n] [-a] [-e] [-t] [-k] [-i] [-d[egp]] [-wtarget,...] [targets ...]",
@@ -260,7 +265,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     if mk.errors > 0 {
-        purgatorio::exits("error");
+        purgatorio::exits("fail:error");
     }
     Ok(())
 }
@@ -498,7 +503,7 @@ impl Mk {
         self.errors += 1;
         if !self.opts.keep_going {
             self.drain();
-            purgatorio::exits("error");
+            purgatorio::exits("fail:error");
         }
         Err(())
     }
@@ -538,7 +543,7 @@ impl Mk {
                 Ok(w) => (w.pid, w.status),
                 Err(e) => {
                     eprintln!("mk: {e}");
-                    purgatorio::exits("error");
+                    purgatorio::exits("fail:error");
                 }
             },
         };
@@ -608,7 +613,7 @@ impl Mk {
             Some(State::Busy) => {
                 eprintln!("mk: cycle in graph detected at target {name}");
                 self.drain();
-                purgatorio::exits("error");
+                purgatorio::exits("fail:error");
             }
             Some(State::Running(_)) => return Ok(Step::Wait),
             Some(&State::Done(t)) => return Ok(Step::Done(t)),

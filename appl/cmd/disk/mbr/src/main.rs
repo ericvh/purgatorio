@@ -33,6 +33,11 @@ const MESSAGE: &[u8] = b"not a bootable disk\r\n\0";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // As Inferno's mbr: any failure is `fail:error`.
+    run(args).map_err(|e| e.fails_as("fail:error"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let (mut plan9, mut code_file) = (false, None);
     while let Some(c) = arg.opt() {

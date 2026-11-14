@@ -13,6 +13,11 @@ const USAGE: &str = "install/wrap2list [-i] [-r root] [file ...]";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's wrap2list prints `Usage:` and exits with no status.
+    run(args).map_err(|e| e.usage_exits("Usage: ", ""))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let (mut init, mut root) = (false, String::from("/"));
     while let Some(c) = arg.opt() {

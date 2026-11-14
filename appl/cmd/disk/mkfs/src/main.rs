@@ -264,7 +264,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             &mut |f| files.push(f.clone()),
         );
         if failed {
-            purgatorio::exits("error");
+            purgatorio::exits("fail:error");
         }
         for f in &files {
             m.file(f)?;
@@ -274,7 +274,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     m.kfscmd("disallow");
     m.kfscmd("sync");
     if errs > 0 {
-        purgatorio::exits("skipped protos");
+        purgatorio::exits("fail:skipped protos");
     }
     if m.archive && !m.list {
         m.out.extend_from_slice(b"end of archive\n");

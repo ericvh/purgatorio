@@ -43,7 +43,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     if failed {
         // The messages are already printed.
-        purgatorio::exits("error");
+        purgatorio::exits("fail:errors");
     }
     Ok(())
 }
