@@ -32,6 +32,10 @@
 //! each new UDP remote, gets back the first message it sends, then
 //! `from` and the remote's address. `netsrv ask addr text` dials `addr`,
 //! sends `text` and prints the reply.
+//!
+//! `netsrv venti` starts a Venti server (venti(6), protocol version 02)
+//! that keeps its blocks in memory for as long as it runs, one connection
+//! at a time.
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -43,7 +47,7 @@ use purgatorio::dial::{self, Connection};
 use purgatorio::{Context, Error};
 
 const SELF: &str = "/bin/test/netsrv.wasm";
-const USAGE: &str = "usage: netsrv dns|ntp|http|whois|telnet | netsrv smtp log | netsrv tftp get|put addr file [text] | netsrv virgil addr query | netsrv bootp addr ether [type [ip]] | netsrv rip addr version route ... | netsrv echo tcp|udp host | netsrv ask addr text";
+const USAGE: &str = "usage: netsrv dns|ntp|http|whois|telnet|venti | netsrv smtp log | netsrv tftp get|put addr file [text] | netsrv virgil addr query | netsrv bootp addr ether [type [ip]] | netsrv rip addr version route ... | netsrv echo tcp|udp host | netsrv ask addr text";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -68,7 +72,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let extra: Vec<String> = argv[2..].to_vec();
     let proto = match kind.as_str() {
         "dns" | "ntp" => "udp",
-        "http" | "whois" | "telnet" => "tcp",
+        "http" | "whois" | "telnet" | "venti" => "tcp",
         "smtp" if extra.len() == 1 => "tcp",
         "echo" if extra.len() == 2 && (extra[0] == "tcp" || extra[0] == "udp") => extra[0].as_str(),
         _ => return Err(Error::from(USAGE)),
@@ -112,6 +116,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let local = dial::local(&ann.dir)?;
     let port = local.rsplit('!').next().unwrap_or("0").to_string();
     let _ = purgatorio::file2chan::write_fd(1, format!("R{port}").as_bytes());
+    let mut store = venti::MemStore::new();
     loop {
         let mut conn = dial::listen(&ann.dir)?;
         let mut f = data(&mut conn)?;
@@ -122,12 +127,46 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             "whois" => whois(&mut f),
             "smtp" => smtp(&mut f, &extra[0]),
             "echo" => echo(&mut f, &conn.dir),
+            "venti" => venti_conn(&mut f, &mut store).map_err(|e| std::io::Error::other(e.0)),
             _ => telnet(&mut f),
         };
         drop(f);
         let mut ctl = File::from(conn.ctl);
         let _ = ctl.write_all(b"hangup");
     }
+}
+
+/// Serves one Venti connection from `store`.
+fn venti_conn(f: &mut File, store: &mut venti::MemStore) -> Result<(), Error> {
+    use venti::{Msg, Venti};
+    let version = venti::version(f).map_err(Error)?;
+    while let Some(body) = venti::read_frame(f).map_err(Error)? {
+        let (tag, m) = Msg::unpack(&body).map_err(Error)?;
+        let r = match m {
+            Msg::Thello { version: v, .. } if v == version => Msg::Rhello {
+                sid: String::from("netsrv"),
+                crypto: 0,
+                codec: 0,
+            },
+            Msg::Thello { .. } => Msg::Rerror(String::from("bad version in hello")),
+            Msg::Tping => Msg::Rping,
+            Msg::Tsync => Msg::Rsync,
+            Msg::Tgoodbye => return Ok(()),
+            Msg::Tread {
+                score,
+                btype,
+                count,
+            } => store
+                .read(&score, btype, count as usize)
+                .map_or_else(Msg::Rerror, Msg::Rread),
+            Msg::Twrite { btype, data } => store
+                .write(btype, &data)
+                .map_or_else(Msg::Rerror, Msg::Rwrite),
+            _ => Msg::Rerror(String::from("unexpected message")),
+        };
+        f.write_all(&r.pack(tag).map_err(Error)?)?;
+    }
+    Ok(())
 }
 
 fn data(conn: &mut Connection) -> Result<File, Error> {

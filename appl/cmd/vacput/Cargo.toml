@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-vacput"
+description = "vacput: write files to a Venti server as a vac archive"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vacput"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+venti.workspace = true
+
+[lints]
+workspace = true
