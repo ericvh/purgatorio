@@ -8,8 +8,9 @@ use alloc::vec::Vec;
 
 use purg_abi::error;
 use purg_auth::modsig::{self, DIGEST, Trust};
+use purg_auth::sig::Id;
 
-use crate::auth::{PUBLIC, read_file};
+use crate::auth::read_file;
 use crate::error::{Error, Result};
 use crate::pgrp::Pgrp;
 use crate::prog::Prog;
@@ -59,6 +60,10 @@ impl Level {
 #[derive(Clone, Default)]
 pub struct ModPolicy {
     pub level: Level,
+    /// Only hybrid Ed25519 + ML-DSA-65 signatures count; an Ed25519 one
+    /// fails with `post-quantum signature required`. Like the level, it
+    /// can be turned on and never off.
+    pub hybrid: bool,
     /// The namespace the trust lists are read in: a copy of the prog's
     /// namespace made when the level first left `none`, so a confined
     /// prog cannot bind its own lists over them.
@@ -71,31 +76,58 @@ pub struct Module {
     /// The name it was loaded by.
     pub path: String,
     pub digest: [u8; DIGEST],
-    /// The signing keys of its trusted signatures. Empty when none was
-    /// verified.
-    pub signers: Vec<[u8; PUBLIC]>,
+    /// The signing keys of its trusted signatures (a hybrid key by its
+    /// id). Empty when none was verified.
+    pub signers: Vec<Id>,
+}
+
+impl ModPolicy {
+    /// How `/prog/<pid>/module` and `ctl` spell it: the level, then
+    /// `hybrid` when only hybrid signatures count.
+    pub fn text(&self) -> String {
+        let mut s = String::from(self.level.as_str());
+        if self.hybrid {
+            s.push_str(" hybrid");
+        }
+        s
+    }
+}
+
+/// Parses `<level> [hybrid]`, as `ctl` takes it after `modules`.
+pub fn parse_policy(s: &str) -> Option<(Level, bool)> {
+    let mut words = s.split_ascii_whitespace();
+    let level = Level::parse(words.next()?)?;
+    let hybrid = match words.next() {
+        None => false,
+        Some("hybrid") => true,
+        Some(_) => return None,
+    };
+    words.next().is_none().then_some((level, hybrid))
 }
 
 impl ModPolicy {
     /// Checks a module's signatures against the lists in the pinned
-    /// namespace. Returns the trusted signing keys.
+    /// namespace. Returns the trusted signing keys. A hybrid signature is
+    /// checked on a stack deep enough for ML-DSA.
     fn verify(
         &self,
+        platform: &dyn purg_platform::Platform,
         info: &modsig::Info<'_>,
         now: u64,
-    ) -> core::result::Result<Vec<[u8; PUBLIC]>, &'static str> {
+    ) -> core::result::Result<Vec<Id>, &'static str> {
         let (anchors, revoked) = match &self.trust {
             Some(pgrp) => trust_lists(pgrp, MODULES),
             None => (Vec::new(), Some(Vec::new())),
         };
-        modsig::check(
-            info,
-            &Trust {
-                anchors: &anchors,
-                revoked: revoked.as_deref(),
-                now,
-            },
-        )
+        let trust = Trust {
+            anchors: &anchors,
+            revoked: revoked.as_deref(),
+            now,
+            hybrid: self.hybrid,
+        };
+        crate::auth::deep(platform, modsig::has_hybrid(info), || {
+            modsig::check(info, &trust)
+        })
     }
 }
 
@@ -103,14 +135,16 @@ impl ModPolicy {
 /// the revocation list in `pgrp`. A missing anchor list trusts nobody. A
 /// missing revocation list revokes nothing; one that is there but cannot
 /// be read or parsed is `None`, which fails closed.
-pub fn trust_lists(pgrp: &Pgrp, anchors: &str) -> (Vec<[u8; PUBLIC]>, Option<Vec<[u8; PUBLIC]>>) {
-    // Module signatures are Ed25519: a hybrid id in either list names no
-    // module signer, and is not a parse error.
+///
+/// The lists are typed (`docs/auth.md`, "Post-quantum signatures"): a
+/// hybrid signer is listed as `mldsa65:` and its id, and matches only
+/// hybrid signatures.
+pub fn trust_lists(pgrp: &Pgrp, anchors: &str) -> (Vec<Id>, Option<Vec<Id>>) {
     let keys = read_file(pgrp, anchors, MAX_LIST)
-        .map(|t| purg_auth::keys::ed25519(&purg_auth::keys::parse_list_lenient(&t)))
+        .map(|t| purg_auth::keys::parse_list_lenient(&t))
         .unwrap_or_default();
     let revoked = match read_file(pgrp, REVOKED, MAX_LIST) {
-        Some(t) => purg_auth::keys::parse_list(&t).map(|l| purg_auth::keys::ed25519(&l)),
+        Some(t) => purg_auth::keys::parse_list(&t),
         None if pgrp.namec(REVOKED, "/").is_ok() => None,
         None => Some(Vec::new()),
     };
@@ -128,7 +162,7 @@ impl Prog {
         let mut signers = Vec::new();
         if policy.level != Level::None {
             let now = self.kernel.platform.now_ns() / 1_000_000_000;
-            match policy.verify(&info, now) {
+            match policy.verify(&*self.kernel.platform, &info, now) {
                 Ok(s) => signers = s,
                 Err(e) if policy.level == Level::Require => return Err(Error::new(e)),
                 Err(e) => {

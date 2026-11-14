@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use purg_abi::mode;
 use purg_abi::mount::{MAFTER, MCREATE, MREPL};
-use purg_auth::cert::Cert;
+use purg_auth::cert::{AnyCert, Cert};
 use purg_auth::keys::list_line;
 use purg_auth::modsig;
+use purg_auth::sig::Secret;
 use purg_core::devram::RamTree;
 use purg_core::devroot::StaticTree;
 use purg_core::modsig::Level;
@@ -174,7 +175,7 @@ fn module(tag: &[u8]) -> Vec<u8> {
 }
 
 fn signed(tag: &[u8], seed: &[u8; 32]) -> Vec<u8> {
-    modsig::sign(&module(tag), seed, Vec::new()).unwrap()
+    modsig::sign(&module(tag), &Secret::Ed25519(*seed), Vec::new()).unwrap()
 }
 
 fn set_level(p: &mut Prog, pid: u32, level: &str) -> Result<(), String> {
@@ -342,13 +343,23 @@ fn require_refuses_each_failure() {
     );
 
     // Two signers: one trusted is enough.
-    let both = modsig::sign(&signed(b"both", &OTHER), &SIGNER, Vec::new()).unwrap();
+    let both = modsig::sign(
+        &signed(b"both", &OTHER),
+        &Secret::Ed25519(SIGNER),
+        Vec::new(),
+    )
+    .unwrap();
     assert_eq!(load(&mut p, "/bin/both.wasm", &both), Ok(()));
 
     // A certificate chain to a trusted key, and its expiry.
     let mut cert = Cert::new("builder", public(&OTHER), 2000).unwrap();
     cert.sign(&ROOT).unwrap();
-    let chained = modsig::sign(&module(b"chain"), &OTHER, vec![cert]).unwrap();
+    let chained = modsig::sign(
+        &module(b"chain"),
+        &Secret::Ed25519(OTHER),
+        vec![AnyCert::V1(cert)],
+    )
+    .unwrap();
     assert_eq!(load(&mut p, "/bin/chain.wasm", &chained), Ok(()));
     mock.now.store(2000, Ordering::Relaxed);
     assert_eq!(
@@ -569,7 +580,7 @@ fn the_system_default_covers_the_first_prog() {
     write_file(&mut p, "/bin/plain.wasm", &module(b"p"));
     write_file(&mut p, "/bin/good.wasm", &signed(b"g", &SIGNER));
     let procs = p.kernel.procs.clone();
-    procs.set_module_policy(Level::Require, &p.pgrp);
+    procs.set_module_policy(Level::Require, false, &p.pgrp);
     // The prog that was already there is not touched.
     assert_eq!(p.proc.module_policy().level, Level::None);
     let first = Prog::new(p.kernel.clone(), p.pgrp.clone());
@@ -584,7 +595,7 @@ fn the_system_default_covers_the_first_prog() {
     // A signed first prog gets as far as the engine.
     let (_, res) = purg_vm::run_command(ctx, "/bin/good.wasm");
     assert_eq!(res.unwrap_err().as_str(), "/bin/good.wasm: not run");
-    procs.set_module_policy(Level::None, &p.pgrp);
+    procs.set_module_policy(Level::None, false, &p.pgrp);
     let next = Prog::new(p.kernel.clone(), p.pgrp.clone());
     assert_eq!(next.proc.module_policy().level, Level::None);
 }

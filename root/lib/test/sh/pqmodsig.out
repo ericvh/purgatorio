@@ -1,0 +1,36 @@
+auth/sign: no key
+auth/sign: /tmp/sh-pqmodsig/eroot: not a hybrid key
+verify hybrid
+digest ok
+abi 0.11
+signer hybrid trusted builder
+verify classic
+digest ok
+abi 0.11
+signer ed25519 classical
+auth/verify: post-quantum signature required
+verify both
+digest ok
+abi 0.11
+signer hybrid trusted builder
+signer ed25519 classical
+verify bare
+digest ok
+abi 0.11
+signer hybrid untrusted
+auth/verify: untrusted signer
+2
+require hybrid
+a hybrid signature runs
+and one beside an Ed25519 signature
+auth/modpolicy: /tmp/sh-pqmodsig/bin/classic.wasm: post-quantum signature required
+auth/modpolicy: /tmp/sh-pqmodsig/bin/bare.wasm: untrusted signer
+an Ed25519 policy takes Ed25519 signatures
+and either kind
+listed
+a listed hybrid key runs
+confused
+auth/modpolicy: /tmp/sh-pqmodsig/bin/hybrid.wasm: untrusted signer
+Ed25519 still
+revoked
+auth/modpolicy: /tmp/sh-pqmodsig/bin/hybrid.wasm: certificate revoked

@@ -121,10 +121,11 @@ impl Proc {
         self.modpolicy.lock().clone()
     }
 
-    /// Tightens the module policy to `level`. The first move off `none`
-    /// pins a copy of this prog's namespace for the trust lists. Lowering
-    /// the level is [`error::EPERM`].
-    pub fn tighten_module_policy(&self, level: crate::modsig::Level) -> Result<()> {
+    /// Tightens the module policy to `level`, and with `hybrid` to take
+    /// only hybrid signatures. The first move off `none` pins a copy of
+    /// this prog's namespace for the trust lists. Lowering the level is
+    /// [`error::EPERM`]; leaving `hybrid` out keeps it as it was.
+    pub fn tighten_module_policy(&self, level: crate::modsig::Level, hybrid: bool) -> Result<()> {
         let pin = {
             let p = self.modpolicy.lock();
             if level < p.level {
@@ -141,6 +142,7 @@ impl Proc {
                 p.trust = pinned;
             }
         }
+        p.hybrid |= hybrid;
         Ok(())
     }
 
@@ -441,9 +443,13 @@ impl Procs {
     /// Sets the system default module policy: that of every prog made
     /// with [`Prog::new`] from now on. `pgrp` is the namespace its trust
     /// lists are read in; a copy is kept.
-    pub fn set_module_policy(&self, level: crate::modsig::Level, pgrp: &Pgrp) {
+    pub fn set_module_policy(&self, level: crate::modsig::Level, hybrid: bool, pgrp: &Pgrp) {
         let trust = (level != crate::modsig::Level::None).then(|| Arc::new(pgrp.fork()));
-        *self.modpolicy.lock() = ModPolicy { level, trust };
+        *self.modpolicy.lock() = ModPolicy {
+            level,
+            hybrid,
+            trust,
+        };
     }
 
     /// The host owner (Inferno's `eve`): the platform's user, which the

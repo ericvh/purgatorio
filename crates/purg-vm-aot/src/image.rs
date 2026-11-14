@@ -19,13 +19,18 @@
 //! a compilation of that module, for this target". The loader checks it
 //! against `/lib/keys/aot` and `/lib/keys/revoked` in the boot namespace,
 //! and runs the image only for a prog whose module has that digest.
+//! Image signatures are Ed25519 only: a hybrid entry (which a module may
+//! carry) makes the file bad, so checking an image never needs the deep
+//! stack ML-DSA would.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use purg_auth::cert::AnyCert;
 use purg_auth::modsig::{self, DIGEST, Entry, Trust};
+use purg_auth::sig::Public;
 use purg_auth::{PUBLIC, SEED};
 use sha2::{Digest as _, Sha256};
 
@@ -225,6 +230,9 @@ impl<'a> Signed<'a> {
             .filter(|&e| e <= file.len())
             .ok_or(BAD_IMAGE)?;
         let entries = modsig::parse(&file[end..]).ok_or(BAD_IMAGE)?;
+        if entries.iter().any(Entry::is_hybrid) {
+            return Err(BAD_IMAGE);
+        }
         Ok(Signed {
             kind,
             module,
@@ -246,10 +254,7 @@ impl<'a> Signed<'a> {
             return Err(BAD_IMAGE);
         }
         let digest: [u8; DIGEST] = Sha256::digest(self.image).into();
-        if trust
-            .revoked
-            .is_none_or(|r| r.contains(module) || r.contains(&digest))
-        {
+        if trust.digest_revoked(module) || trust.digest_revoked(&digest) {
             return Err(modsig::MODULE_REVOKED);
         }
         let msg = message(kind, module, &digest);
@@ -278,7 +283,11 @@ impl<'a> Signed<'a> {
         let digest: [u8; DIGEST] = Sha256::digest(image).into();
         let msg = message(kind, module, &digest);
         let key: [u8; PUBLIC] = purg_auth::public_key(seed);
-        let entry = Entry::new(key, purg_auth::sign(seed, &msg), certs)?;
+        let entry = Entry::new(
+            Public::Ed25519(key),
+            purg_auth::sign(seed, &msg).to_vec(),
+            certs.into_iter().map(AnyCert::V1).collect(),
+        )?;
         let mut out = Vec::with_capacity(SIGNED_HEADER + image.len() + 128);
         out.extend_from_slice(SIGNED_MAGIC);
         out.extend_from_slice(&[kind.byte(), 0, 0, 0]);
@@ -297,11 +306,24 @@ mod tests {
     const SEED_A: [u8; SEED] = [7; SEED];
     const SEED_B: [u8; SEED] = [9; SEED];
 
-    fn trust<'a>(anchors: &'a [[u8; PUBLIC]], revoked: &'a [[u8; PUBLIC]]) -> Trust<'a> {
+    use alloc::boxed::Box;
+    use purg_auth::sig::Id;
+
+    fn ids(k: &[[u8; PUBLIC]]) -> &'static [Id] {
+        Box::leak(
+            k.iter()
+                .map(Id::from)
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        )
+    }
+
+    fn trust(anchors: &[[u8; PUBLIC]], revoked: &[[u8; PUBLIC]]) -> Trust<'static> {
         Trust {
-            anchors,
-            revoked: Some(revoked),
+            anchors: ids(anchors),
+            revoked: Some(ids(revoked)),
             now: 0,
+            hybrid: false,
         }
     }
 
@@ -336,9 +358,10 @@ mod tests {
             assert!(s.verify(Kind::Native, &module, &trust(&[a], &[r])).is_err());
         }
         let damaged = Trust {
-            anchors: &[a],
+            anchors: ids(&[a]),
             revoked: None,
             now: 0,
+            hybrid: false,
         };
         assert!(s.verify(Kind::Native, &module, &damaged).is_err());
         // A changed byte anywhere in the image breaks the signature, and
@@ -355,6 +378,17 @@ mod tests {
         for n in 0..file.len() {
             assert!(Signed::parse(&file[..n]).is_err(), "{n}");
         }
+        // A hybrid entry makes the file bad, wherever it is.
+        let mut h = [0u8; purg_auth::sig::HYBRID_SEED];
+        h[0] = 1;
+        let hybrid = purg_auth::sig::Secret::Hybrid(purg_auth::sig::HybridSecret(h));
+        let entry = Entry::sign(&hybrid, Vec::new(), &[0; DIGEST], b"").unwrap();
+        let mut f = file.clone();
+        let sig = f.len() - (2 + 1 + 64 + 32);
+        f.truncate(sig);
+        let ed = Signed::parse(&file).unwrap().entries[0].clone();
+        f.extend_from_slice(&modsig::encode(&[ed, entry]));
+        assert_eq!(Signed::parse(&f).err(), Some(BAD_IMAGE));
         // The same inputs give the same bytes.
         assert_eq!(
             file,

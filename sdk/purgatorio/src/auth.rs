@@ -297,9 +297,14 @@ fn agent_key() -> Option<([u8; PUBLIC], Option<Cert>)> {
     Some((public, purg_auth::keys::find_cert(&ctl)))
 }
 
-/// Asks the guest factotum for a module signature entry
-/// (`docs/signing.md`). `None` when it is not mounted or has no key.
-fn factotum_module(digest: &[u8; modsig::DIGEST], abi: &[u8]) -> Option<modsig::Entry> {
+/// Asks the guest factotum for a module signature entry by its key of
+/// `proto` (`ed25519` or `hybrid`; `docs/signing.md`). `None` when it is
+/// not mounted or has no such key.
+fn factotum_module(
+    proto: &str,
+    digest: &[u8; modsig::DIGEST],
+    abi: &[u8],
+) -> Option<modsig::Entry> {
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -307,12 +312,13 @@ fn factotum_module(digest: &[u8; modsig::DIGEST], abi: &[u8]) -> Option<modsig::
         .ok()?;
     let mut rpc = |req: &[u8]| -> Option<Vec<u8>> {
         f.write_all(req).ok()?;
-        let mut buf = vec![0u8; 16384];
+        // A hybrid entry with a pgcert2 chain runs to tens of KB.
+        let mut buf = vec![0u8; 65536];
         let n = f.read(&mut buf).ok()?;
         buf.truncate(n);
         Some(buf)
     };
-    if rpc(b"start proto=ed25519 role=modsign")? != b"ok" {
+    if rpc(format!("start proto={proto} role=modsign").as_bytes())? != b"ok" {
         return None;
     }
     let mut w = b"write ".to_vec();
@@ -324,17 +330,34 @@ fn factotum_module(digest: &[u8; modsig::DIGEST], abi: &[u8]) -> Option<modsig::
     modsig::Entry::parse(rpc(b"read")?.strip_prefix(b"ok ")?)
 }
 
-/// Signs a module's digest and ABI version with a key held by an agent:
-/// the guest factotum, then `#¤`. The private key never reaches this prog.
-pub fn sign_module(digest: &[u8; modsig::DIGEST], abi: &[u8]) -> Result<modsig::Entry, Error> {
-    if let Some(e) = factotum_module(digest, abi) {
+/// Signs a module's digest and ABI version with a key held by an agent.
+/// The private key never reaches this prog. With `hybrid` the key is the
+/// guest factotum's hybrid Ed25519 + ML-DSA-65 key; otherwise it is
+/// factotum's Ed25519 key, then `#¤`'s, then factotum's hybrid key.
+pub fn sign_module(
+    digest: &[u8; modsig::DIGEST],
+    abi: &[u8],
+    hybrid: bool,
+) -> Result<modsig::Entry, Error> {
+    if hybrid {
+        return factotum_module("hybrid", digest, abi)
+            .ok_or_else(|| Error::from(abi::auth::NO_KEY));
+    }
+    if let Some(e) = factotum_module("ed25519", digest, abi) {
         return Ok(e);
     }
-    let (public, cert) = agent_key().ok_or_else(|| Error::from(abi::auth::NO_KEY))?;
+    let Some((public, cert)) = agent_key() else {
+        return factotum_module("hybrid", digest, abi)
+            .ok_or_else(|| Error::from(abi::auth::NO_KEY));
+    };
     let msg = modsig::message(digest, abi).ok_or_else(|| Error::from(modsig::BAD_SIGNATURE))?;
     let sig = agent_sign(&msg).ok_or_else(|| Error::from(abi::auth::NO_KEY))?;
-    let certs = cert.filter(|c| c.key == public).into_iter().collect();
-    modsig::Entry::new(public, sig, certs).map_err(Error::from)
+    let certs = cert
+        .filter(|c| c.key == public)
+        .map(fmt::cert::AnyCert::V1)
+        .into_iter()
+        .collect();
+    modsig::Entry::new(fmt::sig::Public::Ed25519(public), sig.to_vec(), certs).map_err(Error::from)
 }
 
 /// Builds the proof for `challenge` as `user`, for attach name `aname`.
