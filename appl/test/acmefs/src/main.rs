@@ -15,6 +15,13 @@
 //! - `plumb`: runs `B -2 /tmp/acme/plumbed` and waits for acme to open
 //!   the file from the plumber's `edit` port; reports the window's name
 //!   and the selection (its second line).
+//! - `edit`: runs `Edit` commands and the other built-in commands in
+//!   windows it makes, by writing their text to a tag and an `x` event
+//!   for it, and reports the bodies, dots, `ctl` fields and the dump
+//!   file they lead to.
+//! - `win`: the name, dot and body (the start of a long one) of each
+//!   window. `layout` adds what `Dump` writes of the columns and
+//!   windows, run in the first window.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -298,6 +305,270 @@ fn plumb(out: &mut Vec<String>) -> Result<(), String> {
     Err(String::from("acme opened no window"))
 }
 
+/// A window made through `new/ctl` and named `name`: its id.
+fn window(name: &str) -> Result<String, String> {
+    let mut ctl = open(&format!("{ACME}/new/ctl"))?;
+    let id = nums(&readf(&mut ctl)).first().cloned().unwrap_or_default();
+    put(&format!("{ACME}/{id}/ctl"), &format!("name {name}\n"))?;
+    Ok(id)
+}
+
+/// Executes `cmd` in window `id` as a button 2 click on it in the tag
+/// would, and clears the tag after.
+fn exec(id: &str, cmd: &str) -> Result<(), String> {
+    let w = format!("{ACME}/{id}");
+    put(&format!("{w}/ctl"), "cleartag\n")?;
+    put(&format!("{w}/tag"), cmd)?;
+    let q1 = read(&format!("{w}/tag"))?.chars().count();
+    let q0 = q1 - cmd.chars().count();
+    put(&format!("{w}/event"), &format!("Mx{q0} {q1}\n"))?;
+    // The command may have deleted the window.
+    let _ = put(&format!("{w}/ctl"), "cleartag\n");
+    Ok(())
+}
+
+/// Window `id`'s body, and its dot.
+fn state(id: &str, addr: &mut File) -> Result<String, String> {
+    let w = format!("{ACME}/{id}");
+    put(&format!("{w}/ctl"), "addr=dot\n")?;
+    let _ = addr.seek(SeekFrom::Start(0));
+    let dot = nums(&readf(addr)).join(" ");
+    Ok(format!("{:?} {dot}", read(&format!("{w}/body"))?))
+}
+
+/// Sets window `id`'s body to `text` and its dot to `q0,q1`.
+fn set(id: &str, addr: &mut File, text: &str, q0: usize, q1: usize) -> Result<(), String> {
+    let w = format!("{ACME}/{id}");
+    at(",", addr);
+    put(&format!("{w}/data"), text)?;
+    at(&format!("#{q0},#{q1}"), addr);
+    put(&format!("{w}/ctl"), "dot=addr\n")?;
+    Ok(())
+}
+
+/// The id of the (first) window named `name`.
+fn find(name: &str) -> Result<Vec<String>, String> {
+    Ok(read(&format!("{ACME}/index"))?
+        .lines()
+        .map(nums)
+        .filter(|f| f.get(5).is_some_and(|n| n == name))
+        .map(|f| f[0].clone())
+        .collect())
+}
+
+/// The body of the window whose name ends with `suffix`.
+fn body_of(suffix: &str) -> Result<String, String> {
+    for l in read(&format!("{ACME}/index"))?.lines() {
+        let f = nums(l);
+        if f.get(5).is_some_and(|n| n.ends_with(suffix)) {
+            return read(&format!("{ACME}/{}/body", f[0]));
+        }
+    }
+    Ok(String::new())
+}
+
+/// Waits until `f` holds, for at most a minute.
+fn until(what: &str, f: impl Fn() -> bool) -> Result<(), String> {
+    for _ in 0..600 {
+        if f() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(format!("{what}: timed out"))
+}
+
+fn running(name: &str) -> bool {
+    let mut v = Vec::new();
+    let _ = ps(&mut v);
+    v.first()
+        .is_some_and(|l| l.split_whitespace().any(|m| m == name))
+}
+
+/// What a dump file says: the directory, each column's place, and each
+/// window's column, kind and name (and with `y`, its place).
+fn dumped(path: &str, y: bool) -> Result<Vec<String>, String> {
+    let s = read(path)?;
+    let mut out = Vec::new();
+    let mut it = s.lines();
+    while let Some(l) = it.next() {
+        if l.starts_with("dir ") {
+            out.push(l.to_string());
+        }
+        let f: Vec<&str> = l.split(' ').collect();
+        if f.first() == Some(&"c") && f.len() == 3 {
+            out.push(format!("c {}", f[1]));
+            it.next();
+        }
+        if f.first() == Some(&"w") && f.len() == 11 {
+            let tag = it.next().unwrap_or("");
+            let name = tag.split_whitespace().next().unwrap_or("");
+            if y {
+                out.push(format!("w {} {} {} {name}", f[1], f[2], f[5]));
+            } else {
+                out.push(format!("w {} {} {name}", f[1], f[5]));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn edit(out: &mut Vec<String>) -> Result<(), String> {
+    let a = window("/tmp/acme/ea")?;
+    let b = window("/tmp/acme/eb")?;
+    let mut addr = open(&format!("{ACME}/{a}/addr"))?;
+    let mut baddr = open(&format!("{ACME}/{b}/addr"))?;
+    const T: &str = "one two\nthree four\nfive\n";
+    let cases: &[(&str, usize, usize, &str)] = &[
+        (T, 0, 0, "Edit ,s/o/0/g"),
+        (T, 0, 0, "Edit 2"),
+        (T, 0, 0, "Edit 2,3d"),
+        (T, 0, 0, "Edit /four/c/4/"),
+        (T, 0, 0, "Edit ,x/[a-z]+/ s/.*/<&>/"),
+        (T, 0, 0, "Edit ,s/([a-z]+) ([a-z]+)/\\2 \\1/g"),
+        (T, 0, 0, "Edit ,x g/w/ d"),
+        (T, 0, 0, "Edit ,y/ / c/_/"),
+        (T, 0, 0, "Edit 1m$"),
+        (T, 0, 0, "Edit {\n1d\n3d\n}"),
+        (T, 0, 0, "Edit ,|tr a-z A-Z"),
+        (T, 8, 8, "Edit <echo hi"),
+        (T, 0, 0, "Edit 9d"),
+        (T, 4, 7, "|tr a-z A-Z"),
+        (T, 4, 7, "<echo new"),
+        (T, 8, 13, ">cat"),
+    ];
+    for (text, q0, q1, cmd) in cases {
+        set(&a, &mut addr, text, *q0, *q1)?;
+        exec(&a, cmd)?;
+        out.push(format!("{cmd:?}: {}", state(&a, &mut addr)?));
+    }
+    out.push(format!("errors: {:?}", body_of("/tmp/acme/+Errors")?));
+
+    // X and Y run commands in other windows; Edit is one Undo.
+    set(&a, &mut addr, T, 0, 0)?;
+    set(&b, &mut baddr, "alpha\n", 0, 0)?;
+    exec(&a, "Edit X/e[ab]$/ $a/!/")?;
+    exec(&a, "Edit Y/(Errors|ea)$/ ,s/alpha/beta/")?;
+    out.push(format!(
+        "X, Y: a {} b {}",
+        state(&a, &mut addr)?,
+        state(&b, &mut baddr)?
+    ));
+    exec(&a, "Edit ,s/one/1/ ,s/two/2/ ,s/five/5/")?;
+    out.push(format!("before Undo: {}", state(&a, &mut addr)?));
+    exec(&a, "Undo")?;
+    out.push(format!("after Undo: {}", state(&a, &mut addr)?));
+
+    // Snarf and Paste.
+    set(&a, &mut addr, T, 4, 7)?;
+    exec(&a, "Snarf")?;
+    at("#0", &mut addr);
+    put(&format!("{ACME}/{a}/ctl"), "dot=addr\n")?;
+    exec(&a, "Paste")?;
+    out.push(format!("Paste: {}", state(&a, &mut addr)?));
+
+    // Zerox: two windows on one text.
+    exec(&a, "Zerox")?;
+    let both = find("/tmp/acme/ea")?;
+    out.push(format!("Zerox: {} windows", both.len()));
+    if let Some(z) = both.iter().find(|i| **i != a) {
+        let mut zaddr = open(&format!("{ACME}/{z}/addr"))?;
+        at("$", &mut zaddr);
+        put(&format!("{ACME}/{z}/data"), "added\n")?;
+        out.push(format!(
+            "in the other: {:?}",
+            read(&format!("{ACME}/{a}/body"))?
+        ));
+        exec(&a, "Undo")?;
+        out.push(format!(
+            "undone in the first: {:?}",
+            read(&format!("{ACME}/{z}/body"))?
+        ));
+        put(&format!("{ACME}/{z}/ctl"), "delete\n")?;
+    }
+
+    // Tab and Font change what ctl says.
+    let ctl =
+        |id: &str| -> Result<Vec<String>, String> { Ok(nums(&read(&format!("{ACME}/{id}/ctl"))?)) };
+    let tab0: i64 = ctl(&a)?[7].parse().unwrap_or(0);
+    exec(&a, "Tab 8")?;
+    let tab1: i64 = ctl(&a)?[7].parse().unwrap_or(0);
+    out.push(format!("Tab 8: {}", if tab0 > 0 { tab1 / tab0 } else { 0 }));
+    exec(&a, "Font")?;
+    out.push(format!("Font: {}", ctl(&a)?[6]));
+    exec(&a, "Font")?;
+    out.push(format!("Font again: {}", ctl(&a)?[6]));
+
+    // Kill: a command run from the window, killed from it.
+    exec(&a, "sleep 1000")?;
+    until("sleep starting", || running("sleep"))?;
+    exec(&a, "Kill")?;
+    until("sleep killed", || !running("sleep"))?;
+    out.push(String::from("Kill: killed"));
+
+    // Sort, Local and Dump: the dump says the order and the directory.
+    let z = window("/tmp/acme/ez")?;
+    let c = window("/tmp/acme/ec")?;
+    exec(&z, "Sort")?;
+    exec(&c, "Local cd /tmp/acme")?;
+    exec(&c, "Dump /tmp/acme/dump")?;
+    for l in dumped("/tmp/acme/dump", false)? {
+        out.push(format!("dump: {l}"));
+    }
+    // Load puts it back after the windows go: the first warns, as the
+    // modified window is named.
+    for id in [&b, &z, &c] {
+        put(&format!("{ACME}/{id}/ctl"), "delete\n")?;
+    }
+    exec(&a, "Load /tmp/acme/dump")?;
+    exec(&a, "Load /tmp/acme/dump")?;
+    let names: Vec<String> = read(&format!("{ACME}/index"))?
+        .lines()
+        .map(|l| nums(l).get(5).cloned().unwrap_or_default())
+        .collect();
+    out.push(format!("after Load: {}", names.join(" ")));
+    let ea = find("/tmp/acme/ea")?;
+    if let Some(id) = ea.first() {
+        out.push(format!(
+            "ea after Load: {:?}",
+            read(&format!("{ACME}/{id}/body"))?
+        ));
+    }
+    for l in read(&format!("{ACME}/index"))?.lines() {
+        let n = nums(l)[0].clone();
+        put(&format!("{ACME}/{n}/ctl"), "delete\n")?;
+    }
+    Ok(())
+}
+
+/// Each window's name, dot and the start of its body; with `layout`,
+/// the dump of the layout too.
+fn win(out: &mut Vec<String>, layout: bool) -> Result<(), String> {
+    let index = read(&format!("{ACME}/index"))?;
+    for l in index.lines() {
+        let f = nums(l);
+        let id = f[0].clone();
+        let mut a = open(&format!("{ACME}/{id}/addr"))?;
+        put(&format!("{ACME}/{id}/ctl"), "addr=dot\n")?;
+        let dot = nums(&readf(&mut a)).join(" ");
+        let body = read(&format!("{ACME}/{id}/body"))?;
+        let start: String = body.chars().take(24).collect();
+        out.push(format!(
+            "{}: dot {dot} len {} start {start:?}",
+            f.get(5).cloned().unwrap_or_default(),
+            body.chars().count()
+        ));
+    }
+    if layout && let Some(first) = index.lines().next().map(nums) {
+        let path = format!("{DIR}/layout");
+        exec(&first[0], &format!("Dump {path}"))?;
+        for l in dumped(&path, true)? {
+            out.push(format!("dump: {l}"));
+        }
+    }
+    Ok(())
+}
+
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.get(1).map(String::as_str) == Some("-r") {
@@ -314,6 +585,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         "body" => body(&mut out),
         "ps" => ps(&mut out),
         "plumb" => plumb(&mut out),
+        "edit" => edit(&mut out),
+        "win" => win(&mut out, false),
+        "layout" => win(&mut out, true),
         m => Err(format!("unknown mode {m:?}")),
     };
     if let Err(e) = r {

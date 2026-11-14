@@ -148,10 +148,15 @@ impl Frames {
     /// Waits for a frame after the `before`th, then for the screen to
     /// stay unchanged for [`QUIET`].
     fn settle(&self, before: usize, what: &str) {
+        self.settle_for(before, QUIET, what);
+    }
+
+    /// [`Frames::settle`] with the screen unchanged for `quiet`.
+    fn settle_for(&self, before: usize, quiet: Duration, what: &str) {
         let start = Instant::now();
         loop {
             let (n, last, closed) = *self.0.lock().unwrap();
-            if n > before && last.elapsed() >= QUIET {
+            if n > before && last.elapsed() >= quiet {
                 return;
             }
             assert!(!closed, "{what}: the emu closed the page");
@@ -628,4 +633,259 @@ fn fs_and_win_wasmtime() {
 #[test]
 fn fs_and_win_wasmi() {
     fs_and_win("wasmi");
+}
+
+/// acme on a fresh root with `args` (after `acme`), its page, and its
+/// console.
+fn start(root: &Root, vm: &str, args: &str) -> (common::Watched, common::Collected, Page) {
+    let mut w = common::Watched::spawn(
+        Command::new(env!("CARGO_BIN_EXE_emu"))
+            .arg("-r")
+            .arg(&root.0)
+            .arg(format!("--vm={vm}"))
+            .args(["-s", &format!("{}x{}", SIZE.0, SIZE.1), "-w"])
+            .args(["sh", "-c", &format!("acme {args}; echo acme: $status")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped()),
+    );
+    let out = common::Collected::new(w.child.stdout.take().unwrap());
+    let (host, token) = url(&w);
+    let s = connect(&host, &token);
+    let frames = Frames::start(s.try_clone().unwrap());
+    let p = Page { s, frames };
+    p.frames.settle(0, "acme's first screen");
+    (w, out, p)
+}
+
+/// Types `Exit` at the end of the row's tag, after rubbing out `typed`
+/// runes there, clicks it (`twice` when the first only warns of a
+/// modified window), and checks that acme ends well.
+fn exit(
+    mut w: common::Watched,
+    out: common::Collected,
+    mut p: Page,
+    typed: usize,
+    twice: bool,
+    vm: &str,
+) {
+    let row_end = (SIZE.0 - 6, 19 / 2);
+    p.hover(row_end.0, row_end.1);
+    p.typed(&format!("{}Exit", "\x08".repeat(typed)), "typing Exit");
+    if twice {
+        p.click(row_end.0, row_end.1, 2, "the first Exit");
+    }
+    p.pointer(row_end.0, row_end.1, 2);
+    p.pointer(row_end.0, row_end.1, 0);
+    let (status, err) = w.finish(WAIT);
+    assert!(status.success(), "{vm}: {}", common::failure(status, &err));
+    let out = String::from_utf8_lossy(&out.bytes(WAIT)).into_owned();
+    assert_eq!(out, "acme: \n", "{vm}: acme failed");
+}
+
+/// What `test/acmefs` reports of `Edit` and the other commands (see
+/// `edit` in `appl/test/acmefs`).
+const EDIT_WANT: &str = r#""Edit ,s/o/0/g": "0ne tw0\nthree f0ur\nfive\n" 0 24
+"Edit 2": "one two\nthree four\nfive\n" 8 19
+"Edit 2,3d": "one two\n" 8 8
+"Edit /four/c/4/": "one two\nthree 4\nfive\n" 14 15
+"Edit ,x/[a-z]+/ s/.*/<&>/": "<one> <two>\n<three> <four>\n<five>\n" 27 33
+"Edit ,s/([a-z]+) ([a-z]+)/\\2 \\1/g": "two one\nfour three\nfive\n" 0 24
+"Edit ,x g/w/ d": "three four\nfive\n" 0 0
+"Edit ,y/ / c/_/": "_ _ _" 4 5
+"Edit 1m$": "three four\nfive\none two\n" 16 24
+"Edit {\n1d\n3d\n}": "three four\n" 11 11
+"Edit ,|tr a-z A-Z": "ONE TWO\nTHREE FOUR\nFIVE\n" 0 24
+"Edit <echo hi": "one two\nhi\nthree four\nfive\n" 8 11
+"Edit 9d": "one two\nthree four\nfive\n" 0 0
+"|tr a-z A-Z": "one TWO\nthree four\nfive\n" 4 7
+"<echo new": "one new\n\nthree four\nfive\n" 4 8
+">cat": "one two\nthree four\nfive\n" 8 13
+errors: "Edit: address out of range\nthree"
+X, Y: a "one two\nthree four\nfive\n!" 24 25 b "beta\n!" 0 6
+before Undo: "1 2\nthree four\n5\n!" 0 18
+after Undo: "one two\nthree four\nfive\n!" 0 3
+Paste: "twoone two\nthree four\nfive\n" 0 3
+Zerox: 2 windows
+in the other: "twoone two\nthree four\nfive\nadded\n"
+undone in the first: "twoone two\nthree four\nfive\n"
+Tab 8: 2
+Font: /fonts/mono/unicode.13.font
+Font again: /fonts/default.font
+Kill: killed
+dump: dir /tmp/acme
+dump: c 0
+dump: c 5000
+dump: w 1 b /tmp/acme/+Errors
+dump: w 1 m /tmp/acme/ea
+dump: w 1 m /tmp/acme/eb
+dump: w 1 f /tmp/acme/ec
+dump: w 1 f /tmp/acme/ez
+after Load: /tmp/acme/+Errors /tmp/acme/ea /tmp/acme/eb /tmp/acme/ec /tmp/acme/ez
+ea after Load: "twoone two\nthree four\nfive\n"
+end
+"#;
+
+/// `Edit`, the commands on the selection, `Zerox`, `Tab`, `Font`,
+/// `Kill`, `Sort`, `Local`, `Dump` and `Load`, run by `test/acmefs`
+/// through acme(4) from inside acme.
+fn edit_commands(vm: &str) {
+    let root = Root::new(vm);
+    let tmp = root.0.join("tmp/acme");
+    let (w, out, mut p) = start(&root, vm, "");
+    let row_end = (SIZE.0 - 6, 19 / 2);
+    std::fs::write(tmp.join("mode"), "edit").unwrap();
+    p.hover(row_end.0, row_end.1);
+    p.typed("test/acmefs", "typing test/acmefs");
+    p.click(row_end.0, row_end.1, 2, "test/acmefs");
+    let got = results(&tmp, "edit", &out);
+    assert_eq!(got, EDIT_WANT, "{vm}: Edit and the commands");
+    assert!(
+        std::fs::read_to_string(tmp.join("dump"))
+            .unwrap()
+            .starts_with("acme dump 1\ndir /tmp/acme\n"),
+        "{vm}: the dump file"
+    );
+    exit(w, out, p, "test/acmefs".len(), false, vm);
+}
+
+#[test]
+fn edit_commands_wasmtime() {
+    edit_commands("wasmtime");
+}
+
+#[test]
+fn edit_commands_wasmi() {
+    edit_commands("wasmi");
+}
+
+impl Page {
+    /// Holds `buttons` down at `(x, y)` until the screen has changed and
+    /// then stayed unchanged for a while: acme has done all it does while
+    /// they are held, which repeats several times a second.
+    fn hold(&mut self, x: i32, y: i32, buttons: u32, what: &str) {
+        let n = self.frames.count();
+        self.pointer(x, y, buttons);
+        self.frames.settle_for(n, Duration::from_secs(3), what);
+    }
+
+    /// A double click with button 1.
+    fn double(&mut self, x: i32, y: i32, what: &str) {
+        let n = self.frames.count();
+        self.hover(x, y);
+        for b in [1, 0, 1, 0] {
+            self.pointer(x, y, b);
+        }
+        self.frames.settle(n, what);
+    }
+}
+
+/// The mouse and the keyboard: `Indent`, the scroll bar held down, a
+/// sweep past the top of a window (autoscroll), the 2-1 chord, and
+/// dragging a window's box to another column and a column's box.
+fn mouse(vm: &str) {
+    let root = Root::new(vm);
+    let tmp = root.0.join("tmp/acme");
+    let mut text = String::from("\tindent\n");
+    for i in 2..=100 {
+        text.push_str(&format!("line {i}\n"));
+    }
+    std::fs::write(tmp.join("long"), &text).unwrap();
+    let (w, out, mut p) = start(&root, vm, "/tmp/acme/long");
+
+    const FH: i32 = 19;
+    let row_end = (SIZE.0 - 6, FH / 2);
+    let tag_end = (SIZE.0 / 2 - 6, 2 * (FH + 1) + FH / 2);
+    // The body's first line, and its left edge.
+    let line1 = 3 * (FH + 1) + FH / 2;
+    let body_x = 16;
+    p.hover(row_end.0, row_end.1);
+    p.typed("test/acmefs", "typing test/acmefs");
+
+    // Indent: a newline copies the line's leading tab.
+    p.hover(tag_end.0, tag_end.1);
+    p.typed("Indent", "typing Indent");
+    p.click(tag_end.0, tag_end.1, 2, "Indent");
+    p.click(300, line1, 1, "the end of the first line");
+    p.typed("\nx", "typing after the indented line");
+    let text = text.replacen('\n', "\n\tx\n", 1);
+    let len = text.chars().count();
+
+    // Button 3 held in the scroll bar repeats until the end shows; then
+    // a sweep from the body up into the tag scrolls back to the start.
+    let bar = (5, line1 + 3 * FH);
+    p.hold(bar.0, bar.1, 4, "holding button 3 in the scroll bar");
+    p.pointer(bar.0, bar.1, 0);
+    p.hold(body_x, line1, 1, "pressing button 1 in the body");
+    p.hold(body_x, tag_end.1, 1, "sweeping past the top");
+    p.pointer(body_x, tag_end.1, 0);
+    std::fs::write(tmp.join("mode"), "win").unwrap();
+    p.click(row_end.0, row_end.1, 2, "test/acmefs win");
+    let start: String = text.chars().take(24).collect();
+    assert_eq!(
+        results(&tmp, "after scrolling", &out),
+        format!("/tmp/acme/long: dot 0 {len} len {len} start {start:?}\nend\n"),
+        "{vm}: the scroll bar and autoscroll"
+    );
+
+    // The 2-1 chord: echo, run from the tag, gets the word selected.
+    p.double(60, line1, "double click on indent");
+    p.hover(tag_end.0, tag_end.1);
+    p.typed("\x08\x08\x08\x08\x08\x08echo", "typing echo");
+    let n = p.frames.count();
+    for b in [0, 2, 3, 2, 0] {
+        p.pointer(tag_end.0, tag_end.1, b);
+    }
+    p.frames.settle(n, "the 2-1 chord");
+    // echo's output comes when it comes: wait for it.
+    until(&mut p, &tmp, &out, row_end, "win", "echo's output", |g| {
+        g.contains("/tmp/acme/+Errors: dot 7 7 len 7")
+    });
+
+    // The window's box dragged into the right column, below +Errors;
+    // then the right column's box dragged right.
+    let n = p.frames.count();
+    p.pointer(5, tag_end.1, 0);
+    p.pointer(5, tag_end.1, 1);
+    p.pointer(SIZE.0 / 2 + 60, 120, 1);
+    p.pointer(SIZE.0 / 2 + 60, 120, 0);
+    p.frames.settle(n, "moving the window");
+    let n = p.frames.count();
+    p.pointer(SIZE.0 / 2 + 5, FH + 1 + FH / 2, 0);
+    p.pointer(SIZE.0 / 2 + 5, FH + 1 + FH / 2, 1);
+    p.pointer(500, FH + 1 + FH / 2, 1);
+    p.pointer(500, FH + 1 + FH / 2, 0);
+    p.frames.settle(n, "moving the column");
+    // Button 2 on the window's box: as big as the column allows.
+    p.click(505, 120 + FH / 2, 2, "growing the window");
+
+    std::fs::write(tmp.join("mode"), "layout").unwrap();
+    p.click(row_end.0, row_end.1, 2, "test/acmefs layout");
+    let x = 500 * 10_000 / SIZE.0;
+    assert_eq!(
+        results(&tmp, "the layout", &out),
+        format!(
+            "/tmp/acme/+Errors: dot 7 7 len 7 start \"indent\\n\"\n\
+             /tmp/acme/long: dot 1 7 len {len} start {start:?}\n\
+             dump: dir /\n\
+             dump: c 0\n\
+             dump: c {x}\n\
+             dump: w 1 {} b /tmp/acme/+Errors\n\
+             dump: w 1 {} m /tmp/acme/long\n\
+             end\n",
+            40 * 10_000 / SIZE.1,
+            62 * 10_000 / SIZE.1,
+        ),
+        "{vm}: the chord and the layout"
+    );
+    exit(w, out, p, "test/acmefs".len(), true, vm);
+}
+
+#[test]
+fn mouse_wasmtime() {
+    mouse("wasmtime");
+}
+
+#[test]
+fn mouse_wasmi() {
+    mouse("wasmi");
 }

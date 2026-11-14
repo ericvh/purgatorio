@@ -28,6 +28,9 @@
 //! ready ([`purgatorio::ready`]), so one prog does it all.
 
 mod addr;
+mod cmds;
+mod dump;
+mod edit;
 mod frame;
 mod fs;
 mod plumb;
@@ -51,8 +54,9 @@ const COL_TAG: &str = "New Delcol win ";
 
 /// The commands acme runs itself; others go to `sh`.
 const BUILTINS: &[&str] = &[
-    "Cut", "Del", "Delcol", "Delete", "Exit", "Get", "Look", "New", "Newcol", "Paste", "Put",
-    "Putall", "Redo", "Snarf", "Undo",
+    "Cut", "Del", "Delcol", "Delete", "Dump", "Edit", "Exit", "Font", "Get", "Indent", "Kill",
+    "Load", "Local", "Look", "New", "Newcol", "Paste", "Put", "Putall", "Redo", "Snarf", "Sort",
+    "Tab", "Undo", "Zerox",
 ];
 
 /// Whether `path` is one of acme's own files, which acme must not open
@@ -77,6 +81,11 @@ const EOWN: &str = "acme's own file";
 /// How close in time two clicks are to make a double click.
 const DOUBLE_MS: u32 = 500;
 
+/// How long a scroll bar button is held before it repeats, and how often
+/// it repeats then.
+const SCROLL_DELAY_MS: i32 = 350;
+const SCROLL_REPEAT_MS: i32 = 100;
+
 /// Which text: the row's tag, a column's, or a window's tag or body
 /// (windows by id, which stay the same while windows come and go).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +102,8 @@ enum Hit {
     Text(Tid),
     Scroll(u64),
     Box(u64),
+    /// The box left of a column's tag.
+    ColBox(usize),
     Nothing,
 }
 
@@ -102,13 +113,26 @@ struct Child {
     dir: String,
     /// Bytes of a rune split between reads.
     carry: Vec<u8>,
+    pid: u32,
+    /// The window it was run from, for `Kill`.
+    win: Option<u64>,
+    /// The command's name, for `Kill name`.
+    name: String,
 }
 
 struct Acme {
     d: Display,
     screen: Image,
     c: Colours,
+    /// The main font, which tags and most bodies use.
     f: Fnt,
+    /// Other fonts bodies were switched to with `Font`: a text's font
+    /// `k` is `fonts[k - 1]`.
+    fonts: Vec<Fnt>,
+    /// The fixed-width font `Font` switches to.
+    fix_name: String,
+    /// New windows indent (`Indent on`).
+    indent: bool,
     tag: Text,
     cols: Vec<Column>,
     mouse: Mouse,
@@ -120,6 +144,9 @@ struct Acme {
     /// The text last selected or typed in, which `Snarf`, `Cut` and
     /// `Paste` in a row or column tag act on.
     seltext: Option<Tid>,
+    /// The text last selected in with button 1: its selection is the
+    /// argument the 2-1 chord gives.
+    argsel: Option<Tid>,
     /// Where typing started, for Escape.
     typing: Option<(Tid, usize)>,
     /// The last button 1 click, for double clicks.
@@ -129,8 +156,6 @@ struct Acme {
     /// pile up.
     waitfd: Option<File>,
     cwd: String,
-    /// The font's file, for acme(4)'s `ctl`.
-    font_name: String,
     /// The file system on `/mnt/acme`, when it could be mounted.
     fs: Option<fs::Fs>,
     /// The plumber's `edit` port, through the helper that reads it.
@@ -183,7 +208,7 @@ fn split_addr(s: &str) -> (&str, Option<usize>) {
 }
 
 impl Acme {
-    fn new(font: Font, font_name: String) -> Result<Acme, Error> {
+    fn new(font: Font, font_name: &str, fix_name: String) -> Result<Acme, Error> {
         let mut d = Display::open()?;
         let screen = d.screen();
         let c = Colours::new(&mut d)?;
@@ -196,7 +221,10 @@ impl Acme {
             d,
             screen,
             c,
-            f: Fnt::new(font),
+            f: Fnt::new(font, font_name),
+            fonts: Vec::new(),
+            fix_name,
+            indent: false,
             tag: Text::with(Kind::Tag, ROW_TAG),
             cols: Vec::new(),
             mouse: Mouse::open()?,
@@ -205,12 +233,12 @@ impl Acme {
             next_id: 1,
             snarf: String::new(),
             seltext: None,
+            argsel: None,
             typing: None,
             click: None,
             children: Vec::new(),
             waitfd,
             cwd,
-            font_name,
             fs: None,
             plumb: None,
             full: true,
@@ -288,7 +316,7 @@ impl Acme {
         if let Some(w) = self.cols[ci]
             .wins
             .iter()
-            .find(|w| w.modified() && !w.warned)
+            .find(|w| w.modified() && !w.warned && w.body.b.views() == 1)
         {
             let name = w.name();
             let id = w.id;
@@ -315,23 +343,19 @@ impl Acme {
             self.new_col();
         }
         let ci = ci.min(self.cols.len() - 1);
-        let fh = self.fh();
         let id = self.next_id;
         self.next_id += 1;
-        let mut w = Window {
-            id,
-            tag: Text::with(Kind::Tag, ""),
-            body: Text::new(Kind::Body),
-            y: 0,
-            bottom: 0,
-            x0: 0,
-            x1: 0,
-            warned: false,
-            is_dir,
-            tag_lines: 1,
-            fs: ui::WinFs::default(),
-        };
+        let mut w = Window::new(id, Text::new(Kind::Body));
+        w.is_dir = is_dir;
+        w.indent = self.indent;
         w.body.b.load(body);
+        self.add_win(ci, w, name);
+        id
+    }
+
+    /// Puts window `w` in column `ci` with tag name `name`.
+    fn add_win(&mut self, ci: usize, mut w: Window, name: &str) {
+        let fh = self.fh();
         set_tag(&mut w, name);
         // The cursor goes at the end of the tag, ready to type a command.
         let n = w.tag.b.len();
@@ -341,7 +365,6 @@ impl Acme {
         self.cols[ci].wins.insert(i, w);
         self.cols[ci].place(fh, &mut self.f);
         self.full = true;
-        id
     }
 
     fn del_win(&mut self, id: u64) {
@@ -433,7 +456,20 @@ impl Acme {
             (Tid::Body(_), Some((ci, wi))) => &mut self.cols[ci].wins[wi].body,
             _ => return None,
         };
-        Some((x, &mut self.f))
+        let f = match x.font {
+            0 => &mut self.f,
+            k => self.fonts.get_mut(k - 1).unwrap_or(&mut self.f),
+        };
+        f.use_tab(x.tab);
+        Some((x, f))
+    }
+
+    /// The height of a line of text `t`.
+    fn text_fh(&self, t: Tid) -> i32 {
+        match self.text(t).map_or(0, |x| x.font) {
+            0 => self.fh(),
+            k => self.fonts.get(k - 1).map_or(self.fh(), Fnt::height),
+        }
     }
 
     /// The window a text belongs to.
@@ -469,6 +505,9 @@ impl Acme {
                 continue;
             }
             if p.y < c.top(fh) {
+                if p.x < c.tag.r.min.x {
+                    return Hit::ColBox(ci);
+                }
                 return Hit::Text(Tid::Col(ci));
             }
             for w in &c.wins {
@@ -492,7 +531,7 @@ impl Acme {
 
     /// The rune nearest `p` in text `t`.
     fn pos(&mut self, t: Tid, p: Point) -> usize {
-        let fh = self.fh();
+        let fh = self.text_fh(t);
         let Some(tx) = self.text(t) else {
             return 0;
         };
@@ -514,6 +553,7 @@ impl Acme {
     // ---- Drawing.
 
     fn redraw(&mut self) -> Result<(), Error> {
+        self.sync_views();
         let fh = self.fh();
         let mut any = false;
         let zero = Point::new(0, 0);
@@ -547,6 +587,19 @@ impl Acme {
                     None,
                     zero,
                 )?;
+                // The column's box, dragged to move the column.
+                self.d.draw(
+                    &self.screen,
+                    Rect::new(
+                        c.r.min.x + 1,
+                        c.r.min.y + 1,
+                        c.r.min.x + SCROLLWID - 1,
+                        c.r.min.y + fh - 1,
+                    ),
+                    &self.c.button,
+                    None,
+                    zero,
+                )?;
                 // A column without windows is body-coloured below its tag.
                 let top = c.top(fh);
                 let first = c.wins.first().map_or(c.r.max.y, |w| w.y);
@@ -571,7 +624,13 @@ impl Acme {
             self.full = false;
             any = true;
         }
-        let (d, s, col, f) = (&mut self.d, &self.screen, &self.c, &mut self.f);
+        let (d, s, col, f, fonts) = (
+            &mut self.d,
+            &self.screen,
+            &self.c,
+            &mut self.f,
+            &mut self.fonts,
+        );
         if self.tag.dirty {
             ui::draw_text(d, s, &mut self.tag, col, f)?;
             any = true;
@@ -593,7 +652,11 @@ impl Acme {
                     any = true;
                 }
                 if w.body.dirty {
-                    ui::draw_text(d, s, &mut w.body, col, f)?;
+                    let bf = match w.body.font {
+                        0 => &mut *f,
+                        k => fonts.get_mut(k - 1).unwrap_or(&mut *f),
+                    };
+                    ui::draw_text(d, s, &mut w.body, col, bf)?;
                     ui::draw_scroll(d, s, w, col)?;
                     // The gap between the scroll bar and the text.
                     let r = w.body.r;
@@ -635,34 +698,35 @@ impl Acme {
 
     /// Scrolls body `id` by `n` lines, forward if `n` is positive.
     fn scroll(&mut self, id: u64, n: i32) {
-        let Some((ci, wi)) = self.find(id) else {
+        let Some((t, f)) = self.text_font(Tid::Body(id)) else {
             return;
         };
-        let w = &mut self.cols[ci].wins[wi];
-        let t = &mut w.body;
         let width = t.r.dx();
+        let org = t.org;
         if n < 0 {
-            t.org = frame::back(&t.b, t.org, (-n) as usize, width, &mut self.f);
+            t.org = frame::back(&t.b, t.org, (-n) as usize, width, f);
         } else if n > 0 {
-            let lines = frame::layout(&t.b, t.org, width, n as usize + 1, &mut self.f);
+            let lines = frame::layout(&t.b, t.org, width, n as usize + 1, f);
             t.org = match lines.get(n as usize) {
                 Some(l) => l.q0,
                 None => lines.last().map_or(t.org, |l| {
                     if l.next > l.q1 {
                         l.next
                     } else {
-                        frame::wrapped_start(&t.b, l.q0, width, &mut self.f)
+                        frame::wrapped_start(&t.b, l.q0, width, f)
                     }
                 }),
             };
         }
-        t.dirty = true;
+        if t.org != org {
+            t.dirty = true;
+        }
     }
 
     /// Scrolls so that `q` is shown, a third of the way down when it was
     /// not.
     fn show(&mut self, t: Tid, q: usize) {
-        let fh = self.fh();
+        let fh = self.text_fh(t);
         let Some((tx, f)) = self.text_font(t) else {
             return;
         };
@@ -704,6 +768,8 @@ impl Acme {
         self.typing = None;
         match h {
             Hit::Scroll(id) => self.scrollbar(id, m)?,
+            Hit::Box(id) => self.drag_win(id, m, pressed)?,
+            Hit::ColBox(ci) => self.drag_col(ci, m)?,
             Hit::Text(t) => {
                 if let Some(x) = self.text_mut(t) {
                     x.b.mark();
@@ -711,14 +777,21 @@ impl Acme {
                 if pressed & 1 != 0 {
                     self.select(t, m)?;
                 } else if pressed & 2 != 0 {
-                    if let Some((q0, q1)) = self.sweep(t, m, 2)?
+                    if let Some((q0, q1, chord)) = self.sweep(t, m, 2)?
                         && !self.send_event(t, q0, q1, 'X')
                     {
-                        let s = self.expand(t, q0, q1, false);
+                        let mut s = self.expand(t, q0, q1, false);
+                        // The 2-1 chord: the last selection is the argument.
+                        if chord {
+                            let arg = self.argtext();
+                            if !arg.is_empty() {
+                                s = format!("{} {arg}", s.trim_end());
+                            }
+                        }
                         self.execute(t, &s)?;
                     }
                 } else if pressed & 4 != 0
-                    && let Some((q0, q1)) = self.sweep(t, m, 4)?
+                    && let Some((q0, q1, _)) = self.sweep(t, m, 4)?
                     && !self.send_event(t, q0, q1, 'L')
                 {
                     let s = self.expand(t, q0, q1, true);
@@ -751,6 +824,7 @@ impl Acme {
     fn select(&mut self, t: Tid, m: Pointer) -> Result<(), Error> {
         let q = self.pos(t, m.xy);
         self.seltext = Some(t);
+        self.argsel = Some(t);
         let double = matches!(self.click, Some((ct, cq, ms))
             if ct == t && cq == q && m.msec.wrapping_sub(ms) < DOUBLE_MS);
         if double {
@@ -765,7 +839,7 @@ impl Acme {
         let anchor = q;
         let mut moved = false;
         let mut chorded = false;
-        self.track(|a, n| {
+        self.track_auto(t, |a, n| {
             let new = n.buttons & !a.m.buttons;
             if new & 2 != 0 {
                 chorded = true;
@@ -793,8 +867,15 @@ impl Acme {
     }
 
     /// Buttons 2 and 3: sweeps text in red or green and returns it when
-    /// the button comes up, unless another button was pressed to cancel.
-    fn sweep(&mut self, t: Tid, m: Pointer, button: u32) -> Result<Option<(usize, usize)>, Error> {
+    /// the button comes up, unless another button was pressed to cancel;
+    /// button 1 during a button 2 sweep is the 2-1 chord, said by the
+    /// flag returned.
+    fn sweep(
+        &mut self,
+        t: Tid,
+        m: Pointer,
+        button: u32,
+    ) -> Result<Option<(usize, usize, bool)>, Error> {
         let q = self.pos(t, m.xy);
         let colour = if button == 2 { 2 } else { 3 };
         if let Some(x) = self.text_mut(t) {
@@ -806,9 +887,13 @@ impl Acme {
             x.dirty = true;
         }
         let mut cancel = false;
+        let mut chord = false;
         let mut end = q;
-        self.track(|a, n| {
-            if n.buttons & !button & 7 != 0 {
+        self.track_auto(t, |a, n| {
+            let other = n.buttons & !button & 7;
+            if button == 2 && other == 1 && !cancel {
+                chord = true;
+            } else if other != 0 {
                 cancel = true;
             }
             if n.buttons & button != 0 {
@@ -828,7 +913,7 @@ impl Acme {
             x.sweep = None;
             x.dirty = true;
         }
-        Ok((!cancel).then_some((q.min(end), q.max(end))))
+        Ok((!cancel).then_some((q.min(end), q.max(end), chord)))
     }
 
     /// The text a button 2 or 3 click means: what was swept, else the
@@ -921,7 +1006,7 @@ impl Acme {
         for w in self.cols.iter_mut().flat_map(|c| c.wins.iter_mut()) {
             let open = w.fs.nevent > 0;
             for (tag, b) in [(false, &mut w.body.b), (true, &mut w.tag.b)] {
-                for c in b.changes.drain(..) {
+                for c in b.take_changes() {
                     if !open {
                         continue;
                     }
@@ -965,9 +1050,42 @@ impl Acme {
     /// pointer, button 3 moves the line at the pointer to the top, and
     /// button 2 shows the part of the file that far down.
     fn scrollbar(&mut self, id: u64, m: Pointer) -> Result<(), Error> {
-        let fh = self.fh();
+        // While the button is held, the first action is repeated after a
+        // pause and then steadily; button 2 follows the pointer.
+        let mut cur = m;
+        let mut wait = SCROLL_DELAY_MS;
+        self.scroll_at(id, cur);
+        loop {
+            self.redraw()?;
+            match purgatorio::ready(&[Ready::Read(self.mouse.fd())], wait)? {
+                Some(_) => {
+                    let n = self.mouse.read()?;
+                    self.m = n;
+                    if n.buttons & 7 == 0 {
+                        return Ok(());
+                    }
+                    if n.buttons & 2 != 0 {
+                        cur = n;
+                        self.scroll_at(id, cur);
+                    } else {
+                        cur.xy = n.xy;
+                    }
+                }
+                None => {
+                    wait = SCROLL_REPEAT_MS;
+                    if cur.buttons & 5 != 0 {
+                        self.scroll_at(id, cur);
+                    }
+                }
+            }
+        }
+    }
+
+    /// One scroll bar action at the pointer.
+    fn scroll_at(&mut self, id: u64, m: Pointer) {
+        let fh = self.text_fh(Tid::Body(id));
         let Some(w) = self.win(id) else {
-            return Ok(());
+            return;
         };
         let r = w.scrollr();
         let lines = ((m.xy.y - r.min.y) / fh).max(1);
@@ -984,7 +1102,6 @@ impl Acme {
                 tx.dirty = true;
             }
         }
-        self.track(|_, _| Ok(()))
     }
 
     // ---- Keyboard.
@@ -994,9 +1111,10 @@ impl Acme {
             Hit::Text(t) => t,
             Hit::Scroll(id) => Tid::Body(id),
             Hit::Box(id) => Tid::Tag(id),
+            Hit::ColBox(ci) => Tid::Col(ci),
             Hit::Nothing => return Ok(()),
         };
-        let fh = self.fh();
+        let fh = self.text_fh(t);
         let Some(x) = self.text(t) else {
             return Ok(());
         };
@@ -1048,6 +1166,10 @@ impl Acme {
             && Acme::win_of(t)
                 .and_then(|id| self.win(id))
                 .is_some_and(|w| w.fs.nevent > 0);
+        let indent = matches!(t, Tid::Body(_))
+            && Acme::win_of(t)
+                .and_then(|id| self.win(id))
+                .is_some_and(|w| w.indent);
         let Some(x) = self.text_mut(t) else {
             return Ok(());
         };
@@ -1110,7 +1232,16 @@ impl Acme {
                 || (events && (c == '\x7F' || c == '\x03')) =>
             {
                 let start = typing.unwrap_or(x.q0);
-                x.replace(&c.to_string());
+                let mut s = c.to_string();
+                if c == '\n' && indent {
+                    // The blanks that start the line go on the next.
+                    let mut q = frame::line_start(&x.b, x.q0);
+                    while q < x.q0 && matches!(x.b.at(q), ' ' | '\t') {
+                        s.push(x.b.at(q));
+                        q += 1;
+                    }
+                }
+                x.replace(&s);
                 new_typing = Some(start.min(x.q0));
             }
             _ => return Ok(()),
@@ -1152,7 +1283,7 @@ impl Acme {
         if del {
             x.replace("");
         }
-        self.snarf = s;
+        self.set_snarf(s);
         if del {
             self.edited(t)?;
         }
@@ -1162,7 +1293,7 @@ impl Acme {
     /// Replaces the selection of `t` with the snarf buffer and selects
     /// it.
     fn paste(&mut self, t: Tid) -> Result<(), Error> {
-        let s = self.snarf.clone();
+        let s = self.get_snarf();
         let Some(x) = self.text_mut(t) else {
             return Ok(());
         };
@@ -1415,13 +1546,26 @@ impl Acme {
         {
             w.body.b.mark();
         }
+        // `<cmd`, `|cmd` and `>cmd` act on the selection, as Edit does.
+        if s.starts_with(['<', '|', '>']) {
+            self.edit(t, s);
+            return Ok(());
+        }
         match cmd {
             "Exit" => {
+                let mut keys = Vec::new();
                 let modified: Vec<String> = self
                     .cols
                     .iter()
                     .flat_map(|c| c.wins.iter())
                     .filter(|w| w.modified())
+                    // Views of one text are named once.
+                    .filter(|w| {
+                        let k = w.body.b.key();
+                        let new = !keys.contains(&k);
+                        keys.push(k);
+                        new
+                    })
                     .map(Window::name)
                     .collect();
                 if modified.is_empty() || self.exit_warned {
@@ -1450,7 +1594,7 @@ impl Acme {
                     let Some(w) = self.win(id) else {
                         return Ok(());
                     };
-                    if cmd == "Del" && w.modified() && !w.warned {
+                    if cmd == "Del" && w.modified() && !w.warned && w.body.b.views() == 1 {
                         let (n, dir) = (w.name(), w.dir(&self.cwd));
                         self.error(&dir, &format!("{n} modified"));
                         if let Some(w) = self.win_mut(id) {
@@ -1523,7 +1667,17 @@ impl Acme {
                     self.search(id, &what);
                 }
             }
-            _ => self.run(t, s)?,
+            "Edit" => self.edit(t, arg),
+            "Zerox" => self.zerox(t),
+            "Dump" => self.dump(arg),
+            "Load" => self.load(arg),
+            "Kill" => self.kill(t, arg),
+            "Sort" => self.sort(t),
+            "Tab" => self.tab(t, arg),
+            "Indent" => self.indent(t, arg),
+            "Font" => self.font(t, arg),
+            "Local" => self.start(t, arg, true)?,
+            _ => self.start(t, s, false)?,
         }
         if let Some(id) = win {
             self.retag(id);
@@ -1532,9 +1686,26 @@ impl Acme {
     }
 
     /// Runs command line `s` with sh in the directory of `t`; its output
-    /// goes to that directory's `+Errors` window.
-    fn run(&mut self, t: Tid, s: &str) -> Result<(), Error> {
+    /// goes to that directory's `+Errors` window. A `local` command runs
+    /// in acme's own namespace, and `cd` then changes acme's directory.
+    fn start(&mut self, t: Tid, s: &str, local: bool) -> Result<(), Error> {
         let dir = self.dir_of(t);
+        if local && let Some(to) = s.strip_prefix("cd") {
+            let to = to.trim();
+            let to = if to.is_empty() {
+                purgatorio::env::get("home").unwrap_or_else(|| String::from("/"))
+            } else {
+                self.resolve(&dir, to)
+            };
+            match std::env::set_current_dir(&to) {
+                Ok(()) => self.cwd = to,
+                Err(_) => {
+                    let e = purgatorio::errstr();
+                    self.error(&dir, &format!("cd: {to}: {e}"));
+                }
+            }
+            return Ok(());
+        }
         let [r, w] = purgatorio::pipe()?;
         let null = purgatorio::open("/dev/null", purgatorio::abi::mode::OREAD)?;
         // As in acme(1), a command run from a window knows it as $winid.
@@ -1551,17 +1722,26 @@ impl Acme {
         ];
         // Each command gets a copy of acme's namespace, with /mnt/acme,
         // and a process group of its own.
-        let flags = pctl::NEWFD | pctl::FORKNS | pctl::NEWPGRP;
-        if let Err(e) = purgatorio::spawn("sh", &argv, flags, &map) {
-            self.error(&dir, &format!("{s}: {e}"));
-            return Ok(());
+        let mut flags = pctl::NEWFD | pctl::NEWPGRP;
+        if !local {
+            flags |= pctl::FORKNS;
         }
+        let pid = match purgatorio::spawn("sh", &argv, flags, &map) {
+            Ok(p) => p,
+            Err(e) => {
+                self.error(&dir, &format!("{s}: {e}"));
+                return Ok(());
+            }
+        };
         drop(w);
         drop(null);
         self.children.push(Child {
             fd: File::from(r),
             dir,
             carry: Vec::new(),
+            pid,
+            win: Acme::win_of(t),
+            name: s.split_whitespace().next().unwrap_or("").to_string(),
         });
         Ok(())
     }
@@ -1713,6 +1893,7 @@ impl Acme {
 
     fn main_loop(&mut self) -> Result<(), Error> {
         while !self.exit {
+            self.sync_views();
             self.serve_waiting();
             self.redraw()?;
             if self.kbd.pending() {
@@ -1806,11 +1987,11 @@ fn set_tag(w: &mut Window, name: &str) {
     };
     let (q0, q1) = (shift(w.tag.q0), shift(w.tag.q1));
     // acme's own rewriting of the tag is not an event.
-    let watch = std::mem::replace(&mut w.tag.b.watch, false);
+    let watch = w.tag.b.set_watch(false);
     let n = w.tag.b.len();
     w.tag.b.delete(0, n);
     w.tag.b.insert(0, &s);
-    w.tag.b.watch = watch;
+    w.tag.b.set_watch(watch);
     w.tag.set_select(q0, q1);
     w.tag.dirty = true;
 }
@@ -1895,20 +2076,28 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.get(1).map(String::as_str) == Some(plumb::HELPER) {
         return plumb::helper();
     }
+    if args.get(1).map(String::as_str) == Some(cmds::FEED) {
+        return cmds::feed();
+    }
+    const USAGE: &str = "usage: acme [-f varfont] [-F fixfont] [-l loadfile] [file ...]";
     let mut args = args.into_iter().skip(1).peekable();
     let mut font = None;
+    let mut fix = None;
+    let mut load = None;
     while let Some(a) = args.peek() {
-        if a == "-f" {
-            args.next();
-            font = Some(
-                args.next()
-                    .ok_or_else(|| Error::from("usage: acme [-f font] [file ...]"))?,
-            );
+        if a == "-f" || a == "-F" || a == "-l" {
+            let flag = args.next().unwrap_or_default();
+            let v = Some(args.next().ok_or_else(|| Error::from(USAGE))?);
+            match flag.as_str() {
+                "-f" => font = v,
+                "-F" => fix = v,
+                _ => load = v,
+            }
         } else if a == "--" {
             args.next();
             break;
         } else if a.starts_with('-') && a.len() > 1 {
-            return Err(Error::from("usage: acme [-f font] [file ...]"));
+            return Err(Error::from(USAGE));
         } else {
             break;
         }
@@ -1922,9 +2111,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some(f) => Font::open(&f)?,
         None => Font::default_font()?,
     };
-    let mut a = Acme::new(font, font_name)?;
+    let fix = fix.unwrap_or_else(|| String::from(cmds::FIXED_FONT));
+    let mut a = Acme::new(font, &font_name, fix)?;
     a.fs = fs::start(&mut a);
     a.plumb = plumb::start();
+    if let Some(l) = load {
+        a.load(&l);
+    }
     let files: Vec<String> = args.collect();
     for f in &files {
         let path = a.resolve(&a.cwd.clone(), f);
@@ -1957,7 +2150,7 @@ mod tests {
 
     #[test]
     fn double_clicks() {
-        let mut b = text::Buffer::new(false);
+        let b = text::Buffer::new(false);
         b.insert(0, "one two(x y)\nnext\n");
         assert_eq!(double_click(&b, 5), (4, 7));
         assert_eq!(double_click(&b, 8), (8, 11));

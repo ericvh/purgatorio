@@ -54,6 +54,10 @@ pub struct Text {
     pub sweep: Option<Sweep>,
     /// Needs drawing.
     pub dirty: bool,
+    /// Which of acme's fonts it is drawn in: 0 is the main one.
+    pub font: usize,
+    /// Its tab stops, in widths of `0`, when not acme's default.
+    pub tab: Option<usize>,
 }
 
 impl Text {
@@ -68,6 +72,8 @@ impl Text {
             lines: Vec::new(),
             sweep: None,
             dirty: true,
+            font: 0,
+            tab: None,
         }
     }
 
@@ -82,9 +88,13 @@ impl Text {
 
     pub fn set_select(&mut self, q0: usize, q1: usize) {
         let n = self.b.len();
-        self.q0 = q0.min(n);
-        self.q1 = q1.min(n).max(self.q0);
-        self.dirty = true;
+        let q0 = q0.min(n);
+        let q1 = q1.min(n).max(q0);
+        if (q0, q1) != (self.q0, self.q1) {
+            self.q0 = q0;
+            self.q1 = q1;
+            self.dirty = true;
+        }
     }
 
     pub fn selection(&self) -> String {
@@ -167,6 +177,8 @@ pub struct Window {
     pub is_dir: bool,
     /// How many lines the tag has: it grows to hold its text.
     pub tag_lines: i32,
+    /// Typing a newline copies the line's leading blanks (`Indent`).
+    pub indent: bool,
     /// Its state in acme(4)'s file system.
     pub fs: WinFs,
 }
@@ -190,6 +202,23 @@ pub struct WinFs {
 }
 
 impl Window {
+    pub fn new(id: u64, body: Text) -> Window {
+        Window {
+            id,
+            tag: Text::with(Kind::Tag, ""),
+            body,
+            y: 0,
+            bottom: 0,
+            x0: 0,
+            x1: 0,
+            warned: false,
+            is_dir: false,
+            tag_lines: 1,
+            indent: false,
+            fs: WinFs::default(),
+        }
+    }
+
     /// The file name: the tag's first word.
     pub fn name(&self) -> String {
         let s = self.tag.b.all();
@@ -239,6 +268,7 @@ impl Window {
     /// [`MAX_TAG_LINES`] and no more than the window has.
     pub fn tag_lines_needed(&self, fh: i32, f: &mut Fnt) -> i32 {
         let tx = self.x0 + SCROLLWID + SCROLLGAP;
+        f.use_tab(None);
         let n = frame::layout(&self.tag.b, 0, self.x1 - tx, MAX_TAG_LINES, f).len() as i32;
         n.clamp(1, ((self.bottom - self.y - 1) / fh).max(1))
     }
@@ -368,19 +398,33 @@ impl Colours {
 /// A font with the widths of its runes remembered.
 pub struct Fnt {
     pub font: Font,
+    /// The file it came from.
+    pub name: String,
     widths: HashMap<char, i32>,
+    /// The width of `0`, which tab stops are counted in.
+    zero: i32,
     tab: i32,
 }
 
+/// acme's default tab stop: four zeros.
+pub const TAB: usize = 4;
+
 impl Fnt {
-    pub fn new(mut font: Font) -> Fnt {
-        // acme's default tab stop: four zeros.
-        let tab = 4 * font.string_width("0");
+    pub fn new(mut font: Font, name: &str) -> Fnt {
+        let zero = font.string_width("0").max(1);
         Fnt {
             font,
+            name: name.to_string(),
             widths: HashMap::new(),
-            tab,
+            zero,
+            tab: TAB as i32 * zero,
         }
+    }
+
+    /// Sets the tab stops for the text laid out next: every `n` zeros,
+    /// or the default.
+    pub fn use_tab(&mut self, n: Option<usize>) {
+        self.tab = n.unwrap_or(TAB).clamp(1, 100) as i32 * self.zero;
     }
 
     pub fn height(&self) -> i32 {
@@ -413,6 +457,7 @@ pub fn draw_text(
     c: &Colours,
     f: &mut Fnt,
 ) -> Result<(), Error> {
+    f.use_tab(t.tab);
     let fh = f.height();
     let (bg, high) = match t.kind {
         Kind::Tag => (&c.tag_bg, &c.tag_high),
