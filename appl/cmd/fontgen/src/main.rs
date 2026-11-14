@@ -11,10 +11,12 @@
 //!   rune 0, into 8-bit grey subfonts `name/XXXX`, one for each block of
 //!   256 runes starting at hexadecimal `XXXX`, and writes `name.font`,
 //!   whose ranges cover only the runes the font has.
-//! - `hex src [combining] name`: the same from a Unifont `.hex` file,
-//!   1-bit, 16 pixels high with ascent 14. `combining` lists the
-//!   combining marks and how far left of the point they draw (Unifont's
-//!   `unifont-combining.txt`); those get that `left` and no advance.
+//! - `hex [min-max] src [combining] name`: the same from a Unifont `.hex`
+//!   file, 1-bit, 16 pixels high with ascent 14, for the runes from `min`
+//!   to `max` (hexadecimal; the BMP, `0-FFFF`, when not given).
+//!   `combining` lists the combining marks and how far left of the point
+//!   they draw (Unifont's `unifont-combining.txt`); those get that `left`
+//!   and no advance.
 //! - `merge name font...`: writes `name.font` with the ranges of each
 //!   font in turn, file names made relative to the new font's directory,
 //!   the largest ascent and the largest descent.
@@ -118,8 +120,20 @@ fn ttf(data: &[u8], px: f32) -> Result<Face, Error> {
     })
 }
 
-/// Unifont's bitmaps: lines of `XXXX:` and 16 rows of hexadecimal bits.
-fn hex(data: &[u8], combining: Option<&[u8]>) -> Result<Face, Error> {
+/// The runes a `hex` job takes when the recipe names none: the BMP.
+const BMP: (u32, u32) = (0, 0xFFFF);
+
+/// A `min-max` range of runes in hexadecimal.
+fn rune_range(s: &str) -> Option<(u32, u32)> {
+    let (a, b) = s.split_once('-')?;
+    let a = u32::from_str_radix(a, 16).ok()?;
+    let b = u32::from_str_radix(b, 16).ok()?;
+    (a <= b && b <= 0x10_FFFF).then_some((a, b))
+}
+
+/// Unifont's bitmaps: lines of `XXXX:` (or more digits above the BMP)
+/// and 16 rows of hexadecimal bits. Only runes in `runes` are kept.
+fn hex(data: &[u8], combining: Option<&[u8]>, runes: (u32, u32)) -> Result<Face, Error> {
     let text = std::str::from_utf8(data).map_err(|_| Error::from("hex: not text"))?;
     let mut offsets = BTreeMap::new();
     if let Some(c) = combining {
@@ -142,7 +156,7 @@ fn hex(data: &[u8], combining: Option<&[u8]>) -> Result<Face, Error> {
         let bad = || Error(format!("hex: bad line {line:?}"));
         let (r, bits) = line.split_once(':').ok_or_else(bad)?;
         let r = u32::from_str_radix(r, 16).map_err(|_| bad())?;
-        if r > 0xFFFF {
+        if r < runes.0 || r > runes.1 {
             continue;
         }
         let bits = bits.trim();
@@ -367,10 +381,18 @@ fn job(words: &[&str], indir: &Path, out: &Path) -> Result<(), Error> {
             let face = ttf(&read(&indir.join(src))?, px)?;
             write_face(&face, out, name)
         }
-        ["hex", src, name] => write_face(&hex(&read(&indir.join(src))?, None)?, out, name),
-        ["hex", src, combining, name] => {
-            let c = read(&indir.join(combining))?;
-            write_face(&hex(&read(&indir.join(src))?, Some(&c))?, out, name)
+        ["hex", rest @ ..] => {
+            let (runes, rest) = match rest {
+                [r, rest @ ..] if let Some(runes) = rune_range(r) => (runes, rest),
+                _ => (BMP, rest),
+            };
+            let (src, combining, name) = match rest {
+                [src, name] => (src, None, name),
+                [src, c, name] => (src, Some(read(&indir.join(c))?), name),
+                _ => return Err(bad()),
+            };
+            let face = hex(&read(&indir.join(src))?, combining.as_deref(), runes)?;
+            write_face(&face, out, name)
         }
         ["merge", name, parts @ ..] if !parts.is_empty() => {
             let parts: Vec<String> = parts.iter().map(|s| String::from(*s)).collect();
@@ -437,6 +459,7 @@ mod tests {
         let f = hex(
             b"0041:0000000018242442427E424242420000\n0300:00000000000000000000000000000000\n",
             Some(b"0300:-8\n"),
+            BMP,
         )
         .unwrap();
         let a = &f.glyphs[&0x41];
@@ -444,5 +467,22 @@ mod tests {
         assert_eq!(&a.cover[4 * 8..5 * 8], &[0, 0, 0, 255, 255, 0, 0, 0]);
         let m = &f.glyphs[&0x300];
         assert_eq!((m.advance, m.left), (0, -8));
+    }
+
+    #[test]
+    fn upper_planes() {
+        let text = format!(
+            "0041:0000000018242442427E424242420000\n01F600:{}\n",
+            "03E0".repeat(16)
+        );
+        let text = text.as_bytes();
+        assert_eq!(rune_range("10000-3FFFF"), Some((0x10000, 0x3FFFF)));
+        assert_eq!(rune_range("3FFFF-10000"), None);
+        assert_eq!(rune_range("0-110000"), None);
+        let f = hex(text, None, (0x10000, 0x1FFFF)).unwrap();
+        assert_eq!(f.glyphs.keys().copied().collect::<Vec<_>>(), [0x1F600]);
+        assert_eq!(f.glyphs[&0x1F600].w, 16);
+        let f = hex(text, None, BMP).unwrap();
+        assert_eq!(f.glyphs.keys().copied().collect::<Vec<_>>(), [0x41]);
     }
 }

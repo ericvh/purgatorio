@@ -383,6 +383,56 @@ fn text() -> Result<(), String> {
     d.flush().map_err(e)
 }
 
+/// Runes above the BMP, from Unifont's Plane 1 subfonts: an emoji,
+/// Linear B, a mathematical letter and a musical symbol.
+const PLANE1: &str = "a\u{1F600}\u{10000}\u{1D538}\u{1D11E}z";
+
+fn plane1() -> Result<(), String> {
+    let mut d = Display::open().map_err(e)?;
+    let mut font = Font::open(SANS).map_err(e)?;
+    if font.string_width("\u{1F600}") != 16 {
+        return Err(format!(
+            "U+1F600 is {} wide",
+            font.string_width("\u{1F600}")
+        ));
+    }
+    let r = Rect::new(0, 0, 120, 24);
+    let dst = d.alloc(r, GREY8, false, 0x000000FF).map_err(e)?;
+    let white = d.color(0xFFFFFFFF).map_err(e)?;
+    let p = Point::new(2, 3);
+    let end = d
+        .string(&dst, p, &white, Point::new(0, 0), &mut font, PLANE1)
+        .map_err(e)?;
+    let got = d.unload(&dst, r).map_err(e)?;
+    let mut want = local(r, GREY8, 0x000000FF);
+    let x = local_string(&mut want, p, &solid(GREY8, 0xFFFFFFFF), SANS, PLANE1);
+    if end != Point::new(x, p.y) {
+        return Err(format!("string ends at {end:?}, want ({x}, {})", p.y));
+    }
+    if got != want.unload(r).unwrap() {
+        return Err(String::from("pixels differ from the subfonts' glyphs"));
+    }
+    // Each rune's own glyph: drawn alone, it differs from rune 0's.
+    let one = |d: &mut Display, font: &mut Font, s: &str| -> Result<Vec<u8>, String> {
+        let r = Rect::new(0, 0, 16, 20);
+        let img = d.alloc(r, GREY8, false, 0x000000FF).map_err(e)?;
+        d.string(&img, Point::new(0, 0), &white, Point::new(0, 0), font, s)
+            .map_err(e)?;
+        let px = d.unload(&img, r).map_err(e)?;
+        d.free(img).map_err(e)?;
+        Ok(px)
+    };
+    let missing = one(&mut d, &mut font, "\0")?;
+    for c in PLANE1.chars().filter(|c| u32::from(*c) > 0xFFFF) {
+        let px = one(&mut d, &mut font, &c.to_string())?;
+        if px == missing || px.iter().all(|&b| b == 0) {
+            return Err(format!("U+{:X} drew no glyph of its own", u32::from(c)));
+        }
+    }
+    font.free(&mut d).map_err(e)?;
+    d.flush().map_err(e)
+}
+
 /// More distinct glyphs than the cache has slots, in a few lines, so that
 /// slots are reused while strings are drawn.
 fn cache_reuse() -> Result<(), String> {
@@ -571,6 +621,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         ("errors", errors),
         ("text", text),
         ("cache", cache_reuse),
+        ("plane1", plane1),
         ("fonterrors", font_errors),
         ("pointer", pointer),
         ("windows", windows),
