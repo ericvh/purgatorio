@@ -29,6 +29,11 @@ const USAGE: &str = "install/create [-uvxo] [-p proto] [-r root] [-s source] [-N
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's create prints its usage and exits with no status.
+    run(args).map_err(|e| e.usage_exits("usage: ", ""))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let (mut update, mut verbose, mut list, mut stdout) = (false, false, false, false);
     let (mut proto_file, mut root, mut source) = (None, String::from("/"), String::from("/"));
@@ -93,7 +98,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         &mut |f| files.push(f.clone()),
     );
     if failed {
-        purgatorio::exits("error");
+        purgatorio::exits("");
     }
     if list {
         for f in &files {
@@ -135,7 +140,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         chosen.push((f, data));
     }
     if failed {
-        purgatorio::exits("error");
+        purgatorio::exits("");
     }
     md5.sort();
     let mut remove = Vec::new();

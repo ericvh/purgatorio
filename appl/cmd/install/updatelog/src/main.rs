@@ -84,7 +84,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         &mut |f| files.push(f.clone()),
     );
     if failed {
-        purgatorio::exits("error");
+        purgatorio::exits("fail:error");
     }
     let mut out = |verb: char, path: &str, d: &Entry| {
         let e = Entry {

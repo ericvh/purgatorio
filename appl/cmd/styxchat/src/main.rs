@@ -622,6 +622,11 @@ fn connect(dest: Option<&str>, net: bool, server: bool) -> Result<Connected, Err
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // As Inferno's styxchat: any failure is `fail:error`.
+    run(args).map_err(|e| e.fails_as("fail:error"))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     match args.get(1).map(String::as_str) {
         Some("--reader") => {
             let flags = args.get(2).map(String::as_str).unwrap_or("");

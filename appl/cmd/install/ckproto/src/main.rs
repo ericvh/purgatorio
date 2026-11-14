@@ -92,6 +92,11 @@ impl Check {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    // Inferno's ckproto prints its usage as a fatal error, with no status.
+    run(args).map_err(|e| e.usage_exits("fatal: usage: ", ""))
+}
+
+fn run(args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(
         args,
         "install/ckproto [-o] [-v] [-m] [-r root] protofile ...",
@@ -134,7 +139,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             &mut |f| selected.push((f.new.clone(), f.old.clone())),
         );
         if failed {
-            purgatorio::exits("error");
+            purgatorio::exits("");
         }
         for (new, old) in selected {
             // Names in the tree are relative to the root.

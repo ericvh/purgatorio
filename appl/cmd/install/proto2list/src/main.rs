@@ -41,7 +41,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             },
         );
         if failed {
-            purgatorio::exits("error");
+            purgatorio::exits("");
         }
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));

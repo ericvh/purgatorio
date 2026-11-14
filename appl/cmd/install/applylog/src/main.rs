@@ -251,7 +251,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             .map_err(|e| Error(format!("{t}: {}", Error::from(e))))?;
     }
     if strict && errors > 0 {
-        purgatorio::exits("error");
+        purgatorio::exits(&format!("fail:{errors} errors"));
     }
     Ok(())
 }

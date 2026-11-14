@@ -22,6 +22,12 @@ use wrap::{Hdr, Reader, Unit, quote};
 
 const USAGE: &str = "install/inst [-chtuvF] [-r root] package [prefix ...]";
 
+/// Inferno's inst prints `Usage:` and raises `fail: usage`, with a space.
+fn usage() -> ! {
+    eprintln!("Usage: {USAGE}");
+    purgatorio::exits("fail: usage");
+}
+
 struct Inst {
     root: String,
     times: bool,
@@ -182,13 +188,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'u' => inst.owners = true,
             'v' => inst.verbose = true,
             'F' => inst.force = true,
-            'r' => inst.root = arg.earg()?,
-            _ => return Err(arg.usage()),
+            'r' => inst.root = arg.arg().unwrap_or_else(|| usage()),
+            _ => usage(),
         }
     }
     let mut rest = arg.argv();
     if rest.is_empty() {
-        return Err(Error::from(format!("usage: {USAGE}")));
+        usage();
     }
     let package = rest.remove(0);
     let prefixes = rest;
@@ -221,14 +227,14 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             inst.file(&h, &data)
         };
         if res.is_err() {
-            purgatorio::exits("error");
+            purgatorio::exits("fail: error");
         }
     }
     if !list {
         inst.remove_files();
     }
     if inst.errors > 0 {
-        purgatorio::exits("error");
+        purgatorio::exits("fail: error");
     }
     Ok(())
 }

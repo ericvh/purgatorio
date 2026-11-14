@@ -196,7 +196,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                 warn(&format!("premature eof reading {name}"));
             }
             out.flush()?;
-            purgatorio::exits("error");
+            purgatorio::exits("fail: error");
         }
         if !files.is_empty() {
             if !files.iter().any(|f| fileprefix(f, name)) {
