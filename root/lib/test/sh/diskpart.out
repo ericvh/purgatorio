@@ -18,7 +18,28 @@ part plan91 1124 2048
 >>> FAT12 FAT16 EXTENDED FATHUGE NTFS FAT32 FAT32X FATHUGEX EXTENDEDX PLAN9 LINUXSWAP LINUX GPT EFI
 ?cannot find partition "p4"
 >>> 00000000  55 aa                                            U.
-not a bootable disk
+>>> >>> >>> >>> >>> ' p1             63 500  (437 sectors, 218 KB) PLAN9
+' s1            500 900  (400 sectors, 200 KB) PLAN9
+' s2            900 1400 (500 sectors, 250 KB) PLAN9
+  empty        1400 1500 (100 sectors, 50 KB)
+' s3           1500 2048 (548 sectors, 274 KB) PLAN9
+>>> p4
+>>> >>> part plan9 63 500
+part plan91 563 900
+part plan92 963 1400
+part plan93 1563 2048
+>>>   p1             63 500  (437 sectors, 218 KB) PLAN9
+  s1            500 900  (400 sectors, 200 KB) PLAN9
+  s2            900 1400 (500 sectors, 250 KB) PLAN9
+  empty        1400 1500 (100 sectors, 50 KB)
+  s3           1500 2048 (548 sectors, 274 KB) PLAN9
+>>> >>> >>> >>> >>> part plan9 63 500
+part plan91 563 900
+part plan92 900 1400
+part plan93 1563 2048
+>>> >>> >>> ?too many primary partitions and chains of secondary partitions
+>>> ?changes unwritten; type q again to quit
+>>> not a bootable disk
 part dos 63 100
 part plan9 100 1124
 part plan91 1124 2048
