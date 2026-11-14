@@ -656,6 +656,162 @@ later gives the server's proof as the kernel first read it, every time;
 where they used to race that session's reader; and
 `purgatorio.export_key` (`export -k`) is new.
 
+## Post-quantum options
+
+Everything above rests on X25519 and Ed25519. A large quantum computer
+would break both: it could read a recorded conversation later by solving
+the X25519 exchange ("harvest now, decrypt later"), and forge signatures.
+The first threat is the urgent one, since recordings made today can be
+read whenever such a machine exists. The options here are opt-in. The
+defaults do not change, and old and new peers keep talking as before.
+
+- **Key exchange:** a hybrid of X25519 and ML-KEM-768 (FIPS 203) in a new
+  proof version, 4. `mount -C x25519mlkem768` uses it and requires it;
+  `export -C x25519mlkem768` requires it of every client. Every export
+  offers it to a client that asks.
+
+ChaCha20-Poly1305 with a 256-bit key, SHA-256 and HKDF stay: Grover's
+algorithm at best halves their security in bits, which leaves 128.
+
+### Hybrid key exchange (version 4)
+
+Version 4 is version 3 with an ML-KEM-768 exchange beside the X25519
+one. The server makes an ephemeral ML-KEM key pair per auth fid, the
+client encapsulates a secret to it, and both secrets go into the one key
+derivation. The session is then safe while either X25519 or ML-KEM-768
+holds: a flaw found in the young ML-KEM leaves X25519's protection, and
+a quantum computer that solves X25519 still faces ML-KEM. This is the
+construction of TLS's `X25519MLKEM768` group and of X-Wing.
+
+```
+C -> S  Tversion, Tauth afid uname aname              (clear)
+S -> C  Rversion, Rauth
+C -> S  Tread afid 0 1248
+S -> C  Rread  offer_pq = challenge[32] || S[32] || ek[1184]
+        (the client makes c, C = X25519(c, base), and encapsulates:
+         (ct, k) = ML-KEM-768.Encaps(ek))
+C -> S  Twrite afid 0  proof v4                       last clear request
+S -> C  Rwrite  (or Rerror)                           last clear reply
+        records from here on, each way
+```
+
+- **The long offer.** A read of the auth fid at offset 0 asking for at
+  least 1248 bytes (`OFFER_PQ`) gives the 64-byte offer followed by `ek`,
+  the server's ephemeral ML-KEM-768 encapsulation key. The server makes
+  the key on the first such read and gives the same bytes to every later
+  one, so it costs nothing for a client that never asks. A shorter read
+  gives the version 3 offer, as before. A server built before version 4
+  answers the long read with 64 bytes, which the client sees as "no
+  post-quantum key". The server's proof stays at offset 64.
+- **The proof.**
+
+  ```
+  proof v4 = 0x04 || kind u8 || signature[64] || C[32] || ct[1088] || body
+  signed   = offer_pq[1248] || C[32] || ct[1088]           (2368 bytes)
+  message  = "pgauth4" 0x00 || signed || len(uname) u16 LE || uname
+                            || len(aname) u16 LE || aname || kind u8 || body
+  ```
+
+  `kind`, `body` and the check are as in version 3. The signature covers
+  the whole long offer (so `ek`) and the ciphertext, under a context of
+  its own.
+- **Keys.** The client checks `ek` (FIPS 203's encapsulation key check)
+  and refuses one that fails it.
+
+  ```
+  x      = X25519(s, C) = X25519(c, S)                   all zeros is refused
+  k      = ML-KEM-768.Decaps(dk, ct) = the client's k
+  prk    = HKDF-Extract(salt = SHA-256(message), ikm = k || x)
+  c2s    = HKDF-Expand(prk, "pgauth4 c2s", 32)
+  s2c    = HKDF-Expand(prk, "pgauth4 s2c", 32)
+  bind   = HKDF-Expand(prk, "pgauth4 server", 32)
+  ```
+
+  The input key material is the ML-KEM secret first and the X25519 secret
+  second, as in X-Wing and `X25519MLKEM768`. The salt is the hash of the
+  signed message, which holds both X25519 keys, `ek` and `ct`, so the
+  derivation binds every public value of both exchanges, the version and
+  both identities. Where the records start, the record layer, the
+  server's proof (with `bind` and `transcript` from this derivation) and
+  the client's rules for the auth fd are as in version 3.
+
+### Requiring it, and downgrade
+
+A client or server either requires the hybrid exchange or does not use
+it; there is no "use it if the peer offers it" mode, so there is no
+quiet downgrade to reason about.
+
+- `mount -C x25519mlkem768` and `import -C x25519mlkem768`
+  (`purg_abi::mount::MPQ`) read the long offer. A server whose offer has
+  no ML-KEM key, or that asks for no proof, fails the mount with `no
+  post-quantum key offered`. A mount of an auth fd from `fauth` with
+  `MPQ` fails with `post-quantum key exchange required` unless its proof
+  was version 4. `-C x25519` names the default; any other name fails with
+  `unknown algorithm`. Inferno's `mount -C` picks the algorithms pushed
+  after authentication; here it picks the key exchange, since the record
+  layer is fixed.
+- `export -C x25519mlkem768` (`MPQ` on `sys->export`) refuses a version
+  1, 2 or 3 proof, and an attach without a version 4 proof, with
+  `post-quantum key exchange required`. It implies `-e`. Without it an
+  export takes version 4 from any client that asks, and every older
+  version as before.
+- `-A` with `-C x25519mlkem768` is a usage error on both commands.
+
+What an attacker on the wire can do against each:
+
+- **Strip the ML-KEM key from the offer**, or rewrite the client's read
+  to ask for 64 bytes: a client that requires the exchange fails with
+  `no post-quantum key offered`. A client that does not require it was
+  never going to use it.
+- **Strip the ciphertext from a version 4 proof** and pass the rest on as
+  a version 3 proof: the signature is over the `pgauth4` message, the
+  long offer and the ciphertext, so the server refuses it with
+  `authentication failed` (or `post-quantum key exchange required` when
+  it requires version 4). Nothing can be removed from a version 4
+  exchange without failing it.
+- **Change `ek` or `ct`:** the signature fails, as for a changed X25519
+  key in version 3. A changed `ct` alone would also give the server
+  another ML-KEM secret (FIPS 203's implicit rejection), so the records
+  could not be opened either way.
+- **A client and server that both could, but neither requires:** they
+  use version 3, as today. Turning the option on at either end is what
+  protects a conversation; at the server end it protects every client.
+
+The kernel enforces the auth fd rules of version 3 for version 4 too.
+Through `fauth`, a read of at least 2368 bytes (`SIGNED_PQ`) at offset 0
+fetches the long offer and returns `signed` above, with the kernel's own
+X25519 key and ciphertext; the X25519 secret and the ML-KEM secret never
+leave the kernel. A server that gives no ML-KEM key fails that read with
+`no post-quantum key offered` and nothing is kept, so a guest may read
+96 bytes for version 3 instead. The first read that makes a key decides
+the exchange; every later read gives the same bytes, and a read too
+short for them fails with `bad arg in system call`. The guest factotum
+signs a version 4 message when the challenge it is given is 2368 bytes
+long, as it signs version 3 for 96.
+
+The ABI goes from 0.9 to 0.10: `MPQ`, the long offer through `fauth`,
+version 4 proofs and the errors `no post-quantum key offered` and
+`post-quantum key exchange required`. A 0.9 guest never asks for the long
+offer, so it keeps talking version 3 to a 0.10 server.
+
+Not covered yet: `rcmd`/`rstyxd` and Lethe have their own exchanges
+(`docs/rcmd.md`, `docs/lethe.md`) and stay on X25519.
+
+### Threat model
+
+- **Harvest now, decrypt later:** a conversation on version 4 cannot be
+  read by someone who records it and later breaks X25519, as long as
+  ML-KEM-768 holds. This is what the option is for.
+- **Authentication** is still Ed25519. A quantum attacker who can forge
+  Ed25519 signatures in real time can pose as a user or a server; that is
+  an active attack at the time of the conversation, not a later
+  decryption. Post-quantum signatures are listed under "Decisions and
+  open questions".
+- **Forward secrecy** is as in version 3: both ML-KEM and X25519 keys are
+  ephemeral, made per auth fid and dropped with the exchange.
+- **Side channels.** ML-KEM is RustCrypto's `ml-kem`, whose decapsulation
+  compares and selects in constant time; X25519 is `curve25519-dalek`'s.
+
 ## Password scheme
 
 The signer must check a password without the password, or anything an
@@ -1082,6 +1238,21 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   `rcmd` to such an impostor gets no `/n/client`: refused under `-S`, and
   without `-S` its own mount of `/n/client` fails) and `srvauth.sh`
   (nothing trusted: an export and `rstyxd` let nobody in).
+- Post-quantum tests: `kem`'s known answers (a key pair, an
+  encapsulation and an implicit rejection, computed separately with the
+  pure-Python `kyber-py`), a malformed encapsulation key refused, and
+  round trips; `session`'s version 4 derivation against Python's `hmac`,
+  both sides agreeing, a changed ciphertext, and malformed long offers;
+  `proof`'s `version_4` (every part of the long offer and the ciphertext
+  bound, a proof stripped to version 3 refused, a version 3 proof still
+  taken by a server that made the long offer); `styxcrypt`'s
+  `a_pq_mount_is_encrypted`, `fauth_with_a_version_4_proof`,
+  `an_export_can_require_pq`, `a_stripped_pq_offer_is_refused`,
+  `a_shortened_offer_request_is_refused` and
+  `a_proof_stripped_to_version_3_is_refused`; and the corpus's
+  `pqmount.sh` (`mount -C`, `import -C`, `export -C`, a classical client
+  of a plain export and of a post-quantum-only one, a server that asks
+  for no proof), in the emu, the probe and the kernel.
 - Fuzzing: the `record` fuzz target also feeds its input to the server
   proof's check, and its smoke test (`cargo test -p purg-auth --test
   fuzz_smoke`) adds genuine server proofs, with keys and certificates,
@@ -1152,3 +1323,11 @@ Still open:
    exists, so it acts as the host owner for everyone (see "Users").
 4. **`/chan` files** (`#s`) are owned by the host owner, whoever posts
    them; Inferno makes them the poster's.
+5. **Post-quantum signatures.** Certificates, proofs and module
+   signatures are Ed25519 only. ML-DSA-65 (FIPS 204) beside Ed25519 would
+   protect authentication against a quantum attacker in real time; see
+   "Post-quantum options".
+6. **Post-quantum `rcmd` and Lethe.** Their exchanges are X25519 only.
+7. **A post-quantum default.** Should a later release make
+   `x25519mlkem768` the default for `mount` and `export`, once both ends
+   in the field speak version 4?

@@ -34,6 +34,9 @@ argon2 = { version = "0.5", default-features = false, features = ["alloc"], opti
 # aarch64 (docs/perf.md).
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc"] }
 hkdf = { version = "0.12", default-features = false }
+# ML-KEM-768 (FIPS 203) for the hybrid key exchange of proof version 4
+# and crypt's public-key mode (docs/auth.md, "Post-quantum options").
+ml-kem = { version = "0.3.4", default-features = false }
 hmac = { version = "0.12", default-features = false, optional = true }
 ring = { version = "0.17", default-features = false, optional = true }
 

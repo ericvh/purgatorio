@@ -8,13 +8,19 @@
 //! - version 3: `0x03 || kind || signature[64] || client_key[32] || body`,
 //!   which also carries the client's ephemeral X25519 key. The signature
 //!   covers the server's and the client's ephemeral keys, and both sides
-//!   derive the session keys from them ([`crate::session`]).
+//!   derive the session keys from them ([`crate::session`]);
+//! - version 4: `0x04 || kind || signature[64] || client_key[32] ||
+//!   ciphertext[1088] || body`, version 3 with an ML-KEM-768 ciphertext
+//!   for the server's ephemeral encapsulation key beside it: the hybrid,
+//!   post-quantum exchange (`docs/auth.md`, "Post-quantum options").
 //!
 //! What the client signs is the "challenge" it was given: the server's 32
-//! random bytes for version 2, or for version 3 [`SIGNED`] bytes, the
+//! random bytes for version 2, for version 3 [`SIGNED`] bytes, the
 //! server's [`OFFER`] (challenge and ephemeral key) followed by the
-//! client's ephemeral key. [`message`], [`assemble`] and [`make`] pick the
-//! version from that length.
+//! client's ephemeral key, and for version 4 [`SIGNED_PQ`] bytes, the
+//! server's [`OFFER_PQ`] followed by the client's key and ciphertext.
+//! [`message`], [`assemble`] and [`make`] pick the version from that
+//! length.
 
 use alloc::vec::Vec;
 
@@ -30,25 +36,39 @@ use crate::{PUBLIC, SEED, SIGNATURE};
 pub const V1_LEN: usize = PROOF;
 /// The first byte of a version 3 proof.
 pub const V3: u8 = purg_abi::auth::PROOF_V3;
+/// The first byte of a version 4 proof.
+pub const V4: u8 = purg_abi::auth::PROOF_V4;
 /// The context string a version 2 signature starts with.
 pub const CONTEXT: &[u8] = b"pgauth2\0";
 /// The context string a version 3 signature starts with.
 pub const CONTEXT3: &[u8] = b"pgauth3\0";
+/// The context string a version 4 signature starts with.
+pub const CONTEXT4: &[u8] = b"pgauth4\0";
 /// What a version 3 server gives on the auth fid: `challenge[32] ||
 /// server_key[32]`, its ephemeral X25519 key.
 pub const OFFER: usize = purg_abi::auth::OFFER;
 /// What a version 3 client signs: the [`OFFER`] and its own ephemeral key.
 pub const SIGNED: usize = purg_abi::auth::SIGNED;
-/// A proof is at most this long (a certificate with every signature fits).
-pub const MAX_LEN: usize = 2048;
+/// What a server gives for a long read of the auth fid: the [`OFFER`]
+/// and its ephemeral ML-KEM-768 encapsulation key.
+pub const OFFER_PQ: usize = purg_abi::auth::OFFER_PQ;
+/// What a version 4 client signs: the [`OFFER_PQ`], its ephemeral X25519
+/// key and its ML-KEM-768 ciphertext.
+pub const SIGNED_PQ: usize = purg_abi::auth::SIGNED_PQ;
+/// An ML-KEM-768 ciphertext.
+pub const CT: usize = purg_abi::auth::KEM_CIPHERTEXT;
+/// A proof is at most this long (a version 4 proof with a certificate
+/// that has every signature fits).
+pub const MAX_LEN: usize = 4096;
 
-/// The bytes a version 2 or 3 proof signs. `challenge` is the server's
-/// challenge (version 2) or [`SIGNED`] bytes (version 3).
+/// The bytes a version 2, 3 or 4 proof signs. `challenge` is the
+/// server's challenge (version 2), [`SIGNED`] bytes (version 3) or
+/// [`SIGNED_PQ`] bytes (version 4).
 pub fn message(challenge: &[u8], uname: &str, aname: &str, kind: u8, body: &[u8]) -> Vec<u8> {
-    let context = if challenge.len() == SIGNED {
-        CONTEXT3
-    } else {
-        CONTEXT
+    let context = match challenge.len() {
+        SIGNED => CONTEXT3,
+        SIGNED_PQ => CONTEXT4,
+        _ => CONTEXT,
     };
     let mut m = Vec::with_capacity(context.len() + challenge.len() + 5 + body.len() + 64);
     m.extend_from_slice(context);
@@ -72,22 +92,27 @@ pub fn body(cert: Option<&Cert>, public: &[u8; PUBLIC]) -> (u8, Vec<u8>) {
 }
 
 /// Assembles a proof from its parts: version 3 when `challenge` is
-/// [`SIGNED`] bytes (the client's key is its last 32), else version 2.
+/// [`SIGNED`] bytes (the client's key is its last 32), version 4 when it
+/// is [`SIGNED_PQ`] bytes (the client's key and ciphertext follow the
+/// [`OFFER_PQ`]), else version 2.
 pub fn assemble(challenge: &[u8], kind: u8, signature: &[u8; SIGNATURE], body: &[u8]) -> Vec<u8> {
-    let v3 = challenge.len() == SIGNED;
-    let mut p = Vec::with_capacity(2 + SIGNATURE + PUBLIC + body.len());
-    p.push(if v3 { V3 } else { PROOF_VERSION });
+    let (version, tail) = match challenge.len() {
+        SIGNED => (V3, &challenge[OFFER..]),
+        SIGNED_PQ => (V4, &challenge[OFFER_PQ..]),
+        _ => (PROOF_VERSION, &[][..]),
+    };
+    let mut p = Vec::with_capacity(2 + SIGNATURE + tail.len() + body.len());
+    p.push(version);
     p.push(kind);
     p.extend_from_slice(signature);
-    if v3 {
-        p.extend_from_slice(&challenge[OFFER..]);
-    }
+    p.extend_from_slice(tail);
     p.extend_from_slice(body);
     p
 }
 
 /// A proof signed with `seed`, carrying `cert` when given: version 3 when
-/// `challenge` is [`SIGNED`] bytes, else version 2.
+/// `challenge` is [`SIGNED`] bytes, version 4 for [`SIGNED_PQ`] bytes,
+/// else version 2.
 pub fn make(
     seed: &[u8; SEED],
     cert: Option<&Cert>,
@@ -100,27 +125,63 @@ pub fn make(
     assemble(challenge, kind, &sig, &body)
 }
 
-/// A version 3 proof taken apart.
+/// A version 3 or 4 proof taken apart.
 pub struct V3Proof<'a> {
     pub kind: u8,
     pub signature: [u8; SIGNATURE],
     /// The client's ephemeral X25519 key.
     pub client_key: [u8; PUBLIC],
+    /// The client's ML-KEM-768 ciphertext: version 4 only.
+    pub ct: Option<&'a [u8; CT]>,
     pub body: &'a [u8],
+}
+
+impl V3Proof<'_> {
+    /// Whether this is a version 4 proof, with the post-quantum exchange.
+    pub fn pq(&self) -> bool {
+        self.ct.is_some()
+    }
 }
 
 /// Splits a version 3 proof. `None` when it is not one.
 pub fn parse_v3(proof: &[u8]) -> Option<V3Proof<'_>> {
-    if proof.len() > MAX_LEN || proof.first() != Some(&V3) {
+    if proof.first() != Some(&V3) {
+        return None;
+    }
+    parse_session(proof)
+}
+
+/// Splits a version 4 proof. `None` when it is not one.
+pub fn parse_v4(proof: &[u8]) -> Option<V3Proof<'_>> {
+    if proof.first() != Some(&V4) {
+        return None;
+    }
+    parse_session(proof)
+}
+
+/// Splits a version 3 or 4 proof. `None` when it is neither.
+pub fn parse_session(proof: &[u8]) -> Option<V3Proof<'_>> {
+    let pq = match proof.first() {
+        Some(&V3) => false,
+        Some(&V4) => true,
+        _ => return None,
+    };
+    if proof.len() > MAX_LEN {
         return None;
     }
     let kind = *proof.get(1)?;
     let signature = proof.get(2..2 + SIGNATURE)?.try_into().ok()?;
-    let client_key = proof
-        .get(2 + SIGNATURE..2 + SIGNATURE + PUBLIC)?
-        .try_into()
-        .ok()?;
-    let body = &proof[2 + SIGNATURE + PUBLIC..];
+    let mut at = 2 + SIGNATURE;
+    let client_key = proof.get(at..at + PUBLIC)?.try_into().ok()?;
+    at += PUBLIC;
+    let ct = if pq {
+        let ct: &[u8; CT] = proof.get(at..at + CT)?.try_into().ok()?;
+        at += CT;
+        Some(ct)
+    } else {
+        None
+    };
+    let body = &proof[at..];
     if body.is_empty() {
         return None;
     }
@@ -128,6 +189,7 @@ pub fn parse_v3(proof: &[u8]) -> Option<V3Proof<'_>> {
         kind,
         signature,
         client_key,
+        ct,
         body,
     })
 }
@@ -140,18 +202,54 @@ pub fn signed(offer: &[u8; OFFER], client_key: &[u8; PUBLIC]) -> [u8; SIGNED] {
     s
 }
 
-/// The message a version 3 `proof` signs, given the server's `offer`, and
-/// the client's ephemeral key it carries. Both sides hash the message into
-/// the session keys. `None` when `proof` is not version 3.
-pub fn transcript(
-    offer: &[u8; OFFER],
-    uname: &str,
-    aname: &str,
-    proof: &[u8],
-) -> Option<(Vec<u8>, [u8; PUBLIC])> {
-    let p = parse_v3(proof)?;
-    let m = message(&signed(offer, &p.client_key), uname, aname, p.kind, p.body);
-    Some((m, p.client_key))
+/// The [`SIGNED_PQ`] bytes of a version 4 exchange.
+pub fn signed_pq(offer: &[u8; OFFER_PQ], client_key: &[u8; PUBLIC], ct: &[u8; CT]) -> Vec<u8> {
+    let mut s = Vec::with_capacity(SIGNED_PQ);
+    s.extend_from_slice(offer);
+    s.extend_from_slice(client_key);
+    s.extend_from_slice(ct);
+    s
+}
+
+/// The bytes a version 3 or 4 proof `p` signs, given the server's
+/// `offer`: for version 3 its first [`OFFER`] bytes, for version 4 all
+/// [`OFFER_PQ`] of them. `None` when `offer` does not fit `p`.
+fn signed_for(offer: &[u8], p: &V3Proof<'_>) -> Option<Vec<u8>> {
+    match p.ct {
+        None => {
+            let offer: &[u8; OFFER] = offer.get(..OFFER)?.try_into().ok()?;
+            Some(signed(offer, &p.client_key).to_vec())
+        }
+        Some(ct) => {
+            let offer: &[u8; OFFER_PQ] = offer.try_into().ok()?;
+            Some(signed_pq(offer, &p.client_key, ct))
+        }
+    }
+}
+
+/// What a version 3 or 4 proof signs, and the client's half of the
+/// exchange it carries.
+pub struct Transcript {
+    /// The signed message. Both sides hash it into the session keys.
+    pub message: Vec<u8>,
+    /// The client's ephemeral X25519 key.
+    pub client_key: [u8; PUBLIC],
+    /// The client's ML-KEM-768 ciphertext: version 4 only.
+    pub ct: Option<[u8; CT]>,
+}
+
+/// The message a version 3 or 4 `proof` signs, given what the server
+/// offered (`offer`: the [`OFFER`], or for version 4 the [`OFFER_PQ`]),
+/// and the client's half of the exchange it carries. `None` when `proof`
+/// is neither version or `offer` does not fit it.
+pub fn transcript(offer: &[u8], uname: &str, aname: &str, proof: &[u8]) -> Option<Transcript> {
+    let p = parse_session(proof)?;
+    let s = signed_for(offer, &p)?;
+    Some(Transcript {
+        message: message(&s, uname, aname, p.kind, p.body),
+        client_key: p.client_key,
+        ct: p.ct.copied(),
+    })
 }
 
 /// What a server trusts.
@@ -205,10 +303,10 @@ pub fn check(
             Ok(())
         };
     }
-    let (kind, sig, body, signed) = if proof.first() == Some(&V3) {
-        let offer: &[u8; OFFER] = offer.try_into().map_err(|_| FAILED)?;
-        let p = parse_v3(proof).ok_or(FAILED)?;
-        let m = message(&signed(offer, &p.client_key), uname, aname, p.kind, p.body);
+    let (kind, sig, body, signed) = if matches!(proof.first(), Some(&V3) | Some(&V4)) {
+        let p = parse_session(proof).ok_or(FAILED)?;
+        let s = signed_for(offer, &p).ok_or(FAILED)?;
+        let m = message(&s, uname, aname, p.kind, p.body);
         (p.kind, p.signature, p.body, m)
     } else {
         if proof.len() < 2 + SIGNATURE || proof.len() > MAX_LEN || proof[0] != PROOF_VERSION {
@@ -468,15 +566,78 @@ mod tests {
             check(&policy(&[], &signer, &[]), &offer, "alice", "", &p),
             Ok(())
         );
-        let (t, key) = transcript(&offer, "alice", "", &p).unwrap();
-        assert_eq!(key, [9; 32]);
-        assert!(t.starts_with(CONTEXT3));
+        let t = transcript(&offer, "alice", "", &p).unwrap();
+        assert_eq!(t.client_key, [9; 32]);
+        assert!(t.ct.is_none());
+        assert!(t.message.starts_with(CONTEXT3));
         // A v2 proof is no transcript, and a v3 proof is not a v2 proof.
         let v2 = make(&USER, None, &CHAL, "alice", "");
         assert!(transcript(&offer, "alice", "", &v2).is_none());
         let mut as_v2 = make(&USER, None, &s, "alice", "");
         as_v2[0] = PROOF_VERSION;
         assert_eq!(check(&pol, &offer, "alice", "", &as_v2), Err(FAILED));
+    }
+
+    /// A version 4 proof signs the whole long offer and the ciphertext,
+    /// under its own context: nothing can be changed or cut out of it,
+    /// and it cannot pass as a version 3 proof.
+    #[test]
+    fn version_4() {
+        let public = [crate::public_key(&USER)];
+        let signer = [crate::public_key(&SIGNER)];
+        let mut offer = alloc::vec![0u8; OFFER_PQ];
+        offer[..32].copy_from_slice(&CHAL);
+        offer[32..OFFER].copy_from_slice(&[8; 32]);
+        offer[OFFER..].fill(0x33);
+        let ct = [0x44u8; CT];
+        let s = signed_pq(offer.as_slice().try_into().unwrap(), &[9; 32], &ct);
+        let p = make(&USER, None, &s, "alice", "");
+        assert_eq!(p[0], V4);
+        assert_eq!(&p[2 + SIGNATURE..2 + SIGNATURE + PUBLIC], &[9; 32]);
+        assert_eq!(&p[2 + SIGNATURE + PUBLIC..2 + SIGNATURE + PUBLIC + CT], &ct);
+        let v = parse_v4(&p).unwrap();
+        assert!(v.pq());
+        assert!(parse_v3(&p).is_none());
+        let pol = policy(&public, &[], &[]);
+        assert_eq!(check(&pol, &offer, "alice", "", &p), Ok(()));
+        // Against the short offer only: the encapsulation key is missing.
+        assert_eq!(check(&pol, &offer[..OFFER], "alice", "", &p), Err(FAILED));
+        // The server's encapsulation key changed on the way.
+        let mut other = offer.clone();
+        other[OFFER + 100] ^= 1;
+        assert_eq!(check(&pol, &other, "alice", "", &p), Err(FAILED));
+        // The ciphertext changed.
+        let mut q = p.clone();
+        q[2 + SIGNATURE + PUBLIC + 5] ^= 1;
+        assert_eq!(check(&pol, &offer, "alice", "", &q), Err(FAILED));
+        // Stripped: the ciphertext cut out and the version made 3, as a
+        // downgrade to the classical exchange would need.
+        let mut stripped = p[..2 + SIGNATURE + PUBLIC].to_vec();
+        stripped[0] = V3;
+        stripped.extend_from_slice(&p[2 + SIGNATURE + PUBLIC + CT..]);
+        assert!(parse_v3(&stripped).is_some());
+        assert_eq!(check(&pol, &offer, "alice", "", &stripped), Err(FAILED));
+        // A version 3 proof still checks against a server that made the
+        // long offer: it signs the first OFFER bytes.
+        let short: &[u8; OFFER] = offer[..OFFER].try_into().unwrap();
+        let p3 = make(&USER, None, &signed(short, &[9; 32]), "alice", "");
+        assert_eq!(check(&pol, &offer, "alice", "", &p3), Ok(()));
+        // Names, certificates and the transcript as for version 3.
+        assert_eq!(check(&pol, &offer, "bob", "", &p), Err(FAILED));
+        let good = cert("alice", NOW + 60, &SIGNER);
+        let pc = make(&USER, Some(&good), &s, "alice", "");
+        assert_eq!(
+            check(&policy(&[], &signer, &[]), &offer, "alice", "", &pc),
+            Ok(())
+        );
+        let t = transcript(&offer, "alice", "", &pc).unwrap();
+        assert_eq!(t.ct, Some(ct));
+        assert!(t.message.starts_with(CONTEXT4));
+        // Cut short anywhere before the body.
+        let head = 2 + SIGNATURE + PUBLIC + CT;
+        for n in [1, 2 + SIGNATURE, head - 1, head] {
+            assert_eq!(check(&pol, &offer, "alice", "", &p[..n]), Err(FAILED));
+        }
     }
 
     #[test]
@@ -488,6 +649,8 @@ mod tests {
             &[3u8; 200][..],
             &[2u8; 200][..],
             &[2u8; MAX_LEN + 1][..],
+            &[4u8; 200][..],
+            &[4u8; 2000][..],
         ] {
             assert_eq!(check(&pol, &CHAL, "a", "", p), Err(FAILED));
         }

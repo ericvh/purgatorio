@@ -1,4 +1,4 @@
-//! mount [-abrcAS] [-k keyfile] fd-or-addr mtpt [spec]: mount a 9P
+//! mount [-abrcAS] [-C alg] [-k keyfile] fd-or-addr mtpt [spec]: mount a 9P
 //! connection at `mtpt`. `fd-or-addr` is a file descriptor, a dial string
 //! (`tcp!host!port`) or a `{command}` block, which is run by sh with a pipe
 //! as its fds 0 and 1. The mount authenticates when the server asks, with
@@ -8,7 +8,12 @@
 //! (`/lib/keys/servers`, `/lib/keys/serversigners` or else
 //! `/lib/keys/signers`), and for a dial string, one
 //! for the host it names: a key listed for that host, or a certificate
-//! with that name (`docs/auth.md`, "Servers per host").
+//! with that name (`docs/auth.md`, "Servers per host"). `-C alg` picks
+//! the key exchange, as Inferno's `-C` picks the algorithms pushed after
+//! authentication: `x25519` (the default) or `x25519mlkem768`, the hybrid
+//! post-quantum exchange, which a server that does not offer it fails
+//! with `no post-quantum key offered` (`docs/auth.md`, "Post-quantum
+//! options").
 
 use std::os::fd::AsRawFd;
 
@@ -17,13 +22,14 @@ use purgatorio::arg::Arg;
 use purgatorio::dial;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "mount [-abrcAS] [-k keyfile] fd-or-addr mtpt [spec]";
+const USAGE: &str = "mount [-abrcAS] [-C alg] [-k keyfile] fd-or-addr mtpt [spec]";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
     let (mut order, mut create, mut noauth, mut srvauth) = (mount::MREPL, 0, 0, 0);
     let mut keyfile = None;
+    let mut kex = 0;
     while let Some(c) = arg.opt() {
         match c {
             'a' => order = mount::MAFTER,
@@ -33,11 +39,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'A' => noauth = mount::MNOAUTH,
             'S' => srvauth = mount::MSRVAUTH,
             'k' => keyfile = Some(arg.earg()?),
+            'C' => kex = purgatorio::auth::kex_flags(&arg.earg()?)?,
             _ => return Err(arg.usage()),
         }
     }
     let rest = arg.argv();
-    if rest.len() < 2 || rest.len() > 3 || (noauth != 0 && srvauth != 0) {
+    if rest.len() < 2 || rest.len() > 3 || (noauth != 0 && (srvauth != 0 || kex != 0)) {
         return Err(Error(format!("usage: {USAGE}")));
     }
     let spec = rest.get(2).map(String::as_str).unwrap_or("");
@@ -70,7 +77,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         pipe = None;
         rest[0].parse().map_err(|_| Error::from("bad fd"))?
     };
-    let flags = order | create | noauth | srvauth;
+    let flags = order | create | noauth | srvauth | kex;
     // The kernel authenticates a plain mount itself, in one conversation.
     // A keyfile or a guest factotum means the proof is built here, with
     // fauth first, and so does a server proof that must be for a host.

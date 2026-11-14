@@ -215,14 +215,18 @@ impl Prog {
     /// With `MSRVAUTH` the server must prove itself too: the mount reads
     /// its proof after the client's and checks it against what this
     /// namespace trusts as a server (`docs/auth.md`).
+    ///
+    /// With `MPQ` the exchange must be the post-quantum one of a version 4
+    /// proof (`docs/auth.md`, "Post-quantum options").
     pub fn mount(&self, fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<()> {
-        use purg_abi::mount::{MNOAUTH, MSRVAUTH};
+        use purg_abi::mount::{MNOAUTH, MPQ, MSRVAUTH};
         let noauth = flags & MNOAUTH != 0;
         let srvauth = flags & MSRVAUTH != 0;
-        if noauth && srvauth {
+        let pq = flags & MPQ != 0;
+        if noauth && (srvauth || pq) {
             return Err(Error::new(error::EBADARG));
         }
-        let flags = flags & !(MNOAUTH | MSRVAUTH);
+        let bind = flags & !(MNOAUTH | MSRVAUTH | MPQ);
         let fd = self.fgrp.get(fd)?;
         let user = self.proc.user();
         let pgrp = self.pgrp.clone();
@@ -237,20 +241,20 @@ impl Prog {
             let afd = self.fgrp.get(afd)?;
             self.kernel
                 .mnt
-                .mount_auth(&fd, &afd, aname, &user, server)?
+                .mount_auth(&fd, &afd, aname, &user, pq, server)?
         } else {
             let pgrp = self.pgrp.clone();
             self.kernel.mnt.mount(
                 fd,
                 aname,
                 &user,
-                noauth,
+                flags & (MNOAUTH | MPQ),
                 |challenge| crate::auth::client_proof(&pgrp, &user, aname, challenge),
                 server,
             )?
         };
         let old = absolute(old, &self.dot());
-        self.pgrp.bind_chan(root, &old, flags)
+        self.pgrp.bind_chan(root, &old, bind)
     }
 
     /// `sys->fauth`: starts authentication on the 9P conversation on `fd`
@@ -311,7 +315,8 @@ impl Prog {
     /// `MNOAUTH` serves the tree to anyone; without it the client must
     /// prove a key or a certificate the caller's namespace trusts, and
     /// when it trusts none nobody gets in; `export::RDONLY` refuses every change to it;
-    /// `export::ENCRYPT` refuses every attach that is not encrypted. The
+    /// `export::ENCRYPT` refuses every attach that is not encrypted, and
+    /// `mount::MPQ` every attach without the post-quantum exchange. The
     /// server's own proof is signed with the key the caller's mount would
     /// prove with.
     pub fn export(&self, fd: i32, dir: &str, flags: u32) -> Result<()> {
@@ -328,6 +333,7 @@ impl Prog {
             noauth: flags & purg_abi::mount::MNOAUTH != 0,
             rdonly: flags & purg_abi::export::RDONLY != 0,
             encrypt: flags & purg_abi::export::ENCRYPT != 0,
+            pq: flags & purg_abi::mount::MPQ != 0,
             user: self.proc.user(),
             keyfile: (!keyfile.is_empty()).then(|| absolute(keyfile, &self.dot())),
         };

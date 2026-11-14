@@ -980,3 +980,266 @@ fn a_live_session_keeps_its_conversation() {
     within("the export ends", move || server.join().unwrap()).unwrap();
     kprocs_gone(&mock);
 }
+
+// Post-quantum exchange (`docs/auth.md`, "Post-quantum options").
+
+use purg_abi::mount::MPQ;
+use purg_core::auth::{NO_PQ, OFFER, OFFER_PQ, PQ_REQUIRED, SIGNED_PQ};
+
+/// A mount with `MPQ` takes the hybrid exchange: the long offer comes
+/// down, the proof carries the ML-KEM ciphertext, and nothing after it is
+/// in the clear.
+#[test]
+fn a_pq_mount_is_encrypted() {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, &mock, 0);
+    let (relay, c) = Relay::new(&mut p, &mock, b, None);
+    p.mount(c, -1, "#R/mnt", MREPL | MCREATE | MPQ, "").unwrap();
+    p.close(c).unwrap();
+    use_mount(&mut p);
+    p.unmount(None, "#R/mnt").unwrap();
+    let (up, down) = relay.join();
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    for (dir, log) in [("up", &up), ("down", &down)] {
+        assert!(!contains(log, NAME), "{dir}: the name went in the clear");
+        assert!(!contains(log, DATA), "{dir}: the data went in the clear");
+    }
+    // Frame 2 down is the Rread of the long offer, frame 3 up the
+    // version 4 proof: size[4] type[1] tag[2] fid[4] offset[8] count[4].
+    let rread = frame_end(&down, 2).unwrap() - frame_end(&down, 1).unwrap();
+    assert_eq!(rread, 4 + 1 + 2 + 4 + OFFER_PQ);
+    let start = frame_end(&up, 2).unwrap();
+    assert_eq!(up[start + 23], purg_auth::proof::V4);
+    kprocs_gone(&mock);
+}
+
+/// The same through `fauth`: a read of SIGNED_PQ bytes gives the long
+/// offer with the kernel's key and ciphertext, a version 4 proof over
+/// them switches the conversation, and a mount with `MPQ` takes it. After
+/// a version 3 proof a mount with `MPQ` is refused.
+#[test]
+fn fauth_with_a_version_4_proof() {
+    let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
+    for v4 in [true, false] {
+        let (mut p, mock) = setup();
+        install_fixture(&mut p);
+        let (server, c) = spawn_export(&mut p, &mock, 0);
+        let afd = p.fauth(c, "").unwrap();
+        let mut signed = vec![
+            0u8;
+            if v4 {
+                SIGNED_PQ
+            } else {
+                purg_core::auth::SIGNED
+            }
+        ];
+        assert_eq!(p.read(afd, &mut signed).unwrap(), signed.len());
+        // Every later read gives the same bytes; a shorter one cannot.
+        let mut again = vec![0u8; SIGNED_PQ];
+        assert_eq!(p.pread(afd, &mut again, 0).unwrap(), signed.len());
+        assert_eq!(&again[..signed.len()], &signed[..]);
+        if v4 {
+            let mut short = [0u8; purg_core::auth::SIGNED];
+            assert_eq!(
+                p.pread(afd, &mut short, 0).unwrap_err().as_str(),
+                purg_abi::error::EBADARG
+            );
+        }
+        let proof = purg_auth::proof::make(&seed, None, &signed, "inferno", "");
+        assert_eq!(p.write(afd, &proof).unwrap(), proof.len());
+        let r = p.mount(c, afd, "#R/mnt", MREPL | MCREATE | MPQ, "");
+        if v4 {
+            r.unwrap();
+            use_mount(&mut p);
+            p.unmount(None, "#R/mnt").unwrap();
+        } else {
+            assert_eq!(r.unwrap_err().as_str(), PQ_REQUIRED);
+        }
+        p.close(afd).unwrap();
+        p.close(c).unwrap();
+        within("the export ends", move || server.join().unwrap()).unwrap();
+        kprocs_gone(&mock);
+    }
+}
+
+/// An export with `MPQ` refuses the classical exchange, from the kernel's
+/// mount and from a version 3 proof through `fauth`, and takes the hybrid
+/// one. A classical client of an export without it works as before.
+#[test]
+fn an_export_can_require_pq() {
+    assert_eq!(mount_with(0, |_| {}), Ok(()));
+    let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, c) = spawn_export(&mut p, &mock, MPQ);
+    let r = p.mount(c, -1, "#R/mnt", MREPL, "");
+    assert_eq!(r.unwrap_err().as_str(), PQ_REQUIRED);
+    p.close(c).unwrap();
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    let (server, c) = spawn_export(&mut p, &mock, MPQ);
+    let afd = p.fauth(c, "").unwrap();
+    let mut signed = [0u8; purg_core::auth::SIGNED];
+    assert_eq!(p.read(afd, &mut signed).unwrap(), signed.len());
+    let proof = purg_auth::proof::make(&seed, None, &signed, "inferno", "");
+    assert_eq!(p.write(afd, &proof).unwrap_err().as_str(), PQ_REQUIRED);
+    let r = p.mount(c, afd, "#R/mnt", MREPL, "");
+    assert_eq!(r.unwrap_err().as_str(), purg_core::auth::REQUIRED);
+    p.close(afd).unwrap();
+    p.close(c).unwrap();
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    let (server, c) = spawn_export(&mut p, &mock, MPQ);
+    p.mount(c, -1, "#R/mnt", MREPL | MCREATE | MPQ, "").unwrap();
+    p.close(c).unwrap();
+    use_mount(&mut p);
+    p.unmount(None, "#R/mnt").unwrap();
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    // `-A` with `MPQ` is a usage error on both sides, and a mount with
+    // `MPQ` of a server that asks for no proof is refused.
+    let (server, c) = spawn_export(&mut p, &mock, MPQ | MNOAUTH);
+    let served = within("the export ends", move || server.join().unwrap());
+    assert_eq!(served, Err(String::from(purg_abi::error::EBADARG)));
+    p.close(c).unwrap();
+    let (server, c) = spawn_export(&mut p, &mock, MNOAUTH);
+    let r = p.mount(c, -1, "#R/mnt", MREPL | MPQ | MNOAUTH, "");
+    assert_eq!(r.unwrap_err().as_str(), purg_abi::error::EBADARG);
+    let r = p.mount(c, -1, "#R/mnt", MREPL | MPQ, "");
+    assert_eq!(r.unwrap_err().as_str(), NO_PQ);
+    p.close(c).unwrap();
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    kprocs_gone(&mock);
+}
+
+/// A man in the middle that relays `n` request and reply pairs, each
+/// passed through `rewrite(request?, message)`, then stops.
+fn mitm(
+    p: &mut Prog,
+    mock: &Arc<Mock>,
+    server: i32,
+    n: usize,
+    rewrite: fn(bool, Vec<u8>) -> Vec<u8>,
+) -> (thread::JoinHandle<()>, i32) {
+    let [c, r] = p.pipe().unwrap();
+    let mut mitm = p
+        .spawn(purg_abi::pctl::NEWFD, &[(r, 0), (server, 1)])
+        .unwrap();
+    mitm.started();
+    p.close(r).unwrap();
+    p.close(server).unwrap();
+    let m = mock.clone();
+    let relay = thread::spawn(move || {
+        use purg_core::rw::{read_msg, write_full};
+        use purg_styx::MAX_MSIZE;
+        enter(&m, &mitm);
+        let to_client = mitm.chan(0).unwrap();
+        let to_server = mitm.chan(1).unwrap();
+        for _ in 0..n {
+            let Ok(t) = read_msg(&to_client, MAX_MSIZE) else {
+                return;
+            };
+            if write_full(&to_server, &rewrite(true, t)).is_err() {
+                return;
+            }
+            let Ok(r) = read_msg(&to_server, MAX_MSIZE) else {
+                return;
+            };
+            if write_full(&to_client, &rewrite(false, r)).is_err() {
+                return;
+            }
+        }
+    });
+    (relay, c)
+}
+
+fn rewrite_msg(bytes: &[u8], f: impl FnOnce(purg_styx::Fcall<'_>) -> Option<Vec<u8>>) -> Vec<u8> {
+    use purg_styx::{MAX_MSIZE, Msg};
+    let msg = Msg::decode(bytes, MAX_MSIZE).unwrap();
+    let tag = msg.tag;
+    match f(msg.fcall) {
+        Some(data) => Msg {
+            tag,
+            fcall: purg_styx::Fcall::Rread { data: &data },
+        }
+        .encode()
+        .unwrap(),
+        None => bytes.to_vec(),
+    }
+}
+
+/// Runs a mount with `MPQ` through [`mitm`] and returns its error.
+fn pq_mount_through(n: usize, rewrite: fn(bool, Vec<u8>) -> Vec<u8>) -> String {
+    let (mut p, mock) = setup();
+    install_fixture(&mut p);
+    let (server, b) = spawn_export(&mut p, &mock, 0);
+    let (relay, c) = mitm(&mut p, &mock, b, n, rewrite);
+    let conn = p.chan(c).unwrap();
+    let err = p.mount(c, -1, "#R/mnt", MREPL | MPQ, "").unwrap_err();
+    p.close(c).unwrap();
+    drop(conn);
+    within("the relay ends", move || relay.join().unwrap());
+    within("the export ends", move || server.join().unwrap()).unwrap();
+    kprocs_gone(&mock);
+    String::from(err.as_str())
+}
+
+/// Cutting the ML-KEM key out of the offer, as a server that predates
+/// version 4 would answer, fails a mount that requires the hybrid
+/// exchange instead of falling back to the classical one.
+#[test]
+fn a_stripped_pq_offer_is_refused() {
+    let err = pq_mount_through(3, |up, m| {
+        if up {
+            return m;
+        }
+        rewrite_msg(&m, |f| match f {
+            purg_styx::Fcall::Rread { data } if data.len() == OFFER_PQ => {
+                Some(data[..OFFER].to_vec())
+            }
+            _ => None,
+        })
+    });
+    assert_eq!(err, NO_PQ);
+}
+
+/// The same by asking the server for the short offer: the request is in
+/// the clear, but the client still sees no ML-KEM key and refuses.
+#[test]
+fn a_shortened_offer_request_is_refused() {
+    let err = pq_mount_through(3, |up, m| {
+        if !up {
+            return m;
+        }
+        let mut m = m;
+        // Tread: size[4] type[1] tag[2] fid[4] offset[8] count[4].
+        if m.get(4) == Some(&purg_styx::kind::TREAD) && m.len() == 23 {
+            m[19..23].copy_from_slice(&(OFFER as u32).to_le_bytes());
+        }
+        m
+    });
+    assert_eq!(err, NO_PQ);
+}
+
+/// Stripping the ML-KEM ciphertext from a version 4 proof, to pass it on
+/// as a version 3 proof, fails: the signature covers the version 4
+/// context, the long offer and the ciphertext.
+#[test]
+fn a_proof_stripped_to_version_3_is_refused() {
+    let err = pq_mount_through(4, |up, m| {
+        use purg_auth::proof::{CT, V3, V4};
+        // Twrite: size[4] type[1] tag[2] fid[4] offset[8] count[4] data.
+        if !up || m.get(4) != Some(&purg_styx::kind::TWRITE) || m.get(23) != Some(&V4) {
+            return m;
+        }
+        let head = 23 + 2 + purg_core::auth::SIGNATURE + purg_core::auth::PUBLIC;
+        let mut data = m[23..head].to_vec();
+        data[0] = V3;
+        data.extend_from_slice(&m[head + CT..]);
+        let mut out = m[..23].to_vec();
+        out[19..23].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&data);
+        let size = out.len() as u32;
+        out[..4].copy_from_slice(&size.to_le_bytes());
+        out
+    });
+    assert_eq!(err, purg_core::auth::FAILED);
+}

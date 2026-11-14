@@ -1,6 +1,6 @@
      32
 mount: server did not authenticate
-usage: mount [-abrcAS] [-k keyfile] fd-or-addr mtpt [spec]
+usage: mount [-abrcAS] [-C alg] [-k keyfile] fd-or-addr mtpt [spec]
 encrypted
 proved
      32

@@ -130,6 +130,23 @@ fn safe_user(user: &str) -> bool {
     !user.is_empty() && user != "." && user != ".." && !user.contains('/')
 }
 
+/// The classical key exchange (X25519), the default.
+pub const KEX_CLASSICAL: &str = "x25519";
+/// The hybrid post-quantum key exchange, X25519 with ML-KEM-768.
+pub const KEX_PQ: &str = "x25519mlkem768";
+
+/// The mount flags for `-C alg` on `mount`, `import` and `export`
+/// (`docs/auth.md`, "Post-quantum options"): [`KEX_CLASSICAL`] adds
+/// nothing, [`KEX_PQ`] adds `abi::mount::MPQ`, which requires the hybrid
+/// exchange. Anything else is refused.
+pub fn kex_flags(alg: &str) -> Result<u32, Error> {
+    match alg {
+        KEX_CLASSICAL => Ok(0),
+        KEX_PQ => Ok(abi::mount::MPQ),
+        _ => Err(Error(format!("unknown algorithm: {alg}"))),
+    }
+}
+
 /// The path of authinfo `name`: itself when it holds a `/`, else
 /// `/usr/<user>/keyring/<name>`.
 pub fn keyfile_path(name: &str, user: &str) -> String {
@@ -517,16 +534,41 @@ pub fn authenticate_for(
     aname: &str,
     keyfile: Option<&str>,
 ) -> Result<(), Error> {
+    authenticate_with(afd, user, aname, keyfile, false)
+}
+
+/// [`authenticate_for`], with the post-quantum exchange of a version 4
+/// proof when `pq` is set (`abi::mount::MPQ`, `docs/auth.md`,
+/// "Post-quantum options"): a server that does not offer it fails with
+/// `abi::auth::NO_PQ`.
+pub fn authenticate_with(
+    afd: &OwnedFd,
+    user: &str,
+    aname: &str,
+    keyfile: Option<&str>,
+    pq: bool,
+) -> Result<(), Error> {
     // SAFETY: `afd` stays open for this call, and ManuallyDrop keeps the
     // File from closing it.
     let mut f = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(afd.as_raw_fd()) });
     // One read: the kernel answers a read of SIGNED bytes with the offer
     // and its own ephemeral key. Anything shorter is a server that offers
     // no session key, and is refused rather than spoken to in the clear.
-    let mut signed = [0u8; abi::auth::SIGNED];
+    // A read of SIGNED_PQ bytes asks for the long offer, and the kernel
+    // fails it when the server gives none.
+    let want = if pq {
+        abi::auth::SIGNED_PQ
+    } else {
+        abi::auth::SIGNED
+    };
+    let mut signed = vec![0u8; want];
     let n = f.read(&mut signed)?;
-    if n != signed.len() {
-        return Err(Error::from(abi::auth::NO_SESSION));
+    if n != want {
+        return Err(Error::from(if pq {
+            abi::auth::NO_PQ
+        } else {
+            abi::auth::NO_SESSION
+        }));
     }
     let p = proof_for(&signed, user, aname, keyfile)?;
     // The proof is one write.
@@ -575,7 +617,8 @@ pub fn amount_host(
     }
     match crate::fauth(fd, aname) {
         Ok(afd) => {
-            authenticate_for(&afd, &user(), aname, keyfile)?;
+            let pq = flags & abi::mount::MPQ != 0;
+            authenticate_with(&afd, &user(), aname, keyfile, pq)?;
             if flags & abi::mount::MSRVAUTH != 0 && host.is_some() {
                 check_server_fd(&afd, host)?;
             }
@@ -583,6 +626,9 @@ pub fn amount_host(
         }
         Err(e) if e.0 == abi::auth::NOT_REQUIRED && flags & abi::mount::MSRVAUTH != 0 => {
             Err(Error::from(abi::auth::SERVER_NONE))
+        }
+        Err(e) if e.0 == abi::auth::NOT_REQUIRED && flags & abi::mount::MPQ != 0 => {
+            Err(Error::from(abi::auth::NO_PQ))
         }
         Err(e) if e.0 == abi::auth::NOT_REQUIRED => {
             crate::mount(fd, -1, old, flags | abi::mount::MNOAUTH, aname)
