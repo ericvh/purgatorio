@@ -47,6 +47,17 @@ pub trait Screen: Send + Sync {
     /// Moves the pointer, when a program writes `/dev/pointer`. A backend
     /// that cannot move the host's pointer does nothing.
     fn set_pointer(&self, _x: i32, _y: i32) {}
+    /// The text on the host's clipboard, for the snarf device (`#^`), or
+    /// `None` when the backend cannot reach one; the device then keeps a
+    /// buffer of its own.
+    fn snarf_get(&self) -> Option<alloc::string::String> {
+        None
+    }
+    /// Puts `text` on the host's clipboard; false when the backend
+    /// cannot reach one.
+    fn snarf_put(&self, _text: &str) -> bool {
+        false
+    }
 }
 
 /// One pointer state, as `/dev/pointer` reports it (pointer(3)).

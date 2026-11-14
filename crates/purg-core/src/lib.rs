@@ -31,6 +31,7 @@ pub mod devprog;
 pub mod devram;
 pub mod devroot;
 pub mod devrtc;
+pub mod devsnarf;
 pub mod devsrv;
 #[cfg(feature = "tls")]
 pub mod devssl;
@@ -73,7 +74,7 @@ pub struct Portable {
     pub mnt: Arc<DevMnt>,
 }
 
-/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C`, `#¤`, with the
+/// `#c`, `#e`, `#|`, `#p`, `#s`, `#M`, `#d`, `#%`, `#I`, `#C`, `#¤`, `#^`, with the
 /// `tls` feature `#D`, with the `lethe` feature `#λ`, and with the `draw`
 /// feature and a platform screen `#i` and `#m`. Embedders add `#/` and
 /// their own devices.
@@ -98,6 +99,10 @@ pub fn portable_devices(platform: &Arc<dyn Platform>, procs: &Arc<Procs>) -> Por
         Arc::new(devfactotum::DevFactotum::new(
             platform.clone(),
             procs.clone(),
+        )),
+        Arc::new(devsnarf::DevSnarf::new(
+            platform.screen(),
+            procs.user().into()
         )),
     ];
     #[cfg(feature = "tls")]
