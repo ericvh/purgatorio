@@ -35,4 +35,14 @@ echo '# modules'
 mash -c 'load mashcase; upper hello world; lower ABC; whatis upper; x = `{upper q r}; echo $x'
 mash -c 'load make; whatis make; load tk' >[2=1]
 mash -c 'load nosuch; echo still here' >[2=1]
-mash -c 'load history; echo extra >> /chan/history; cat /chan/history'
+# history posts /chan/history: a /chan of its own, so overlapping runs
+# do not share one.
+@{
+	load std
+	pctl forkns
+	mkdir -p /tmp/mashchan
+	bind -c /tmp/mashchan /chan
+	mash -c 'load history; echo extra >> /chan/history; cat /chan/history'
+	unmount /chan
+	rm -rf /tmp/mashchan
+}
