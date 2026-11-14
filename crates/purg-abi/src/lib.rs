@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.9";
+pub const ABI_VERSION: &str = "0.10";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -311,6 +311,14 @@ pub mod mount {
     /// [`super::auth::SERVER_PROOF_OFFSET`] returns: the kernel reads it
     /// from the server once and checks those same bytes.
     pub const MSRVAUTH: u32 = 0x4000_0000;
+    /// Post-quantum key exchange (`mount -C x25519mlkem768`; v0.10): the
+    /// mount uses the hybrid X25519 + ML-KEM-768 exchange of a version 4
+    /// proof and refuses a server that does not offer it, with
+    /// [`super::auth::NO_PQ`]. On an export (`export -C x25519mlkem768`)
+    /// it refuses every attach that is not on a version 4 proof, with
+    /// [`super::auth::PQ_REQUIRED`]. Not with [`MNOAUTH`] (`docs/auth.md`,
+    /// "Post-quantum options").
+    pub const MPQ: u32 = 0x1000_0000;
 }
 
 /// `export` flags, beside [`mount::MNOAUTH`].
@@ -358,6 +366,23 @@ pub mod auth {
     /// [`OFFER`] followed by the client's ephemeral X25519 key, which the
     /// kernel made. A version 3 proof signs these bytes.
     pub const SIGNED: usize = OFFER + PUBLIC;
+    /// The first byte of a version 4 proof: version 3 with an ML-KEM-768
+    /// encapsulation beside the X25519 exchange (v0.10; `docs/auth.md`,
+    /// "Post-quantum options").
+    pub const PROOF_V4: u8 = 4;
+    /// An ML-KEM-768 encapsulation key (FIPS 203).
+    pub const KEM_PUBLIC: usize = 1184;
+    /// An ML-KEM-768 ciphertext.
+    pub const KEM_CIPHERTEXT: usize = 1088;
+    /// What a server gives for a read of at least this many bytes at
+    /// offset 0 of the auth fid: the [`OFFER`] followed by its ephemeral
+    /// ML-KEM-768 encapsulation key.
+    pub const OFFER_PQ: usize = OFFER + KEM_PUBLIC;
+    /// What a client reads from the auth fd for a version 4 exchange:
+    /// the [`OFFER_PQ`], the client's ephemeral X25519 key and its
+    /// ML-KEM-768 ciphertext, all made by the kernel. A version 4 proof
+    /// signs these bytes.
+    pub const SIGNED_PQ: usize = OFFER_PQ + PUBLIC + KEM_CIPHERTEXT;
 
     pub const NOT_REQUIRED: &str = "authentication not required";
     pub const REQUIRED: &str = "authentication required";
@@ -388,6 +413,13 @@ pub mod auth {
     /// and no signer: it cannot authenticate anyone, so it lets nobody in
     /// (v0.9; before, it asked for no proof).
     pub const NO_TRUST: &str = "server trusts no keys";
+    /// A client that requires the post-quantum exchange
+    /// ([`super::mount::MPQ`]) dialled a server that does not offer it,
+    /// or something on the way removed the offer (v0.10).
+    pub const NO_PQ: &str = "no post-quantum key offered";
+    /// An export with [`super::mount::MPQ`] refused a proof (or an
+    /// attach) without the post-quantum exchange (v0.10).
+    pub const PQ_REQUIRED: &str = "post-quantum key exchange required";
     /// The offset on the auth fid where the server's proof is read, after
     /// the [`OFFER`].
     pub const SERVER_PROOF_OFFSET: u64 = OFFER as u64;

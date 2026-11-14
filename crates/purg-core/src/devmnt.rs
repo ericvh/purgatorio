@@ -20,7 +20,10 @@ use purg_styx::{
 use purg_auth::record::{self, Opener, Sealer};
 use purg_auth::session;
 
-use crate::auth::{self, ENCRYPTED, NO_SESSION, OFFER, SERVER_NONE, SERVER_PROOF_OFFSET, SIGNED};
+use crate::auth::{
+    self, ENCRYPTED, NO_PQ, NO_SESSION, OFFER, OFFER_PQ, PQ_REQUIRED, SERVER_NONE,
+    SERVER_PROOF_OFFSET, SIGNED, SIGNED_PQ,
+};
 use crate::chan::Chan;
 use crate::dev::{Dev, WalkEnd, Walked, WalkedNames};
 use crate::error::{Error, Result};
@@ -378,39 +381,64 @@ impl Session {
     /// server's offer and returns it followed by a fresh ephemeral key of
     /// this client's ([`SIGNED`] bytes). A server that offers only a
     /// challenge gives just that, and the caller decides.
+    ///
+    /// A read of at least [`SIGNED_PQ`] bytes wants a version 4 exchange:
+    /// it fetches the long offer and returns it followed by this client's
+    /// ephemeral key and ML-KEM-768 ciphertext. A server that does not
+    /// offer the post-quantum key fails it with [`NO_PQ`], and nothing is
+    /// kept: the caller may read [`SIGNED`] bytes instead.
+    ///
+    /// The first read that makes a key decides the exchange; every later
+    /// read gives the same bytes, or `EBADARG` when they do not fit.
     fn read_offer(&self, buf: &mut [u8]) -> Result<usize> {
         if let Some(c) = self.kx.lock().as_ref().and_then(|k| k.client.as_ref()) {
-            buf[..SIGNED].copy_from_slice(&c.signed);
-            return Ok(SIGNED);
+            let n = c.signed.len();
+            if buf.len() < n {
+                return Err(Error::new(error::EBADARG));
+            }
+            buf[..n].copy_from_slice(&c.signed);
+            return Ok(n);
         }
+        let pq = buf.len() >= SIGNED_PQ;
         let reply = self.rpc(Fcall::Tread {
             fid: AUTH_FID,
             offset: 0,
-            count: OFFER as u32,
+            count: if pq { OFFER_PQ } else { OFFER } as u32,
         })?;
         let data = match self.decode(&reply)? {
             Fcall::Rread { data } => data,
             _ => return Err(Error::new(error::EIO)),
         };
-        let offer: &[u8; OFFER] = match data.try_into() {
-            Ok(o) if !self.sealed() => o,
-            _ => {
-                let n = data.len().min(buf.len());
-                buf[..n].copy_from_slice(&data[..n]);
-                return Ok(n);
+        let client = if pq {
+            if data.len() != OFFER_PQ || self.sealed() {
+                return Err(Error::new(NO_PQ));
             }
+            self.client_pq(data)?
+        } else {
+            let offer: &[u8; OFFER] = match data.try_into() {
+                Ok(o) if !self.sealed() => o,
+                _ => {
+                    let n = data.len().min(buf.len());
+                    buf[..n].copy_from_slice(&data[..n]);
+                    return Ok(n);
+                }
+            };
+            self.client(offer)?
         };
-        let client = self.client(offer)?;
         // Two first reads at once: the one that stores its key wins, and
         // both return that key.
         let mut kx = self.kx.lock();
         let signed = match kx.as_mut() {
-            Some(k) => k.client.get_or_insert(client).signed,
+            Some(k) => k.client.get_or_insert(client).signed.clone(),
             None => client.signed,
         };
         drop(kx);
-        buf[..SIGNED].copy_from_slice(&signed);
-        Ok(SIGNED)
+        let n = signed.len();
+        if buf.len() < n {
+            return Err(Error::new(error::EBADARG));
+        }
+        buf[..n].copy_from_slice(&signed);
+        Ok(n)
     }
 
     /// The session keys for `proof`, written to the auth fd, when it is a
@@ -426,6 +454,16 @@ impl Session {
         let mut random = [0u8; 32];
         self.platform.entropy(&mut random);
         session::Client::new(offer, random).ok_or(Error::new(auth::FAILED))
+    }
+
+    /// This client's answer to the server's long `offer` ([`OFFER_PQ`]
+    /// bytes): a fresh ephemeral key and an ML-KEM-768 encapsulation.
+    fn client_pq(&self, offer: &[u8]) -> Result<session::Client> {
+        let mut random = [0u8; 32];
+        self.platform.entropy(&mut random);
+        let mut m = [0u8; 32];
+        self.platform.entropy(&mut m);
+        session::Client::new_pq(offer, random, m).ok_or(Error::new(auth::FAILED))
     }
 
     fn flush_tag(&self, tag: u16) {
@@ -603,11 +641,16 @@ impl Session {
     /// client's ephemeral key, and the conversation is encrypted from the
     /// proof on. A server that offers no key is refused, so nothing on
     /// the way can strip the offer and keep the conversation in the clear.
+    ///
+    /// With `pq` the exchange is version 4: the long offer, with the
+    /// server's ML-KEM-768 key, is read, and a server that does not give
+    /// it is refused with [`NO_PQ`].
     fn authenticate(
         &self,
         user: &str,
         aname: &str,
         secret: impl Fn(&[u8]) -> Result<Vec<u8>>,
+        pq: bool,
     ) -> Result<Option<u32>> {
         const AFID: u32 = AUTH_FID;
         let buf = self.rpc(Fcall::Tauth {
@@ -624,18 +667,24 @@ impl Session {
         let buf = self.rpc(Fcall::Tread {
             fid: AFID,
             offset: 0,
-            count: OFFER as u32,
+            count: if pq { OFFER_PQ } else { OFFER } as u32,
         })?;
-        let offer: [u8; OFFER] = match self.decode(&buf)? {
-            Fcall::Rread { data } if data.len() == OFFER => {
-                data.try_into().map_err(|_| Error::new(error::EIO))?
+        let client = match self.decode(&buf)? {
+            Fcall::Rread { data } if pq && data.len() == OFFER_PQ => self.client_pq(data)?,
+            Fcall::Rread { data }
+                if pq && (data.len() == OFFER || data.len() == auth::CHALLENGE) =>
+            {
+                return Err(Error::new(NO_PQ));
+            }
+            Fcall::Rread { data } if !pq && data.len() == OFFER => {
+                let offer: &[u8; OFFER] = data.try_into().map_err(|_| Error::new(error::EIO))?;
+                self.client(offer)?
             }
             Fcall::Rread { data } if data.len() == auth::CHALLENGE => {
                 return Err(Error::new(NO_SESSION));
             }
             _ => return Err(Error::new(error::EIO)),
         };
-        let client = self.client(&offer)?;
         let proof = secret(&client.signed)?;
         let keys = client
             .keys(user, aname, &proof)
@@ -808,10 +857,11 @@ impl DevMnt {
 
     /// Version and attach on `fd`, returning the attached root.
     ///
-    /// `noauth` attaches with `NOFID`. Otherwise the client speaks `Tauth`
-    /// and, when the server asks, signs the challenge with `secret`. With
-    /// `server`, the server must prove itself after that, and `server`
-    /// checks its proof; a server that asks for no proof cannot.
+    /// `flags` are the mount's: with `MNOAUTH` it attaches with `NOFID`.
+    /// Otherwise the client speaks `Tauth` and, when the server asks,
+    /// signs the challenge with `secret`, in a version 4 exchange with
+    /// `MPQ`. With `server`, the server must prove itself after that, and
+    /// `server` checks its proof; a server that asks for no proof cannot.
     ///
     /// A conversation that went to records earlier fails with
     /// [`ENCRYPTED`], and one another session still reads (an open auth fd
@@ -821,10 +871,12 @@ impl DevMnt {
         fd: Arc<Chan>,
         aname: &str,
         user: &str,
-        noauth: bool,
+        flags: u32,
         secret: impl Fn(&[u8]) -> Result<Vec<u8>>,
         server: Option<ServerCheck<'_>>,
     ) -> Result<Chan> {
+        let noauth = flags & purg_abi::mount::MNOAUTH != 0;
+        let pq = flags & purg_abi::mount::MPQ != 0;
         self.sealed.check(&fd)?;
         self.live.check(&fd)?;
         // The version exchange runs on the caller's thread, with `NOTAG`
@@ -848,8 +900,13 @@ impl DevMnt {
             let afid = if noauth {
                 NOFID
             } else {
-                session.authenticate(user, aname, &secret)?.unwrap_or(NOFID)
+                session
+                    .authenticate(user, aname, &secret, pq)?
+                    .unwrap_or(NOFID)
             };
+            if pq && afid == NOFID {
+                return Err(Error::new(NO_PQ));
+            }
             if let Some(check) = server {
                 if afid == NOFID {
                     return Err(Error::new(SERVER_NONE));
@@ -939,13 +996,15 @@ impl DevMnt {
     /// `sys->mount` with an auth fd from [`DevMnt::auth`]: attaches on the
     /// session `afd` belongs to. `fd` must be that session's conversation.
     /// With `server`, the server's proof is read from `afd` and checked
-    /// first.
+    /// first. With `pq` the conversation must have switched to records on
+    /// a version 4 proof, or the mount fails with [`PQ_REQUIRED`].
     pub fn mount_auth(
         self: &Arc<Self>,
         fd: &Arc<Chan>,
         afd: &Chan,
         aname: &str,
         user: &str,
+        pq: bool,
         server: Option<ServerCheck<'_>>,
     ) -> Result<Chan> {
         let f = match afd.aux::<MntFile>() {
@@ -954,6 +1013,9 @@ impl DevMnt {
         };
         if !Arc::ptr_eq(&f.session.fd, fd) {
             return Err(Error::new(error::EBADUSEFD));
+        }
+        if pq && !f.session.keys.lock().as_ref().is_some_and(|k| k.pq) {
+            return Err(Error::new(PQ_REQUIRED));
         }
         if let Some(check) = server {
             f.session.check_server(f.fid, check)?;
@@ -1175,6 +1237,7 @@ impl Dev for DevMnt {
     fn read(&self, c: &Chan, buf: &mut [u8], offset: u64) -> Result<usize> {
         let f = file(c)?;
         if f.fid == AUTH_FID && offset == 0 && buf.len() >= SIGNED {
+            // [`SIGNED_PQ`] bytes or more ask for the version 4 exchange.
             return f.session.read_offer(buf);
         }
         if f.fid == AUTH_FID && offset >= SERVER_PROOF_OFFSET && f.session.keys.lock().is_some() {
