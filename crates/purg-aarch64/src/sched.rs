@@ -97,7 +97,10 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::arch::{asm, global_asm};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering, compiler_fence};
+use core::panic::Location;
+use core::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering, compiler_fence,
+};
 
 use purg_platform::idle::IdleGate;
 use purg_platform::sync::{Note, Sched};
@@ -195,6 +198,8 @@ pub struct ThreadInfo {
     /// when it last left by [`Left::Preempt`]: a thread that should be
     /// asleep but keeps running shows where it loops.
     pub preempted_at: Option<(u64, u64)>,
+    /// Where it is asleep on a `Rendez`: the code that asked to sleep.
+    pub asleep_at: Option<&'static Location<'static>>,
 }
 
 /// A thread. Its address is in `TPIDR_EL1` while it runs.
@@ -229,6 +234,9 @@ struct Thread {
     timed_out: AtomicBool,
     /// PC and link register where the timer last preempted it.
     preempted_at: (u64, u64),
+    /// Where it sleeps on a `Rendez` ([`Sched::set_waiting`]), or null.
+    /// Only the thread itself writes it; reports read it.
+    waiting_at: AtomicPtr<Location<'static>>,
     /// One word of thread-local storage ([`tls`]). Only the thread itself
     /// reads or writes it.
     tls: AtomicUsize,
@@ -266,6 +274,7 @@ impl Thread {
             deadline: 0,
             timed_out: AtomicBool::new(false),
             preempted_at: (0, 0),
+            waiting_at: AtomicPtr::new(core::ptr::null_mut()),
             tls: AtomicUsize::new(0),
         }
     }
@@ -985,6 +994,9 @@ impl Scheduler {
                 preempt: th.preempt.load(Ordering::Relaxed),
                 runs: th.runs,
                 preempted_at: (th.left == Left::Preempt).then_some(th.preempted_at),
+                // SAFETY: only `set_waiting` stores here, a `&'static
+                // Location` or null.
+                asleep_at: unsafe { th.waiting_at.load(Ordering::Relaxed).as_ref() },
             })
             .collect()
     }
@@ -1107,6 +1119,13 @@ impl Sched for Scheduler {
         let _g = IrqGuard::new();
         let cpu = cpu::id();
         self.threads.lock().current_mut(cpu).note.clone()
+    }
+
+    fn set_waiting(&self, at: Option<&'static Location<'static>>) {
+        if let Some(th) = running() {
+            let p = at.map_or(core::ptr::null_mut(), |l| core::ptr::from_ref(l).cast_mut());
+            th.waiting_at.store(p, Ordering::Relaxed);
+        }
     }
 
     fn set_note(&self, note: Option<Arc<Note>>) {

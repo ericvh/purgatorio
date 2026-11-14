@@ -38,8 +38,12 @@ pub fn thread_line(t: &ThreadInfo) -> String {
     let pc = t.preempted_at.map_or(String::new(), |(pc, lr)| {
         format!(" at pc {pc:#x} lr {lr:#x}")
     });
+    let asleep = match t.asleep_at {
+        Some(l) if t.parked => format!(", asleep at {}:{}", l.file(), l.line()),
+        _ => String::new(),
+    };
     format!(
-        "thread {:?} pid {} {at}, left by {:?}{pc}, {} locks, {} runs",
+        "thread {:?} pid {} {at}{asleep}, left by {:?}{pc}, {} locks, {} runs",
         t.name, t.pid, t.left, t.preempt, t.runs
     )
 }

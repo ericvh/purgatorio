@@ -360,6 +360,11 @@ pub trait Sched: Sync {
         0
     }
     fn irq_unmask(&self, _saved: usize) {}
+    /// Records where the running thread is about to sleep on a
+    /// [`Rendez`] (the caller of [`Rendez::sleep`] or [`Rendez::tsleep`]),
+    /// or `None` once it is awake, for reports of a thread that stays
+    /// asleep. A sleep through a [`Note`] records the same place there.
+    fn set_waiting(&self, _at: Option<&'static Location<'static>>) {}
 }
 
 /// The scheduler as a wait queue's parker.
@@ -473,6 +478,7 @@ impl Rendez {
     }
 
     /// Sleeps until `cond` returns true.
+    #[track_caller]
     pub fn sleep(&self, mut cond: impl FnMut() -> bool) {
         #[cfg(feature = "std")]
         {
@@ -484,12 +490,17 @@ impl Rendez {
         #[cfg(not(feature = "std"))]
         match SCHED.get() {
             Some(s) if s.can_park() => {
+                if cond() {
+                    return;
+                }
+                s.set_waiting(Some(Location::caller()));
                 let p = SchedParker(*s);
                 let mut late = false;
                 while !cond() {
                     let deadline = s.monotonic_ns().saturating_add(SAFETY_NS);
                     late = self.inner.q.wait(&p, &mut cond, Some(deadline));
                 }
+                s.set_waiting(None);
                 if late {
                     RESCUED.fetch_add(1, Ordering::Relaxed);
                 }
@@ -509,6 +520,7 @@ impl Rendez {
 
     /// Sleeps until `cond` returns true or `timeout_ns` passes. Returns the
     /// final value of `cond`.
+    #[track_caller]
     pub fn tsleep(&self, mut cond: impl FnMut() -> bool, timeout_ns: u64) -> bool {
         #[cfg(all(feature = "std", not(loom)))]
         {
@@ -543,14 +555,19 @@ impl Rendez {
                 return cond();
             };
             let deadline = s.monotonic_ns().saturating_add(timeout_ns);
-            loop {
+            let mut waiting = false;
+            let done = loop {
                 if cond() {
-                    return true;
+                    break true;
                 }
                 if s.monotonic_ns() >= deadline {
-                    return false;
+                    break false;
                 }
                 if s.can_park() {
+                    if !waiting {
+                        waiting = true;
+                        s.set_waiting(Some(Location::caller()));
+                    }
                     // The scheduler's tick unparks at the deadline.
                     self.inner
                         .q
@@ -560,7 +577,11 @@ impl Rendez {
                     // block, so the deadline is seen within a tick.
                     s.block();
                 }
+            };
+            if waiting {
+                s.set_waiting(None);
             }
+            done
         }
     }
 
