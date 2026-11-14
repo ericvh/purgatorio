@@ -19,8 +19,10 @@
 //!
 //! A panic is reported with its thread, its prog and a backtrace, whatever
 //! `RUST_BACKTRACE` says, and an abort from C with its thread and prog
-//! (`host::report_aborts`): the emu's tests run it with its standard error
-//! captured, and a crash has to explain itself there.
+//! (`host::report_aborts`), and a memory fault with its address, thread,
+//! prog and the code it came from (`host::report_faults`): the emu's tests
+//! run it with its standard error captured, and a crash has to explain
+//! itself there.
 //!
 //! `-g` opens a window of `W` by `H` pixels (800x600 by default) and
 //! shows the draw device's screen in it (docs/graphics.md); the main
@@ -217,6 +219,7 @@ fn report_panics() {
 fn main() {
     report_panics();
     host::report_aborts();
+    host::report_faults();
     // The module loader's SHA-256 with the CPU's instructions.
     #[cfg(target_arch = "aarch64")]
     if std::arch::is_aarch64_feature_detected!("sha2") {

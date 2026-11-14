@@ -513,6 +513,35 @@ kill $pids &";
 /// abort here is sent by the test; in the emu it is the C library's.
 #[test]
 fn an_abort_is_reported() {
+    let report = signal_report(libc::SIGABRT);
+    assert!(report.contains("SIGABRT"), "{report}");
+    assert!(
+        report.contains("emu: abort (SIGABRT) on thread '"),
+        "{report}"
+    );
+}
+
+/// A memory fault is reported the same way, with the faulting address
+/// and where the code was (issue #239: an emu died of SIGSEGV with
+/// nothing on its standard error). The signal here is sent by the test,
+/// which also shows that the handler hands it on: the process still
+/// ends on SIGSEGV.
+#[test]
+fn a_memory_fault_is_reported() {
+    let report = signal_report(libc::SIGSEGV);
+    assert!(report.contains("SIGSEGV"), "{report}");
+    assert!(
+        report.contains("emu: memory fault (SIGSEGV) at 0x"),
+        "{report}"
+    );
+    assert!(report.contains(", pc 0x"), "{report}");
+    assert!(report.contains("emu:   lr 0x"), "{report}");
+}
+
+/// Starts an emu running a shell, sends it `sig` once the shell is up,
+/// and returns the harness's account of how it ended, with its standard
+/// error.
+fn signal_report(sig: libc::c_int) -> String {
     use std::io::{BufRead, BufReader};
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -523,7 +552,7 @@ fn an_abort_is_reported() {
         .args(["--vm=wasmi", "sh", "-c", "echo ready; sleep 100"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped());
-    // No core file for this abort. A limit of one byte also keeps Linux
+    // No core file for this signal. A limit of one byte also keeps Linux
     // from piping the core to a handler such as systemd-coredump.
     // SAFETY: setrlimit is async-signal-safe and touches no memory of
     // the parent.
@@ -544,17 +573,10 @@ fn an_abort_is_reported() {
         .unwrap();
     assert_eq!(line, "ready\n");
     // SAFETY: kill only sends a signal, here to the test's own child.
-    assert_eq!(
-        unsafe { libc::kill(emu.child.id() as libc::pid_t, libc::SIGABRT) },
-        0
-    );
+    assert_eq!(unsafe { libc::kill(emu.child.id() as libc::pid_t, sig) }, 0);
     let report = emu.post_mortem();
-    assert!(report.contains("SIGABRT"), "{report}");
-    assert!(
-        report.contains("emu: abort (SIGABRT) on thread '"),
-        "{report}"
-    );
     assert!(!report.contains("still running"), "{report}");
+    report
 }
 
 /// The `.sh` files in `root/<dir>`, without the suffix, sorted.

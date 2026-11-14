@@ -166,6 +166,49 @@ pub fn clipboard_put(text: &str) -> bool {
     })
 }
 
+/// The registers at a fault, from the context macOS passes a signal
+/// handler.
+pub fn fault_registers(uc: *mut libc::c_void) -> super::unix::FaultRegisters {
+    let mut regs = super::unix::FaultRegisters {
+        pc: 0,
+        sp: 0,
+        fp: 0,
+        lr: 0,
+    };
+    if uc.is_null() {
+        return regs;
+    }
+    // SAFETY: an SA_SIGINFO handler's third argument is the ucontext_t
+    // of the interrupted thread, whose machine context it points to.
+    let mc = unsafe { (*uc.cast::<libc::ucontext_t>()).uc_mcontext };
+    if mc.is_null() {
+        return regs;
+    }
+    // SAFETY: mc is the non-null machine context of that ucontext_t.
+    let ss = unsafe { &(*mc).__ss };
+    #[cfg(target_arch = "aarch64")]
+    {
+        regs.pc = ss.__pc as usize;
+        regs.sp = ss.__sp as usize;
+        regs.fp = ss.__fp as usize;
+        regs.lr = ss.__lr as usize;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        regs.pc = ss.__rip as usize;
+        regs.sp = ss.__rsp as usize;
+        regs.fp = ss.__rbp as usize;
+    }
+    regs
+}
+
+/// Whether a signal's `si_code` says a process sent it rather than the
+/// CPU raising it: macOS's codes for those (`SI_USER` and on) start at
+/// 0x10001, and some paths leave 0.
+pub fn sent_by_kill(code: libc::c_int) -> bool {
+    code <= 0 || code > 0x10000
+}
+
 #[cfg(test)]
 mod tests {
     use super::{clipboard_get, clipboard_put};
