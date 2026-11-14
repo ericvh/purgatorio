@@ -13,7 +13,12 @@
 //! authentication: `x25519` (the default) or `x25519mlkem768`, the hybrid
 //! post-quantum exchange, which a server that does not offer it fails
 //! with `no post-quantum key offered` (`docs/auth.md`, "Post-quantum
-//! options").
+//! options"). It also takes `mldsa65` (and `ed25519`, the default), for
+//! hybrid Ed25519 + ML-DSA-65 signatures: the mount proves with a hybrid
+//! key when factotum has one, and requires the server to prove itself
+//! with a hybrid key or certificate, as `-S` does (`docs/auth.md`,
+//! "Post-quantum signatures"). Several names are joined with `/`:
+//! `-C x25519mlkem768/mldsa65`.
 
 use std::os::fd::AsRawFd;
 
@@ -81,7 +86,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     // The kernel authenticates a plain mount itself, in one conversation.
     // A keyfile or a guest factotum means the proof is built here, with
     // fauth first, and so does a server proof that must be for a host.
-    if keyfile.is_some() || purgatorio::auth::have_factotum() || (srvauth != 0 && host.is_some()) {
+    let srvauth = srvauth != 0 || kex & mount::MPQSIG != 0;
+    if keyfile.is_some() || purgatorio::auth::have_factotum() || (srvauth && host.is_some()) {
         purgatorio::auth::amount_host(
             fd,
             &rest[1],

@@ -4,10 +4,12 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use purg_platform::net::Net;
+use purg_platform::sync::Rendez;
 use purg_platform::{Console, MemPool, Platform, Result, Rtc};
 
 use crate::heap::Heap;
@@ -142,6 +144,25 @@ impl Platform for MetalPlatform {
             self.sched.spawn_named(name, f);
         }
         Ok(())
+    }
+
+    fn deep(&self, size: usize, f: &mut (dyn FnMut() + Send)) {
+        let done = Arc::new((Rendez::new(), AtomicBool::new(false)));
+        // SAFETY: this waits below until the thread has run `f` and
+        // finished with it, so the borrow outlives every use; the
+        // 'static is only for the thread's closure type.
+        let f: &'static mut (dyn FnMut() + Send) = unsafe { core::mem::transmute(f) };
+        let d = done.clone();
+        self.sched.spawn_named_sized(
+            "deep",
+            size,
+            Box::new(move || {
+                f();
+                d.1.store(true, Ordering::Release);
+                d.0.wakeup();
+            }),
+        );
+        done.0.sleep(|| done.1.load(Ordering::Acquire));
     }
 
     fn memory(&self) -> (u64, u64) {

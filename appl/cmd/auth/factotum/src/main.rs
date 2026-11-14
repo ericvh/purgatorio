@@ -1,14 +1,16 @@
 //! auth/factotum [-m mntpt] [-s authinfo] [authinfo ...]: the
 //! authentication agent, with Plan 9's `ctl` and `rpc` files at `mntpt`
 //! (default `/mnt/factotum`). Each authinfo named is loaded as an
-//! `ed25519` key, and each `crypt -g` key file as an `mlkem768x25519` key;
-//! `-s` loads an authinfo as the key for server proofs (`role=server`).
+//! `ed25519` key (a `hybrid` key for a hybrid authinfo), and each `crypt
+//! -g` key file as an `mlkem768x25519` key; `-s` loads an authinfo as the
+//! key for server proofs (`role=server`).
 //!
 //! `ctl` takes lines of attributes; a name starting with `!` is secret and
 //! never read back:
 //!
 //! ```text
 //! key proto=ed25519 [user=<name>] [role=<role>] !seed=<hex> [cert='<pgcert1 line>']
+//! key proto=hybrid [user=<name>] [role=<role>] !seed=<hex> [cert='<pgcert2 line>']
 //! key proto=pass server=<addr> user=<name> !password=<password>
 //! key proto=mlkem768x25519 !secret=<hex>
 //! delkey proto=<proto> [attr=value ...]
@@ -33,8 +35,14 @@
 //! then `read` gives `ok <key>`, that file's 32-byte key
 //! (`purg_auth::hybrid`); it decapsulates nothing but `crypt` headers.
 //!
-//! An `ed25519` key with a `role` (`client`, `server` or `modsign`)
-//! serves only that role; one without serves every role. A `start`
+//! A `hybrid` key is an Ed25519 + ML-DSA-65 key (`docs/auth.md`,
+//! "Post-quantum signatures"): its `!seed` is both seeds, 128 hex digits,
+//! and it makes the hybrid proofs (kinds 2 and 3) for `role=client` and
+//! `role=server` as an `ed25519` key makes Ed25519 ones. It does not sign
+//! modules.
+//!
+//! An `ed25519` or `hybrid` key with a `role` (`client`, `server` or
+//! `modsign`) serves only that role; one without serves every role. A `start`
 //! (whose role is `client` when it names none) takes the first key kept
 //! for its role, and else the first key with no role, that matches its
 //! other attributes.
@@ -42,7 +50,9 @@
 use std::collections::BTreeMap;
 
 use authlib::fmt::attr::{self, quote};
-use authlib::fmt::{self, cert::Cert, hex, keys::AuthInfo};
+use authlib::fmt::cert::AnyCert;
+use authlib::fmt::sig::{HybridSecret, Secret};
+use authlib::fmt::{self, hex, keys::AuthInfo};
 use authlib::synth::{self, Files};
 use purgatorio::abi::error;
 use purgatorio::arg::Arg;
@@ -57,12 +67,13 @@ const ROLES: &[&str] = &["client", "server", "modsign"];
 const KEM: &str = "mlkem768x25519";
 
 enum Key {
+    /// An Ed25519 key, or a hybrid Ed25519 + ML-DSA-65 one.
     Ed {
         user: Option<String>,
         /// The one role it serves; `None` for every role.
         role: Option<String>,
-        seed: [u8; fmt::SEED],
-        cert: Option<Cert>,
+        secret: Secret,
+        cert: Option<AnyCert>,
     },
     Pass {
         server: String,
@@ -76,6 +87,7 @@ enum Key {
 impl Key {
     fn proto(&self) -> &'static str {
         match self {
+            Key::Ed { secret, .. } if secret.is_hybrid() => "hybrid",
             Key::Ed { .. } => "ed25519",
             Key::Pass { .. } => "pass",
             Key::Kem(_) => KEM,
@@ -152,14 +164,21 @@ impl Key {
 fn parse_key(attrs: &[(String, String)]) -> Result<Key, String> {
     let get = |k: &str| attr::get(attrs, k);
     match get("proto") {
-        Some("ed25519") => {
-            let seed = get("!seed")
-                .and_then(|s| hex::array::<{ fmt::SEED }>(s.as_bytes()))
-                .ok_or_else(|| String::from("missing or bad !seed"))?;
+        Some(proto @ ("ed25519" | "hybrid")) => {
+            let seed = get("!seed").map(str::as_bytes);
+            let secret = match proto {
+                "ed25519" => seed
+                    .and_then(hex::array::<{ fmt::SEED }>)
+                    .map(Secret::Ed25519),
+                _ => seed
+                    .and_then(hex::array::<{ fmt::sig::HYBRID_SEED }>)
+                    .map(|s| Secret::Hybrid(HybridSecret(s))),
+            }
+            .ok_or_else(|| String::from("missing or bad !seed"))?;
             let cert = match get("cert") {
                 Some(c) => {
-                    let c = Cert::parse(c.as_bytes()).map_err(String::from)?;
-                    if c.key != fmt::public_key(&seed) {
+                    let c = AnyCert::parse(c.as_bytes()).map_err(String::from)?;
+                    if c.key() != secret.public() {
                         return Err(String::from("certificate is for another key"));
                     }
                     Some(c)
@@ -168,7 +187,7 @@ fn parse_key(attrs: &[(String, String)]) -> Result<Key, String> {
             };
             let user = get("user")
                 .map(String::from)
-                .or_else(|| cert.as_ref().map(|c| c.name.clone()));
+                .or_else(|| cert.as_ref().map(|c| String::from(c.name())));
             let role = match get("role") {
                 Some(r) if ROLES.contains(&r) => Some(String::from(r)),
                 Some(r) => return Err(format!("unknown role {r}")),
@@ -177,7 +196,7 @@ fn parse_key(attrs: &[(String, String)]) -> Result<Key, String> {
             Ok(Key::Ed {
                 user,
                 role,
-                seed,
+                secret,
                 cert,
             })
         }
@@ -300,14 +319,14 @@ impl Factotum {
                 };
                 match keys.get(*i) {
                     Some(Key::Ed {
-                        seed, cert, user, ..
+                        secret, cert, user, ..
                     }) => {
                         let Some(ch) = &rpc.challenge else {
                             return b"error phase error".to_vec();
                         };
                         match attr::get(attrs, "role") {
-                            Some("modsign") => return modsign(seed, cert.as_ref(), ch),
-                            Some("server") => return server(seed, cert.as_ref(), ch),
+                            Some("modsign") => return modsign(secret, cert.as_ref(), ch),
+                            Some("server") => return server(secret, cert.as_ref(), ch),
                             _ => {}
                         }
                         let uname = attr::get(attrs, "user")
@@ -315,7 +334,7 @@ impl Factotum {
                             .or_else(|| user.clone())
                             .unwrap_or_else(authlib::user);
                         let aname = attr::get(attrs, "aname").unwrap_or("");
-                        let p = fmt::proof::make(seed, cert.as_ref(), ch, &uname, aname);
+                        let p = fmt::proof::make_any(secret, cert.as_ref(), ch, &uname, aname);
                         let mut out = b"ok ".to_vec();
                         out.extend_from_slice(&p);
                         out
@@ -347,7 +366,7 @@ impl Factotum {
 /// Makes a server proof: `request` is the session's transcript and bound
 /// value (`purg_auth::server::SESSION` bytes). The message, with its
 /// context string, is built here, so this signs nothing but server proofs.
-fn server(seed: &[u8; fmt::SEED], cert: Option<&Cert>, request: &[u8]) -> Vec<u8> {
+fn server(secret: &Secret, cert: Option<&AnyCert>, request: &[u8]) -> Vec<u8> {
     use fmt::server::{SESSION, assemble, message_for};
     let Some((transcript, bind)) = <&[u8; SESSION]>::try_from(request)
         .ok()
@@ -355,22 +374,29 @@ fn server(seed: &[u8; fmt::SEED], cert: Option<&Cert>, request: &[u8]) -> Vec<u8
     else {
         return b"error bad session".to_vec();
     };
-    let public = fmt::public_key(seed);
-    let cert = cert.filter(|c| c.key == public);
-    let (kind, body) = fmt::proof::body(cert, &public);
-    let sig = fmt::sign(seed, &message_for(transcript, bind, kind, &body));
+    let public = secret.public();
+    let cert = cert.filter(|c| c.key() == public);
+    let (kind, body) = fmt::proof::body_any(cert, &public);
+    let sig = secret.sign(&message_for(transcript, bind, kind, &body));
     let mut out = b"ok ".to_vec();
     out.extend_from_slice(&assemble(kind, &sig, &body));
     out
 }
 
 /// Signs a module: `request` is its digest followed by its ABI version.
-fn modsign(seed: &[u8; fmt::SEED], cert: Option<&Cert>, request: &[u8]) -> Vec<u8> {
+fn modsign(secret: &Secret, cert: Option<&AnyCert>, request: &[u8]) -> Vec<u8> {
     use fmt::modsig::{DIGEST, Entry};
     let Some((digest, abi)) = request.split_first_chunk::<DIGEST>() else {
         return b"error bad digest".to_vec();
     };
-    match Entry::sign(seed, cert.cloned().into_iter().collect(), digest, abi) {
+    let (Secret::Ed25519(seed), None | Some(AnyCert::V1(_))) = (secret, cert) else {
+        return b"error module signatures are Ed25519 only".to_vec();
+    };
+    let cert = match cert {
+        Some(AnyCert::V1(c)) => Some(c.clone()),
+        _ => None,
+    };
+    match Entry::sign(seed, cert.into_iter().collect(), digest, abi) {
         Ok(e) => {
             let mut out = b"ok ".to_vec();
             out.extend_from_slice(&e.encode());
@@ -473,10 +499,15 @@ fn authinfo_line(path: &str, role: Option<&str>) -> Result<String, Error> {
     }
     let info: AuthInfo = purgatorio::auth::read_authinfo(path)?;
     let role = role.map(|r| format!(" role={r}")).unwrap_or_default();
+    let proto = if info.key.is_hybrid() {
+        "hybrid"
+    } else {
+        "ed25519"
+    };
     Ok(format!(
-        "key proto=ed25519 user={}{role} !seed={} cert={}\n",
-        quote(&info.cert.name),
-        hex::encode(&info.seed),
+        "key proto={proto} user={}{role} !seed={} cert={}\n",
+        quote(info.cert.name()),
+        hex::encode(info.key.seed_bytes()),
         quote(&info.cert.encode())
     ))
 }

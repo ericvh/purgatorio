@@ -2,7 +2,8 @@
 //! file, default `/keydb/signerkey`) to the certificate in `file` (a
 //! certificate or an authinfo), and print the file with the new
 //! certificate in place. A server that trusts either signer then accepts
-//! it.
+//! it. The key must be of the certificate's kind: Ed25519 for a
+//! `pgcert1`, hybrid for a `pgcert2`.
 
 use authlib::fmt::keys;
 use purgatorio::arg::Arg;
@@ -24,10 +25,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let [file] = rest.as_slice() else {
         return Err(Error(format!("usage: {USAGE}")));
     };
-    let key = purgatorio::auth::read_seed(&keyfile)?;
+    let key = purgatorio::auth::read_secret(&keyfile)?;
     let text =
         std::fs::read_to_string(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
-    let mut cert = keys::find_cert(text.as_bytes())
+    let mut cert = keys::find_any_cert(text.as_bytes())
         .ok_or_else(|| Error(format!("{file}: bad certificate")))?;
     let old = cert.encode();
     cert.sign(&key).map_err(Error::from)?;

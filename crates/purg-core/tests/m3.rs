@@ -697,7 +697,7 @@ fn certificate_mount() {
             .unwrap();
         p.close(fd).unwrap();
     }
-    let signers = list_line(&purg_auth::public_key(&signer), "test");
+    let signers = list_line(purg_auth::public_key(&signer), "test");
     // Planted in the exported tree: a signer list and the user's key.
     write_file(&mut p, "#R/box/lib/keys/signers", signers.as_bytes());
     write_file(
@@ -706,9 +706,9 @@ fn certificate_mount() {
         &purg_auth::public_key(&user),
     );
     let info = AuthInfo {
-        seed: user,
-        signer: purg_auth::public_key(&signer),
-        cert: cert.clone(),
+        key: purg_auth::sig::Secret::Ed25519(user),
+        signer: purg_auth::sig::Id::Ed25519(purg_auth::public_key(&signer)),
+        cert: purg_auth::cert::AnyCert::V1(cert.clone()),
     };
     write_file(
         &mut p,
@@ -735,7 +735,7 @@ fn certificate_mount() {
     assert_eq!(mount(&mut p, mock.clone()), Ok(()));
 
     // A revocation planted in the tree does nothing either.
-    let revoked = list_line(&purg_auth::public_key(&user), "");
+    let revoked = list_line(purg_auth::public_key(&user), "");
     write_file(&mut p, "#R/box/lib/keys/revoked", revoked.as_bytes());
     assert_eq!(mount(&mut p, mock.clone()), Ok(()));
     write_file(&mut p, "/lib/keys/revoked", revoked.as_bytes());

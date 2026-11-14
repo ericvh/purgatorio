@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.10";
+pub const ABI_VERSION: &str = "0.11";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -319,6 +319,14 @@ pub mod mount {
     /// [`super::auth::PQ_REQUIRED`]. Not with [`MNOAUTH`] (`docs/auth.md`,
     /// "Post-quantum options").
     pub const MPQ: u32 = 0x1000_0000;
+    /// Post-quantum signatures (`mount -C mldsa65`, `export -C mldsa65`;
+    /// v0.11): every proof must be signed with a hybrid Ed25519 +
+    /// ML-DSA-65 key ([`super::auth::KIND_HYBRID_KEY`] or
+    /// [`super::auth::KIND_HYBRID_CERT`]). On a mount it applies to the
+    /// server's proof and implies [`MSRVAUTH`]; on an export, to every
+    /// client's. Anything else fails with [`super::auth::PQSIG_REQUIRED`].
+    /// Not with [`MNOAUTH`] (`docs/auth.md`, "Post-quantum signatures").
+    pub const MPQSIG: u32 = 0x0800_0000;
 }
 
 /// `export` flags, beside [`mount::MNOAUTH`].
@@ -354,6 +362,19 @@ pub mod auth {
     pub const KIND_KEY: u8 = 0;
     /// A versioned proof: a `pgcert1` certificate follows the signature.
     pub const KIND_CERT: u8 = 1;
+    /// A version 3 or 4 proof (or a server's proof) by a hybrid Ed25519 +
+    /// ML-DSA-65 key: a [`HYBRID_SIGNATURE`] and the key's
+    /// [`HYBRID_PUBLIC`] bytes (v0.11; `docs/auth.md`, "Post-quantum
+    /// signatures").
+    pub const KIND_HYBRID_KEY: u8 = 2;
+    /// The same with a `pgcert2` certificate of a hybrid key as the body.
+    pub const KIND_HYBRID_CERT: u8 = 3;
+    /// A hybrid public key: Ed25519's 32 bytes, then ML-DSA-65's 1952.
+    pub const HYBRID_PUBLIC: usize = PUBLIC + 1952;
+    /// A hybrid signature: Ed25519's 64 bytes, then ML-DSA-65's 3309.
+    pub const HYBRID_SIGNATURE: usize = SIGNATURE + 3309;
+    /// A hybrid secret key: the Ed25519 seed, then the ML-DSA-65 seed.
+    pub const HYBRID_SEED: usize = SEED + 32;
     /// Bytes the server asks the client to sign.
     pub const CHALLENGE: usize = 32;
     /// The first byte of a version 3 proof, which agrees a session key
@@ -420,6 +441,10 @@ pub mod auth {
     /// An export with [`super::mount::MPQ`] refused a proof (or an
     /// attach) without the post-quantum exchange (v0.10).
     pub const PQ_REQUIRED: &str = "post-quantum key exchange required";
+    /// A proof by an Ed25519 key or certificate, where
+    /// [`super::mount::MPQSIG`] (or a hybrid trust entry) wants a hybrid
+    /// one (v0.11).
+    pub const PQSIG_REQUIRED: &str = "post-quantum signature required";
     /// The offset on the auth fid where the server's proof is read, after
     /// the [`OFFER`].
     pub const SERVER_PROOF_OFFSET: u64 = OFFER as u64;

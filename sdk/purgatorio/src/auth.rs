@@ -12,7 +12,9 @@
 //! it), an authinfo (a `-k` keyfile, else `/usr/<user>/keyring/default`),
 //! then the seed in `/usr/<user>/key` or the public test key
 //! `/lib/test/auth.key`, which no stock server trusts (`docs/auth.md`,
-//! "Trust by default").
+//! "Trust by default"). A key may be Ed25519 or a hybrid Ed25519 +
+//! ML-DSA-65 key (`docs/auth.md`, "Post-quantum signatures"); factotum
+//! is asked for its Ed25519 key first unless a hybrid one is wanted.
 //!
 //! A server proves itself in turn (`docs/auth.md`, "Server
 //! authentication"). For a mount the kernel checks that proof when the
@@ -31,6 +33,7 @@ pub use purg_auth as fmt;
 use purg_auth::cert::Cert;
 use purg_auth::keys::AuthInfo;
 use purg_auth::modsig;
+use purg_auth::sig::{Id, Secret};
 use purg_auth::{PUBLIC, SEED, SIGNATURE};
 
 use crate::{Error, abi};
@@ -135,16 +138,29 @@ pub const KEX_CLASSICAL: &str = "x25519";
 /// The hybrid post-quantum key exchange, X25519 with ML-KEM-768.
 pub const KEX_PQ: &str = "x25519mlkem768";
 
+/// The classical signature (Ed25519), the default.
+pub const SIG_CLASSICAL: &str = "ed25519";
+/// The hybrid post-quantum signature, Ed25519 with ML-DSA-65.
+pub const SIG_PQ: &str = "mldsa65";
+
 /// The mount flags for `-C alg` on `mount`, `import` and `export`
-/// (`docs/auth.md`, "Post-quantum options"): [`KEX_CLASSICAL`] adds
-/// nothing, [`KEX_PQ`] adds `abi::mount::MPQ`, which requires the hybrid
-/// exchange. Anything else is refused.
+/// (`docs/auth.md`, "Post-quantum options"). `alg` is one name or
+/// several joined by `/`, as Inferno's `-C` joins its algorithms:
+/// [`KEX_CLASSICAL`] and [`SIG_CLASSICAL`] add nothing, [`KEX_PQ`] adds
+/// `abi::mount::MPQ`, which requires the hybrid key exchange, and
+/// [`SIG_PQ`] adds `abi::mount::MPQSIG`, which requires hybrid
+/// signatures. Anything else is refused.
 pub fn kex_flags(alg: &str) -> Result<u32, Error> {
-    match alg {
-        KEX_CLASSICAL => Ok(0),
-        KEX_PQ => Ok(abi::mount::MPQ),
-        _ => Err(Error(format!("unknown algorithm: {alg}"))),
+    let mut flags = 0;
+    for a in alg.split('/') {
+        flags |= match a {
+            KEX_CLASSICAL | SIG_CLASSICAL => 0,
+            KEX_PQ => abi::mount::MPQ,
+            SIG_PQ => abi::mount::MPQSIG,
+            _ => return Err(Error(format!("unknown algorithm: {a}"))),
+        };
     }
+    Ok(flags)
 }
 
 /// The path of authinfo `name`: itself when it holds a `/`, else
@@ -167,6 +183,13 @@ pub fn read_authinfo(path: &str) -> Result<AuthInfo, Error> {
 pub fn read_seed(path: &str) -> Result<[u8; SEED], Error> {
     let bytes = std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
     <[u8; SEED]>::try_from(bytes.as_slice()).map_err(|_| Error(format!("{path}: not a key")))
+}
+
+/// Reads a seed file of either kind: 32 bytes for Ed25519, 64 for a
+/// hybrid Ed25519 + ML-DSA-65 key.
+pub fn read_secret(path: &str) -> Result<Secret, Error> {
+    let bytes = std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    Secret::from_seed_file(&bytes).ok_or_else(|| Error(format!("{path}: not a key")))
 }
 
 /// Writes `data` to a new file only its owner can read.
@@ -203,9 +226,26 @@ pub fn have_factotum() -> bool {
     crate::stat(&format!("{FACTOTUM}/rpc")).is_ok()
 }
 
-/// Asks the guest factotum for a v2 proof. `None` when it is not mounted
-/// or has no key.
-fn factotum(challenge: &[u8], user: &str, aname: &str) -> Option<Vec<u8>> {
+/// The factotum protocols to ask, in order: the hybrid key alone when
+/// one is wanted, else the Ed25519 key and then the hybrid one.
+fn protos(hybrid: bool) -> &'static [&'static str] {
+    if hybrid {
+        &["hybrid"]
+    } else {
+        &["ed25519", "hybrid"]
+    }
+}
+
+/// Asks the guest factotum for a proof: with its hybrid key when
+/// `hybrid`, else its Ed25519 key, or failing that its hybrid one. `None`
+/// when it is not mounted or has no such key.
+fn factotum(challenge: &[u8], user: &str, aname: &str, hybrid: bool) -> Option<Vec<u8>> {
+    protos(hybrid)
+        .iter()
+        .find_map(|p| factotum_proto(challenge, user, aname, p))
+}
+
+fn factotum_proto(challenge: &[u8], user: &str, aname: &str, proto: &str) -> Option<Vec<u8>> {
     use purg_auth::attr::quote;
     let mut f = std::fs::OpenOptions::new()
         .read(true)
@@ -214,13 +254,13 @@ fn factotum(challenge: &[u8], user: &str, aname: &str) -> Option<Vec<u8>> {
         .ok()?;
     let mut rpc = |req: &[u8]| -> Option<Vec<u8>> {
         f.write_all(req).ok()?;
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; purg_auth::proof::MAX_LEN + 3];
         let n = f.read(&mut buf).ok()?;
         buf.truncate(n);
         Some(buf)
     };
     let start = format!(
-        "start proto=ed25519 role=client user={} aname={}",
+        "start proto={proto} role=client user={} aname={}",
         quote(user),
         quote(aname)
     );
@@ -305,17 +345,30 @@ pub fn proof_for(
     aname: &str,
     keyfile: Option<&str>,
 ) -> Result<Vec<u8>, Error> {
+    proof_with(challenge, user, aname, keyfile, false)
+}
+
+/// [`proof_for`], asking factotum for its hybrid key when `hybrid`
+/// (`-C mldsa65`). The other sources hold one key each and give it
+/// whatever its kind.
+pub fn proof_with(
+    challenge: &[u8],
+    user: &str,
+    aname: &str,
+    keyfile: Option<&str>,
+    hybrid: bool,
+) -> Result<Vec<u8>, Error> {
     if let Some(k) = keyfile {
         let info = read_authinfo(&keyfile_path(k, user))?;
-        return Ok(purg_auth::proof::make(
-            &info.seed,
+        return Ok(purg_auth::proof::make_any(
+            &info.key,
             Some(&info.cert),
             challenge,
             user,
             aname,
         ));
     }
-    if let Some(p) = factotum(challenge, user, aname) {
+    if let Some(p) = factotum(challenge, user, aname, hybrid) {
         return Ok(p);
     }
     if let Some((public, cert)) = agent_key() {
@@ -329,8 +382,8 @@ pub fn proof_for(
     if safe_user(user)
         && let Ok(info) = read_authinfo(&format!("/usr/{user}/keyring/default"))
     {
-        return Ok(purg_auth::proof::make(
-            &info.seed,
+        return Ok(purg_auth::proof::make_any(
+            &info.key,
             Some(&info.cert),
             challenge,
             user,
@@ -338,12 +391,24 @@ pub fn proof_for(
         ));
     }
     let seed = seed(user)?;
-    Ok(purg_auth::proof::make(&seed, None, challenge, user, aname))
+    Ok(purg_auth::proof::make_any(
+        &seed, None, challenge, user, aname,
+    ))
 }
 
 /// Asks the guest factotum for a server proof for the session `keys`
-/// (`role=server`). `None` when it is not mounted or has no key.
-fn factotum_server(keys: &purg_auth::session::Keys) -> Option<Vec<u8>> {
+/// (`role=server`): with its hybrid key first when `hybrid`, else with
+/// its Ed25519 key first. `None` when it is not mounted or has no key.
+fn factotum_server(keys: &purg_auth::session::Keys, hybrid: bool) -> Option<Vec<u8>> {
+    let order: &[&str] = if hybrid {
+        &["hybrid", "ed25519"]
+    } else {
+        &["ed25519", "hybrid"]
+    };
+    order.iter().find_map(|p| factotum_server_proto(keys, p))
+}
+
+fn factotum_server_proto(keys: &purg_auth::session::Keys, proto: &str) -> Option<Vec<u8>> {
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -351,12 +416,12 @@ fn factotum_server(keys: &purg_auth::session::Keys) -> Option<Vec<u8>> {
         .ok()?;
     let mut rpc = |req: &[u8]| -> Option<Vec<u8>> {
         f.write_all(req).ok()?;
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; purg_auth::proof::MAX_LEN + 3];
         let n = f.read(&mut buf).ok()?;
         buf.truncate(n);
         Some(buf)
     };
-    if rpc(b"start proto=ed25519 role=server")? != b"ok" {
+    if rpc(format!("start proto={proto} role=server").as_bytes())? != b"ok" {
         return None;
     }
     let mut w = b"write ".to_vec();
@@ -380,12 +445,24 @@ pub fn server_proof(
     user: &str,
     keyfile: Option<&str>,
 ) -> Option<Vec<u8>> {
+    server_proof_with(keys, user, keyfile, false)
+}
+
+/// [`server_proof`], preferring factotum's hybrid key when `hybrid`: a
+/// client that proved with a hybrid key gets a hybrid proof back when
+/// this side has one (`docs/auth.md`, "Post-quantum signatures").
+pub fn server_proof_with(
+    keys: &purg_auth::session::Keys,
+    user: &str,
+    keyfile: Option<&str>,
+    hybrid: bool,
+) -> Option<Vec<u8>> {
     use purg_auth::server;
     if let Some(k) = keyfile {
         let info = read_authinfo(&keyfile_path(k, user)).ok()?;
-        return Some(server::make(&info.seed, Some(&info.cert), keys));
+        return Some(server::make_any(&info.key, Some(&info.cert), keys));
     }
-    if let Some(p) = factotum_server(keys) {
+    if let Some(p) = factotum_server(keys, hybrid) {
         return Some(p);
     }
     if let Some((public, cert)) = agent_key() {
@@ -398,10 +475,10 @@ pub fn server_proof(
     if safe_user(user)
         && let Ok(info) = read_authinfo(&format!("/usr/{user}/keyring/default"))
     {
-        return Some(server::make(&info.seed, Some(&info.cert), keys));
+        return Some(server::make_any(&info.key, Some(&info.cert), keys));
     }
     let seed = seed(user).ok()?;
-    Some(server::make(&seed, None, keys))
+    Some(server::make_any(&seed, None, keys))
 }
 
 /// What this namespace trusts as a server: the keys `/lib/keys/servers`
@@ -412,8 +489,10 @@ pub fn server_proof(
 /// but takes every key in `/lib/keys/servers`, whatever its host.
 pub struct ServerTrust {
     pub servers: Vec<purg_auth::keys::Named>,
-    pub signers: Vec<[u8; PUBLIC]>,
-    pub revoked: Option<Vec<[u8; PUBLIC]>>,
+    pub signers: Vec<Id>,
+    pub revoked: Option<Vec<Id>>,
+    /// Take only hybrid keys and certificates (`-C mldsa65`).
+    pub hybrid: bool,
 }
 
 impl ServerTrust {
@@ -439,21 +518,23 @@ impl ServerTrust {
             servers,
             signers,
             revoked,
+            hybrid: false,
         }
     }
 
     /// The server keys held for `host`; for `None`, every one.
-    pub fn keys(&self, host: Option<&str>) -> Vec<[u8; PUBLIC]> {
+    pub fn keys(&self, host: Option<&str>) -> Vec<Id> {
         purg_auth::keys::keys_for(&self.servers, host)
     }
 
     /// The policy for `keys`, from [`ServerTrust::keys`].
-    pub fn policy<'a>(&'a self, keys: &'a [[u8; PUBLIC]]) -> purg_auth::proof::Policy<'a> {
+    pub fn policy<'a>(&'a self, keys: &'a [Id]) -> purg_auth::proof::Policy<'a> {
         purg_auth::proof::Policy {
             keys,
             signers: &self.signers,
             revoked: self.revoked.as_deref(),
             now: now(),
+            hybrid: self.hybrid,
         }
     }
 }
@@ -470,7 +551,19 @@ pub fn check_server_host(
     proof: &[u8],
     host: Option<&str>,
 ) -> Result<(), Error> {
-    let t = ServerTrust::read();
+    check_server_host_with(keys, proof, host, false)
+}
+
+/// [`check_server_host`] that takes only a hybrid key or certificate when
+/// `hybrid`; anything else fails with `abi::auth::PQSIG_REQUIRED`.
+pub fn check_server_host_with(
+    keys: &purg_auth::session::Keys,
+    proof: &[u8],
+    host: Option<&str>,
+    hybrid: bool,
+) -> Result<(), Error> {
+    let mut t = ServerTrust::read();
+    t.hybrid = hybrid;
     let k = t.keys(host);
     purg_auth::server::check_host(&t.policy(&k), keys, proof, host).map_err(Error::from)
 }
@@ -487,6 +580,16 @@ pub fn check_server(keys: &purg_auth::session::Keys, proof: &[u8]) -> Result<(),
 /// over the session is the kernel's to check, which a mount with
 /// `abi::mount::MSRVAUTH` does on the same bytes.
 pub fn check_server_fd(afd: &impl AsRawFd, host: Option<&str>) -> Result<(), Error> {
+    check_server_fd_with(afd, host, false)
+}
+
+/// [`check_server_fd`] that takes only a hybrid key or certificate when
+/// `hybrid` (`abi::mount::MPQSIG`).
+pub fn check_server_fd_with(
+    afd: &impl AsRawFd,
+    host: Option<&str>,
+    hybrid: bool,
+) -> Result<(), Error> {
     // SAFETY: `afd` stays open for this call, and ManuallyDrop keeps the
     // File from closing it.
     let mut f = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(afd.as_raw_fd()) });
@@ -494,7 +597,8 @@ pub fn check_server_fd(afd: &impl AsRawFd, host: Option<&str>) -> Result<(), Err
     let mut proof = vec![0u8; purg_auth::proof::MAX_LEN];
     let n = f.read(&mut proof)?;
     proof.truncate(n);
-    let t = ServerTrust::read();
+    let mut t = ServerTrust::read();
+    t.hybrid = hybrid;
     let k = t.keys(host);
     purg_auth::server::check_identity(&t.policy(&k), &proof, host).map_err(Error::from)
 }
@@ -504,8 +608,9 @@ pub fn proof(challenge: &[u8], user: &str) -> Result<Vec<u8>, Error> {
     proof_for(challenge, user, "", None)
 }
 
-/// The signing seed: `/usr/<user>/key`, then the shared test fixture.
-fn seed(user: &str) -> Result<[u8; SEED], Error> {
+/// The signing seed: `/usr/<user>/key` (32 bytes, or 64 for a hybrid
+/// key), then the shared test fixture.
+fn seed(user: &str) -> Result<Secret, Error> {
     let mut paths = Vec::new();
     if safe_user(user) {
         paths.push(format!("/usr/{user}/key"));
@@ -513,7 +618,7 @@ fn seed(user: &str) -> Result<[u8; SEED], Error> {
     paths.push(String::from("/lib/test/auth.key"));
     for path in paths {
         if let Ok(bytes) = std::fs::read(&path)
-            && let Ok(seed) = <[u8; SEED]>::try_from(bytes.as_slice())
+            && let Some(seed) = Secret::from_seed_file(&bytes)
         {
             return Ok(seed);
         }
@@ -548,6 +653,19 @@ pub fn authenticate_with(
     keyfile: Option<&str>,
     pq: bool,
 ) -> Result<(), Error> {
+    authenticate_opts(afd, user, aname, keyfile, pq, false)
+}
+
+/// [`authenticate_with`], proving with factotum's hybrid key when
+/// `hybrid` (`abi::mount::MPQSIG`).
+pub fn authenticate_opts(
+    afd: &OwnedFd,
+    user: &str,
+    aname: &str,
+    keyfile: Option<&str>,
+    pq: bool,
+    hybrid: bool,
+) -> Result<(), Error> {
     // SAFETY: `afd` stays open for this call, and ManuallyDrop keeps the
     // File from closing it.
     let mut f = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(afd.as_raw_fd()) });
@@ -570,7 +688,7 @@ pub fn authenticate_with(
             abi::auth::NO_SESSION
         }));
     }
-    let p = proof_for(&signed, user, aname, keyfile)?;
+    let p = proof_with(&signed, user, aname, keyfile, hybrid)?;
     // The proof is one write.
     let n = f.write(&p)?;
     if n != p.len() {
@@ -618,13 +736,17 @@ pub fn amount_host(
     match crate::fauth(fd, aname) {
         Ok(afd) => {
             let pq = flags & abi::mount::MPQ != 0;
-            authenticate_with(&afd, &user(), aname, keyfile, pq)?;
-            if flags & abi::mount::MSRVAUTH != 0 && host.is_some() {
-                check_server_fd(&afd, host)?;
+            let hybrid = flags & abi::mount::MPQSIG != 0;
+            authenticate_opts(&afd, &user(), aname, keyfile, pq, hybrid)?;
+            if flags & (abi::mount::MSRVAUTH | abi::mount::MPQSIG) != 0 && host.is_some() {
+                check_server_fd_with(&afd, host, hybrid)?;
             }
             crate::mount(fd, afd.as_raw_fd(), old, flags, aname)
         }
-        Err(e) if e.0 == abi::auth::NOT_REQUIRED && flags & abi::mount::MSRVAUTH != 0 => {
+        Err(e)
+            if e.0 == abi::auth::NOT_REQUIRED
+                && flags & (abi::mount::MSRVAUTH | abi::mount::MPQSIG) != 0 =>
+        {
             Err(Error::from(abi::auth::SERVER_NONE))
         }
         Err(e) if e.0 == abi::auth::NOT_REQUIRED && flags & abi::mount::MPQ != 0 => {

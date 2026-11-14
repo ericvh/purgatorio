@@ -39,6 +39,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use purg_abi::auth::KIND_HYBRID_KEY;
 use purg_abi::{error, mode};
 use purg_auth::record::{Opener, Sealer};
 use purg_platform::Platform;
@@ -187,6 +188,8 @@ struct Conn {
     encrypt: bool,
     /// Refuse what is not on the post-quantum exchange.
     pq: bool,
+    /// Refuse proofs not signed with a hybrid key.
+    pqsig: bool,
     /// The exporting user, whose key signs this server's proof.
     user: String,
     /// The authinfo that signs this server's proof instead (`export -k`).
@@ -211,6 +214,8 @@ struct Conn {
     keys: Mutex<Option<purg_auth::session::Keys>>,
     /// This server's proof for those keys, made when first asked for.
     server: Mutex<Option<Vec<u8>>>,
+    /// The client proved with a hybrid key.
+    hybrid_client: AtomicBool,
     /// The sealer of this server's direction. Only the thread draining
     /// [`Conn::out`] touches it, so records go out in the order of their
     /// sequence numbers.
@@ -263,6 +268,9 @@ pub struct Opts {
     /// Refuse every proof but version 4, and any attach that is not on
     /// one: only the post-quantum exchange (`purg_abi::mount::MPQ`).
     pub pq: bool,
+    /// Refuse every proof not signed with a hybrid Ed25519 + ML-DSA-65
+    /// key (`purg_abi::mount::MPQSIG`).
+    pub pqsig: bool,
     /// The exporting user: its key, found as a mount by it would find
     /// one, signs this server's proof. Empty finds only `#¤` and the test
     /// key.
@@ -280,7 +288,7 @@ pub fn serve_with(
     platform: &Arc<dyn Platform>,
     opts: &Opts,
 ) -> KResult<()> {
-    if opts.noauth && (opts.encrypt || opts.pq) {
+    if opts.noauth && (opts.encrypt || opts.pq || opts.pqsig) {
         return Err(Error::new(error::EBADARG));
     }
     let mut fs = Export::new(pgrp, root)?;
@@ -292,6 +300,7 @@ pub fn serve_with(
         noauth: opts.noauth,
         encrypt: opts.encrypt || opts.pq,
         pq: opts.pq,
+        pqsig: opts.pqsig,
         user: opts.user.clone(),
         keyfile: opts.keyfile.clone(),
         pid: platform.current_pid(),
@@ -305,6 +314,7 @@ pub fn serve_with(
         switch: Mutex::new(None),
         keys: Mutex::new(None),
         server: Mutex::new(None),
+        hybrid_client: AtomicBool::new(false),
         sealer: Mutex::new(None),
         wnote: Arc::new(Note::new()),
         dead: AtomicBool::new(false),
@@ -347,6 +357,13 @@ impl Conn {
                 let (sealer, o) = keys.server();
                 *self.switch.lock() = Some((tag, sealer));
                 *self.keys.lock() = Some(keys);
+                // A client that proves with a hybrid key gets a hybrid
+                // server proof back, when this side has one.
+                if let Fcall::Twrite { data, .. } = &msg.fcall
+                    && data.get(1).is_some_and(|&k| k >= KIND_HYBRID_KEY)
+                {
+                    self.hybrid_client.store(true, Ordering::Release);
+                }
                 opener = Some(o);
             }
             let for_worker = match &msg.fcall {
@@ -573,9 +590,16 @@ impl Conn {
         let Some(keys) = self.keys.lock().clone() else {
             return Vec::new();
         };
-        let p =
-            crate::auth::server_proof(&self.fs.pgrp, &self.user, self.keyfile.as_deref(), &keys)
-                .unwrap_or_default();
+        let hybrid = self.hybrid_client.load(Ordering::Acquire);
+        let p = crate::auth::server_proof(
+            &*self.platform,
+            &self.fs.pgrp,
+            &self.user,
+            self.keyfile.as_deref(),
+            &keys,
+            hybrid,
+        )
+        .unwrap_or_default();
         if !p.is_empty() {
             *self.server.lock() = Some(p.clone());
         }
@@ -793,7 +817,8 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
         if let Some((offer, offered, uname, aname)) = held {
             // The proof is one write.
             let now = platform.now_ns() / 1_000_000_000;
-            let t = trust(fs, &uname);
+            let mut t = trust(fs, &uname);
+            t.hybrid = conn.pqsig;
             let session = purg_auth::proof::parse_session(data);
             let v3 = session.is_some();
             let pq = session.is_some_and(|p| p.pq());
@@ -802,7 +827,10 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
             } else if conn.encrypt && !v3 {
                 Err(crate::auth::ENCRYPTION_REQUIRED)
             } else {
-                purg_auth::proof::check(&t.policy(now), &offered, &uname, &aname, data)
+                let policy = t.policy(now);
+                crate::auth::deep(platform, crate::auth::hybrid_kind(data, 1), || {
+                    purg_auth::proof::check(&policy, &offered, &uname, &aname, data)
+                })
             };
             // The fid may have been clunked meanwhile, or clunked and made
             // again with another challenge.

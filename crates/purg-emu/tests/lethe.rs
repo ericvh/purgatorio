@@ -475,9 +475,9 @@ fn authinfo(path: &Path, user: &str, signer: &[u8; 32]) {
     let mut cert = Cert::new(user, purg_auth::public_key(&USER_SEED), 0).unwrap();
     cert.sign(signer).unwrap();
     let info = AuthInfo {
-        seed: USER_SEED,
-        signer: purg_auth::public_key(signer),
-        cert,
+        key: purg_auth::sig::Secret::Ed25519(USER_SEED),
+        signer: purg_auth::sig::Id::Ed25519(purg_auth::public_key(signer)),
+        cert: purg_auth::cert::AnyCert::V1(cert),
     };
     std::fs::write(path, info.encode()).unwrap();
 }
@@ -488,7 +488,7 @@ fn untrusted_clients_are_refused() {
     let signers = s.host.join("signers");
     std::fs::write(
         &signers,
-        purg_auth::keys::list_line(&purg_auth::public_key(&SIGNER), "test"),
+        purg_auth::keys::list_line(purg_auth::public_key(&SIGNER), "test"),
     )
     .unwrap();
     authinfo(&s.host.join("good"), "glenda", &SIGNER);

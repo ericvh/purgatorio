@@ -4,7 +4,11 @@
 //!
 //! ```text
 //! key proto=ed25519 [tag] user=<name> !seed=<hex> cert=<pgcert1 line>
+//! key proto=hybrid [tag] user=<name> !seed=<hex> cert=<pgcert2 line>
 //! ```
+//!
+//! The second for a hybrid Ed25519 + ML-DSA-65 authinfo (`docs/auth.md`,
+//! "Post-quantum signatures").
 //!
 //! `tag` (usually attribute comments) is printed after the `proto`
 //! attribute. A `keyfile` without a `/` is a name under
@@ -28,10 +32,15 @@ const USAGE: &str = "auth/ai2key [-t tag] keyfile ...";
 fn line(path: &str, tag: Option<&str>) -> Result<String, Error> {
     let info = purgatorio::auth::read_authinfo(path)?;
     let tag = tag.map(|t| format!(" {t}")).unwrap_or_default();
+    let proto = if info.key.is_hybrid() {
+        "hybrid"
+    } else {
+        "ed25519"
+    };
     Ok(format!(
-        "key proto=ed25519{tag} user={} !seed={} cert={}\n",
-        quote(&info.cert.name),
-        hex::encode(&info.seed),
+        "key proto={proto}{tag} user={} !seed={} cert={}\n",
+        quote(info.cert.name()),
+        hex::encode(info.key.seed_bytes()),
         quote(&info.cert.encode())
     ))
 }

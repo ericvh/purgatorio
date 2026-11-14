@@ -26,13 +26,23 @@ const USAGE: &str = "usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] add
 
 /// The seed and certificate to authenticate with.
 fn key(keyfile: Option<&str>, user: &str) -> Result<([u8; 32], Option<fmt::cert::Cert>), Error> {
+    // Lethe's exchange is Ed25519 only (`docs/lethe.md`, Section 6).
+    let ed = |path: &str, info: fmt::keys::AuthInfo| {
+        info.ed25519()
+            .map(|(s, c)| (s, Some(c)))
+            .ok_or_else(|| Error(format!("{path}: Lethe takes only an Ed25519 key")))
+    };
     if let Some(k) = keyfile {
-        let info = auth::read_authinfo(&auth::keyfile_path(k, user))?;
-        return Ok((info.seed, Some(info.cert)));
+        let path = auth::keyfile_path(k, user);
+        return ed(&path, auth::read_authinfo(&path)?);
     }
     let safe = !user.is_empty() && user != "." && user != ".." && !user.contains('/');
-    if safe && let Ok(info) = auth::read_authinfo(&format!("/usr/{user}/keyring/default")) {
-        return Ok((info.seed, Some(info.cert)));
+    let default = format!("/usr/{user}/keyring/default");
+    if safe
+        && let Ok(info) = auth::read_authinfo(&default)
+        && info.ed25519().is_some()
+    {
+        return ed(&default, info);
     }
     let mut paths = Vec::new();
     if safe {

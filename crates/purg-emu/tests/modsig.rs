@@ -56,7 +56,7 @@ fn signed_root(name: &str) -> PathBuf {
     }
     std::fs::copy(root().join("bin/ls.wasm"), dir.join("bin/ls.wasm")).unwrap();
     let key = purg_auth::public_key(&SEED);
-    std::fs::write(dir.join("lib/keys/modules"), list_line(&key, "test")).unwrap();
+    std::fs::write(dir.join("lib/keys/modules"), list_line(key, "test")).unwrap();
     dir
 }
 
@@ -133,7 +133,7 @@ fn require_runs_modules_signed_on_the_host() {
     // A revoked signer stops the first prog.
     std::fs::write(
         dir.join("lib/keys/revoked"),
-        list_line(&purg_auth::public_key(&SEED), ""),
+        list_line(purg_auth::public_key(&SEED), ""),
     )
     .unwrap();
     let o = emu(&dir, "wasmi", &["--modules=require", "echo", "signed"]);

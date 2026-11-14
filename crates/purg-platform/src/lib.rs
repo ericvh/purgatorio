@@ -101,6 +101,15 @@ pub trait Platform: Send + Sync {
     /// on hosted, a kernel thread on bare metal. Fails with `"no free
     /// procs"` when none can be created.
     fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()>;
+    /// Runs `f` on a stack of at least `size` bytes and waits for it to
+    /// return. For work that needs more stack than a kproc has, such as
+    /// ML-DSA (`purg_auth::sig`). The default runs it on the calling
+    /// thread, for hosted platforms whose threads have large stacks; bare
+    /// metal runs it on a kernel thread made for it.
+    fn deep(&self, size: usize, f: &mut (dyn FnMut() + Send)) {
+        let _ = size;
+        f();
+    }
     /// Bytes of memory in use and bytes available to the system, for `#c/memory`
     /// and `#%`. `(0, 0)` means the platform has no figures.
     fn memory(&self) -> (u64, u64) {

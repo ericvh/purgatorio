@@ -1,25 +1,25 @@
 auth/sign: no key
 verify hello
 digest ok
-abi 0.10
+abi 0.11
 signer trusted builder
 verify plain
 digest ok
-abi 0.10
+abi 0.11
 auth/verify: module not signed
 verify other
 digest ok
-abi 0.10
+abi 0.11
 signer untrusted
 auth/verify: untrusted signer
 verify both
 digest ok
-abi 0.10
+abi 0.11
 signer untrusted
 signer trusted
 verify changed
 digest ok
-abi 0.10
+abi 0.11
 signer bad builder
 auth/verify: bad signature
 require
@@ -37,7 +37,7 @@ sh: /bin/echo.wasm: module not signed
 revoked
 auth/modpolicy: /tmp/sh-modsig/bin/hello.wasm: certificate revoked
 digest ok
-abi 0.10
+abi 0.11
 signer untrusted
 signer revoked
 auth/verify: certificate revoked

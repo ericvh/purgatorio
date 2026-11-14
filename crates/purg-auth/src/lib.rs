@@ -9,6 +9,8 @@
 //! - [`session`]: the version 3 handshake's ephemeral X25519 exchange,
 //!   version 4's hybrid X25519 + ML-KEM-768 exchange, and the session keys
 //!   they derive.
+//! - [`sig`]: signature keys of either kind, Ed25519 or the hybrid of
+//!   Ed25519 and ML-DSA-65, and the typed ids trust lists hold.
 //! - [`kem`]: ML-KEM-768 (FIPS 203), the post-quantum half of the hybrid
 //!   exchanges.
 //! - [`record`]: the ChaCha20-Poly1305 records that carry the Styx
@@ -41,6 +43,7 @@ pub mod record;
 pub mod server;
 pub mod session;
 pub mod sha256;
+pub mod sig;
 
 pub use purg_abi::auth::{PUBLIC, SEED, SIGNATURE};
 

@@ -104,11 +104,13 @@ impl ModPolicy {
 /// missing revocation list revokes nothing; one that is there but cannot
 /// be read or parsed is `None`, which fails closed.
 pub fn trust_lists(pgrp: &Pgrp, anchors: &str) -> (Vec<[u8; PUBLIC]>, Option<Vec<[u8; PUBLIC]>>) {
+    // Module signatures are Ed25519: a hybrid id in either list names no
+    // module signer, and is not a parse error.
     let keys = read_file(pgrp, anchors, MAX_LIST)
-        .map(|t| purg_auth::keys::parse_list_lenient(&t))
+        .map(|t| purg_auth::keys::ed25519(&purg_auth::keys::parse_list_lenient(&t)))
         .unwrap_or_default();
     let revoked = match read_file(pgrp, REVOKED, MAX_LIST) {
-        Some(t) => purg_auth::keys::parse_list(&t),
+        Some(t) => purg_auth::keys::parse_list(&t).map(|l| purg_auth::keys::ed25519(&l)),
         None if pgrp.namec(REVOKED, "/").is_ok() => None,
         None => Some(Vec::new()),
     };
