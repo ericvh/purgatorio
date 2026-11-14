@@ -365,6 +365,56 @@ fn hangup_reaps_blocked_workers() {
     assert_eq!(err.as_str(), error::EHUNGUP);
 }
 
+/// Inferno's exportfs starts a worker whenever none is free. With 40
+/// reads blocked on one pipe (more than the 32 workers the export used to
+/// stop at), the connection still answers: a write through it gets a
+/// worker of its own instead of waiting behind them for ever.
+#[test]
+fn many_blocked_reads_do_not_stall_a_write() {
+    const BLOCKED: u16 = 40;
+    let (mut p, mock) = setup();
+    let s = serve(&mut p, &mock);
+    let raw = Raw::new(&mut p, s.conn);
+    raw.open_pipe(1);
+    for tag in 0..BLOCKED {
+        raw.read(100 + tag, 1);
+    }
+    raw.quiet();
+    // A write on box/data comes out of box/data1, the test's end.
+    raw.call(
+        2,
+        Fcall::Twalk {
+            fid: 0,
+            newfid: 2,
+            wnames: vec!["box", "data"],
+        },
+        "Rwalk",
+    );
+    raw.call(
+        2,
+        Fcall::Topen {
+            fid: 2,
+            mode: mode::ORDWR,
+        },
+        "Ropen",
+    );
+    raw.call(
+        3,
+        Fcall::Twrite {
+            fid: 2,
+            offset: 0,
+            data: b"up",
+        },
+        "Rwrite",
+    );
+    let mut buf = [0u8; 16];
+    let n = p.read(s.feed, &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"up");
+    drop(raw);
+    within("the export ends", move || s.server.join().unwrap());
+    kprocs_gone(&mock);
+}
+
 /// Killing the exporting prog ends the export, blocked requests and all.
 #[test]
 fn killing_the_exporter_reaps_blocked_workers() {
