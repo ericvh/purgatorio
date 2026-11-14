@@ -907,7 +907,8 @@ rasterized from its OpenType file: the bitmaps are the font's source,
   has, with an offset into the block's subfont, so a font(6) reader that
   only looks at the first matching range (Inferno's libdraw) still never
   lands on a missing glyph.
-- `hex src [combining] name` does the same from Unifont's bitmaps:
+- `hex [min-max] src [combining] name` does the same from Unifont's
+  bitmaps, for the runes from `min` to `max` (the BMP when not given):
   `k1`, height 16, ascent 14. A combining mark gets the `left` that
   `unifont-combining.txt` gives (−8 for most) and an advance of the
   glyph's width plus that, usually 0, so it lands on the rune before it.
@@ -948,6 +949,7 @@ minutes because it builds the guests and the emu.
 | `default.font` | the same as `sans/unicode.13.font` |
 | `go/{regular,mono}.{13,20}.font` | a Go face alone (its missing-glyph box as rune 0) |
 | `unifont/unifont.16.font` | Unifont alone: 57,086 glyphs in 223 subfonts |
+| `unifont/plane1.16.font` | Unifont's Plane 1 alone: 49,903 glyphs in 202 subfonts (Section 9.8) |
 
 `go/LICENSE` (the Go fonts' notice), `unifont/OFL-1.1.txt`,
 `unifont/COPYING` and a `README` go with them. Sizes, compressed as
@@ -958,7 +960,8 @@ written:
 | Go Regular 13 / 20 | 15 subfonts each | 52,871 / 84,943 |
 | Go Mono 13 / 20 | 15 each | 52,392 / 84,909 |
 | Unifont 16 | 223 | 1,481,011 |
-| All of `root/fonts`, with font files and licences | 297 | 1,893,517 |
+| Unifont 16, Plane 1 | 202 | 751,074 |
+| All of `root/fonts`, with font files and licences | 500 | 2,695,271 |
 
 The fonts are not in the kernel's or the probe's image (only `bin` and
 `lib` go in, and `fontgen.wasm` is left out with the other graphics
@@ -985,10 +988,8 @@ both: devdraw reads them with `BGSHORT`, which cannot be negative, so its
 `ci < 0` test never fires, and `l` and `s` here have no negative case
 either. No client can tell the two apart there.
 
-**Named images (`n`, `N`) are not implemented.** Neither libdraw's font
-code nor ours needs them; they exist to share images between clients
-(`wm` and its windows), and images here belong to one connection, so
-they wait for G4.
+**Named images.** The device has had `n` and `N` since G4 (Section
+12.2). The font code does not use them; Section 9.8 says why.
 
 ### 9.3 Text in the SDK
 
@@ -1092,8 +1093,8 @@ Measured on Linux aarch64 with Rust 1.99.1, the same way as Section 8.3.
 | `draw/demo.wasm` | 80,063 bytes | 124,393 bytes (the font code) |
 | `test/draw.wasm` | 133,832 bytes | 181,021 bytes |
 | `fontgen.wasm` (fontdue and ttf-parser) | | 226,565 bytes |
-| `root/fonts` | | 1,893,517 bytes in 297 files (Section 9.1) |
-| `fonts/` (sources and licences) | | 4,167,541 bytes; Unifont's `.hex` is 3,762,132 of it, 936,573 gzipped |
+| `root/fonts` | | 1,893,517 bytes in 297 files (Section 9.1); 2,695,271 in 500 with Plane 1 (Section 9.8) |
+| `fonts/` (sources and licences) | | 4,167,541 bytes; Unifont's `.hex` is 3,762,132 of it, 936,573 gzipped; 8,165,014 with `unifont_upper.hex` (Section 9.8) |
 
 The G1 memdraw figure in this table was measured again with the same
 command as the G2 one; Section 8.3's 24,330 used a slightly different
@@ -1105,13 +1106,98 @@ options 150, the screen trait 40, the test guest and goldens 290, xtask
 ### 9.7 Not done in G2
 
 - Named images (`n`, `N`), screens and windows: done in G4, Section 12.2.
-- Noto, and bold or italic Go faces: one recipe line each when wanted.
-- Unifont's planes above the BMP, and its CSUR private-use glyphs.
-- Shaping (Arabic joining, Indic reordering, ligatures): Inferno does
-  not shape; a later SDK extra.
+- Bold or italic Go faces: one recipe line each when wanted.
+- Unifont's Plane 1: done after G2 (Section 9.8). Its Planes 2 and 3,
+  and its CSUR private-use glyphs, are left out; Noto is not added;
+  shaping is out of scope (all Section 9.8).
 - `Font.build` from a string, `/dev/cursor` images, `m8`.
-- The font cache in the kernel (the device is still emu-only).
+- The font cache in the kernel: later, with the kernel's graphics
+  (Section 9.8).
 - Real Inferno goldens; the text goldens are ours.
+
+### 9.8 After G2: runes above the BMP, and what was left out
+
+**Unifont's Plane 1.** `fonts/unifont/unifont_upper-18.0.01.hex` is
+Unifont 18.0.01's `font/precompiled/unifont_upper-18.0.01.hex`, vendored
+whole (3,996,670 bytes, 681,114 gzipped) so that its sha256 matches the
+tarball's, with the checksum in `fonts/README`. It holds Planes 1, 2, 3
+and 14. The recipe makes `unifont/plane1.16` from its Plane 1 with
+`hex 10000-1FFFF ...` and the same combining file (which lists Plane 1's
+marks too): 49,903 glyphs in 202 `k1` subfonts named by their first rune
+(`unifont/plane1.16/1F600`), 751,074 bytes, and 206 ranges in its font
+file. The four `unicode` fonts list it after the BMP, which makes each of
+them 8.9 KB larger (12,914 to 21,823 bytes for `sans/unicode.13.font`).
+Emoji (one colour, 16 pixels), historic scripts, Linear B, musical and
+mathematical symbols now draw.
+
+Nothing else had to change. font(6) ranges, `purg-memdraw`'s
+`FontFile` and the SDK's lookup and cache were already in 32-bit runes
+(`char`), and the device never sees runes: `l` and `s` carry cache
+slots. `test/draw`'s `plane1` check draws `a😀𐀀𝔸𝄞z` in
+`sans/unicode.13` through the device's cache, compares it with the same
+string drawn in the guest from the subfont files, checks the emoji's
+advance (16), and checks that each rune above the BMP draws a glyph of
+its own and not rune 0's box, on both VMs. fontgen's `upper_planes` test
+covers the range filter.
+
+Left out of the upper file:
+
+- **Planes 2 and 3.** Unifont has 6,586 and 1,110 of their ideographs,
+  a small part of CJK Extensions B to H. Made into subfonts they are
+  606 KB (509,737 and 96,598 bytes in 274 sparse subfonts), and their
+  1,434 ranges would add about 50 KB to each `unicode` font file, which
+  every program that draws text reads. Not worth it for partial
+  coverage.
+- **Plane 14:** tags and variation selectors, which draw nothing.
+  Unifont gives them dashed boxes; drawn per rune they would show as
+  boxes after an emoji. The BMP's variation selectors (`U+FE00` to
+  `U+FE0F`) are in `unifont.16` and do draw boxes today.
+- **Plane 15 (CSUR):** private-use assignments that are not Unicode
+  (`unifont_csur-18.0.01.hex`, 576,536 bytes, 11,691 glyphs).
+
+**Noto: not added.** The licence is fine (SIL OFL 1.1, like Unifont),
+and a face would be one `ttf` recipe line. It is not added because it
+would buy little:
+
+- Unifont already has a glyph for every script in the BMP and Plane 1,
+  so no script is missing.
+- The scripts where a Noto face would look much better than Unifont's
+  bitmaps (Devanagari and the other Indic scripts, Arabic, Thai,
+  Myanmar) need shaping to be readable: reordering, conjuncts, joining
+  forms. Drawn rune by rune, as font(6) and libdraw do, a Noto face
+  shows them wrong just as Unifont does.
+- Noto is one family per script, so "Noto" is many fonts. Noto Sans
+  Regular alone is 621,572 bytes (Latin, Greek, Cyrillic, which Go
+  covers); Noto Sans Devanagari is 243,520.
+
+A non-shaping script that someone wants in a smoother face (Ethiopic,
+Cherokee, Canadian syllabics) can be added as an optional font file with
+one `ttf` and one `merge` line, not as the default.
+
+**Named images: not needed by the font code.** Plan 9's libdraw does
+not share fonts between clients either: each client keeps its own cache
+image and subfont images. Sharing the cache by name would not work: its
+slots belong to the client's LRU state, so two clients writing one cache
+would overwrite each other's glyphs. Sharing subfont images by name
+would save a little device memory (a Unifont `k1` subfont is about 8 KB,
+a Go `k8` one a few KB) and one load each, but a name lives only as long
+as the connection that made it, and the same path can name different
+files in different namespaces, so the name would need a server and a
+content key. That is more than it saves.
+
+**Shaping: out of scope.** Inferno and Plan 9 draw rune by rune. The one
+part that matters for Latin, Greek and Cyrillic text, combining marks,
+is already handled by fontgen: Unifont's marks get a negative `left` and
+no advance, so they land on the rune before. Go's marks keep the offsets
+and advances its TrueType file gives them. Anything more (Arabic joining, Indic
+reordering, ligatures, mark stacking) needs a shaper, which would be an
+SDK extra, not part of font(6).
+
+**The font cache in the kernel: later.** The kernel has no draw device
+yet (its owner is the kernel graphics work). The cache messages are in
+`purg-core`'s device and `purg-memdraw`, both `no_std`, so they come
+with the device when it is added; the fonts would then go into the
+kernel's image, which today carries only `bin`, `lib` and `locale`.
 
 ## 10. acme: the first application
 
@@ -1423,10 +1509,11 @@ idle program sleeps. `q` or Delete ends the first three.
 
 - `draw/clock [-d] [-t seconds]`, after `wm/clock`: an analog face with
   sixty ticks, numerals when the face is large enough, hour, minute and
-  second hands, `GMT` and the date; `-d` shows seven-segment digits
-  (filled polygons, so they scale with the screen) and the date. It
-  wakes at each second. The time is GMT: there is no timezone database
-  yet (the SDK's `daytime` says the same). `-t` stops the clock at a
+  second hands, the time zone's name and the date; `-d` shows
+  seven-segment digits (filled polygons, so they scale with the screen)
+  and the date and zone. It wakes at each second. The time is local,
+  from `$timezone` or `/locale/timezone` as daytime(2) reads them
+  (Section 11.4); the default zone is GMT. `-t` stops the clock at a
   time, for tests and screenshots. Each second's face is drawn off
   screen and copied, so a half-drawn face is never shown.
 - `draw/coffee`, after `wm/coffee`, which shows a sequence of pictures:
@@ -1504,13 +1591,92 @@ acceptance test 530.
 
 ### 11.3 Not done
 
-- Timezones: the clock shows GMT.
+- Timezones: done, Section 11.4.
 - `/dev/snarf`: `draw/sh` keeps its own snarf buffer until a window
   manager or the emu serves one.
 - `draw/sh` has no `plumb` or `look` items, no hold mode, and types only
   at the end of the text; `-c` sends one line rather than running sh's
   `-c`.
 - `draw/faces` does not plumb; button 1 only shows details.
+
+### 11.4 Time zones
+
+Inferno keeps time zones in `/locale`: one file per zone, and
+`/locale/timezone`, the one in use. daytime(2)'s `local` reads
+`$timezone` (from `/env`) or, when that is unset or empty,
+`/locale/timezone`; either holds a zone or the name of a file (starting
+with `/` or `#`) that does. A name given to `readtimezone` that starts
+with neither is a file in `/locale`. A zone is a line
+`STD stdiff DL dldiff` (names, and offsets east of Greenwich in seconds)
+followed by the periods of daylight time as start and end pairs, in
+seconds since 1970 as a clock on standard time counts them. Fewer than
+four words mean GMT. We follow all of that.
+
+**The files.** `root/locale` holds 83 files, 70,061 bytes: Inferno's
+69 zone names that the database still has (`US_Eastern`, `GB-Eire`,
+`Japan`, `Australia_NSW`, `CST.CDT`, ...), 12 more by the database's
+names with `/` as `_` (`Asia_Kolkata`, `Europe_Berlin`, `UTC`, ...), a
+`README`, and `timezone`, a copy of `GMT`. Inferno ships Britain's zone
+as `timezone`; we ship GMT so that a system shows the same times
+wherever it runs and the goldens do not depend on it. Inferno's
+`Australia_Sturt` and `US_Yukon` are left out: the database no longer
+has either. `Canada_East-Saskatchewan` is the database's
+`Canada/Saskatchewan`, which it was merged into.
+
+**How they are made.** `tzdata/` holds the IANA time zone database,
+release 2026f, pinned with checksums in `tzdata/README`. It is in the
+public domain. `tzdata/zones` maps each file to a zone.
+`cargo xtask timezones` (`xtask/src/tz.rs`) is a small zic: it reads the
+Rule, Zone and Link lines (`lastSun`, `Sun>=8`, wall, standard and UT
+times, negative saves, `%s`, `%z` and `A/B` formats) and works out each
+zone's offsets from 1970 to 2037. It is integer arithmetic on text, so
+it runs in xtask on the host and gives the same bytes everywhere. The
+files are committed; the xtask test `locale_is_current` makes them again
+and fails if anything differs, which `cargo test --workspace` runs on
+every host. Its `US_Eastern` has the same 140 numbers as Inferno's,
+except that Inferno's ends daylight time an hour late every year from
+2007 (02:00 standard time instead of 02:00 daylight time). It agrees
+with the host's zoneinfo (Python's
+`zoneinfo`) for every three hours from 1970 to 2038 for New York,
+London, Berlin, Sydney, Auckland, Sao Paulo, Phoenix, Santiago, Cairo,
+Jerusalem and Los Angeles.
+
+**What the format cannot say.** A file has one standard and one
+daylight offset. A zone gets those in force at the end of the range and
+every daylight period from 1970; years when the zone's standard offset
+or its daylight saving was different show with today's (Moscow before
+2014, Turkey before 2016, Newfoundland's double daylight time in 1988,
+Lord Howe's hour of daylight time before 1986). Plan 9's and Inferno's
+files have the same limit. Times are 32-bit in Inferno, so the table
+stops at 2037.
+
+**The SDK** (`purgatorio::daytime`): `Timezone` (`parse`, `read` as
+`readtimezone`, `local`), `timezone()` (read once) and `local(t)`. `Tm`
+gained `zone` and `tzoff`, as Inferno's `Tm` has, so it is `Clone` and
+no longer `Copy`. `text` prints the zone's name instead of `GMT`, and
+`filet` (`ls -l`, `tar tv`, `fs`) uses local time, as Inferno's does.
+`date` prints local time, and `-u` GMT, as date(1) says. `draw/clock`
+shows local time and the zone's name.
+
+**Images.** The kernel's and the probe's images now carry `locale`
+beside `bin` and `lib`, so the corpus script runs everywhere.
+
+**Tests.** The SDK's `zones` test (US Eastern around both changes in
+2026, 1970, Japan, GMT fallbacks), `tz.rs`'s `calendar` and
+`inferno_files` tests (the rule days, Inferno's US_Eastern, a zone with
+a `Zone` continuation and standard-time rules), the clock's `dates`
+test (Tokyo is a day ahead), and the corpus script `timezone.sh`:
+`date` by default, with `-u`, with `$timezone` naming
+`/locale/US_Eastern` around both changes, Sydney in January, Kolkata,
+a zone given as text, and the GMT fallbacks. Quoting matters there: sh
+writes a one-word value to `/env` quoted, so `timezone='JST 32400 JST
+32400'` gives a zone named `'JST`, as it would in Inferno; a list
+(`timezone=(JST 32400 JST 32400)`) works.
+
+**Sizes.** `tzdata/` is 857,388 bytes. `date.wasm` went from 74,580 to
+85,955 bytes and `ls.wasm` from 89,385 to 101,202 (reading the zone).
+`root/lib/test/sh/kfs.out` changed with it: that script copies
+`ls.wasm` into a file system and prints its size and the blocks used.
 
 ## 12. G4: rio, the base window system
 
