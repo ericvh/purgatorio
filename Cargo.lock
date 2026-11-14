@@ -3997,6 +3997,9 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "miniz_oxide",
+ "objc2 0.5.3",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
  "purg-abi",
  "purg-auth",
  "purg-core",

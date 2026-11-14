@@ -16,6 +16,18 @@ pub fn hidden_entry(_name: &str) -> bool {
     false
 }
 
+/// The host clipboard for `#^`: none on Linux yet (X11's selections and
+/// Wayland's data devices are left for later), so the device keeps its
+/// own buffer.
+pub fn clipboard_get() -> Option<String> {
+    None
+}
+
+/// See [`clipboard_get`]: there is no host clipboard to put text on.
+pub fn clipboard_put(_text: &str) -> bool {
+    false
+}
+
 /// `(resident bytes, MemTotal bytes)` from procfs. Both are 0 when it cannot
 /// be read.
 pub fn memory_usage() -> (u64, u64) {

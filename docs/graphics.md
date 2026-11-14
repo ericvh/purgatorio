@@ -427,7 +427,7 @@ protocol that sends damage. It fits as an optional demo.
 | memdraw and memlayer | new `purg-memdraw` | Yes | Images, channels, the operators, geometry, layers |
 | `#i`, `#m`, keyboard, `#^` | `purg-core` | Yes | The devices, against a screen trait |
 | Screen trait | `purg-platform` | Yes | Give the framebuffer (channels, rectangle, stride), flush a rectangle, deliver input |
-| Emu window | `purg-emu/src/host/` | No | winit + softbuffer, arboard for snarf |
+| Emu window | `purg-emu/src/host/` | No | winit + softbuffer, `NSPasteboard` for snarf on macOS |
 | Kernel display and input | `purg-aarch64` | Yes | fw_cfg + ramfb, then virtio-gpu; virtio-input; a cargo feature `draw` in the kernel, off in `kernel-small` |
 | Draw SDK | `sdk/` (a `draw` module or crate) | Guest | `Display`, `Image`, `Screen`, `Font`, `Point`, `Rect`; speaks `/dev/draw` messages; Bézier and spline subdivision |
 | Fonts | `xtask` runs a `fontgen` guest | Guest | Writes `root/fonts/...` |
@@ -2093,18 +2093,36 @@ window code: `Screen::snarf_get` and `Screen::snarf_put` default to
 none, and `#^` keeps its own buffer when the screen has no clipboard (or
 there is no screen, as in the kernel). With one, a read at offset 0
 takes the clipboard's text and a close after writing puts the text
-there too. No backend implements them yet. The obvious crate,
-`arboard` (MIT or Apache-2.0), depends on Windows on `clipboard-win`,
-which is BSL-1.0: `deny.toml` checks every target and does not allow
-that licence, and adding it is a decision for the owner. Its current
-version also brings a second version of the `objc2` crates. Doing it
-without a new crate means the selection protocol over `x11rb` on X11
-(with a thread to answer requests for the selection we own), the data
-device protocol on Wayland, and `NSPasteboard` through `objc2-app-kit`
-on macOS, all in `crates/purg-emu/src/window.rs` and `host/`, for
-`emu -g` only (the browser backend and the in-memory screen should not
-touch the host's clipboard, so tests do not either). That is left for
-later.
+there too.
+
+On macOS the window screen (`emu -g`) implements them with the general
+pasteboard, `NSPasteboard`, and its plain text type
+(`NSPasteboardTypeString`, `public.utf8-plain-text`), in
+`crates/purg-emu/src/host/macos.rs`. A read of `/dev/snarf` at offset 0
+returns the pasteboard's text now, so text copied in another program
+pastes in rio, acme or `draw/sh`; a close after writing clears the
+pasteboard and puts the text there. When the pasteboard holds no text
+(an image, say) a read returns nothing. Text longer than 1 MiB is cut
+to 1 MiB, at a character boundary, as a write to `#^` is limited.
+
+The calls come from prog threads, not from the main thread that runs
+winit's event loop. AppKit does not restrict `NSPasteboard` to the main
+thread (the objc2 bindings declare it usable from any thread, unlike
+windows and views); it talks to the pasteboard server, and it is used
+from other threads in practice. That is what the emu relies on. Each
+call runs in its own autorelease pool, since prog threads have none.
+The bindings are the `objc2`, `objc2-foundation` and `objc2-app-kit`
+versions winit already uses, so there is no new crate and one `objc2`.
+The obvious crate, `arboard`, is not used: on Windows it depends on
+`clipboard-win`, which is BSL-1.0, a licence `deny.toml` does not
+allow, and its current version brings a second `objc2`.
+
+Linux keeps the device's own buffer for now. Reaching the host's
+clipboard there means the selection protocol over `x11rb` on X11 (with
+a thread to answer requests for the selection we own) and the data
+device protocol on Wayland. The browser backend (`emu -w`) and the
+in-memory screen never touch the host's clipboard, so tests do not
+either.
 
 ### 12.5 Differences from Plan 9's rio
 
@@ -2120,8 +2138,8 @@ later.
 - `plumb` sends from rio's directory: rio does not know the shell's.
 - The pointer's cursor does not change while sweeping or dragging (the
   emu does not show cursors yet).
-- No `/dev/snarf` of rio's own, and no host clipboard yet (Section
-  12.4).
+- No `/dev/snarf` of rio's own, and the host's clipboard only on macOS
+  (Section 12.4).
 
 ### 12.6 Tests
 
@@ -2143,6 +2161,10 @@ later.
   on close, readers keep their copy, the size limit, names and errors,
   and a screen with a clipboard. `root/lib/test/sh/snarf.sh` runs in
   the emu, the probe and the kernel.
+- `purg-emu`, on macOS only (CI's macOS job): a string put on the
+  general pasteboard comes back, the 1 MiB cut, and the pasteboard's
+  earlier text is put back afterwards. It passes with a note when the
+  pasteboard refuses a write.
 - `appl/cmd/rio`: the text window's output point, erasing and end of
   file; typing at the selection, cut, paste and send, double clicks;
   wctl parsing; scaling windows to a new screen.
