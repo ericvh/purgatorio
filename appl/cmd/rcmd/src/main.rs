@@ -41,7 +41,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     if let Some(alg) = alg {
-        client::check_alg(&alg, o.noauth)?;
+        o.pq = client::check_alg(&alg, o.noauth)?;
     }
     let rest = arg.argv();
     if o.noauth && o.srvauth {

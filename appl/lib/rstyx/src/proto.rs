@@ -2,11 +2,14 @@
 //! kind, a u32 little-endian length and that many bytes.
 //!
 //! ```text
-//! C -> S  HELLO   "pgrstyx2 <user>"
-//! S -> C  CHAL    the offer challenge[32] || S[32], or empty when no
-//!                 proof is wanted
+//! C -> S  HELLO   "pgrstyx2 <user>", or "pgrstyx3 <user>" for the hybrid
+//!                 X25519 + ML-KEM-768 exchange
+//! S -> C  CHAL    the offer challenge[32] || S[32] (for pgrstyx3 the long
+//!                 offer, which adds the server's ML-KEM-768 key), or
+//!                 empty when no proof is wanted
 //! C -> S  PROOF   a version 3 mount proof (docs/auth.md) for attach name
-//!                 "rstyx" over the offer, or empty
+//!                 "rstyx" over the offer (version 4 for pgrstyx3), or
+//!                 empty
 //! S -> C  OK | ERR <reason>
 //!         after a proof, every later frame is sealed (crate::link)
 //! C -> S  EXEC    flags u8, then the command line for `sh -c`
@@ -27,6 +30,12 @@
 /// The protocol name and version, the first word of HELLO. Version 2
 /// encrypts the connection after the proof.
 pub const MAGIC: &str = "pgrstyx2";
+/// HELLO's first word from a client that wants the hybrid X25519 +
+/// ML-KEM-768 exchange (`rcmd -e x25519mlkem768`): the server answers
+/// with the long offer and takes only a version 4 proof. Everything else
+/// is as in version 2. A server that does not know it refuses the
+/// client, so a client that asks for it never ends up without it.
+pub const MAGIC_PQ: &str = "pgrstyx3";
 /// The attach name the proof is made for, so that a proof for a mount is
 /// not a proof for a command.
 pub const ANAME: &str = "rstyx";

@@ -798,8 +798,10 @@ version 4 proofs and the errors `no post-quantum key offered` and
 `post-quantum key exchange required`. A 0.9 guest never asks for the long
 offer, so it keeps talking version 3 to a 0.10 server.
 
-Not covered yet: `rcmd`/`rstyxd` and Lethe have their own exchanges
-(`docs/rcmd.md`, `docs/lethe.md`) and stay on X25519.
+`rcmd -e x25519mlkem768`, `cpu -C x25519mlkem768` and `rstyxd -C
+x25519mlkem768` use the same exchange on an rstyx connection, with the
+same rules (`docs/rcmd.md`, "Post-quantum key exchange"). Lethe has its
+own exchange (`docs/lethe.md`).
 
 ### Threat model
 
@@ -1523,7 +1525,8 @@ Still open:
    signatures are Ed25519 only. ML-DSA-65 (FIPS 204) beside Ed25519 would
    protect authentication against a quantum attacker in real time; the
    design is in "Post-quantum signatures (proposed, not built)".
-6. **Post-quantum `rcmd` and Lethe.** Their exchanges are X25519 only.
+6. **Post-quantum Lethe.** Its exchange is X25519 only; `rcmd` has the
+   hybrid exchange (`docs/rcmd.md`).
 7. **A post-quantum default.** Should a later release make
    `x25519mlkem768` the default for `mount` and `export`, once both ends
    in the field speak version 4?
