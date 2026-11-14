@@ -39,7 +39,8 @@
 //!
 //! `--modules` sets the system's module policy (`docs/signing.md`) before
 //! the first prog is loaded, with the trust lists read in the boot
-//! namespace.
+//! namespace. `--modules=require,hybrid` (or `warn,hybrid`) counts only
+//! hybrid Ed25519 + ML-DSA-65 signatures.
 
 use std::backtrace::Backtrace;
 use std::io::Write;
@@ -59,6 +60,8 @@ struct Options {
     root: PathBuf,
     vm: String,
     modules: Level,
+    /// `--modules=<level>,hybrid`: only hybrid signatures count.
+    hybrid: bool,
     /// `-g`: show the screen in a window.
     graphics: bool,
     /// Window pixels per screen pixel (`-1`, `-2`); automatic if `None`.
@@ -84,7 +87,7 @@ fn geometry(s: &str) -> Option<(u32, u32)> {
 
 fn usage() -> u8 {
     eprintln!(
-        "usage: emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [-x] [--vm=wasmtime|wasmi] [--modules=none|warn|require] [cmd [args...]]"
+        "usage: emu [-r root] [-g[WxH]] [-1|-2] [-w [addr]] [-s WxH] [-x] [--vm=wasmtime|wasmi] [--modules=none|warn|require[,hybrid]] [cmd [args...]]"
     );
     2
 }
@@ -97,6 +100,7 @@ fn parse_args() -> Option<Options> {
             .unwrap_or_else(|| PathBuf::from("root")),
         vm: String::from("wasmtime"),
         modules: Level::None,
+        hybrid: false,
         graphics: false,
         scale: None,
         web: None,
@@ -142,7 +146,8 @@ fn parse_args() -> Option<Options> {
         } else if let Some(vm) = a.strip_prefix("--vm=") {
             opts.vm = String::from(vm);
         } else if let Some(level) = a.strip_prefix("--modules=") {
-            opts.modules = Level::parse(level)?;
+            (opts.modules, opts.hybrid) =
+                purg_core::modsig::parse_policy(&level.replace(',', " "))?;
         } else if a == "--" {
             opts.argv.extend(args.by_ref());
         } else if a.starts_with('-') && a.len() > 1 {
@@ -156,7 +161,11 @@ fn parse_args() -> Option<Options> {
 }
 
 /// Builds the boot namespace and the first prog.
-fn boot(root: PathBuf, modules: Level, screen: Arc<dyn Screen>) -> Result<Prog, Error> {
+fn boot(
+    root: PathBuf,
+    (modules, hybrid): (Level, bool),
+    screen: Arc<dyn Screen>,
+) -> Result<Prog, Error> {
     let platform: Arc<dyn Platform> = Arc::new(platform::Emu::with_screen(screen));
     let procs = Procs::new(platform.clone());
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
@@ -185,7 +194,7 @@ fn boot(root: PathBuf, modules: Level, screen: Arc<dyn Screen>) -> Result<Prog, 
     pgrp.bind("#d", "/fd", MREPL)?;
     pgrp.bind("#I", "/net", MREPL)?;
     pgrp.bind("#C", "/cmd", MREPL)?;
-    kernel.procs.set_module_policy(modules, &pgrp);
+    kernel.procs.set_module_policy(modules, hybrid, &pgrp);
     let mut prog = Prog::new(kernel, pgrp);
     platform.set_current_pid(prog.pid);
     purg_vm::init_fds(&mut prog)?;
@@ -289,8 +298,12 @@ fn run() -> u8 {
         (None, Some(s)) => s.clone(),
         (None, None) => Arc::new(Headless::new(w, h)),
     };
-    let setup =
-        engine(&opts.vm).and_then(|e| Ok((e, boot(opts.root.clone(), opts.modules, screen)?)));
+    let setup = engine(&opts.vm).and_then(|e| {
+        Ok((
+            e,
+            boot(opts.root.clone(), (opts.modules, opts.hybrid), screen)?,
+        ))
+    });
     let (engine, prog) = match setup {
         Ok(v) => v,
         Err(e) => {

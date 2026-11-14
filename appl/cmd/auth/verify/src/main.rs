@@ -8,12 +8,15 @@
 //! `mldsa65:` ids; `-a hybrid` refuses an Ed25519 one, as a server with
 //! `-C mldsa65` does.
 //!
-//! auth/verify -m [-s modules] [-r revoked] [-t time] module: check a
-//! module's signatures (`docs/signing.md`) against the module signer list
-//! (default `/lib/keys/modules`) and the revocation list. Prints the
-//! module's digest and ABI version and, for each signature, the signing
-//! key, its standing and the names in its certificates, and fails with
-//! the error the loader would give under `require`.
+//! auth/verify -m [-a ed25519|hybrid] [-s modules] [-r revoked] [-t time]
+//! module: check a module's signatures (`docs/signing.md`) against the
+//! module signer list (default `/lib/keys/modules`) and the revocation
+//! list. Prints the module's digest and ABI version and, for each
+//! signature, the signing key (a hybrid key by its `mldsa65:` id), its
+//! standing and the names in its certificates, and fails with the error
+//! the loader would give under `require`. `-a hybrid` judges as a
+//! `require hybrid` policy does: an Ed25519 signature stands as
+//! `classical` and counts for nothing.
 
 use authlib::fmt::{hex, keys, modsig, proof};
 use purgatorio::arg::Arg;
@@ -62,12 +65,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Err(_) => Some(Vec::new()),
     };
     if module {
-        let anchors = keys::ed25519(&signers);
-        let revoked = revoked.map(|r| keys::ed25519(&r));
         let trust = modsig::Trust {
-            anchors: &anchors,
+            anchors: &signers,
             revoked: revoked.as_deref(),
             now,
+            hybrid,
         };
         return verify_module(file, &text, &trust);
     }
@@ -113,12 +115,12 @@ fn verify_module(file: &str, wasm: &[u8], trust: &modsig::Trust<'_>) -> Result<(
         for e in &entries {
             let mut line = format!(
                 "signer {} {}",
-                hex::encode(e.key()),
+                e.key().id().encode(),
                 modsig::standing(e, &msg, trust).as_str()
             );
             for c in e.certs() {
                 line.push(' ');
-                line.push_str(&c.name);
+                line.push_str(c.name());
             }
             println!("{line}");
         }

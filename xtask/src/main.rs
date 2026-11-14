@@ -2630,7 +2630,8 @@ fn check_wasm(files: &[String]) -> Result<()> {
 }
 
 /// `sign <module> --key <seed file> [--cert <file>]... [-o <out>]`: signs
-/// a module (`docs/signing.md`) with a 32-byte seed file. Each `--cert`
+/// a module (`docs/signing.md`) with a seed file (32 bytes for Ed25519,
+/// 64 for a hybrid key). Each `--cert`
 /// adds a certificate to the chain, first the one for the key. Signing is
 /// a step after the build: `build-root` never signs, and the same module
 /// and key give the same bytes on every host.
@@ -2657,12 +2658,15 @@ fn sign(args: &[String]) -> Result<()> {
     }
     let (module, key) = (module.ok_or(USAGE)?, key.ok_or(USAGE)?);
     let read = |f: &str| fs::read(f).map_err(|e| format!("{f}: {e}"));
-    let seed: [u8; purg_auth::SEED] = read(&key)?
-        .try_into()
-        .map_err(|_| format!("{key}: not a 32-byte seed"))?;
+    // 32 bytes for an Ed25519 seed, 64 for a hybrid Ed25519 + ML-DSA-65
+    // one.
+    let seed = purg_auth::sig::Secret::from_seed_file(&read(&key)?)
+        .ok_or(format!("{key}: not a 32- or 64-byte seed"))?;
     let mut chain = Vec::new();
     for c in &certs {
-        chain.push(purg_auth::keys::find_cert(&read(c)?).ok_or(format!("{c}: bad certificate"))?);
+        chain.push(
+            purg_auth::keys::find_any_cert(&read(c)?).ok_or(format!("{c}: bad certificate"))?,
+        );
     }
     let signed = purg_auth::modsig::sign(&read(&module)?, &seed, chain)
         .map_err(|e| format!("{module}: {e}"))?;
@@ -2672,7 +2676,7 @@ fn sign(args: &[String]) -> Result<()> {
     println!(
         "{out}: digest {} signed by {}",
         purg_auth::hex::encode(&digest),
-        purg_auth::hex::encode(&purg_auth::public_key(&seed))
+        seed.public().id().encode()
     );
     Ok(())
 }

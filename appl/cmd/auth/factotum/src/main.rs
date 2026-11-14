@@ -38,8 +38,8 @@
 //! A `hybrid` key is an Ed25519 + ML-DSA-65 key (`docs/auth.md`,
 //! "Post-quantum signatures"): its `!seed` is both seeds, 128 hex digits,
 //! and it makes the hybrid proofs (kinds 2 and 3) for `role=client` and
-//! `role=server` as an `ed25519` key makes Ed25519 ones. It does not sign
-//! modules.
+//! `role=server`, and the hybrid module signatures (`start proto=hybrid
+//! role=modsign`), as an `ed25519` key makes Ed25519 ones.
 //!
 //! An `ed25519` or `hybrid` key with a `role` (`client`, `server` or
 //! `modsign`) serves only that role; one without serves every role. A `start`
@@ -389,14 +389,16 @@ fn modsign(secret: &Secret, cert: Option<&AnyCert>, request: &[u8]) -> Vec<u8> {
     let Some((digest, abi)) = request.split_first_chunk::<DIGEST>() else {
         return b"error bad digest".to_vec();
     };
-    let (Secret::Ed25519(seed), None | Some(AnyCert::V1(_))) = (secret, cert) else {
-        return b"error module signatures are Ed25519 only".to_vec();
-    };
-    let cert = match cert {
-        Some(AnyCert::V1(c)) => Some(c.clone()),
-        _ => None,
-    };
-    match Entry::sign(seed, cert.into_iter().collect(), digest, abi) {
+    // A certificate of the other kind, or for another key, is left out.
+    let cert = cert.filter(|c| c.is_hybrid() == secret.is_hybrid());
+    let cert = cert.filter(|c| match (secret, c) {
+        (Secret::Ed25519(s), AnyCert::V1(c)) => c.key == fmt::public_key(s),
+        (Secret::Hybrid(h), AnyCert::V2(c)) => {
+            c.key.0[..fmt::PUBLIC] == fmt::public_key(&h.ed25519())
+        }
+        _ => false,
+    });
+    match Entry::sign(secret, cert.cloned().into_iter().collect(), digest, abi) {
         Ok(e) => {
             let mut out = b"ok ".to_vec();
             out.extend_from_slice(&e.encode());

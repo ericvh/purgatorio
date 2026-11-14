@@ -223,10 +223,10 @@ fn custom(wasm: &[u8], m: &Module<'_>) {
                 Some(entries) => {
                     println!("custom {name} signatures {}", entries.len());
                     for e in &entries {
-                        let mut line = format!("\tsigner {}", hex::encode(e.key()));
+                        let mut line = format!("\tsigner {}", e.key().id().encode());
                         for c in e.certs() {
                             line.push(' ');
-                            line.push_str(&c.name);
+                            line.push_str(c.name());
                         }
                         println!("{line}");
                     }

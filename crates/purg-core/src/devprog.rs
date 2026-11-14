@@ -4,7 +4,8 @@
 //! `interruptgrp` sends them the `interrupt` note, which kills a prog
 //! unless `catchint on` was written to its `ctl` (`docs/abi.md`,
 //! "Interrupts"), and `modules warn` or `modules
-//! require` tightens its module policy (`docs/signing.md`). A prog's
+//! require` (with ` hybrid` after either, to count only hybrid
+//! signatures) tightens its module policy (`docs/signing.md`). A prog's
 //! files are its user's; only that user or the host owner may open its
 //! `ctl` and `heap` (`docs/abi.md`, "Users").
 //!
@@ -430,11 +431,11 @@ impl Dev for DevProg {
                 p.pgrp().deny_devs(devs);
             }
             _ => {
-                let level = cmd
+                let (level, hybrid) = cmd
                     .strip_prefix("modules ")
-                    .and_then(|l| crate::modsig::Level::parse(l.trim()))
+                    .and_then(crate::modsig::parse_policy)
                     .ok_or(Error::new(error::EBADARG))?;
-                p.tighten_module_policy(level)?;
+                p.tighten_module_policy(level, hybrid)?;
             }
         }
         Ok(buf.len())
@@ -516,12 +517,12 @@ fn fd_text(p: &crate::prog::Proc) -> String {
 /// <signers> <path>`, with `-` when no signer was verified.
 fn module_text(p: &crate::prog::Proc) -> String {
     use purg_auth::hex;
-    let mut out = format!("policy {}\n", p.module_policy().level.as_str());
+    let mut out = format!("policy {}\n", p.module_policy().text());
     for m in p.modules() {
         let signers = if m.signers.is_empty() {
             String::from("-")
         } else {
-            let keys: Vec<String> = m.signers.iter().map(|k| hex::encode(k)).collect();
+            let keys: Vec<String> = m.signers.iter().map(|k| k.encode()).collect();
             keys.join(",")
         };
         out.push_str(&format!(

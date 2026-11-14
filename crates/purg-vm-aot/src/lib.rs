@@ -385,6 +385,7 @@ impl Inner {
                     anchors: &anchors,
                     revoked: revoked.as_deref(),
                     now,
+                    hybrid: false,
                 },
             )
         });

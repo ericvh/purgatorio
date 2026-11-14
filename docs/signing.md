@@ -95,6 +95,80 @@ module with more than one `purgatorio.sig` section is refused (`bad
 signature`) by any policy that checks signatures; the digest still ignores
 them all.
 
+## Hybrid signatures
+
+A module may also be signed with a hybrid Ed25519 + ML-DSA-65 key
+(`docs/auth.md`, "Post-quantum signatures"), whose signature is good
+only when both halves verify. Two more entry kinds carry them, in the
+same section version:
+
+```
+kind 2: signature[3373] || key[1984]           a bare hybrid key
+kind 3: signature[3373] || ncerts u8 (1 to 4)
+        then ncerts times: len u16 LE (1 to 49152) || pgcert2 line
+```
+
+- The signature is a hybrid signature over the same `pgmodsig1` message,
+  so both halves sign `"pghybrid1" 0x00 || "pgmodsig1" 0x00 || digest ||
+  len(abi) || abi`. Cut down to its Ed25519 half and written as a kind 0
+  entry, it does not verify: the Ed25519 half signed the framed message,
+  not the module's.
+- An entry has one kind throughout: a hybrid key comes with `pgcert2`
+  certificates only, and an Ed25519 key with `pgcert1` ones. A hybrid
+  key is never vouched for by an Ed25519 signature a quantum attacker
+  could forge.
+- The lists are typed, as for mounts: a hybrid signer is listed in
+  `/lib/keys/modules` (and `revoked`) as `mldsa65:` and its id. A hybrid
+  id matches only hybrid entries and an Ed25519 key only Ed25519 ones;
+  the same 32 bytes listed without the marker trust nothing hybrid. A
+  module digest in the revocation list is 64 bare hex digits, as before.
+- An Ed25519 entry and a hybrid one can sit in one section
+  (countersigning), so a module can carry both while systems move over.
+  A loader built before this refuses the whole section when it holds a
+  kind it does not know (`bad signature`): sign with Ed25519 alone for
+  those.
+- `/prog/<pid>/module` and `auth/verify -m` print a hybrid signer by its
+  `mldsa65:` id.
+
+**Requiring them.** A policy can count only hybrid signatures:
+
+```
+echo modules require hybrid > /prog/<pid>/ctl      (or warn hybrid)
+auth/modpolicy -a hybrid require cmd ...
+emu --modules=require,hybrid
+```
+
+An Ed25519 entry then stands as `classical`, and a module that has no
+trusted hybrid entry fails with `post-quantum signature required` when
+that is the best its entries do. `hybrid` is part of the policy: it is
+inherited, it can be turned on and not off (writing `modules require`
+later keeps it), and `policy require hybrid` is the first line of
+`/prog/<pid>/module`. Without it a module passes on a trusted entry of
+either kind. A policy whose list holds only `mldsa65:` entries already
+takes only hybrid signatures, through the typed lists; the switch makes
+that explicit and keeps an Ed25519 key added to the list later from
+counting.
+
+**Signing.** `auth/sign -k` takes a hybrid seed file (64 bytes) or a
+hybrid authinfo. Without `-k`, `auth/sign -a hybrid` asks the guest
+factotum for its hybrid key (`start proto=hybrid role=modsign`), and
+plain `auth/sign` asks for factotum's Ed25519 key, then `#¤`, then
+factotum's hybrid key. `cargo xtask sign --key` takes a 64-byte seed
+file too. ML-DSA signs deterministically, so a hybrid signature is the
+same bytes on every host, as Ed25519's is.
+
+**Cost.** An entry is 5,358 bytes for a bare key (Ed25519: 97), and
+about 18 KB with one `pgcert2`. Checking it is one ML-DSA-65
+verification more than an Ed25519 check, about 0.2 ms natively, and
+one per certificate signature the chain walk looks at. The kernel checks
+a section that holds a hybrid entry on a kernel thread with a 512 KiB
+stack (`Platform::deep`), as it does hybrid proofs; a module signed with
+Ed25519 alone is checked in place, as before.
+
+**Images.** Ahead-of-time image files (below) stay Ed25519 only: one
+with a hybrid entry is a bad image, so checking images never needs the
+deep stack.
+
 ## Trust
 
 A policy that checks signatures reads two key lists (the format of
@@ -249,16 +323,17 @@ stays 0.6.
 | tool | role |
 |---|---|
 | `cargo xtask sign <module> --key <seed file> [--cert <file>]... [-o <out>]` | Signs on the build host. `--cert` gives the chain, first the certificate for the key. Rewrites the module in place without `-o`. An existing entry by the same key is replaced; other entries stay (countersigning). |
-| `auth/sign [-k keyfile] [-c certfile]... [-o out] module` | The same inside the system. With `-k` the key is a seed file or an authinfo (whose certificate is used). Without it the signature comes from the guest factotum, then from `#¤`, so the private key need not be a readable file. |
-| `auth/verify -m [-s modules] [-r revoked] [-t time] module` | Prints the module's digest and ABI version, and for each entry its signing key, its standing (`trusted`, `untrusted`, `revoked`, `expired`, `bad`) and the names in its certificates. Exits with the error the loader would give under `require`. It reads the lists in its own namespace (or the ones named), so it is a check for people, not the loader's verdict. Without `-m` it checks a certificate, as before. |
-| `auth/modpolicy warn\|require cmd [arg ...]` | Sets its own module policy, then runs `cmd` under it. |
+| `auth/sign [-a ed25519\|hybrid] [-k keyfile] [-c certfile]... [-o out] module` | The same inside the system. With `-k` the key is a seed file or an authinfo (whose certificate is used), of either kind. Without it the signature comes from the guest factotum, then from `#¤`, so the private key need not be a readable file. `-a` names the kind of signature wanted (see "Hybrid signatures"). |
+| `auth/verify -m [-a ed25519\|hybrid] [-s modules] [-r revoked] [-t time] module` | Prints the module's digest and ABI version, and for each entry its signing key, its standing (`trusted`, `untrusted`, `revoked`, `expired`, `bad`, or `classical` under `-a hybrid`) and the names in its certificates. Exits with the error the loader would give under `require`. It reads the lists in its own namespace (or the ones named), so it is a check for people, not the loader's verdict. Without `-m` it checks a certificate, as before. |
+| `auth/modpolicy [-a ed25519\|hybrid] warn\|require cmd [arg ...]` | Sets its own module policy, then runs `cmd` under it. `-a hybrid` counts only hybrid signatures. |
 
 Signing through an agent:
 
 - **`#¤`** signs the bytes written to `rpc`. `auth/sign` builds the
   `pgmodsig1` message itself and reads the public key and certificate from
   `#¤/ctl`.
-- **`auth/factotum`** gains a role: `start proto=ed25519 role=modsign`,
+- **`auth/factotum`** gains a role: `start proto=ed25519 role=modsign`
+  (or `proto=hybrid` for its hybrid key),
   then `write <digest[32] || abi>`, then `read` returns `ok <entry>`, one
   encoded section entry. Factotum builds the `pgmodsig1` message itself,
   so this role cannot be used to sign a mount proof or a certificate, and

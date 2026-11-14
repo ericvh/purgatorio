@@ -7,6 +7,7 @@ use std::process::{Command, Output};
 
 use purg_auth::keys::list_line;
 use purg_auth::modsig;
+use purg_auth::sig::Secret;
 
 mod common;
 
@@ -50,8 +51,11 @@ fn signed_root(name: &str) -> PathBuf {
     std::fs::create_dir_all(dir.join("lib/keys")).unwrap();
     for m in ["echo", "cat", "auth/verify"] {
         let wasm = std::fs::read(root().join(format!("bin/{m}.wasm"))).unwrap();
-        let signed = modsig::sign(&wasm, &SEED, Vec::new()).unwrap();
-        assert_eq!(signed, modsig::sign(&wasm, &SEED, Vec::new()).unwrap());
+        let signed = modsig::sign(&wasm, &Secret::Ed25519(SEED), Vec::new()).unwrap();
+        assert_eq!(
+            signed,
+            modsig::sign(&wasm, &Secret::Ed25519(SEED), Vec::new()).unwrap()
+        );
         std::fs::write(dir.join(format!("bin/{m}.wasm")), signed).unwrap();
     }
     std::fs::copy(root().join("bin/ls.wasm"), dir.join("bin/ls.wasm")).unwrap();
@@ -149,4 +153,79 @@ fn signing_through_factotum() {
         assert_eq!(stdout(&o), want, "{vm}");
         assert!(o.status.success(), "{vm}: {o:?}");
     }
+}
+
+/// A hybrid Ed25519 + ML-DSA-65 key, made from a fixed seed.
+fn hybrid_key() -> Secret {
+    let mut s = [0u8; purg_auth::sig::HYBRID_SEED];
+    for (i, b) in s.iter_mut().enumerate() {
+        *b = 0x60 ^ i as u8;
+    }
+    Secret::Hybrid(purg_auth::sig::HybridSecret(s))
+}
+
+/// `--modules=require,hybrid` runs a module with a hybrid signature by a
+/// listed hybrid id and refuses one signed with Ed25519 alone; a module
+/// with both runs under either policy.
+#[test]
+fn a_policy_can_require_hybrid_signatures() {
+    let dir = signed_root("modsig-hybrid");
+    let h = hybrid_key();
+    let id = h.public().id();
+    let wasm = std::fs::read(dir.join("bin/cat.wasm")).unwrap();
+    std::fs::write(
+        dir.join("bin/cat.wasm"),
+        modsig::sign(&wasm, &h, Vec::new()).unwrap(),
+    )
+    .unwrap();
+    let mut lists = list_line(purg_auth::public_key(&SEED), "test");
+    lists.push_str(&list_line(id, "hybrid"));
+    std::fs::write(dir.join("lib/keys/modules"), lists).unwrap();
+    let ed = purg_auth::hex::encode(&purg_auth::public_key(&SEED));
+    for vm in VMS {
+        let o = emu(
+            &dir,
+            vm,
+            &["--modules=require,hybrid", "cat", "/prog/1/module"],
+        );
+        assert!(o.status.success(), "{vm}: {o:?}");
+        let text = stdout(&o);
+        assert!(text.starts_with("policy require hybrid\n"), "{vm}: {text}");
+        assert!(
+            text.contains(&format!(" {} /bin/cat.wasm\n", id.encode())),
+            "{vm}: {text}"
+        );
+        let o = emu(&dir, vm, &["--modules=require,hybrid", "echo", "hi"]);
+        assert!(!o.status.success(), "{vm}");
+        assert_eq!(
+            stderr(&o),
+            "emu: /bin/echo.wasm: post-quantum signature required\n",
+            "{vm}"
+        );
+        // Under an Ed25519 policy both signatures count.
+        let o = emu(&dir, vm, &["--modules=require", "cat", "/prog/1/module"]);
+        assert!(o.status.success(), "{vm}: {o:?}");
+        assert!(
+            stdout(&o).contains(&format!(" {ed},{} /bin/cat.wasm\n", id.encode())),
+            "{vm}: {o:?}"
+        );
+        let o = emu(
+            &dir,
+            vm,
+            &[
+                "/bin/auth/verify.wasm",
+                "-m",
+                "-a",
+                "hybrid",
+                "/bin/echo.wasm",
+            ],
+        );
+        assert!(!o.status.success(), "{vm}");
+        assert!(
+            stdout(&o).contains(&format!("signer {ed} classical\n")),
+            "{vm}: {o:?}"
+        );
+    }
+    let o = emu(&dir, "wasmi", &["--modules=require,always", "echo", "hi"]);
+    assert_eq!(o.status.code(), Some(2));
 }

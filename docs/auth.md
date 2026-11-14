@@ -1109,9 +1109,9 @@ prints a hybrid key's id, and `-x` the whole key. `auth/ai2key` and
 cert=<pgcert2>`. `auth/countersigner` takes a key of the certificate's
 kind. `auth/verify` prints `pgcert2` keys and signers by their ids.
 `keyfs` and `keysrv` are not involved: the signer's key file and the
-certificates are what change. Module signatures and Lethe stay Ed25519
-(`docs/signing.md`, `docs/lethe.md`); `auth/factotum` refuses
-`role=modsign` with a hybrid key.
+certificates are what change. Module signatures take hybrid keys too
+(`docs/signing.md`, "Hybrid signatures"), and so does Lethe's `Tauth`
+(`docs/lethe.md`).
 
 **Stack.** ML-DSA-65 keeps its keys and vectors on the stack while it
 works: about 190 KiB at its deepest natively at `opt-level=3`, 128 KiB
@@ -1446,8 +1446,9 @@ the reply (`ok [data]`, `done`, `needkey <attrs>`, `error <message>`).
   one kept for `role=server`, else the first with no role (above).
 - `hybrid`: as `ed25519`, with a hybrid Ed25519 + ML-DSA-65 key (128
   hex digits of `!seed`, both seeds) and a `pgcert2`, for `role=client`
-  (kind 2 or 3 proofs) and `role=server`. Not for `role=modsign`. An
-  authinfo of that kind loads as one (see "Post-quantum signatures").
+  (kind 2 or 3 proofs), `role=server` and `role=modsign` (a hybrid
+  module signature entry). An authinfo of that kind loads as one (see
+  "Post-quantum signatures").
 - `pass`: `start proto=pass server=<s> [user=<u>]`, then `read` returns
   `ok <user> <password>`, both quoted.
 - `mlkem768x25519`: `start proto=mlkem768x25519`, then `write <header>`
