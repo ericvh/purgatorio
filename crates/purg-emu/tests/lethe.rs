@@ -847,8 +847,8 @@ echo end",
     );
     let want = "lethe: authentication required
 lethe: authentication not required
-lethe: usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
-lethe: usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
+usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
+usage: lethe [-abc] [-A] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
 echo: write error: bad arg in system call
 end
 ";

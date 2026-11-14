@@ -65,6 +65,30 @@ impl Error {
     pub fn last() -> Error {
         Error(errstr())
     }
+
+    /// For a command whose Inferno original ends a bad command line with
+    /// something other than `fail:usage`: a `usage: ...` error is printed
+    /// with `prefix` in place of `usage: ` and the prog exits with `status`.
+    /// Any other error is returned as it is.
+    pub fn usage_exits(self, prefix: &str, status: &str) -> Error {
+        if let Some(msg) = self.0.strip_prefix("usage: ") {
+            eprintln!("{prefix}{msg}");
+            exits(status);
+        }
+        self
+    }
+
+    /// For a command whose Inferno original fails with one fixed status
+    /// (`fail:error`, say) rather than its message: any error but a usage
+    /// error is printed as `argv0: msg` and the prog exits with `status`.
+    pub fn fails_as(self, status: &str) -> Error {
+        if self.0.starts_with("usage: ") {
+            return self;
+        }
+        let argv0 = std::env::args().next().unwrap_or_default();
+        eprintln!("{argv0}: {self}");
+        exits(status);
+    }
 }
 
 impl fmt::Display for Error {
@@ -509,7 +533,8 @@ pub mod rt {
 
     /// Runs a `#[purgatorio::main]` function: installs the panic hook, calls
     /// it with argv, and turns an error into `argv0: msg` on fd 2 plus a
-    /// `fail:` exit status.
+    /// `fail:` exit status. A `usage: ...` error is printed alone and
+    /// exits `fail:usage`.
     pub fn run(main: fn(Context, Vec<String>) -> Result<(), Error>) {
         std::panic::set_hook(Box::new(|info| {
             let msg = match info.payload().downcast_ref::<&str>() {
@@ -538,6 +563,12 @@ pub mod rt {
         let args: Vec<String> = std::env::args().collect();
         let argv0 = args.first().cloned().unwrap_or_default();
         if let Err(e) = main(Context, args) {
+            // A usage error is printed and raised as Inferno's arg->usage
+            // does: the message alone, and the status `fail:usage`.
+            if e.0.starts_with("usage: ") {
+                eprintln!("{e}");
+                exits("fail:usage");
+            }
             eprintln!("{argv0}: {e}");
             exits(&format!("fail:{e}"));
         }
