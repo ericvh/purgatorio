@@ -77,6 +77,9 @@ B
 for p in `{ps | grep plumber | sed 's/^ *([0-9]+) .*/\1/'} {
 	kill $p
 }
+# The plumber's files go once it has died: wait for that, or B can still
+# open them and find the other end hung up.
+while {test -e /chan/plumb.input} {sleep 0.05}
 B one
 cd /
 rm -rf $d
