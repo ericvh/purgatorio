@@ -60,8 +60,11 @@ pub trait Net: Send + Sync {
         let _ = (host, port);
         Err(alloc::borrow::Cow::Borrowed("headers not supported"))
     }
-    /// The IP interfaces this stack configures, for `/net/ipifc`. A
-    /// hosted emu uses the host's and has none of its own.
+    /// The IP interfaces this stack configures, for `/net/ipifc`, in
+    /// order: a network card's, then the loopback ([`Ifc::loopback`]),
+    /// as Inferno lists them once both are bound. A hosted emu uses the
+    /// host's interfaces and lists only the loopback, which the host's
+    /// own loopback serves.
     fn interfaces(&self) -> Vec<Ifc> {
         Vec::new()
     }
@@ -97,6 +100,33 @@ pub struct Ifc {
     /// The default route through it the platform starts with, if any.
     /// `#I` takes it into its route table on first use.
     pub gateway: Option<[u8; 4]>,
+}
+
+/// The loopback medium's name, as ip(3)'s `bind loopback` gives it.
+pub const LOOPBACK: &str = "loopback";
+
+/// The loopback medium's MTU, as Inferno's has it.
+pub const LOOPBACK_MTU: usize = 16 * 1024;
+
+impl Ifc {
+    /// The loopback interface, `127.0.0.1/8`, as Inferno configures it
+    /// with `bind loopback /dev/null` and `add 127.0.0.1 255.0.0.0`.
+    /// It has no hardware address and no gateway.
+    pub fn loopback() -> Ifc {
+        Ifc {
+            device: String::from(LOOPBACK),
+            mtu: LOOPBACK_MTU,
+            mac: [0; 6],
+            addr: [127, 0, 0, 1],
+            prefix: 8,
+            gateway: None,
+        }
+    }
+
+    /// Whether this is the loopback interface.
+    pub fn is_loopback(&self) -> bool {
+        self.device == LOOPBACK
+    }
 }
 
 /// The size of the header `headers` mode puts before each datagram:

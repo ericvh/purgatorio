@@ -40,7 +40,9 @@ waitfor announced
 ra=udp!`{sed -n 's/rip: announced //p' $d/rl}
 test/netsrv rip $ra 1 203.0.113.0/0.0.0.0/0.0.0.0/3
 while {! inroute} {sleep 0}
-grep '^203\.0\.113\.' /net/iproute
+# The gateway, 127.0.0.1, is on the loopback, whose interface number
+# differs between the emu and the kernel.
+grep '^203\.0\.113\.' /net/iproute | sed 's/ +[0-9]+$//'
 test/netsrv rip $ra 1 203.0.113.0/0.0.0.0/0.0.0.0/16
 while {inroute} {sleep 0}
 echo withdrawn

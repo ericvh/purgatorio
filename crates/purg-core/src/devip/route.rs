@@ -123,8 +123,10 @@ fn line(target: [u8; 4], mask: [u8; 4], gw: [u8; 4], kind: &str, tag: &str, ifc:
 /// The routes an interface address implies, as Inferno's ipifc adds them:
 /// its network (type `4i`, or `4ip` for a /32), its own address (`4u`),
 /// then the broadcast and network addresses of its subnet and of its
-/// class, and the all-ones broadcast (`4b`), each once.
-fn ifc_routes(n: usize, i: &Ifc, out: &mut String) {
+/// class, and the all-ones broadcast (`4b`), each once: a broadcast route
+/// another interface already has (`seen`) is not listed again, since
+/// Inferno counts references to one route rather than adding another.
+fn ifc_routes(n: usize, i: &Ifc, seen: &mut Vec<[u8; 4]>, out: &mut String) {
     let mask = prefix_mask(i.prefix);
     let net = network(i.addr, mask);
     let ifc = format!("{n}");
@@ -135,7 +137,6 @@ fn ifc_routes(n: usize, i: &Ifc, out: &mut String) {
     let bcast =
         |a: [u8; 4], m: [u8; 4]| (u32::from_be_bytes(a) | !u32::from_be_bytes(m)).to_be_bytes();
     let cmask = class_mask(i.addr);
-    let mut seen: Vec<[u8; 4]> = Vec::new();
     for a in [
         bcast(i.addr, mask),
         net,
@@ -162,8 +163,9 @@ fn ifc_for(ifcs: &[Ifc], gw: [u8; 4]) -> Option<usize> {
 /// The text of `iproute`: the interfaces' routes, then those written.
 pub fn text(ifcs: &[Ifc], routes: &[Route]) -> String {
     let mut out = String::new();
+    let mut seen = Vec::new();
     for (n, i) in ifcs.iter().enumerate() {
-        ifc_routes(n, i, &mut out);
+        ifc_routes(n, i, &mut seen, &mut out);
     }
     for r in routes {
         let ifc = ifc_for(ifcs, r.gateway).map_or_else(|| String::from("-"), |n| format!("{n}"));
@@ -215,6 +217,28 @@ mod tests {
             "192.0.2.0       /120 198.51.100.1    4     rip   -\n",
         );
         assert_eq!(text(&[ifc()], &routes), want);
+    }
+
+    #[test]
+    fn lists_the_loopback_after_the_card() {
+        let want = concat!(
+            "127.0.0.0       /104 127.0.0.0       4i   ifc    1\n",
+            "127.0.0.1       /128 127.0.0.1       4u   ifc    1\n",
+            "127.255.255.255 /128 127.255.255.255 4b   ifc    1\n",
+            "127.0.0.0       /128 127.0.0.0       4b   ifc    1\n",
+        );
+        let both = text(&[ifc(), Ifc::loopback()], &[]);
+        // The all-ones broadcast is the card's alone.
+        assert_eq!(both.matches("255.255.255.255 /128").count(), 1);
+        assert!(both.ends_with(want), "{both}");
+        let alone = text(&[Ifc::loopback()], &[]);
+        assert_eq!(
+            alone,
+            format!(
+                "{}255.255.255.255 /128 255.255.255.255 4b   ifc    0\n",
+                want.replace("ifc    1", "ifc    0")
+            )
+        );
     }
 
     #[test]
