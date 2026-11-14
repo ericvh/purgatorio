@@ -3,15 +3,19 @@
 //! of `mount`. `path` is the subtree to attach (default `/`); the ticket
 //! is limited to it. The key is the authinfo `keyfile` if given, else
 //! `/usr/<user>/keyring/default`, `/usr/<user>/key`, then the test key.
+//! It may be an Ed25519 key or a hybrid Ed25519 + ML-DSA-65 one
+//! (`docs/lethe.md`, "Hybrid signatures").
 //!
 //! `-A` asks for no authentication and no encryption, as `mount -A`
 //! does: requests go in the clear to a server started with `-A`, which
 //! answers them as the user `none`. It takes no key and no user.
 //!
-//! `-C x25519mlkem768` uses and requires the hybrid X25519 + ML-KEM-768
-//! exchange for the ticket (`docs/lethe.md`, "The post-quantum
-//! exchange"), as `mount -C` does; a server that does not offer it fails
-//! with `no post-quantum key offered`. `-C x25519` names the default.
+//! The ticket comes from the hybrid X25519 + ML-KEM-768 exchange when
+//! the server can do it, and from the classical X25519 one when it
+//! cannot (`docs/lethe.md`, "The default exchange"). `-C x25519mlkem768`
+//! requires the hybrid exchange, as `mount -C` does: a server that does
+//! not offer it fails with `no post-quantum key offered`. `-C x25519`
+//! asks only for the classical one.
 //!
 //! `-t ms` sets how long the device trusts what it learnt about a file
 //! (its stat, and that cached data is current) before asking the server
@@ -30,25 +34,18 @@ use purgatorio::{Context, Error, dial};
 const USAGE: &str =
     "usage: lethe [-abc] [-A] [-C alg] [-k keyfile] [-t ms] [-u user] addr mtpt [path]";
 
-/// The seed and certificate to authenticate with.
-fn key(keyfile: Option<&str>, user: &str) -> Result<([u8; 32], Option<fmt::cert::Cert>), Error> {
-    // Lethe's exchange is Ed25519 only (`docs/lethe.md`, Section 6).
-    let ed = |path: &str, info: fmt::keys::AuthInfo| {
-        info.ed25519()
-            .map(|(s, c)| (s, Some(c)))
-            .ok_or_else(|| Error(format!("{path}: Lethe takes only an Ed25519 key")))
-    };
+/// The key and certificate to authenticate with.
+type Key = (fmt::sig::Secret, Option<fmt::cert::AnyCert>);
+
+fn key(keyfile: Option<&str>, user: &str) -> Result<Key, Error> {
     if let Some(k) = keyfile {
-        let path = auth::keyfile_path(k, user);
-        return ed(&path, auth::read_authinfo(&path)?);
+        let info = auth::read_authinfo(&auth::keyfile_path(k, user))?;
+        return Ok((info.key, Some(info.cert)));
     }
     let safe = !user.is_empty() && user != "." && user != ".." && !user.contains('/');
     let default = format!("/usr/{user}/keyring/default");
-    if safe
-        && let Ok(info) = auth::read_authinfo(&default)
-        && info.ed25519().is_some()
-    {
-        return ed(&default, info);
+    if safe && let Ok(info) = auth::read_authinfo(&default) {
+        return Ok((info.key, Some(info.cert)));
     }
     let mut paths = Vec::new();
     if safe {
@@ -56,8 +53,8 @@ fn key(keyfile: Option<&str>, user: &str) -> Result<([u8; 32], Option<fmt::cert:
     }
     paths.push(String::from("/lib/test/auth.key"));
     for p in paths {
-        if let Ok(seed) = auth::read_seed(&p) {
-            return Ok((seed, None));
+        if let Ok(secret) = auth::read_secret(&p) {
+            return Ok((secret, None));
         }
     }
     Err(Error::from(purgatorio::abi::auth::NO_KEY))
@@ -84,7 +81,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let (mut order, mut create) = (mount::MREPL, 0);
     let (mut keyfile, mut user) = (None, None);
     let mut noauth = false;
-    let mut pq = false;
+    let mut kx = None;
     let mut cache = None;
     while let Some(c) = arg.opt() {
         match c {
@@ -93,11 +90,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'c' => create = mount::MCREATE,
             'A' => noauth = true,
             'C' => {
-                pq = match arg.earg()?.as_str() {
-                    "x25519" => false,
-                    "x25519mlkem768" => true,
+                kx = Some(match arg.earg()?.as_str() {
+                    a @ ("x25519" | "x25519mlkem768") => String::from(a),
                     a => return Err(Error(format!("unknown algorithm: {a}"))),
-                }
+                })
             }
             'k' => keyfile = Some(arg.earg()?),
             'u' => user = Some(arg.earg()?),
@@ -110,18 +106,21 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let rest = arg.argv();
     // -A is a mode of its own: a key or a user with it is a mistake.
-    if rest.len() < 2 || rest.len() > 3 || (noauth && (keyfile.is_some() || user.is_some() || pq)) {
+    if rest.len() < 2
+        || rest.len() > 3
+        || (noauth && (keyfile.is_some() || user.is_some() || kx.is_some()))
+    {
         return Err(Error::from(USAGE));
     }
     let mut settings = if noauth {
         format!("dial {}\nnoauth\n", address(&rest[0])?)
     } else {
         let user = user.unwrap_or_else(auth::user);
-        let (seed, cert) = key(keyfile.as_deref(), &user)?;
+        let (secret, cert) = key(keyfile.as_deref(), &user)?;
         let mut s = format!(
             "dial {}\nuser {user}\nkey {}\n",
             address(&rest[0])?,
-            fmt::hex::encode(&seed)
+            secret.encode()
         );
         if let Some(c) = cert {
             s.push_str(&format!("cert {}\n", c.encode()));
@@ -134,8 +133,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if let Some(ms) = cache {
         settings.push_str(&format!("cache {ms}\n"));
     }
-    if pq {
-        settings.push_str("kx x25519mlkem768\n");
+    if let Some(kx) = kx {
+        settings.push_str(&format!("kx {kx}\n"));
     }
     let mut clone = purgatorio::open("#λ/clone", mode::ORDWR)
         .map(std::fs::File::from)

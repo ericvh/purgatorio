@@ -9,7 +9,13 @@
 //! `-C x25519mlkem768` issues tickets only from the hybrid X25519 +
 //! ML-KEM-768 exchange (`Tauth2`), and refuses a `Tauth` and a request on
 //! a ticket from one with `post-quantum key exchange required`. Without it
-//! a client may still ask for the hybrid exchange.
+//! a client may still ask for the hybrid exchange, and every `Rauth` says
+//! that this server could have done it (`docs/lethe.md`, "The default
+//! exchange"). `-C mldsa65` takes only `Tauth`s signed with a hybrid
+//! Ed25519 + ML-DSA-65 key; an Ed25519 one fails with `post-quantum
+//! signature required`. Names are joined with `/`, as for `mount -C`. A
+//! `-k` or `-U` key file holds a 32-byte Ed25519 key or a hybrid one
+//! (1984 bytes).
 //!
 //! `-A` also answers requests with no authentication and no encryption,
 //! as the user `none`. Without it, and without a key to trust, `lethed`
@@ -38,7 +44,7 @@ use crate::devfs;
 use crate::host;
 
 /// The usage line.
-pub const USAGE: &str = "usage: lethed [-v] [-A] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window] [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root";
+pub const USAGE: &str = "usage: lethed [-v] [-A] [-C alg] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w window] [-k keyfile ...] [-U userdir] [-s signers] [-r revoked] root";
 
 /// What the command line says.
 pub struct Options {
@@ -82,10 +88,13 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             "-v" => o.verbose = true,
             "-A" => o.clear = true,
             "-C" => {
-                o.config.pq = match val()?.as_str() {
-                    "x25519" => false,
-                    "x25519mlkem768" => true,
-                    a => return Err(format!("lethed: unknown algorithm: {a}")),
+                for a in val()?.split('/') {
+                    match a {
+                        "x25519" | "ed25519" => {}
+                        "x25519mlkem768" => o.config.pq = true,
+                        "mldsa65" => o.config.pqsig = true,
+                        a => return Err(format!("lethed: unknown algorithm: {a}")),
+                    }
                 }
             }
             "-a" => o.addr = val()?,
@@ -360,19 +369,20 @@ fn read_key(path: &Path) -> Option<[u8; 32]> {
     fs::read(path).ok()?.try_into().ok()
 }
 
+/// A public key file: 32 bytes for Ed25519, 1984 for a hybrid key.
+fn read_public(path: &Path) -> Option<purg_auth::sig::Id> {
+    purg_auth::sig::Public::from_slice(&fs::read(path).ok()?).map(|k| k.id())
+}
+
 /// The trust for `uname`, read now from the files the options name: an
 /// edit takes effect on the next ticket.
 fn trust(o: &Options, uname: &str) -> Trust {
-    let mut keys: Vec<purg_auth::sig::Id> = o
-        .keys
-        .iter()
-        .filter_map(|p| read_key(p).map(purg_auth::sig::Id::Ed25519))
-        .collect();
+    let mut keys: Vec<purg_auth::sig::Id> = o.keys.iter().filter_map(|p| read_public(p)).collect();
     if let Some(dir) = &o.user_keys
         && purg_auth::cert::valid_name(uname)
-        && let Some(k) = read_key(&dir.join(uname).join("key.pub"))
+        && let Some(k) = read_public(&dir.join(uname).join("key.pub"))
     {
-        keys.push(purg_auth::sig::Id::Ed25519(k));
+        keys.push(k);
     }
     let signers = o
         .signers

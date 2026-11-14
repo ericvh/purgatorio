@@ -55,11 +55,25 @@ pub struct Tauth<'a> {
     pub rights: u8,
     pub prefix: &'a str,
     pub uname: &'a str,
-    /// `purg_abi::auth::KIND_KEY` or `KIND_CERT`.
+    /// `purg_abi::auth::KIND_KEY` or `KIND_CERT`, or for a hybrid
+    /// Ed25519 + ML-DSA-65 key `KIND_HYBRID_KEY` or `KIND_HYBRID_CERT`.
     pub kind: u8,
-    /// A public key or a `pgcert1` line.
+    /// A public key or a certificate line (`pgcert1`, or `pgcert2` for a
+    /// hybrid key).
     pub body: &'a [u8],
-    pub signature: [u8; 64],
+    /// [`signature_len`] bytes for the kind.
+    pub signature: &'a [u8],
+}
+
+/// How long a `Tauth`'s signature is for its `kind`: a hybrid signature
+/// for the hybrid kinds, an Ed25519 one for any other.
+pub fn signature_len(kind: u8) -> usize {
+    use purg_abi::auth::{HYBRID_SIGNATURE, KIND_HYBRID_CERT, KIND_HYBRID_KEY, SIGNATURE};
+    if kind == KIND_HYBRID_KEY || kind == KIND_HYBRID_CERT {
+        HYBRID_SIGNATURE
+    } else {
+        SIGNATURE
+    }
 }
 
 impl Tauth<'_> {
@@ -179,6 +193,27 @@ pub struct Msg<'a> {
     pub frame: Frame<'a>,
 }
 
+impl<'a> Tauth<'a> {
+    /// The fields after the ephemeral key(s).
+    fn get(r: &mut Reader<'a>, eph: [u8; EPH]) -> Result<Tauth<'a>, &'static str> {
+        let rights = r.u8()?;
+        let prefix = r.str16()?;
+        let uname = r.str16()?;
+        let kind = r.u8()?;
+        let body = r.data16()?;
+        let signature = r.bytes(signature_len(kind))?;
+        Ok(Tauth {
+            eph,
+            rights,
+            prefix,
+            uname,
+            kind,
+            body,
+            signature,
+        })
+    }
+}
+
 fn sealed<'a>(r: &mut Reader<'a>) -> Result<&'a [u8], &'static str> {
     let s = r.rest();
     if s.len() < TAG {
@@ -202,16 +237,8 @@ impl<'a> Msg<'a> {
         let id = r.u32()?;
         let frame = match ty {
             kind::TAUTH => {
-                let t = Tauth {
-                    eph: r.array()?,
-                    rights: r.u8()?,
-                    prefix: r.str16()?,
-                    uname: r.str16()?,
-                    kind: r.u8()?,
-                    body: r.data16()?,
-                    signature: r.array()?,
-                };
-                Frame::Tauth(t)
+                let eph = r.array()?;
+                Frame::Tauth(Tauth::get(&mut r, eph)?)
             }
             kind::RAUTH => Frame::Rauth {
                 eph: r.array()?,
@@ -221,16 +248,10 @@ impl<'a> Msg<'a> {
             kind::TAUTH2 => {
                 let eph = r.array()?;
                 let ek = r.bytes(KEM_PUBLIC)?.try_into().map_err(|_| MESSAGE)?;
-                let t = Tauth {
-                    eph,
-                    rights: r.u8()?,
-                    prefix: r.str16()?,
-                    uname: r.str16()?,
-                    kind: r.u8()?,
-                    body: r.data16()?,
-                    signature: r.array()?,
-                };
-                Frame::Tauth2 { t, ek }
+                Frame::Tauth2 {
+                    t: Tauth::get(&mut r, eph)?,
+                    ek,
+                }
             }
             kind::RAUTH2 => Frame::Rauth2 {
                 eph: r.array()?,
@@ -283,7 +304,7 @@ impl<'a> Msg<'a> {
                 w.data16(t.uname.as_bytes());
                 w.u8(t.kind);
                 w.data16(t.body);
-                w.bytes(&t.signature);
+                w.bytes(t.signature);
             }
             Frame::Rauth { eph, nonce, sealed } => {
                 w.bytes(eph);
@@ -298,7 +319,7 @@ impl<'a> Msg<'a> {
                 w.data16(t.uname.as_bytes());
                 w.u8(t.kind);
                 w.data16(t.body);
-                w.bytes(&t.signature);
+                w.bytes(t.signature);
             }
             Frame::Rauth2 {
                 eph,
@@ -1046,7 +1067,7 @@ mod tests {
             uname: "glenda",
             kind: 0,
             body: &[2; 32],
-            signature: [3; 64],
+            signature: &[3; 64],
         };
         let b = round(&Msg {
             id: 9,

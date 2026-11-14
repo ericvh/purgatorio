@@ -5,11 +5,19 @@
 //! ```text
 //! dial tcp!host!port
 //! user <name>
-//! key <seed hex>
-//! cert <pgcert1 line>     (optional)
+//! key <seed hex>          (mldsa65:<hex> for a hybrid Ed25519 + ML-DSA-65 key)
+//! cert <pgcert1 line>     (optional; pgcert2 for a hybrid key)
 //! path <subtree>          (optional, default /)
 //! cache <ms>              (optional, default 1000)
+//! kx <exchange>           (optional: x25519 or x25519mlkem768)
 //! ```
+//!
+//! Without `kx` the ticket exchange is the hybrid X25519 + ML-KEM-768 one
+//! when the server can do it, and the classical one with a server that
+//! cannot (`docs/lethe.md`, "The default exchange"); `kx x25519mlkem768`
+//! requires the hybrid exchange and `kx x25519` asks only for the
+//! classical one. A hybrid key signs on a deep stack
+//! (`Platform::deep`).
 //!
 //! dials the server and gets a ticket, so a refused key fails the write
 //! with the server's error. With a `noauth` line in place of `user`,
@@ -54,7 +62,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use purg_abi::error::{EBADARG, EBADUSEFD, EHUNGUP, EINUSE, EISDIR, ENONEXIST, ENOTIMPL, EPERM};
 use purg_abi::mode;
-use purg_lethe::client::{self, ClearPending, Creds, Failure, ReqPending, Session};
+use purg_lethe::client::{self, ClearPending, Creds, Failure, Kx, ReqPending, Session};
 use purg_lethe::msg::{Op, Owned};
 use purg_lethe::{MAX_WALK, NONCE, path, rights};
 use purg_platform::Platform;
@@ -298,15 +306,15 @@ struct Settings {
     prefix: String,
     /// How long attributes and data are trusted, in nanoseconds.
     life: u64,
-    /// `kx x25519mlkem768`: the hybrid post-quantum exchange, required.
-    pq: bool,
+    /// The ticket exchange (`kx`).
+    kx: Kx,
 }
 
 fn parse(text: &str) -> Result<Settings> {
     let bad = || Error::new(EBADARG);
     let (mut dial, mut user, mut seed, mut cert, mut prefix) = (None, None, None, None, None);
     let mut noauth = false;
-    let mut pq = false;
+    let mut kx = None;
     let mut life = DEFAULT_CACHE_MS * 1_000_000;
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if line == "noauth" {
@@ -318,18 +326,18 @@ fn parse(text: &str) -> Result<Settings> {
             "dial" => dial = Some(v),
             "user" => user = Some(String::from(v)),
             "key" => {
-                seed = Some(purg_auth::hex::array::<32>(v.as_bytes()).ok_or_else(bad)?);
+                seed = Some(purg_auth::sig::Secret::parse(v.as_bytes()).ok_or_else(bad)?);
             }
             "cert" => {
-                cert = Some(purg_auth::cert::Cert::parse(v.as_bytes()).map_err(|_| bad())?);
+                cert = Some(purg_auth::cert::AnyCert::parse(v.as_bytes()).map_err(|_| bad())?);
             }
             "path" => prefix = Some(String::from(v)),
             "kx" => {
-                pq = match v {
-                    "x25519" => false,
-                    "x25519mlkem768" => true,
+                kx = Some(match v {
+                    "x25519" => Kx::Classical,
+                    "x25519mlkem768" => Kx::Require,
                     _ => return Err(bad()),
-                }
+                })
             }
             "cache" => {
                 let ms: u64 = v.parse().map_err(|_| bad())?;
@@ -350,14 +358,14 @@ fn parse(text: &str) -> Result<Settings> {
     // The mode is one or the other: `noauth` with a user or a key is a
     // mistake, not a request to try both.
     let creds = if noauth {
-        if user.is_some() || seed.is_some() || cert.is_some() || pq {
+        if user.is_some() || seed.is_some() || cert.is_some() || kx.is_some() {
             return Err(bad());
         }
         None
     } else {
         Some(Creds {
             user: user.ok_or_else(bad)?,
-            seed: seed.ok_or_else(bad)?,
+            secret: seed.ok_or_else(bad)?,
             cert,
         })
     };
@@ -367,7 +375,7 @@ fn parse(text: &str) -> Result<Settings> {
         creds,
         prefix,
         life,
-        pq,
+        kx: kx.unwrap_or(Kx::Auto),
     })
 }
 
@@ -485,32 +493,28 @@ impl Remote {
         {
             return Ok(s.clone());
         }
-        let mut random = [0u8; 32];
-        self.platform.entropy(&mut random);
-        let (frame, pending) = if self.settings.pq {
+        let prefix = &self.settings.prefix;
+        let start = |pq: bool| {
+            let mut random = [0u8; 32];
+            self.platform.entropy(&mut random);
             let mut seed = [0u8; purg_auth::kem::SEED];
             self.platform.entropy(&mut seed);
-            client::auth_pq(
-                creds,
-                self.tag(),
-                rights::READ,
-                &self.settings.prefix,
-                random,
-                &seed,
-            )
-        } else {
-            client::auth(
-                creds,
-                self.tag(),
-                rights::READ,
-                &self.settings.prefix,
-                random,
-            )
+            let id = self.tag();
+            // A hybrid key's signature takes ML-DSA's stack.
+            crate::auth::deep(&*self.platform, creds.secret.is_hybrid(), || {
+                if pq {
+                    client::auth_pq(creds, id, rights::READ, prefix, random, &seed)
+                } else {
+                    client::auth(creds, id, rights::READ, prefix, random)
+                }
+            })
         };
-        let reply =
-            exchange(c, &frame).map_err(|e| alloc::boxed::Box::new(Attempt::Transport(e)))?;
-        let s = pending
-            .finish(&reply, self.now())
+        let send =
+            |f: &[u8]| exchange(c, f).map_err(|e| alloc::boxed::Box::new(Attempt::Transport(e)));
+        let s = self
+            .settings
+            .kx
+            .run(start, send, self.now())?
             .map_err(|e| alloc::boxed::Box::new(Attempt::Done(Err(e))))?;
         *self.session.lock() = Some(s.clone());
         Ok(s)
