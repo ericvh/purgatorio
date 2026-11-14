@@ -8,6 +8,13 @@
 //!
 //! While a window's `event` file is open its buffers also keep a list of
 //! [`Change`]s, which acme turns into acme(4) insert and delete events.
+//!
+//! A text can have more than one view (`Zerox`): each view is a
+//! [`Buffer`] on the same [`Store`].
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Runes with a gap at the last edit, so that typing at one place moves
 /// nothing.
@@ -105,7 +112,7 @@ pub const EVENTSIZE: usize = 256;
 
 /// A buffer and, for a body, its undo and redo logs.
 #[derive(Default)]
-pub struct Buffer {
+pub struct Store {
     text: Gap,
     log: bool,
     undo: Vec<Edit>,
@@ -120,15 +127,45 @@ pub struct Buffer {
     /// Record [`Change`]s.
     pub watch: bool,
     pub changes: Vec<Change>,
+    /// Record [`Op`]s, as while more than one view shows the text.
+    track: bool,
+    /// The view making the edits now.
+    actor: u64,
+    ops: Vec<Op>,
 }
 
-impl Buffer {
+/// One edit as the other views of a shared text need it: who made it,
+/// and where the runes went in or came out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Op {
+    pub view: u64,
+    pub insert: bool,
+    pub q: usize,
+    pub n: usize,
+}
+
+impl Op {
+    /// Where position `p` of a view goes after this edit.
+    pub fn fix(&self, p: usize) -> usize {
+        if self.insert {
+            if p > self.q { p + self.n } else { p }
+        } else if p >= self.q + self.n {
+            p - self.n
+        } else if p > self.q {
+            self.q
+        } else {
+            p
+        }
+    }
+}
+
+impl Store {
     /// A buffer that keeps an undo log or not.
-    pub fn new(log: bool) -> Buffer {
-        Buffer {
+    pub fn new(log: bool) -> Store {
+        Store {
             log,
             seq: 1,
-            ..Buffer::default()
+            ..Store::default()
         }
     }
 
@@ -162,6 +199,14 @@ impl Buffer {
     }
 
     fn note(&mut self, insert: bool, q: usize, text: &[char]) {
+        if self.track && !text.is_empty() {
+            self.ops.push(Op {
+                view: self.actor,
+                insert,
+                q,
+                n: text.len(),
+            });
+        }
         if !self.watch || text.is_empty() {
             return;
         }
@@ -237,7 +282,7 @@ impl Buffer {
         self.clean = self.top();
     }
 
-    /// Calls the text modified until the next [`Buffer::set_clean`], as
+    /// Calls the text modified until the next [`Store::set_clean`], as
     /// acme(4)'s `dirty` does.
     pub fn set_dirty(&mut self) {
         self.clean = u64::MAX;
@@ -305,6 +350,144 @@ impl Buffer {
     }
 }
 
+/// The last view number given out.
+static VIEWS: AtomicU64 = AtomicU64::new(0);
+
+/// A view of a text: what a tag or body holds. `Zerox` makes a second
+/// view of a body's text with [`Buffer::share`]; the views share the
+/// runes and the undo log, and each knows the edits made through the
+/// others ([`Buffer::take_ops`]), to keep its selection on the same text.
+pub struct Buffer {
+    rc: Rc<RefCell<Store>>,
+    view: u64,
+}
+
+impl Buffer {
+    /// A text that keeps an undo log or not.
+    pub fn new(log: bool) -> Buffer {
+        Buffer {
+            rc: Rc::new(RefCell::new(Store::new(log))),
+            view: VIEWS.fetch_add(1, Ordering::Relaxed) + 1,
+        }
+    }
+
+    /// Another view of the same text.
+    pub fn share(&self) -> Buffer {
+        self.rc.borrow_mut().track = true;
+        Buffer {
+            rc: self.rc.clone(),
+            view: VIEWS.fetch_add(1, Ordering::Relaxed) + 1,
+        }
+    }
+
+    /// How many views the text has.
+    pub fn views(&self) -> usize {
+        Rc::strong_count(&self.rc)
+    }
+
+    pub fn view(&self) -> u64 {
+        self.view
+    }
+
+    /// The same for every view of a text.
+    pub fn key(&self) -> usize {
+        Rc::as_ptr(&self.rc) as usize
+    }
+
+    fn get(&self) -> std::cell::Ref<'_, Store> {
+        self.rc.borrow()
+    }
+
+    /// The store, for an edit made through this view.
+    fn put(&self) -> std::cell::RefMut<'_, Store> {
+        let mut s = self.rc.borrow_mut();
+        s.actor = self.view;
+        s
+    }
+
+    pub fn len(&self) -> usize {
+        self.get().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.get().is_empty()
+    }
+
+    pub fn at(&self, q: usize) -> char {
+        self.get().at(q)
+    }
+
+    pub fn string(&self, q0: usize, q1: usize) -> String {
+        self.get().string(q0, q1)
+    }
+
+    pub fn all(&self) -> String {
+        self.get().all()
+    }
+
+    pub fn mark(&self) {
+        self.put().mark();
+    }
+
+    pub fn insert(&self, q: usize, s: &str) {
+        self.put().insert(q, s);
+    }
+
+    pub fn delete(&self, q0: usize, q1: usize) -> String {
+        self.put().delete(q0, q1)
+    }
+
+    pub fn load(&self, s: &str) {
+        self.put().load(s);
+    }
+
+    pub fn set_clean(&self) {
+        self.put().set_clean();
+    }
+
+    pub fn set_dirty(&self) {
+        self.put().set_dirty();
+    }
+
+    pub fn dirty(&self) -> bool {
+        self.get().dirty()
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.get().can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.get().can_redo()
+    }
+
+    pub fn undo(&self) -> Option<(usize, usize)> {
+        self.put().undo()
+    }
+
+    pub fn redo(&self) -> Option<(usize, usize)> {
+        self.put().redo()
+    }
+
+    /// Turns the recording of [`Change`]s on or off; returns what it was.
+    pub fn set_watch(&self, on: bool) -> bool {
+        std::mem::replace(&mut self.rc.borrow_mut().watch, on)
+    }
+
+    pub fn take_changes(&self) -> Vec<Change> {
+        std::mem::take(&mut self.rc.borrow_mut().changes)
+    }
+
+    /// The edits made since the last call, by any view; stops recording
+    /// them once only one view is left.
+    pub fn take_ops(&self) -> Vec<Op> {
+        let n = self.views();
+        let mut s = self.rc.borrow_mut();
+        s.track = n > 1;
+        std::mem::take(&mut s.ops)
+    }
+}
+
 /// Whether `c` is part of a word, for double-clicks and `^W`.
 pub fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -337,7 +520,7 @@ mod tests {
 
     #[test]
     fn undo_groups() {
-        let mut b = Buffer::new(true);
+        let mut b = Store::new(true);
         b.load("hello\n");
         assert!(!b.dirty());
         b.mark();
@@ -372,7 +555,7 @@ mod tests {
 
     #[test]
     fn backspaces_join() {
-        let mut b = Buffer::new(true);
+        let mut b = Store::new(true);
         b.insert(0, "abcd");
         b.mark();
         b.delete(3, 4);
@@ -383,7 +566,7 @@ mod tests {
 
     #[test]
     fn changes() {
-        let mut b = Buffer::new(true);
+        let mut b = Store::new(true);
         b.insert(0, "gone");
         assert!(b.changes.is_empty());
         b.watch = true;
@@ -418,9 +601,55 @@ mod tests {
 
     #[test]
     fn no_log() {
-        let mut b = Buffer::new(false);
+        let mut b = Store::new(false);
         b.insert(0, "tag");
         assert!(!b.dirty());
         assert_eq!(b.undo(), None);
+    }
+
+    #[test]
+    fn shared_views() {
+        let a = Buffer::new(true);
+        a.insert(0, "hello world");
+        // One view records nothing for others.
+        assert!(a.take_ops().is_empty());
+        let b = a.share();
+        assert!(a.key() == b.key() && a.views() == 2);
+        a.mark();
+        a.insert(0, ">> ");
+        b.mark();
+        b.delete(9, 14);
+        assert_eq!(b.all(), ">> hello ");
+        let ops = a.take_ops();
+        assert_eq!(
+            ops,
+            [
+                Op {
+                    view: a.view(),
+                    insert: true,
+                    q: 0,
+                    n: 3
+                },
+                Op {
+                    view: b.view(),
+                    insert: false,
+                    q: 9,
+                    n: 5
+                }
+            ]
+        );
+        // A selection of "world" in another view goes with the insert,
+        // and collapses where the delete was.
+        let (q0, q1) = (6, 11);
+        let (q0, q1) = (ops[0].fix(q0), ops[0].fix(q1));
+        assert_eq!((q0, q1), (9, 14));
+        assert_eq!((ops[1].fix(q0), ops[1].fix(q1)), (9, 9));
+        // The undo log is shared: undo through either view.
+        a.undo();
+        assert_eq!(b.all(), ">> hello world");
+        drop(b);
+        a.take_ops();
+        a.insert(0, "x");
+        assert!(a.take_ops().is_empty());
     }
 }
