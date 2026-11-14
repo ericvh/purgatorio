@@ -179,7 +179,7 @@ impl Shell {
     pub(crate) fn mod_cmd(&mut self, m: Module, argv: &[String], io: &Io) -> Flow<String> {
         let res: Result<String, Ex> = match m {
             Module::Std if argv[0] == "pctl" => pctl(argv).map_err(Ex::from),
-            Module::Std => return self.std_cmd(argv),
+            Module::Std => return self.std_cmd(argv, io),
             Module::Expr => crate::num::ntest(argv, false).map_err(Ex::from),
             Module::Mpexpr => crate::num::ntest(argv, true).map_err(Ex::from),
             Module::String => crate::string::cmd(argv).map_err(|e| Fail::from(e).into()),
