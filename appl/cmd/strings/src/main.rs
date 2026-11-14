@@ -69,7 +69,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         out.flush()?;
         return Ok(());
     }
-    let mut failed = false;
     for f in &args[1..] {
         if args.len() > 2 {
             writeln!(out, "{f}:")?;
@@ -78,14 +77,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             Ok(data) => strings(&data, &mut out)?,
             Err(_) => {
                 out.flush()?;
-                eprintln!("strings: cannot open {f}: {}", purgatorio::errstr());
-                failed = true;
+                // As Inferno's strings: no prefix, no error, no status.
+                eprintln!("cannot open {f}");
             }
         }
     }
     out.flush()?;
-    if failed {
-        purgatorio::exits("fail:errors");
-    }
     Ok(())
 }

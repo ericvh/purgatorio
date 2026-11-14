@@ -398,8 +398,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         [f] => f.as_str(),
         _ => return Err(usage),
     };
-    let text = std::fs::read_to_string(file)
-        .map_err(|_| Error(format!("cannot open {file}: {}", purgatorio::errstr())))?;
+    let Ok(text) = std::fs::read_to_string(file) else {
+        eprintln!("units: cannot open {file}: {}", purgatorio::errstr());
+        purgatorio::exits("fail:open");
+    };
     let mut db = Db::load(&text);
     let mut out = io::stdout().lock();
     if verbose {

@@ -42,7 +42,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         match std::fs::File::open(f) {
             Ok(file) => read(&mut BufReader::new(file))?,
             Err(_) => {
-                return Err(Error(format!("can't open {f}: {}", purgatorio::errstr())));
+                // As Inferno's mc: reported, skipped, no status.
+                eprintln!("mc: can't open {f}: {}", purgatorio::errstr());
             }
         }
     }

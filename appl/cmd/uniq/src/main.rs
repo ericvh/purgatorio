@@ -30,7 +30,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         [f] => match std::fs::File::open(f) {
             Ok(file) => Box::new(BufReader::new(file)),
             Err(_) => {
-                return Err(Error(format!("cannot open {f}: {}", purgatorio::errstr())));
+                // As Inferno's uniq: `fail:open file`.
+                eprintln!("uniq: cannot open {f}: {}", purgatorio::errstr());
+                purgatorio::exits("fail:open file");
             }
         },
         _ => return Err(arg_usage()),

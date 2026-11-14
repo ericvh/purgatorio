@@ -13,10 +13,11 @@ fn open(name: &str) -> Result<Box<dyn BufRead>, Error> {
     }
     match std::fs::File::open(name) {
         Ok(f) => Ok(Box::new(BufReader::new(f))),
-        Err(_) => Err(Error(format!(
-            "cannot open {name}: {}",
-            purgatorio::errstr()
-        ))),
+        Err(_) => {
+            // As Inferno's comm: `fail:open`.
+            eprintln!("comm: cannot open {name}: {}", purgatorio::errstr());
+            purgatorio::exits("fail:open");
+        }
     }
 }
 
