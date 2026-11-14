@@ -19,8 +19,8 @@ check free list
 lo = 6; hi = 399
        4 files
      399 blocks in the file system
-     209 used blocks
-     190 free blocks
+     187 used blocks
+     212 free blocks
       15 maximum qid path
 /adm/users
 /ls
@@ -31,7 +31,7 @@ disk/kfscmd: 'check z': illegal check flag: z
 again
 same
 d-rwxrwxrwx 0 n/adm
---rw-r--r-- 101202 n/ls
+--rw-r--r-- 90000 n/ls
 check free list
 lo = 6; hi = 399
 read only
