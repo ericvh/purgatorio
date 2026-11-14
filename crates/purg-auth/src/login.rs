@@ -548,7 +548,7 @@ pub mod stream {
             h.extend_from_slice(MAGIC);
             h.extend_from_slice(&kdf.to_bytes());
             h.extend_from_slice(&prefix);
-            Ok((Cipher::with(&key, prefix), h))
+            Ok((Cipher::with_key(&key, prefix), h))
         }
 
         /// Reads a header for decryption.
@@ -560,10 +560,12 @@ pub mod stream {
             let key = kdf.derive(secret)?;
             let mut prefix = [0u8; 7];
             prefix.copy_from_slice(&header[HEADER - 7..]);
-            Ok(Cipher::with(&key, prefix))
+            Ok(Cipher::with_key(&key, prefix))
         }
 
-        fn with(key: &[u8; 32], prefix: [u8; 7]) -> Cipher {
+        /// A cipher for chunks under `key` and the nonce prefix `prefix`, as
+        /// [`crate::hybrid`] derives them.
+        pub fn with_key(key: &[u8; 32], prefix: [u8; 7]) -> Cipher {
             Cipher {
                 aead: ChaCha20Poly1305::new(key.into()),
                 prefix,
