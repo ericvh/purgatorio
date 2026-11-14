@@ -147,6 +147,7 @@ mod tests {
             s2c: [2; 32],
             transcript: [3; 32],
             bind: [4; 32],
+            pq: false,
         }
     }
 

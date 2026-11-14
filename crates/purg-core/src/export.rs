@@ -185,6 +185,8 @@ struct Conn {
     noauth: bool,
     /// Refuse what would leave the conversation in the clear.
     encrypt: bool,
+    /// Refuse what is not on the post-quantum exchange.
+    pq: bool,
     /// The exporting user, whose key signs this server's proof.
     user: String,
     /// The authinfo that signs this server's proof instead (`export -k`).
@@ -258,6 +260,9 @@ pub struct Opts {
     /// Refuse version 1 and 2 proofs, and any attach that is not on an
     /// encrypted conversation (`purg_abi::export::ENCRYPT`).
     pub encrypt: bool,
+    /// Refuse every proof but version 4, and any attach that is not on
+    /// one: only the post-quantum exchange (`purg_abi::mount::MPQ`).
+    pub pq: bool,
     /// The exporting user: its key, found as a mount by it would find
     /// one, signs this server's proof. Empty finds only `#¤` and the test
     /// key.
@@ -275,7 +280,7 @@ pub fn serve_with(
     platform: &Arc<dyn Platform>,
     opts: &Opts,
 ) -> KResult<()> {
-    if opts.noauth && opts.encrypt {
+    if opts.noauth && (opts.encrypt || opts.pq) {
         return Err(Error::new(error::EBADARG));
     }
     let mut fs = Export::new(pgrp, root)?;
@@ -285,7 +290,8 @@ pub fn serve_with(
         fd: fd.clone(),
         platform: platform.clone(),
         noauth: opts.noauth,
-        encrypt: opts.encrypt,
+        encrypt: opts.encrypt || opts.pq,
+        pq: opts.pq,
         user: opts.user.clone(),
         keyfile: opts.keyfile.clone(),
         pid: platform.current_pid(),
@@ -537,14 +543,18 @@ impl Conn {
         self.write_replies();
     }
 
-    /// The session keys when `msg` is a version 3 proof written to one of
-    /// this connection's auth fids. The proof is checked later, by the
-    /// worker that answers it; the keys only need its client key.
+    /// The session keys when `msg` is a version 3 or 4 proof written to
+    /// one of this connection's auth fids. The proof is checked later, by
+    /// the worker that answers it; the keys only need its client key (and
+    /// for version 4 its ciphertext).
     fn proof_keys(&self, msg: &Msg<'_>) -> Option<purg_auth::session::Keys> {
         let Fcall::Twrite { fid, data, .. } = &msg.fcall else {
             return None;
         };
-        if data.first() != Some(&purg_auth::proof::V3) {
+        if !matches!(
+            data.first(),
+            Some(&purg_auth::proof::V3) | Some(&purg_auth::proof::V4)
+        ) {
             return None;
         }
         let afids = self.afids.lock();
@@ -657,8 +667,11 @@ struct Afid {
     uname: String,
     aname: String,
     ok: bool,
-    /// The proof accepted was version 3.
+    /// The proof accepted was version 3 or 4: the conversation is
+    /// encrypted.
     v3: bool,
+    /// The proof accepted was version 4: the post-quantum exchange.
+    pq: bool,
 }
 
 /// Reads the trust material for `uname` from the exporter's own namespace
@@ -678,9 +691,33 @@ fn rerr(tag: u16, ename: &'static str) -> Vec<u8> {
 
 /// What the auth fid `fid` reads as at `offset`: the offer (the challenge,
 /// then the ephemeral key; a version 2 client reads only the challenge),
-/// and after it, once a version 3 proof on it is accepted, this server's
-/// own proof for the conversation's keys. `None` when `fid` is no auth fid.
-fn auth_read(conn: &Conn, fid: u32, offset: u64) -> Option<Vec<u8>> {
+/// and after it, once a version 3 or 4 proof on it is accepted, this
+/// server's own proof for the conversation's keys. `None` when `fid` is no
+/// auth fid.
+///
+/// A read of at least [`purg_auth::proof::OFFER_PQ`] bytes at offset 0
+/// gives the long offer instead: the offer followed by an ephemeral
+/// ML-KEM-768 encapsulation key, made on the first such read and the same
+/// on every later one (`docs/auth.md`, "Post-quantum options"). A client
+/// that never asks costs no key.
+fn auth_read(conn: &Conn, fid: u32, offset: u64, count: u32) -> Option<Vec<u8>> {
+    if offset == 0 && count as usize >= purg_auth::proof::OFFER_PQ {
+        let made = conn
+            .afids
+            .lock()
+            .get(&fid)
+            .map(|a| a.kx.offer_pq().map(<[u8]>::to_vec))?;
+        if let Some(o) = made {
+            return Some(o);
+        }
+        // The key is made with no lock held; the first one stored wins.
+        let mut seed = [0u8; purg_auth::kem::SEED];
+        conn.platform.entropy(&mut seed);
+        let mut afids = conn.afids.lock();
+        let a = afids.get_mut(&fid)?;
+        a.kx.make_pq(&seed);
+        return a.kx.offer_pq().map(<[u8]>::to_vec);
+    }
     let (offer, v3) = conn.afids.lock().get(&fid).map(|a| (a.kx.offer, a.v3))?;
     let start = usize::try_from(offset).unwrap_or(usize::MAX);
     if let Some(d) = offer.get(start..).filter(|d| !d.is_empty()) {
@@ -722,6 +759,7 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
                 aname: String::from(*aname),
                 ok: false,
                 v3: false,
+                pq: false,
             },
         );
         return Some(reply(
@@ -738,25 +776,33 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
     // Each look at the table is a statement of its own, so its lock is
     // released before anything else happens.
     if let Fcall::Tread { fid, offset, count } = &msg.fcall
-        && let Some(data) = auth_read(conn, *fid, *offset)
+        && let Some(data) = auth_read(conn, *fid, *offset, *count)
     {
         let n = (*count as usize).min(data.len());
         return Some(reply(tag, Fcall::Rread { data: &data[..n] }));
     }
     if let Fcall::Twrite { fid, data, .. } = &msg.fcall {
-        let held = afids
-            .lock()
-            .get(fid)
-            .map(|a| (a.kx.offer, a.uname.clone(), a.aname.clone()));
-        if let Some((offer, uname, aname)) = held {
+        let held = afids.lock().get(fid).map(|a| {
+            (
+                a.kx.offer,
+                a.kx.offered().to_vec(),
+                a.uname.clone(),
+                a.aname.clone(),
+            )
+        });
+        if let Some((offer, offered, uname, aname)) = held {
             // The proof is one write.
             let now = platform.now_ns() / 1_000_000_000;
             let t = trust(fs, &uname);
-            let v3 = purg_auth::proof::parse_v3(data).is_some();
-            let checked = if conn.encrypt && !v3 {
+            let session = purg_auth::proof::parse_session(data);
+            let v3 = session.is_some();
+            let pq = session.is_some_and(|p| p.pq());
+            let checked = if conn.pq && !pq {
+                Err(crate::auth::PQ_REQUIRED)
+            } else if conn.encrypt && !v3 {
                 Err(crate::auth::ENCRYPTION_REQUIRED)
             } else {
-                purg_auth::proof::check(&t.policy(now), &offer, &uname, &aname, data)
+                purg_auth::proof::check(&t.policy(now), &offered, &uname, &aname, data)
             };
             // The fid may have been clunked meanwhile, or clunked and made
             // again with another challenge.
@@ -764,6 +810,7 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
                 Some(a) if a.kx.offer == offer => {
                     a.ok = checked.is_ok();
                     a.v3 = a.ok && v3;
+                    a.pq = a.ok && pq;
                 }
                 _ => return Some(rerr(tag, UNKNOWN_FID)),
             }
@@ -788,12 +835,15 @@ fn auth_reply(conn: &Conn, msg: &Msg<'_>) -> Option<Vec<u8>> {
         afid, uname, aname, ..
     } = &msg.fcall
     {
-        // With `encrypt`, only an attach on a version 3 proof's fid. An
-        // attach without a proof gets nowhere.
-        let proved = afids
-            .lock()
-            .get(afid)
-            .map(|a| a.ok && a.uname == *uname && a.aname == *aname && (!conn.encrypt || a.v3));
+        // With `encrypt`, only an attach on a version 3 or 4 proof's fid,
+        // and with `pq` on a version 4 proof's. An attach without a proof
+        // gets nowhere.
+        let proved = afids.lock().get(afid).map(|a| {
+            a.ok && a.uname == *uname
+                && a.aname == *aname
+                && (!conn.encrypt || a.v3)
+                && (!conn.pq || a.pq)
+        });
         return match proved {
             Some(true) => None,
             Some(false) => Some(rerr(tag, crate::auth::REQUIRED)),

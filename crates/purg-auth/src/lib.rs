@@ -4,10 +4,13 @@
 //!   user name, the user's public key and an expiry.
 //! - [`keys`]: key lists (`lib/keys/signers`, `lib/keys/revoked`) and
 //!   authinfo files.
-//! - [`proof`]: the mount handshake's proofs, versions 1 to 3, and the
+//! - [`proof`]: the mount handshake's proofs, versions 1 to 4, and the
 //!   server's check of them.
-//! - [`session`]: the version 3 handshake's ephemeral X25519 exchange and
-//!   the session keys it derives.
+//! - [`session`]: the version 3 handshake's ephemeral X25519 exchange,
+//!   version 4's hybrid X25519 + ML-KEM-768 exchange, and the session keys
+//!   they derive.
+//! - [`kem`]: ML-KEM-768 (FIPS 203), the post-quantum half of the hybrid
+//!   exchanges.
 //! - [`record`]: the ChaCha20-Poly1305 records that carry the Styx
 //!   conversation after a version 3 handshake.
 //! - [`server`]: the server's proof of a version 3 handshake, which a
@@ -24,6 +27,7 @@ extern crate alloc;
 pub mod attr;
 pub mod cert;
 pub mod hex;
+pub mod kem;
 pub mod keys;
 #[cfg(feature = "login")]
 pub mod login;
@@ -55,4 +59,14 @@ pub fn verify(public: &[u8; PUBLIC], message: &[u8], signature: &[u8; SIGNATURE]
     };
     let signature = Signature::from_bytes(signature);
     key.verify_strict(message, &signature).is_ok()
+}
+
+/// Whether `a` and `b` are equal, in time that depends only on their
+/// lengths.
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let d = a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y));
+    core::hint::black_box(d) == 0
 }

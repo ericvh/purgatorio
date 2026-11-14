@@ -1,8 +1,10 @@
-//! import [-AS] [-k keyfile] [-9 tree] addr mtpt: dial `addr` and mount the
+//! import [-AS] [-C alg] [-k keyfile] [-9 tree] addr mtpt: dial `addr` and mount the
 //! 9P server there. The mount authenticates with `fauth` when the server
 //! asks, with the authinfo `keyfile` if given; `-A` skips authentication.
 //! `-S` requires the server to prove itself too, as `mount -S` does: with
-//! a key or certificate trusted for the host `addr` names.
+//! a key or certificate trusted for the host `addr` names. `-C alg` picks
+//! the key exchange as `mount -C` does (`x25519mlkem768` requires the
+//! post-quantum one).
 //!
 //! `-9 tree` (an addition) is for a Plan 9 `exportfs`, or `9export` here:
 //! before 9P, the name of the tree wanted is sent and the server's `OK`
@@ -12,12 +14,12 @@
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 
-use purgatorio::abi::mount::{MNOAUTH, MREPL, MSRVAUTH};
+use purgatorio::abi::mount::{MNOAUTH, MPQ, MREPL, MSRVAUTH};
 use purgatorio::arg::Arg;
 use purgatorio::dial;
 use purgatorio::{Context, Error};
 
-const USAGE: &str = "import [-AS] [-k keyfile] [-9 tree] addr mtpt";
+const USAGE: &str = "import [-AS] [-C alg] [-k keyfile] [-9 tree] addr mtpt";
 
 /// `exportfs`'s opening exchange on `fd`.
 fn plan9(fd: i32, tree: &str) -> Result<(), Error> {
@@ -49,6 +51,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             'A' => flags |= MNOAUTH,
             'S' => flags |= MSRVAUTH,
             'k' => keyfile = Some(arg.earg()?),
+            'C' => flags |= purgatorio::auth::kex_flags(&arg.earg()?)?,
             '9' => {
                 tree = Some(arg.earg()?);
                 flags |= MNOAUTH;
@@ -57,7 +60,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let rest = arg.argv();
-    if rest.len() != 2 || (flags & MNOAUTH != 0 && flags & MSRVAUTH != 0) {
+    if rest.len() != 2 || (flags & MNOAUTH != 0 && flags & (MSRVAUTH | MPQ) != 0) {
         return Err(Error(format!("usage: {USAGE}")));
     }
     let conn = dial::dial(&rest[0])?;

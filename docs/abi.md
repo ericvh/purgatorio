@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.9)
+# Purgatorio application ABI (v0.10)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.9`. The loader rejects a mismatched version. Modules
+section containing `0.10`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -103,7 +103,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.9
+## `purgatorio` imports in v0.10
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -326,7 +326,7 @@ The host writes `args` into a fresh page of the module's memory, the export
 overwrites that page with its result and returns the result length, and the
 host copies up to `olen` bytes of it to `out`.
 
-### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7, server proofs in v0.8, no trust by default in v0.9)
+### Authentication (M5; version 2 proofs in v0.6, version 3 and encryption in v0.7, server proofs in v0.8, no trust by default in v0.9, the post-quantum exchange in v0.10)
 
 A mount authenticates before `Tattach` with an Ed25519 signature over a
 challenge from the server. This is not Inferno's keyring protocol, so real
@@ -398,6 +398,15 @@ and a security review.
   `afd = -1` and `fauth` on its fd fail with `device or object already in
   use` (v0.9). Before, a second session raced the first one's reader for
   the replies.
+- `MPQ` (`0x1000_0000`, `-C x25519mlkem768`; v0.10) asks for the hybrid
+  X25519 + ML-KEM-768 exchange of a version 4 proof (`docs/auth.md`,
+  "Post-quantum options"). On `mount` with `afd = -1` the kernel reads
+  the long offer and fails with `no post-quantum key offered` when the
+  server gives none or asks for no proof; with an `afd` the mount fails
+  with `post-quantum key exchange required` unless its proof was version
+  4. On `export` it refuses every proof but version 4, and every attach
+  not on one, with `post-quantum key exchange required`, and implies
+  `export::ENCRYPT`. With `MNOAUTH` it is `bad arg in system call`.
 - With `afd = -1`, `mount` does all of this itself. A guest can instead run
   the exchange with `fauth` (below) and pass the auth fd to `mount`.
   `MNOAUTH` is ignored when an `afd` is given.
@@ -468,7 +477,14 @@ for a version 1 or 2 proof and a conversation in the clear; a read of 96
 that returns fewer bytes means the server offers no key. Since v0.8 the
 kernel makes one ephemeral key per auth fd: every read of the offer, from
 any thread, returns the same 96 bytes, so a read beside the write of the
-proof cannot change the key under it. Writing a proof
+proof cannot change the key under it. Since v0.10 a read of at least
+2368 bytes (`purg_abi::auth::SIGNED_PQ`) at offset 0 asks for the
+version 4 exchange: it gives the server's long offer followed by the
+kernel's ephemeral X25519 key and its ML-KEM-768 ciphertext, the bytes a
+version 4 proof signs, and fails with `no post-quantum key offered` (and
+keeps nothing) when the server offers no ML-KEM key. The first read that
+makes a key decides the exchange; a later read too short for its bytes
+fails with `bad arg in system call`. Writing a proof
 (above) completes the exchange. A wrong proof fails that write. The
 caller then calls `mount(fd, afd, ...)` with the same `aname`, which
 attaches with the auth fid. An `afd` that did not authenticate makes the attach fail with
