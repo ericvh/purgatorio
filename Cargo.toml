@@ -156,18 +156,28 @@ opt-level = 2
 
 # The same for the interpreter: guests run in it, and a debug wasmi runs
 # them ten times slower or more (Argon2 with the default cost takes over
-# a minute).
+# a minute). Without debug assertions too: wasmi's dispatch relies on
+# LLVM turning each instruction handler's call of the next into a jump,
+# and the standard library's debug checks (on `ptr::copy` and the like)
+# take the address of a local, which keeps the call a call. Every wasm
+# instruction then took a native frame until the prog's slice of fuel
+# ran out, 32 to 64 MiB of a prog's 64 MiB stack in the sh corpus, and
+# an emu died of the overflow (issue #239).
 [profile.dev.package.wasmi]
 opt-level = 2
+debug-assertions = false
 
 [profile.dev.package.wasmi_core]
 opt-level = 2
+debug-assertions = false
 
 [profile.dev.package.wasmi_ir]
 opt-level = 2
+debug-assertions = false
 
 [profile.dev.package.wasmi_collections]
 opt-level = 2
+debug-assertions = false
 
 [profile.wasm]
 inherits = "release"
