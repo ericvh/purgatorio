@@ -299,15 +299,16 @@ pub fn iounit(fd: i32) -> Result<usize, Error> {
 }
 
 /// `sys->bind` with flags from `abi::mount`.
-pub fn bind(name: &str, old: &str, flags: u32) -> Result<(), Error> {
-    check(unsafe { sys::bind(name.as_ptr(), name.len(), old.as_ptr(), old.len(), flags) }).map(drop)
+pub fn bind(name: &str, old: &str, flags: u32) -> Result<i32, Error> {
+    check(unsafe { sys::bind(name.as_ptr(), name.len(), old.as_ptr(), old.len(), flags) })
+        .map(|id| id as i32)
 }
 
 /// `sys->mount`. `afd` is -1, so the mount authenticates by itself (or not
 /// at all with `abi::mount::MNOAUTH`), or an fd from [`fauth`] on which the
 /// caller has already authenticated (see [`auth`]). `aname` is the attach
 /// name, often empty.
-pub fn mount(fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<(), Error> {
+pub fn mount(fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<i32, Error> {
     check(unsafe {
         sys::mount(
             fd,
@@ -319,7 +320,7 @@ pub fn mount(fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<()
             aname.len(),
         )
     })
-    .map(drop)
+    .map(|id| id as i32)
 }
 
 /// `sys->fauth`: starts authentication on the 9P conversation on `fd` for

@@ -622,7 +622,7 @@ fn through_relay(flag: &str, flags: u32, flip: Option<(bool, usize)>) -> Result<
         purgatorio::auth::amount(c.as_raw_fd(), &dir, MREPL | MCREATE | (flags & MNOAUTH), "")
             .map_err(|e| e.0);
     drop(c);
-    let used = mounted.clone().and_then(|()| {
+    let used = mounted.clone().and_then(|_| {
         let path = format!("{dir}/tmp/{WIRE_NAME}");
         let r = std::fs::write(&path, WIRE_DATA)
             .and_then(|()| std::fs::read(&path))

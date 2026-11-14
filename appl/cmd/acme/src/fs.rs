@@ -151,6 +151,7 @@ pub struct Fs {
 /// with acme.
 pub fn mount_helper() -> Result<(), Error> {
     purgatorio::mount(0, -1, MTPT, mount::MREPL | mount::MNOAUTH, "")
+        .map(drop)
         .map_err(|e| Error(format!("acme: cannot mount on {MTPT}: {e}")))
 }
 

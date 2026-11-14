@@ -789,8 +789,9 @@ pub fn authenticate_kx(
 
 /// Inferno's `amount`: mount the 9P conversation on `fd` at `old`,
 /// authenticating first when the server asks. With `abi::mount::MNOAUTH`
-/// in `flags` there is no `Tauth` at all.
-pub fn amount(fd: i32, old: &str, flags: u32, aname: &str) -> Result<(), Error> {
+/// in `flags` there is no `Tauth` at all. Returns the mount id, as
+/// [`crate::mount`] does.
+pub fn amount(fd: i32, old: &str, flags: u32, aname: &str) -> Result<i32, Error> {
     amount_key(fd, old, flags, aname, None)
 }
 
@@ -804,7 +805,7 @@ pub fn amount_key(
     flags: u32,
     aname: &str,
     keyfile: Option<&str>,
-) -> Result<(), Error> {
+) -> Result<i32, Error> {
     amount_host(fd, old, flags, aname, keyfile, None)
 }
 
@@ -819,7 +820,7 @@ pub fn amount_host(
     aname: &str,
     keyfile: Option<&str>,
     host: Option<&str>,
-) -> Result<(), Error> {
+) -> Result<i32, Error> {
     amount_kx(
         fd,
         old,
@@ -840,7 +841,7 @@ pub fn amount_kx(
     keyfile: Option<&str>,
     host: Option<&str>,
     kx: Kx,
-) -> Result<(), Error> {
+) -> Result<i32, Error> {
     if flags & abi::mount::MNOAUTH != 0 {
         return crate::mount(fd, -1, old, flags, aname);
     }

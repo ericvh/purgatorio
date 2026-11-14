@@ -172,6 +172,18 @@ fn fauth_stream_errors() -> Result<(), String> {
     expect_errstr(abi::error::EBADARG)
 }
 
+/// bind returns the new entry's mount id: positive, and larger for a
+/// later mount, as Inferno's sys-bind(2) says.
+fn bind_mount_id() -> Result<(), String> {
+    purgatorio::pctl(abi::pctl::FORKNS, &[]).map_err(|e| e.0)?;
+    let a = purgatorio::bind("/lib", "/lib", abi::mount::MREPL).map_err(|e| e.0)?;
+    let b = purgatorio::bind("/lib", "/lib", abi::mount::MREPL).map_err(|e| e.0)?;
+    if a <= 0 || b <= a {
+        return Err(format!("mount ids {a} then {b}"));
+    }
+    Ok(())
+}
+
 #[purgatorio::main]
 fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
     let checks: &[(&str, Check)] = &[
@@ -185,6 +197,7 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
         ("dirread_root", dirread_root),
         ("werrstr_roundtrip", werrstr_roundtrip),
         ("fauth_stream_errors", fauth_stream_errors),
+        ("bind_mount_id", bind_mount_id),
     ];
     let mut failed = false;
     for (name, check) in checks {

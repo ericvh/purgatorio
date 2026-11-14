@@ -145,5 +145,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     clone.read_to_string(&mut id).map_err(Error::from)?;
     let src = format!("#λ{}", id.trim());
     purgatorio::bind(&src, &rest[1], order | create)
+        .map(drop)
         .map_err(|e| Error(format!("cannot bind {src} on {}: {e}", rest[1])))
 }

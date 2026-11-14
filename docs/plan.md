@@ -254,7 +254,7 @@ Why p1 and not p2 or p3? WASI p2 and later require the Component Model, which wa
 #### Shared conventions
 
 - Fds are one table: the prog's `Fgrp`. WASI fds and `purgatorio` fds are the same integers, and fds 0, 1, and 2 are the standard streams.
-- **Preopens:** fd 3 is preopened as `/` (the prog's namespace root). fd 4 is preopened as `.`, a *live* handle that always resolves to the prog's current dot, so `purgatorio.chdir` takes effect for relative paths opened by wasi-libc and Rust std. `path_open(dirfd, path)` resolves `path` with `namec` relative to the `Chan` behind `dirfd`, so bind and mount unions apply. Absolute paths are routed by wasi-libc to the `/` preopen.
+- **Preopens:** fd 3 is preopened as `.`, a *live* handle that always resolves to the prog's current dot, so `purgatorio.chdir` takes effect for relative paths opened by wasi-libc and Rust std. fd 4 is preopened as `/` (the prog's namespace root); wasi-libc prefers the preopen registered last, so absolute names resolve from the root. `path_open(dirfd, path)` resolves `path` with `namec` relative to the `Chan` behind `dirfd`, so bind and mount unions apply. `docs/abi.md` is the reference.
 - **Errors:** WASI calls return an errno. The host also records the **exact Inferno error string** (`"file does not exist"`, `"permission denied"`, `"interrupted"`, `"i/o on hungup channel"`, …) in the prog's errstr. `purgatorio.errstr` fetches it, and the SDK's `Error` always carries the string. A fixed table maps strings to errnos (ENOENT, EACCES, EINTR, EPIPE, EEXIST, ENOTDIR, EISDIR, EBADF, EFAULT, EINVAL, ENOSPC, and EIO as the fallback). Unknown strings (for example from a remote Styx server) map to EIO, and the string is preserved. Plain Rust std code therefore gets usable `io::ErrorKind`s, and Inferno-aware code gets the exact text.
 - `purgatorio` calls return `-1` on error and set errstr, as Inferno does. Pointers are `u32` offsets into the exported `memory`. Strings are `(ptr, len)` UTF-8.
 - Seek whence values are identical in both worlds: Inferno `SEEKSTART/SEEKRELA/SEEKEND` = WASI `set/cur/end` = 0/1/2.
@@ -303,7 +303,7 @@ Why p1 and not p2 or p3? WASI p2 and later require the Component Model, which wa
 Other WASI p1 functions implemented for `std` compatibility:
 
 - Implemented directly: `fd_fdstat_get`/`set_flags` (append only), `fd_prestat_get`/`dir_name`, `fd_sync`/`fd_datasync` (null-Dir wstat), and `sched_yield`.
-- Return `ENOTSUP`: `fd_advise`, `fd_allocate`, `path_link`, `path_symlink`, `path_readlink`, and `proc_raise`. Inferno has no links, and `#U` follows host symlinks transparently.
+- Return `ENOTSUP`: `path_link`, `path_symlink` and `path_readlink`. Inferno has no links, and `#U` follows host symlinks transparently. `fd_advise` checks its arguments and does nothing, `fd_allocate` grows the file, and `proc_raise` kills the prog (`docs/abi.md`, "WASI p1 functions implemented").
 
 #### `purgatorio` import module (v0)
 

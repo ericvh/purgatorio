@@ -19,6 +19,7 @@ ok fstat_stdout
 ok dirread_root
 ok werrstr_roundtrip
 ok fauth_stream_errors
+ok bind_mount_id
 probe: ok
 probe: run /bin/test/procs.wasm
 ok spawn_echo

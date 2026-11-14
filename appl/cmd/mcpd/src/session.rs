@@ -1113,7 +1113,7 @@ fn call(name: &str, args: &Value) -> Result<Value, String> {
             let (from, to) = (s("from").unwrap_or(""), s("to").unwrap_or(""));
             let flags = order(s("order")) | create(args);
             purgatorio::bind(from, to, flags)
-                .map(|()| obj([("ok", true.into())]))
+                .map(|_| obj([("ok", true.into())]))
                 .map_err(|e| format!("bind: cannot bind {from} on {to}: {e}"))
         }
         "unmount" => {
