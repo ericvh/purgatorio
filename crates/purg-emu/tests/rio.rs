@@ -449,8 +449,11 @@ fn run(vm: &str) {
     p.drag((w1.0, w1.1), (w1.2, w1.3), 4);
     p.see("the new window", |s| s.at(w1.0 + 1, w1.1 + 20) == FOCUS);
     p.typed("echo hello\n");
+    // On a slow host the first `cat` can be typed before echo prints, and
+    // its line then shows above `hello`, as rio shows a line typed ahead:
+    // look for the output line, not for it right after the command.
     let text = p.until("cat /dev/text", "echo's output", |t| {
-        t.contains("echo hello\nhello\n")
+        t.contains("; echo hello\n") && t.lines().any(|l| l == "hello")
     });
     assert!(text.contains("; cat /dev/text"), "{vm}: {text:?}");
     assert_eq!(p.run("cat /dev/winid").trim(), "1", "{vm}");
