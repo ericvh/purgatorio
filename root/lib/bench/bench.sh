@@ -8,8 +8,9 @@
 # purgfs on virtio-blk, on the kernel only, when xtask attached a disk
 # holding `big`. Styx mounts are an export over a pipe, in the clear and
 # encrypted with the test key. mount-sealed-10 and mount-pq-10 time ten
-# authenticated mounts each, with the classical and the hybrid
-# post-quantum key exchange (docs/auth.md, "Post-quantum options");
+# authenticated mounts each, with the classical (-C x25519) and the hybrid
+# post-quantum key exchange, the default (docs/auth.md, "Post-quantum
+# options");
 # mount-pqsig-10 the same with hybrid Ed25519 + ML-DSA-65 signatures
 # both ways (docs/auth.md, "Post-quantum signatures").
 load std
@@ -67,7 +68,7 @@ for r in $rounds {
 	kp; echo -n 'bench sha1-file-16m '; time sha1sum $d/src/c16 >[2=1] >/dev/null; kpsave sha1-file-16m
 	echo -n 'bench sh-builtin-10k '; time sh -c 'load std; ten=(0 1 2 3 4 5 6 7 8 9); for a in $ten {for b in $ten {for c in $ten {for e in $ten {x=$e}}}}' >[2=1] >/dev/null
 	echo -n 'bench sh-spawn-1k '; time sh -c 'load std; ten=(0 1 2 3 4 5 6 7 8 9); for a in $ten {for b in $ten {for c in $ten {echo -n}}}' >[2=1] >/dev/null
-	echo -n 'bench mount-sealed-10 '; time sh -c 'load std; for i in 0 1 2 3 4 5 6 7 8 9 {mount -k $d/info {export -e $d/src} $d/m; unmount $d/m}' >[2=1] >/dev/null
+	echo -n 'bench mount-sealed-10 '; time sh -c 'load std; for i in 0 1 2 3 4 5 6 7 8 9 {mount -C x25519 -k $d/info {export -e $d/src} $d/m; unmount $d/m}' >[2=1] >/dev/null
 	echo -n 'bench mount-pq-10 '; time sh -c 'load std; for i in 0 1 2 3 4 5 6 7 8 9 {mount -C x25519mlkem768 -k $d/info {export -C x25519mlkem768 $d/src} $d/m; unmount $d/m}' >[2=1] >/dev/null
 	echo -n 'bench mount-pqsig-10 '; time sh -c 'load std; for i in 0 1 2 3 4 5 6 7 8 9 {mount -C mldsa65 -k $d/hinfo {export -C mldsa65 -k $d/hinfo $d/src} $d/m; unmount $d/m}' >[2=1] >/dev/null
 	/bin/test/bench.wasm spawn spawn-1k 1000

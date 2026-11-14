@@ -133,10 +133,42 @@ fn safe_user(user: &str) -> bool {
     !user.is_empty() && user != "." && user != ".." && !user.contains('/')
 }
 
-/// The classical key exchange (X25519), the default.
+/// The classical key exchange (X25519) alone: `-C x25519`.
 pub const KEX_CLASSICAL: &str = "x25519";
-/// The hybrid post-quantum key exchange, X25519 with ML-KEM-768.
+/// The hybrid post-quantum key exchange, X25519 with ML-KEM-768: the
+/// default with a server that offers it, and required with `-C
+/// x25519mlkem768`.
 pub const KEX_PQ: &str = "x25519mlkem768";
+
+/// Which key exchange a client uses (`docs/auth.md`, "The default
+/// exchange").
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Kx {
+    /// `-C x25519`: version 3 only; the long offer is not asked for.
+    Classical,
+    /// The default: version 4 when the server offers it, version 3 with
+    /// a server that cannot, and an error when the server could have
+    /// offered it and the offer arrived without it.
+    #[default]
+    Auto,
+    /// `-C x25519mlkem768` (`abi::mount::MPQ`): version 4 or nothing.
+    Require,
+}
+
+impl Kx {
+    /// The exchange a `-C` argument names, when it names one, or for a
+    /// mount's flags: [`Kx::Require`] with `abi::mount::MPQ`, else the
+    /// default.
+    pub fn from_alg(alg: Option<&str>, flags: u32) -> Kx {
+        if flags & abi::mount::MPQ != 0 {
+            return Kx::Require;
+        }
+        match alg {
+            Some(a) if a.split('/').any(|n| n == KEX_CLASSICAL) => Kx::Classical,
+            _ => Kx::Auto,
+        }
+    }
+}
 
 /// The classical signature (Ed25519), the default.
 pub const SIG_CLASSICAL: &str = "ed25519";
@@ -689,6 +721,19 @@ pub fn authenticate_opts(
     pq: bool,
     hybrid: bool,
 ) -> Result<(), Error> {
+    let kx = if pq { Kx::Require } else { Kx::Auto };
+    authenticate_kx(afd, user, aname, keyfile, kx, hybrid)
+}
+
+/// [`authenticate_opts`] with the key exchange `kx`.
+pub fn authenticate_kx(
+    afd: &OwnedFd,
+    user: &str,
+    aname: &str,
+    keyfile: Option<&str>,
+    kx: Kx,
+    hybrid: bool,
+) -> Result<(), Error> {
     // SAFETY: `afd` stays open for this call, and ManuallyDrop keeps the
     // File from closing it.
     let mut f = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(afd.as_raw_fd()) });
@@ -696,21 +741,43 @@ pub fn authenticate_opts(
     // and its own ephemeral key. Anything shorter is a server that offers
     // no session key, and is refused rather than spoken to in the clear.
     // A read of SIGNED_PQ bytes asks for the long offer, and the kernel
-    // fails it when the server gives none.
-    let want = if pq {
-        abi::auth::SIGNED_PQ
-    } else {
-        abi::auth::SIGNED
+    // fails it when the server gives none. After that failure a read of
+    // SIGNED bytes gets the short offer, unless the server's challenge
+    // said it would have given the long one: the kernel then refuses
+    // every offer (`docs/auth.md`, "The default exchange").
+    let mut signed = vec![0u8; abi::auth::SIGNED_PQ];
+    let n = match kx {
+        Kx::Classical => 0,
+        Kx::Auto | Kx::Require => match f.read(&mut signed) {
+            Ok(n) => n,
+            Err(e) => {
+                let e = Error::from(e);
+                if kx == Kx::Require || e.0 != abi::auth::NO_PQ {
+                    return Err(e);
+                }
+                0
+            }
+        },
     };
-    let mut signed = vec![0u8; want];
-    let n = f.read(&mut signed)?;
-    if n != want {
-        return Err(Error::from(if pq {
+    let n = if n == 0 {
+        if kx == Kx::Require {
+            return Err(Error::from(abi::auth::NO_PQ));
+        }
+        f.read(&mut signed[..abi::auth::SIGNED])?
+    } else {
+        n
+    };
+    if n != abi::auth::SIGNED_PQ && n != abi::auth::SIGNED {
+        return Err(Error::from(if kx == Kx::Require {
             abi::auth::NO_PQ
         } else {
             abi::auth::NO_SESSION
         }));
     }
+    if kx == Kx::Require && n != abi::auth::SIGNED_PQ {
+        return Err(Error::from(abi::auth::NO_PQ));
+    }
+    signed.truncate(n);
     let p = proof_with(&signed, user, aname, keyfile, hybrid)?;
     // The proof is one write.
     let n = f.write(&p)?;
@@ -753,14 +820,34 @@ pub fn amount_host(
     keyfile: Option<&str>,
     host: Option<&str>,
 ) -> Result<(), Error> {
+    amount_kx(
+        fd,
+        old,
+        flags,
+        aname,
+        keyfile,
+        host,
+        Kx::from_alg(None, flags),
+    )
+}
+
+/// [`amount_host`] with the key exchange `kx` ([`Kx::from_alg`]).
+pub fn amount_kx(
+    fd: i32,
+    old: &str,
+    flags: u32,
+    aname: &str,
+    keyfile: Option<&str>,
+    host: Option<&str>,
+    kx: Kx,
+) -> Result<(), Error> {
     if flags & abi::mount::MNOAUTH != 0 {
         return crate::mount(fd, -1, old, flags, aname);
     }
     match crate::fauth(fd, aname) {
         Ok(afd) => {
-            let pq = flags & abi::mount::MPQ != 0;
             let hybrid = flags & abi::mount::MPQSIG != 0;
-            authenticate_opts(&afd, &user(), aname, keyfile, pq, hybrid)?;
+            authenticate_kx(&afd, &user(), aname, keyfile, kx, hybrid)?;
             if flags & (abi::mount::MSRVAUTH | abi::mount::MPQSIG) != 0 && host.is_some() {
                 check_server_fd_with(&afd, host, hybrid)?;
             }

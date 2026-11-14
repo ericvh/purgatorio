@@ -72,6 +72,10 @@ struct Kx {
     /// of it. Every later read gives the same bytes, so a read from
     /// another thread cannot change the key under a proof being written.
     client: Option<session::Client>,
+    /// A read of the long offer got the short one from a server whose
+    /// challenge says it can do version 4 ([`session::offers_pq`]):
+    /// something on the way cut the offer, so no offer is given after it.
+    stripped: bool,
 }
 
 /// The conversations (by their fd's Chan) that went to records. One of
@@ -399,6 +403,9 @@ impl Session {
             buf[..n].copy_from_slice(&c.signed);
             return Ok(n);
         }
+        if self.kx.lock().as_ref().is_some_and(|k| k.stripped) {
+            return Err(Error::new(NO_PQ));
+        }
         let pq = buf.len() >= SIGNED_PQ;
         let reply = self.rpc(Fcall::Tread {
             fid: AUTH_FID,
@@ -411,6 +418,15 @@ impl Session {
         };
         let client = if pq {
             if data.len() != OFFER_PQ || self.sealed() {
+                // A guest that does not require the hybrid exchange may
+                // read the short offer next, unless this one says the
+                // server would have given the long one.
+                if data.len() == OFFER
+                    && session::offers_pq(data)
+                    && let Some(k) = self.kx.lock().as_mut()
+                {
+                    k.stripped = true;
+                }
                 return Err(Error::new(NO_PQ));
             }
             self.client_pq(data)?
@@ -642,9 +658,13 @@ impl Session {
     /// proof on. A server that offers no key is refused, so nothing on
     /// the way can strip the offer and keep the conversation in the clear.
     ///
-    /// With `pq` the exchange is version 4: the long offer, with the
-    /// server's ML-KEM-768 key, is read, and a server that does not give
-    /// it is refused with [`NO_PQ`].
+    /// The long offer, with the server's ML-KEM-768 key, is always asked
+    /// for, and the exchange is version 4 when the server gives it. With
+    /// `pq` a server that does not is refused with [`NO_PQ`]. Without it a
+    /// server that gives the short offer gets version 3, unless its
+    /// challenge says it can do version 4 ([`session::offers_pq`]): then
+    /// the long offer was cut on the way, and that too is [`NO_PQ`]
+    /// (`docs/auth.md`, "The default exchange").
     fn authenticate(
         &self,
         user: &str,
@@ -667,16 +687,19 @@ impl Session {
         let buf = self.rpc(Fcall::Tread {
             fid: AFID,
             offset: 0,
-            count: if pq { OFFER_PQ } else { OFFER } as u32,
+            count: OFFER_PQ as u32,
         })?;
         let client = match self.decode(&buf)? {
-            Fcall::Rread { data } if pq && data.len() == OFFER_PQ => self.client_pq(data)?,
+            Fcall::Rread { data } if data.len() == OFFER_PQ => self.client_pq(data)?,
             Fcall::Rread { data }
                 if pq && (data.len() == OFFER || data.len() == auth::CHALLENGE) =>
             {
                 return Err(Error::new(NO_PQ));
             }
-            Fcall::Rread { data } if !pq && data.len() == OFFER => {
+            Fcall::Rread { data } if data.len() == OFFER && session::offers_pq(data) => {
+                return Err(Error::new(NO_PQ));
+            }
+            Fcall::Rread { data } if data.len() == OFFER => {
                 let offer: &[u8; OFFER] = data.try_into().map_err(|_| Error::new(error::EIO))?;
                 self.client(offer)?
             }
@@ -980,6 +1003,7 @@ impl DevMnt {
             user: String::from(user),
             aname: String::from(aname),
             client: None,
+            stripped: false,
         });
         let aux = MntFile::new(&session, AUTH_FID, aname);
         aux.settle.store(true, Ordering::Release);

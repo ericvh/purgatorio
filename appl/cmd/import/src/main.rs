@@ -4,8 +4,9 @@
 //! `-S` requires the server to prove itself too, as `mount -S` does: with
 //! a key or certificate trusted for the host `addr` names. `-C alg` picks
 //! the key exchange and the signatures as `mount -C` does
-//! (`x25519mlkem768` requires the post-quantum exchange, `mldsa65` hybrid
-//! signatures from the server).
+//! (by default the hybrid post-quantum exchange when the server offers
+//! it; `x25519mlkem768` requires it, `x25519` asks for X25519 alone,
+//! `mldsa65` requires hybrid signatures from the server).
 //!
 //! `-9 tree` (an addition) is for a Plan 9 `exportfs`, or `9export` here:
 //! before 9P, the name of the tree wanted is sent and the server's `OK`
@@ -47,12 +48,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut flags = MREPL;
     let mut keyfile = None;
     let mut tree = None;
+    let mut alg = None;
     while let Some(c) = arg.opt() {
         match c {
             'A' => flags |= MNOAUTH,
             'S' => flags |= MSRVAUTH,
             'k' => keyfile = Some(arg.earg()?),
-            'C' => flags |= purgatorio::auth::kex_flags(&arg.earg()?)?,
+            'C' => {
+                let a = arg.earg()?;
+                flags |= purgatorio::auth::kex_flags(&a)?;
+                alg = Some(a);
+            }
             '9' => {
                 tree = Some(arg.earg()?);
                 flags |= MNOAUTH;
@@ -74,7 +80,16 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         plan9(fd, &tree)?;
     }
     let host = dial::host(&rest[0]);
-    purgatorio::auth::amount_host(fd, &rest[1], flags, "", keyfile.as_deref(), host.as_deref())?;
+    let kx = purgatorio::auth::Kx::from_alg(alg.as_deref(), flags);
+    purgatorio::auth::amount_kx(
+        fd,
+        &rest[1],
+        flags,
+        "",
+        keyfile.as_deref(),
+        host.as_deref(),
+        kx,
+    )?;
     drop(conn);
     Ok(())
 }

@@ -11,9 +11,11 @@
 //! the authinfo `keyfile` (an addition), or else this user's default key.
 //! `-C x25519mlkem768` (an addition) serves only conversations on the
 //! hybrid post-quantum exchange: any other proof, or an attach without
-//! one, fails with `post-quantum key exchange required`. Without it a
-//! client may still choose that exchange (`docs/auth.md`, "Post-quantum
-//! options"). `-C mldsa65` takes only proofs signed with a hybrid
+//! one, fails with `post-quantum key exchange required`. Without it the
+//! server offers that exchange to every client that asks, which current
+//! clients do by default (`docs/auth.md`, "The default exchange"), and
+//! takes the older ones from older clients. `-C x25519` names that
+//! default. `-C mldsa65` takes only proofs signed with a hybrid
 //! Ed25519 + ML-DSA-65 key or certificate; any other fails with `post-quantum
 //! signature required` (`docs/auth.md`, "Post-quantum signatures").
 //! Names are joined with `/`: `-C x25519mlkem768/mldsa65`.
