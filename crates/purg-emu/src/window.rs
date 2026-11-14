@@ -8,6 +8,9 @@
 //! [`EventLoopProxy`]. The loop copies only what changed into the
 //! window's buffer and presents that damage. Pointer and keyboard events
 //! go into the screen's [`Input`], which `#m` and `#c/keyboard` read.
+//! The snarf buffer (`#^`) reaches the host's clipboard through
+//! `host::clipboard_get` and `clipboard_put`, where the host code has
+//! one (macOS); prog threads call them directly.
 //!
 //! The user may resize the window. The screen then takes the window's
 //! new size (in screen pixels) and the draw device is told through
@@ -166,6 +169,16 @@ impl Screen for WindowScreen {
 
     fn set_pointer(&self, x: i32, y: i32) {
         self.send(Event::Warp(x, y));
+    }
+
+    /// The host's clipboard, where the host code reaches one (macOS);
+    /// otherwise `#^` keeps its own buffer.
+    fn snarf_get(&self) -> Option<String> {
+        crate::host::clipboard_get()
+    }
+
+    fn snarf_put(&self, text: &str) -> bool {
+        crate::host::clipboard_put(text)
     }
 }
 
