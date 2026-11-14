@@ -1,8 +1,8 @@
 //! auth/factotum [-m mntpt] [-s authinfo] [authinfo ...]: the
 //! authentication agent, with Plan 9's `ctl` and `rpc` files at `mntpt`
 //! (default `/mnt/factotum`). Each authinfo named is loaded as an
-//! `ed25519` key; `-s` loads one as the key for server proofs
-//! (`role=server`).
+//! `ed25519` key, and each `crypt -g` key file as an `mlkem768x25519` key;
+//! `-s` loads an authinfo as the key for server proofs (`role=server`).
 //!
 //! `ctl` takes lines of attributes; a name starting with `!` is secret and
 //! never read back:
@@ -10,6 +10,7 @@
 //! ```text
 //! key proto=ed25519 [user=<name>] [role=<role>] !seed=<hex> [cert='<pgcert1 line>']
 //! key proto=pass server=<addr> user=<name> !password=<password>
+//! key proto=mlkem768x25519 !secret=<hex>
 //! delkey proto=<proto> [attr=value ...]
 //! ```
 //!
@@ -26,7 +27,11 @@
 //! version 3 server's proof for that session (`docs/auth.md`, "Server
 //! authentication"), again over a message factotum builds. For `pass`,
 //! `start proto=pass server=<s> [user=<u>]`, then `read` gives `ok <user>
-//! <password>`, quoted.
+//! <password>`, quoted. For `mlkem768x25519` (a `crypt -g` key, loaded
+//! from its key file or with `ctl`), `start proto=mlkem768x25519`, then
+//! `write <header>`, the header of a file `crypt -r` encrypted to the key,
+//! then `read` gives `ok <key>`, that file's 32-byte key
+//! (`purg_auth::hybrid`); it decapsulates nothing but `crypt` headers.
 //!
 //! An `ed25519` key with a `role` (`client`, `server` or `modsign`)
 //! serves only that role; one without serves every role. A `start`
@@ -48,6 +53,9 @@ const USAGE: &str = "auth/factotum [-m mntpt] [-s authinfo] [authinfo ...]";
 /// The roles an `ed25519` key can be kept for.
 const ROLES: &[&str] = &["client", "server", "modsign"];
 
+/// The proto of `crypt`'s hybrid keys.
+const KEM: &str = "mlkem768x25519";
+
 enum Key {
     Ed {
         user: Option<String>,
@@ -61,6 +69,8 @@ enum Key {
         user: String,
         password: String,
     },
+    /// A hybrid X25519 + ML-KEM-768 key for `crypt`'s public-key mode.
+    Kem(Box<fmt::hybrid::Secret>),
 }
 
 impl Key {
@@ -68,6 +78,7 @@ impl Key {
         match self {
             Key::Ed { .. } => "ed25519",
             Key::Pass { .. } => "pass",
+            Key::Kem(_) => KEM,
         }
     }
 
@@ -92,6 +103,12 @@ impl Key {
                 a.push((String::from("server"), server.clone()));
                 a.push((String::from("user"), user.clone()));
             }
+            Key::Kem(k) => {
+                a.push((
+                    String::from("id"),
+                    hex::encode(&fmt::hybrid::id(&k.public())),
+                ));
+            }
         }
         a
     }
@@ -104,6 +121,7 @@ impl Key {
         s.push_str(match self {
             Key::Ed { .. } => " !seed?",
             Key::Pass { .. } => " !password?",
+            Key::Kem(_) => " !secret?",
         });
         s.push('\n');
         s
@@ -113,7 +131,7 @@ impl Key {
     fn role(&self) -> Option<&str> {
         match self {
             Key::Ed { role, .. } => role.as_deref(),
-            Key::Pass { .. } => None,
+            Key::Pass { .. } | Key::Kem(_) => None,
         }
     }
 
@@ -168,6 +186,12 @@ fn parse_key(attrs: &[(String, String)]) -> Result<Key, String> {
             user: String::from(get("user").ok_or("missing user")?),
             password: String::from(get("!password").ok_or("missing !password")?),
         }),
+        Some(KEM) => {
+            let b = get("!secret")
+                .and_then(|s| hex::array::<{ fmt::hybrid::SECRET }>(s.as_bytes()))
+                .ok_or_else(|| String::from("missing or bad !secret"))?;
+            Ok(Key::Kem(Box::new(fmt::hybrid::Secret::from_bytes(&b))))
+        }
         Some(p) => Err(format!("unknown proto {p}")),
         None => Err(String::from("missing proto")),
     }
@@ -264,7 +288,7 @@ impl Factotum {
                 }
             }
             b"write" => match &rpc.started {
-                Some((i, _)) if matches!(keys.get(*i), Some(Key::Ed { .. })) => {
+                Some((i, _)) if matches!(keys.get(*i), Some(Key::Ed { .. } | Key::Kem(_))) => {
                     rpc.challenge = Some(arg.to_vec());
                     b"ok".to_vec()
                 }
@@ -298,6 +322,19 @@ impl Factotum {
                     }
                     Some(Key::Pass { user, password, .. }) => {
                         format!("ok {} {}", quote(user), quote(password)).into_bytes()
+                    }
+                    Some(Key::Kem(k)) => {
+                        let Some(header) = &rpc.challenge else {
+                            return b"error phase error".to_vec();
+                        };
+                        match k.open(header) {
+                            Ok(key) => {
+                                let mut out = b"ok ".to_vec();
+                                out.extend_from_slice(&key);
+                                out
+                            }
+                            Err(e) => format!("error {e}").into_bytes(),
+                        }
                     }
                     None => b"error key gone".to_vec(),
                 }
@@ -423,8 +460,17 @@ impl Files for Factotum {
 }
 
 /// The `ctl` line that loads the authinfo at `path`, kept for `role` if
-/// given.
+/// given. A `crypt -g` key file loads as an `mlkem768x25519` key.
 fn authinfo_line(path: &str, role: Option<&str>) -> Result<String, Error> {
+    if role.is_none()
+        && let Ok(text) = std::fs::read(path)
+        && text.starts_with(fmt::hybrid::SECRET_WORD.as_bytes())
+    {
+        let k = fmt::hybrid::Secret::parse(&text).map_err(|e| Error(format!("{path}: {e}")))?;
+        let line = k.encode();
+        let hexpart = line.split_once(' ').map_or("", |(_, h)| h);
+        return Ok(format!("key proto={KEM} !secret={hexpart}\n"));
+    }
     let info: AuthInfo = purgatorio::auth::read_authinfo(path)?;
     let role = role.map(|r| format!(" role={r}")).unwrap_or_default();
     Ok(format!(
