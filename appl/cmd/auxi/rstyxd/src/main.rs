@@ -123,7 +123,16 @@ struct Hello<'a> {
 /// The opening exchange. Returns the EXEC flags, the command and the link
 /// the rest goes over, or the reason the client was refused (already sent
 /// to it).
-fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
+/// What a client that got in asked for.
+struct Call {
+    flags: u8,
+    cmd: String,
+    link: Link,
+    /// The user the client proved; `None` when it proved nothing (`-A`).
+    user: Option<String>,
+}
+
+fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<Call, String> {
     let noauth = h.noauth;
     let refuse = |net: &mut Fd, why: &str| {
         let _ = net.write_all(&frame(kind::ERR, why.as_bytes()));
@@ -202,9 +211,12 @@ fn hello(net: &mut Fd, h: &Hello<'_>) -> Result<(u8, String, Link), String> {
     net.write_all(&frame(kind::OK, &mine))
         .map_err(|_| String::from(proto::EHUNGUP))?;
     match link.read(net)? {
-        (kind::EXEC, d) if !d.is_empty() => {
-            Ok((d[0], String::from_utf8_lossy(&d[1..]).into_owned(), link))
-        }
+        (kind::EXEC, d) if !d.is_empty() => Ok(Call {
+            flags: d[0],
+            cmd: String::from_utf8_lossy(&d[1..]).into_owned(),
+            link,
+            user: offer.is_some().then(|| String::from(uname)),
+        }),
         // A refusal now would be in the clear on a sealed link; just go.
         _ => Err(String::from(EPROTO)),
     }
@@ -276,7 +288,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         pq,
         pqsig,
     };
-    let Ok((flags, cmd, mut link)) = hello(&mut net, &h) else {
+    let Ok(Call {
+        flags,
+        cmd,
+        mut link,
+        user,
+    }) = hello(&mut net, &h)
+    else {
         // The client has the reason; a refused client is not an error here.
         return Ok(());
     };
@@ -315,6 +333,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         String::from("--session"),
         flags.to_string(),
         keyfile,
+        user.unwrap_or_default(),
         cmd,
     ];
     // Its own process group, so that the command and all it starts can be

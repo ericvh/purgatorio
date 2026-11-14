@@ -2,7 +2,7 @@
 # runs a command for a client that proved who it is, with the client's
 # namespace on /n/client. Standard input, output and error and the exit
 # status are carried; a command that ignores its input does not stall
-# the session. cpu binds the caller's /dev before the remote one. Then
+# the session, and the command runs as the client's user. cpu binds the caller's /dev before the remote one. Then
 # with certificates: a signer both ends trust, another they do not, and
 # a client with no proof. The first part trusts the test keys, bound on
 # /lib/keys.
@@ -22,6 +22,8 @@ echo status $status
 cat $d/work/g
 rcmd $a echo 'a  b' 'it''s' c </dev/null
 echo status $status
+# The command runs as the user the client proved (rstyxd(8)).
+runas bob rcmd $a 'cat /dev/user; echo' </dev/null
 # More input than the pipes hold, to a command that never reads it.
 {cat /bin/sh.wasm /bin/sh.wasm | rcmd $a 'cmp /n/client/bin/sh.wasm /bin/sh.wasm && echo same'} >[2] /dev/null
 rcmd $a 'cat /bin/sh.wasm' </dev/null > $d/work/copy
@@ -56,6 +58,9 @@ lpid=$apid
 while {! test -s $d/l3} {sleep 0}
 a=tcp!`{sed 's/styxlisten: //' $d/l3}
 rcmd -A $a echo open </dev/null
+# With no proof the command runs as rstyxd's own user.
+x=`{runas bob rcmd -A $a cat /dev/user </dev/null}
+if {~ $x $u} {echo server user}
 kill $lpid
 unmount $d/lib /lib
 rm -rf $d
