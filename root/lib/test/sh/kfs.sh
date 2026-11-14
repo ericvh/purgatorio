@@ -7,9 +7,11 @@ mkdir -p $d/n
 cd $d
 # #s is shared by everything running: a console name of this run's own.
 c=t`{cat /dev/pid}
-# 512-byte blocks hold 504 bytes and 126 block numbers, so ls.wasm needs
-# the double indirect block.
+# 512-byte blocks hold 504 bytes and 126 block numbers, so a file of
+# 90,000 bytes needs the double indirect block. It is made here, not
+# copied from /bin, so the output does not change when a command does.
 zeros 512 400 > kfs.file
+zeros -v 5a 1000 90 > big
 echo ream
 mount -c {disk/kfs -r -b 512 -n $c kfs.file} n
 mkdir n/adm n/dir
@@ -20,9 +22,9 @@ echo '-1:adm:adm:
 101:dev:glenda:glenda' > n/adm/users
 disk/kfscmd -n $c users
 echo hello > n/dir/hello
-cp /bin/ls.wasm n/ls
+cp big n/ls
 chmod 644 n/ls
-cmp /bin/ls.wasm n/ls && echo same
+cmp big n/ls && echo same
 ls n n/dir
 echo more >> n/dir/hello
 cat n/dir/hello
@@ -42,7 +44,7 @@ disk/kfscmd -n $c allowoff allow sync
 unmount n
 echo again
 mount -c {disk/kfs -n $c kfs.file} n
-cmp /bin/ls.wasm n/ls && echo same
+cmp big n/ls && echo same
 ls -l n | sed 's/^([^ ]+) . [0-9]+ [^ ]+ [^ ]+ +([0-9]+) .* ([^ ]+)$/\1 \2 \3/'
 rm n/ls
 disk/kfscmd -n $c 'check q'
