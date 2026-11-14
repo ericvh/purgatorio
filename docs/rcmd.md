@@ -62,9 +62,15 @@ auxi/cpuslave [command [arg...]]
 - `cpu` sends `auxi/cpuslave command` as its command. The slave binds
   `/n/client/dev` before `/dev` in its own namespace and runs the command.
 
-The command runs under `sh -c` as the user `rstyxd` runs as (there is no
-way to change user yet), in a copy of `rstyxd`'s namespace and
-environment and in its own process group. When the command exits, what
+The command runs under `sh -c` as the user the client proved, as
+rstyxd(8) says: the session writes that name to `/dev/user` after it
+has mounted `/n/client`, which it does as `rstyxd`'s own user. A client
+that proved nothing (a server started with `-A`) runs its command as
+`rstyxd`'s user. Changing user needs `rstyxd` to run as the host owner
+(`docs/auth.md`, "Users"); otherwise the command does not run and the
+client gets `can't set user name: permission denied`. The command runs
+in a copy of `rstyxd`'s namespace and environment and in its own process
+group. When the command exits, what
 is left of its group is killed: a program that should outlive the session
 must leave the group.
 
@@ -300,7 +306,6 @@ in its own prog on the client.
   (and, without `-S`, gets `/n/client` without a second handshake only
   when it proved the host dialled). The host is the dial string's, as
   written: a certificate for `fs.example` does not prove `10.0.0.5`.
-- The remote command runs as the server's user.
 - The client's namespace is served by the kernel's `export`, which
   serves requests concurrently, so a remote read that blocks (of
   `/n/client/dev/cons` under `cpu`, say) does not hold up other use of

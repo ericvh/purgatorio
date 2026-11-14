@@ -5,6 +5,7 @@ status bad|
 remote
 a  b it's c
 status 
+bob
 same
 carried
 local
@@ -19,3 +20,4 @@ local
 rcmd: untrusted signer
 rcmd: authentication required
 open
+server user

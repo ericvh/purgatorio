@@ -44,7 +44,7 @@ fn mkdir(path: &str) {
 
 /// Mounts the client's namespace (the 9P conversation on fd [`STYX`]) and runs
 /// `cmd`, returning its exit status.
-fn command(flags: u8, keyfile: &str, cmd: &str) -> Result<String, Error> {
+fn command(flags: u8, keyfile: &str, user: &str, cmd: &str) -> Result<String, Error> {
     mkdir("/n");
     mkdir(CLIENT);
     let mount = if flags & proto::NOAUTH != 0 {
@@ -57,6 +57,12 @@ fn command(flags: u8, keyfile: &str, cmd: &str) -> Result<String, Error> {
         purgatorio::mount(STYX, -1, CLIENT, MREPL, "")
     };
     mount.map_err(|e| Error(format!("mount {CLIENT}: {e}")))?;
+    // As rstyxd(8): the command runs as the user the client proved. The
+    // mount above was this side's, made as rstyxd's own user.
+    if !user.is_empty() && user != auth::user() {
+        std::fs::write("/dev/user", user)
+            .map_err(|e| Error(format!("can't set user name: {}", Error::from(e))))?;
+    }
     let argv = ["sh", "-c", cmd].map(String::from);
     let pid = purgatorio::spawn("/bin/sh.wasm", &argv, NEWFD, &[(0, 0), (1, 1), (2, 2)])
         .map_err(|e| Error(format!("sh: {e}")))?;
@@ -68,14 +74,15 @@ fn command(flags: u8, keyfile: &str, cmd: &str) -> Result<String, Error> {
     }
 }
 
-/// `--session flags keyfile cmd`: run the command with fds 0 to 2 as it was
+/// `--session flags keyfile user cmd`: run the command, as `user` when
+/// that is not empty, with fds 0 to 2 as it was
 /// given them, write `s` and its exit status to fd [`STATUS`], and stay until
 /// killed, so that this prog's process group can always be named.
 pub fn run(args: &[String]) -> Result<(), Error> {
-    let [flags, keyfile, cmd] = args else {
+    let [flags, keyfile, user, cmd] = args else {
         return Err(Error::from("usage: auxi/rstyxd [-A] [-k keyfile]"));
     };
-    let status = match command(flags.parse().unwrap_or(0), keyfile, cmd) {
+    let status = match command(flags.parse().unwrap_or(0), keyfile, user, cmd) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("auxi/rstyxd: {e}");
