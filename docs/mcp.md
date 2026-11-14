@@ -110,7 +110,11 @@ input ends.
   `job_read`, which is answered as soon as it can be. A `reset` waits for
   the calls before it, except waiting `job_read`s, which it ends.
 - `notifications/cancelled` is accepted and ignored; use `timeout_ms`.
-- Prompts, resource subscriptions and server-to-client requests are not
+- One prompt, `inferno-sh` (`prompts/list`, `prompts/get`): the primer on
+  Inferno sh that `instructions` also carries, as a single user message,
+  for clients that show prompts to their user rather than reading
+  `instructions`. An unknown prompt name is `-32602`.
+- Resource subscriptions and server-to-client requests are not
   implemented.
 
 ## Tools

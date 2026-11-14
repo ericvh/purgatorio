@@ -245,6 +245,21 @@ fn templates() -> Value {
     ])])
 }
 
+/// The one prompt: the primer on Inferno sh that `instructions` carries,
+/// for a client that shows prompts to its user rather than reading
+/// `instructions`.
+const PROMPT: &str = "inferno-sh";
+const PROMPT_DESCRIPTION: &str =
+    "A primer on Inferno sh, the shell the run tool uses: it is not a POSIX shell";
+
+fn prompt_entry() -> Value {
+    obj([
+        ("name", PROMPT.into()),
+        ("title", "Inferno sh primer".into()),
+        ("description", PROMPT_DESCRIPTION.into()),
+    ])
+}
+
 fn capabilities(handshake: bool) -> Value {
     if handshake {
         obj([
@@ -253,11 +268,13 @@ fn capabilities(handshake: bool) -> Value {
                 "resources",
                 obj([("subscribe", false.into()), ("listChanged", false.into())]),
             ),
+            ("prompts", obj([("listChanged", false.into())])),
         ])
     } else {
         obj([
             ("tools", Value::Object(Vec::new())),
             ("resources", Value::Object(Vec::new())),
+            ("prompts", Value::Object(Vec::new())),
         ])
     }
 }
@@ -638,6 +655,47 @@ impl Server {
                     modern,
                 })
             }
+            "prompts/list" => {
+                let modern = self.era(params)?;
+                no_cursor()?;
+                Ok(Answer::Now(complete(
+                    obj([("prompts", Value::Array(vec![prompt_entry()]))]),
+                    modern,
+                    Cache::Public,
+                )))
+            }
+            "prompts/get" => {
+                let modern = self.era(params)?;
+                let name = params.get("name").and_then(Value::as_str).ok_or_else(|| {
+                    RpcError::new(INVALID_PARAMS, "Invalid params: name must be a string")
+                })?;
+                if name != PROMPT {
+                    return Err(RpcError::new(
+                        INVALID_PARAMS,
+                        format!("Invalid params: unknown prompt: {name}"),
+                    ));
+                }
+                Ok(Answer::Now(complete(
+                    obj([
+                        ("description", PROMPT_DESCRIPTION.into()),
+                        (
+                            "messages",
+                            Value::Array(vec![obj([
+                                ("role", "user".into()),
+                                (
+                                    "content",
+                                    obj([
+                                        ("type", "text".into()),
+                                        ("text", crate::primer::PRIMER.into()),
+                                    ]),
+                                ),
+                            ])]),
+                        ),
+                    ]),
+                    modern,
+                    Cache::Public,
+                )))
+            }
             "resources/templates/list" => {
                 let modern = self.era(params)?;
                 no_cursor()?;
@@ -804,7 +862,7 @@ mod tests {
     fn unknown_method() {
         let (mut s, mut h) = (Server::default(), Fake::default());
         for m in [
-            "prompts/list",
+            "completion/complete",
             "resources/subscribe",
             "nope",
             "tools/nope",
@@ -835,7 +893,7 @@ mod tests {
             assert_eq!(r.get("protocolVersion").unwrap().as_str(), Some(got));
             assert_eq!(
                 r.get("capabilities").unwrap().encode(),
-                r#"{"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false}}"#
+                r#"{"tools":{"listChanged":false},"resources":{"subscribe":false,"listChanged":false},"prompts":{"listChanged":false}}"#
             );
             let info = r.get("serverInfo").unwrap();
             assert_eq!(info.get("name").unwrap().as_str(), Some("mcpd"));
@@ -851,6 +909,39 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
         );
         assert_eq!(code(&v), INVALID_PARAMS);
+    }
+
+    #[test]
+    fn prompts_carry_the_primer() {
+        let (mut s, mut h) = (Server::default(), Fake::default());
+        init(&mut s, &mut h, "2025-06-18");
+        let v = ask(
+            &mut s,
+            &mut h,
+            r#"{"jsonrpc":"2.0","id":2,"method":"prompts/list"}"#,
+        );
+        let Some(Value::Array(prompts)) = v.get("result").unwrap().get("prompts") else {
+            panic!("no prompts")
+        };
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0].get("name").unwrap().as_str(), Some(PROMPT));
+        let v = ask(
+            &mut s,
+            &mut h,
+            r#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"inferno-sh"}}"#,
+        );
+        let Some(Value::Array(msgs)) = v.get("result").unwrap().get("messages") else {
+            panic!("no messages")
+        };
+        let text = msgs[0].get("content").unwrap().get("text").unwrap();
+        assert_eq!(text.as_str(), Some(crate::primer::PRIMER));
+        let v = ask(
+            &mut s,
+            &mut h,
+            r#"{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"nosuch"}}"#,
+        );
+        assert_eq!(code(&v), INVALID_PARAMS);
+        assert!(h.calls.is_empty());
     }
 
     #[test]
@@ -954,7 +1045,7 @@ mod tests {
         );
         assert_eq!(
             r.get("capabilities").unwrap().encode(),
-            r#"{"tools":{},"resources":{}}"#
+            r#"{"tools":{},"resources":{},"prompts":{}}"#
         );
         assert!(
             r.get("instructions")
