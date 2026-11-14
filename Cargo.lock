@@ -1032,6 +1032,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-m4"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-mash"
 version = "0.1.0"
 dependencies = [

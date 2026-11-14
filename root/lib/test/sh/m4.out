@@ -1,0 +1,168 @@
+# text, names and plain definitions
+hello, world
+y x1 1y _x (y) inferno
+<p|a|b|> <p|a|b |c > <p|(a,b)|c|> <p|a,b|c|> <p|||> <p|||> ()
+[b]
+$y$
+self zero
+1 w `w'  nest `deep' x
+yes no only|
+
+-- builtins
+3 0 3 1
+2 -1 0
+ell lo | he
+he001 ho a_b
+42 0 1 8
+1 2 3 4 |
+t []
+2 2 []
+gone
+abc def
+0
+
+-- eval
+7 9 3 -1 512 4
+17 -4 3 1 1 -1
+1 0 1 0 -5 -9223372036854775808
+3
+
+-- recursion
+1 120 3628800
+fedcba
+1 2 3 4 5 
+
+-- quotes and comments
+# x is not expanded `here
+y
+/* x
+ x */ y /y # y
+@ x
+y  # y
+`x' [n] x
+x
+x
+<a> 
+
+-- diversions
+zero
+0
+two
+end
+
+3
+one
+nine
+x
+y
+
+b
+a
+
+-- include
+before included
+
+included
+after
+included
+
+included
+
+
+-- syscmd
+one
+two
+three
+four
+m4 subcommand
+
+-- maketemp
+prefix ok
+a dddddddddd
+b same base
+
+-- errprint and dumpdef
+m4: a message two
+m4: 
+dd	`a $1'
+ln	builtin ln
+'d e'	`x'
+dd	[a $1]
+
+
+
+
+ifdef builtin ifdef
+undivert builtin undivert
+divert builtin divert
+changequote builtin changequote
+sinclude builtin sinclude
+copydef builtin copydef
+dnl builtin dnl
+changecom builtin changecom
+maketemp builtin maketemp
+include builtin include
+undefine builtin undefine
+define builtin define
+index builtin index
+ifelse builtin ifelse
+incr builtin incr
+syscmd builtin syscmd
+divnum builtin divnum
+dumpdef builtin dumpdef
+eval builtin eval
+substr builtin substr
+translit builtin translit
+errprint builtin errprint
+len builtin len
+
+-- options
+ b `B' inferno 
+a B C inferno define
+bee define(B,x)bee 3 len(abc)
+bee 3
+m4: can't redefine built-in define
+exit error
+A B C inferno x
+A B C inferno define
+expand define [define] 1: [x] 2: [$1-$2]
+expand x [x] 1: [a] 2: [b]
+expand x [x]
+expand len [len] 1: [-]
+a-b 1
+A B C inferno 
+a
+
+A two C inferno 
+usage: m4 [-t] [-pprefix] [-Dname[=value]] [-Qname[=value]] [-Uname] [file ...]
+exit usage
+usage: m4 [-t] [-pprefix] [-Dname[=value]] [-Qname[=value]] [-Uname] [file ...]
+exit usage
+-- errors
+m4: can't open /tmp/sh-m4/missing.m4: file does not exist
+exit error
+ok
+m4: standard input:2: can't open /tmp/sh-m4/missing.m4: file does not exist
+exit error|
+included
+
+
+exit 
+start
+m4: standard input:3: EOF in parameters
+exit error|
+start
+unterminated
+
+m4: /tmp/sh-m4/str.m4:4: EOF in string
+exit error
+m4: standard input:1: syntax error: 1+ ''
+m4: standard input:1: syntax error: '1 2' ' 3'
+m4: standard input:1: syntax error: (1 ''
+m4: standard input:1: zero divide in 1/0
+m4: standard input:1: zero divide in 5%0
+m4: standard input:1: zero divide in 2**-1
+exit error|
+m4: standard input:2: syntax error: x ''
+# comment at the endm4: EOF in comment
+exit error|
