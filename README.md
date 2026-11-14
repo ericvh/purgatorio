@@ -41,7 +41,7 @@ a `; ` prompt.
 | `load std`: `if`, `while`, `for`, `and`, `or`, `not`, `~` pattern match, `fn`, `raise`, `${hd}` `${tl}` `${index}` `${quote}` `${unquote}`. `load expr`: postfix `${expr}` | done |
 | `load string`: the sh-string(1) builtins (`prefix`, `in`, `${splitl}`, `${slice}`, `${fields}`, `${padl}`, ...). `load regex`: `match` and `${re g\|v\|s\|sg\|m\|mg\|M}` | done |
 | The rest of the sh modules: `load arg`, `csv`, `echo`, `file2chan` (its reply commands also work as pipeline stages), `mload`, `mpexpr` (arbitrary precision), `sexprs`, `test` | done |
-| `mash`, Inferno's other shell, with its built-in make (`load make`), history and `serve` | done |
+| `mash`, Inferno's other shell, with its built-in make (`load make`), history and `serve`. Statuses as in Inferno's mash: it keeps no `$status`; under `-e` a waited-for command that fails ends mash with its `fail:` status as it is, a pipeline's last command only; a prog that dies otherwise has its wait message printed and mash goes on; mash itself exits `fail: mash usage`, `fail: mash error`, `fail: mash system error` or `fail: make error` | done |
 | Plan 9 regular expressions (regexp(6)) in one shared crate, `appl/lib/regexp`, used by `grep`, `sed` and `load regex` | done |
 | `load` and `call` of reactor modules from `/bin/lib` (the shell's `load add` gives `${add 20 22}`) | done |
 | `#M` mount, `export`, `#s` file2chan, `#d`, `#%`, kernel channels | done |

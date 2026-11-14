@@ -176,6 +176,12 @@ errors
 mash error
 don't know how to make nosuch
 make error
+piped
+reached
+
+false
+PID "debug":trap: unreachable
+reached
 # modules
 HELLO WORLD
 abc
