@@ -55,9 +55,14 @@ use crate::rw::{Pool, read_msg_in, read_sealed_in, write_full};
 use crate::sysfile::{self, open};
 use crate::workq::{OutQ, Put, WorkQ};
 
-/// The most worker kprocs one export runs. With all of them blocked,
-/// further requests wait (a `Tflush` still gets through).
-pub const MAX_WORKERS: usize = 32;
+/// The most worker kprocs one export runs. Inferno's exportfs starts a
+/// worker whenever none is free, with no limit; this one stops at a
+/// number no client reaches in practice but a hostile one cannot pass
+/// (on the kernel, 16 MiB of 64 KiB stacks). Each blocked request holds
+/// a worker, so with all of them blocked further requests wait (a
+/// `Tflush` still gets through). Workers start on demand and all but
+/// `KEEP_IDLE` exit once idle, so the limit costs nothing until used.
+pub const MAX_WORKERS: usize = 256;
 /// Idle workers kept for the next request; others exit.
 const KEEP_IDLE: usize = 2;
 
