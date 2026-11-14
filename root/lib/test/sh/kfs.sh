@@ -1,6 +1,7 @@
 # disk/kfs and disk/kfscmd (kfs(4), kfscmd(8)): make a file system in an
 # image, use it, check it through the console, serve it again, read only,
 # and after an unclean shutdown.
+load std
 d=/tmp/sh-kfs
 rm -rf $d
 mkdir -p $d/n
@@ -42,6 +43,8 @@ disk/kfscmd -n $c bogus
 disk/kfscmd -n $c 'check z'
 disk/kfscmd -n $c allowoff allow sync
 unmount n
+# The console goes when that kfs has gone: wait, as its name is used again.
+while {test -e /chan/kfs.$c.cmd} {sleep 0.05}
 echo again
 mount -c {disk/kfs -n $c kfs.file} n
 cmp big n/ls && echo same
