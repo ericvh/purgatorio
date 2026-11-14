@@ -23,8 +23,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         _ => return Err(usage),
     };
     let path = format!("/prog/{id}/ns");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|_| Error(format!("can't open {path}: {}", Error::last())))?;
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        // As Inferno's ns: `fail:open`.
+        eprintln!("ns: can't open {path}: {}", Error::last());
+        purgatorio::exits("fail:open");
+    };
     print!("{}", purgatorio::ns::tidy(&text, !raw));
     Ok(())
 }

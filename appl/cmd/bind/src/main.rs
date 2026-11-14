@@ -22,8 +22,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let [source, target] = arg.argv().try_into().map_err(|_| arg_usage())?;
-    purgatorio::bind(&source, &target, order | create)
-        .map_err(|e| Error(format!("cannot bind {source} on {target}: {e}")))
+    if let Err(e) = purgatorio::bind(&source, &target, order | create) {
+        // As Inferno's bind: `fail:bind`.
+        eprintln!("bind: cannot bind {source} onto {target}: {e}");
+        purgatorio::exits("fail:bind");
+    }
+    Ok(())
 }
 
 fn arg_usage() -> Error {

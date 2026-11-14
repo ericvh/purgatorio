@@ -18,7 +18,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                 .append(append)
                 .truncate(!append)
                 .open(a)
-                .map_err(|_| Error::last())?;
+                .unwrap_or_else(|_| {
+                    eprintln!("tee: cannot open {a}: {}", purgatorio::errstr());
+                    purgatorio::exits("fail:error")
+                });
             files.push(f);
         }
     }

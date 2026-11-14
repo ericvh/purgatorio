@@ -65,21 +65,22 @@ fn apply(m: &Mode, old: u32) -> u32 {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
+    let usage =
+        || Error::from("usage: chmod [8r]777 file ... or chmod [augo][+-=][rwxalt] file ...");
     if args.len() < 3 {
-        return Err(Error::from(
-            "usage: chmod [8r]777 file ... or chmod [augo][+-=][rwxalt] file ...",
-        ));
+        return Err(usage());
     }
+    // As Inferno's chmod: a bad mode is reported, then the usage, and a
+    // file it cannot change is reported with no status.
     let Some(m) = parse(&args[1]) else {
-        return Err(Error(format!("bad mode: {}", args[1])));
+        eprintln!("chmod: bad mode '{}'", args[1]);
+        return Err(usage());
     };
-    let mut failed = false;
     for f in &args[2..] {
         let old = match purgatorio::stat(f) {
             Ok(d) => d.mode,
             Err(e) => {
                 eprintln!("chmod: cannot stat {f}: {e}");
-                failed = true;
                 continue;
             }
         };
@@ -87,11 +88,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         d.mode = (apply(&m, old) & !DMDIR) | (old & DMDIR);
         if let Err(e) = purgatorio::wstat(f, &d) {
             eprintln!("chmod: cannot wstat {f}: {e}");
-            failed = true;
         }
-    }
-    if failed {
-        purgatorio::exits("fail:errors");
     }
     Ok(())
 }

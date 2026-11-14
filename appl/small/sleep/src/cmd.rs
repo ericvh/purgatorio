@@ -30,13 +30,9 @@ pub fn sleep() {
     let args = args();
     let ns = match (args.len(), args.get(1).and_then(parse)) {
         (2, Some(ns)) => ns,
-        (2, None) => {
-            write(STDERR, b"sleep: bad time\n");
-            exits("fail:bad time")
-        }
         _ => {
-            write(STDERR, b"sleep: usage: sleep seconds\n");
-            exits("fail:usage: sleep seconds")
+            write(STDERR, b"usage: sleep seconds\n");
+            exits("fail:usage")
         }
     };
     sleep_ns(ns);
