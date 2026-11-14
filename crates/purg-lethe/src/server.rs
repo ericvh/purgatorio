@@ -10,7 +10,10 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use purg_abi::auth::{FAILED, KIND_CERT, KIND_KEY, NO_TRUST, NOT_REQUIRED, PQ_REQUIRED, REQUIRED};
+use purg_abi::auth::{
+    FAILED, KIND_CERT, KIND_HYBRID_CERT, KIND_HYBRID_KEY, KIND_KEY, NO_TRUST, NOT_REQUIRED,
+    PQ_REQUIRED, REQUIRED,
+};
 use purg_abi::error::{EISDIR, ENOTDIR, ENOTIMPL, EPERM, ESHORTSTAT};
 use purg_auth::proof::{Policy, check_signed};
 use purg_auth::session::Ephemeral;
@@ -62,6 +65,10 @@ pub struct Config {
     /// x25519mlkem768`): a `Tauth`, and a request on a ticket from one,
     /// fail with `post-quantum key exchange required`.
     pub pq: bool,
+    /// Require hybrid Ed25519 + ML-DSA-65 signatures (`lethed -C
+    /// mldsa65`): a `Tauth` by an Ed25519 key or certificate fails with
+    /// `post-quantum signature required`.
+    pub pqsig: bool,
 }
 
 impl Default for Config {
@@ -71,6 +78,7 @@ impl Default for Config {
             window: 60,
             allow: rights::READ,
             pq: false,
+            pqsig: false,
         }
     }
 }
@@ -300,7 +308,7 @@ impl Server {
             signers: &trust.signers,
             revoked: trust.revoked.as_deref(),
             now: env.now,
-            hybrid: false,
+            hybrid: self.config.pqsig,
         };
         // No key, nobody: refused as an export that trusts nothing
         // refuses (`docs/auth.md`, "Trust by default"). A server that
@@ -314,22 +322,18 @@ impl Server {
             None => t.message(),
             Some(ek) => msg::auth2_message(&t.eph, ek, t.rights, t.prefix, t.uname, t.kind, t.body),
         };
-        // Lethe's Tauth carries an Ed25519 signature, so only Ed25519 keys
-        // and `pgcert1` certificates (`docs/lethe.md`, Section 6).
-        if !matches!(t.kind, KIND_KEY | KIND_CERT) {
+        // An Ed25519 key or `pgcert1`, or a hybrid key or `pgcert2`
+        // (`docs/lethe.md`, Section 6).
+        if !matches!(
+            t.kind,
+            KIND_KEY | KIND_CERT | KIND_HYBRID_KEY | KIND_HYBRID_CERT
+        ) {
             return Err(FAILED);
         }
-        if t.kind == KIND_KEY && policy.revoked.is_none() {
+        if matches!(t.kind, KIND_KEY | KIND_HYBRID_KEY) && policy.revoked.is_none() {
             return Err(purg_abi::auth::REVOKED);
         }
-        check_signed(
-            &policy,
-            t.kind,
-            &t.signature,
-            t.body,
-            &signed,
-            Some(t.uname),
-        )?;
+        check_signed(&policy, t.kind, t.signature, t.body, &signed, Some(t.uname))?;
         let granted = t.rights & self.config.allow & rights::GRANTABLE;
         if granted == 0 {
             return Err(EPERM);
@@ -378,7 +382,12 @@ impl Server {
         (env.random)(&mut n);
         let keys = Keys::from_master(&master);
         let reply = match &kem {
-            None => crypto::rauth(&keys, id, &eph.public, &n, &grant),
+            None => {
+                // Say, under the seal, that this server could have done
+                // the hybrid exchange.
+                n[NONCE - crate::PQ_MARK.len()..].copy_from_slice(&crate::PQ_MARK);
+                crypto::rauth(&keys, id, &eph.public, &n, &grant)
+            }
             Some((ct, _)) => crypto::rauth2(&keys, id, &eph.public, ct, &n, &grant),
         };
         Ok((

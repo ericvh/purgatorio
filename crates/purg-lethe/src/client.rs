@@ -14,8 +14,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use purg_abi::auth::{FAILED, NO_PQ};
-use purg_auth::cert::Cert;
+use purg_auth::cert::AnyCert;
 use purg_auth::session::Ephemeral;
+use purg_auth::sig::{Public, Secret};
 
 use crate::crypto::{self, Keys};
 use crate::error::MESSAGE;
@@ -25,13 +26,53 @@ use crate::{NONCE, path};
 /// A ticket is renewed this many seconds before it expires.
 pub const RENEW_MARGIN: u64 = 5;
 
-/// What a client signs with.
+/// What a client signs with: an Ed25519 key, or a hybrid Ed25519 +
+/// ML-DSA-65 one (`docs/lethe.md`, "Hybrid signatures").
 #[derive(Clone)]
 pub struct Creds {
     pub user: String,
-    pub seed: [u8; 32],
-    /// A certificate for the seed's key, if the client has one.
-    pub cert: Option<Cert>,
+    pub secret: Secret,
+    /// A certificate for the key, if the client has one: `pgcert1` for an
+    /// Ed25519 key, `pgcert2` for a hybrid one.
+    pub cert: Option<AnyCert>,
+}
+
+impl Creds {
+    /// An Ed25519 key and its `pgcert1`, if any.
+    pub fn ed25519(user: &str, seed: [u8; 32], cert: Option<purg_auth::cert::Cert>) -> Creds {
+        Creds {
+            user: String::from(user),
+            secret: Secret::Ed25519(seed),
+            cert: cert.map(AnyCert::V1),
+        }
+    }
+
+    /// The public key, taken from the certificate when it is for this
+    /// key (a hybrid key's public half takes an ML-DSA key generation),
+    /// and the certificate, when there is one for it.
+    fn public(&self) -> (Public, Option<&AnyCert>) {
+        let cert = self.cert.as_ref().filter(|c| match (&self.secret, c) {
+            (Secret::Ed25519(s), AnyCert::V1(c)) => c.key == purg_auth::public_key(s),
+            (Secret::Hybrid(h), AnyCert::V2(c)) => {
+                c.key.0[..purg_auth::PUBLIC] == purg_auth::public_key(&h.ed25519())
+            }
+            _ => false,
+        });
+        match cert {
+            Some(c) => (c.key(), Some(c)),
+            None => (self.secret.public(), None),
+        }
+    }
+
+    /// The kind, body and signature for `message` (made from the kind and
+    /// body). A hybrid key's work wants a deep stack in the kernel.
+    fn sign(&self, message: impl FnOnce(u8, &[u8]) -> Vec<u8>) -> (u8, Vec<u8>, Vec<u8>) {
+        let (public, cert) = self.public();
+        let (kind, body) = purg_auth::proof::body_any(cert, &public);
+        let signed = message(kind, &body);
+        let signature = self.secret.sign(&signed);
+        (kind, body, [signed, signature].concat())
+    }
 }
 
 /// A ticket and what goes with it.
@@ -55,6 +96,10 @@ pub struct AuthPending {
     signed: Vec<u8>,
     /// The ephemeral ML-KEM-768 key of a hybrid exchange.
     kem: Option<alloc::boxed::Box<purg_auth::kem::Secret>>,
+    /// This classical exchange follows a hybrid one the server refused:
+    /// an `Rauth` from a server that can do the hybrid exchange
+    /// ([`crate::PQ_MARK`] in its nonce) is a downgrade.
+    fallback: bool,
 }
 
 /// Starts the ticket exchange: the `Tauth` frame and what its reply needs.
@@ -67,11 +112,10 @@ pub fn auth(
     random: [u8; 32],
 ) -> (Vec<u8>, AuthPending) {
     let eph = Ephemeral::new(random);
-    let public = purg_auth::public_key(&creds.seed);
-    let cert = creds.cert.as_ref().filter(|c| c.key == public);
-    let (kind, body) = purg_auth::proof::body(cert, &public);
-    let signed = msg::auth_message(&eph.public, rights, prefix, &creds.user, kind, &body);
-    let signature = purg_auth::sign(&creds.seed, &signed);
+    let (kind, body, both) = creds
+        .sign(|kind, body| msg::auth_message(&eph.public, rights, prefix, &creds.user, kind, body));
+    let n = both.len() - msg::signature_len(kind);
+    let (signed, signature) = both.split_at(n);
     let frame = Msg {
         id,
         frame: Frame::Tauth(Tauth {
@@ -90,8 +134,9 @@ pub fn auth(
         AuthPending {
             id,
             eph,
-            signed,
+            signed: signed.to_vec(),
             kem: None,
+            fallback: false,
         },
     )
 }
@@ -111,11 +156,11 @@ pub fn auth_pq(
     let eph = Ephemeral::new(random);
     let kem = purg_auth::kem::Secret::from_seed(kem_seed);
     let ek = kem.public();
-    let public = purg_auth::public_key(&creds.seed);
-    let cert = creds.cert.as_ref().filter(|c| c.key == public);
-    let (kind, body) = purg_auth::proof::body(cert, &public);
-    let signed = msg::auth2_message(&eph.public, &ek, rights, prefix, &creds.user, kind, &body);
-    let signature = purg_auth::sign(&creds.seed, &signed);
+    let (kind, body, both) = creds.sign(|kind, body| {
+        msg::auth2_message(&eph.public, &ek, rights, prefix, &creds.user, kind, body)
+    });
+    let n = both.len() - msg::signature_len(kind);
+    let (signed, signature) = both.split_at(n);
     let frame = Msg {
         id,
         frame: Frame::Tauth2 {
@@ -137,13 +182,23 @@ pub fn auth_pq(
         AuthPending {
             id,
             eph,
-            signed,
+            signed: signed.to_vec(),
             kem: Some(alloc::boxed::Box::new(kem)),
+            fallback: false,
         },
     )
 }
 
 impl AuthPending {
+    /// Marks a classical exchange as the fallback after a hybrid one was
+    /// refused (`docs/lethe.md`, "The default exchange"): its `Rauth` must
+    /// come from a server that cannot do the hybrid exchange, or it fails
+    /// with `no post-quantum key offered`.
+    pub fn fallback(mut self) -> AuthPending {
+        self.fallback = true;
+        self
+    }
+
     /// The session from the server's reply. `local` is the client's clock,
     /// in seconds. An `Rerror` gives its string.
     pub fn finish(self, frame: &[u8], local: u64) -> Result<Session, String> {
@@ -157,6 +212,11 @@ impl AuthPending {
                 let master = crypto::master(&shared, &crypto::transcript(&self.signed, &eph));
                 let keys = Keys::from_master(&master);
                 let plain = crypto::open_rauth(&keys, frame, &eph, &nonce, sealed)?;
+                // Only once the seal is open: the mark is then the
+                // server's, as the nonce is under the seal's key.
+                if self.fallback && crate::offers_pq(&nonce) {
+                    return Err(String::from(NO_PQ));
+                }
                 (keys, plain)
             }
             (
@@ -342,6 +402,45 @@ pub enum CallError {
     Remote(String),
 }
 
+/// Which ticket exchange a client uses (`docs/lethe.md`, "The default
+/// exchange").
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Kx {
+    /// The classical exchange only (`kx x25519`).
+    Classical,
+    /// The hybrid exchange when the server can do it; with a server that
+    /// refuses `Tauth2`, the classical one, unless that server's `Rauth`
+    /// says it could have done the hybrid one ([`crate::PQ_MARK`]).
+    #[default]
+    Auto,
+    /// The hybrid exchange, required (`kx x25519mlkem768`).
+    Require,
+}
+
+impl Kx {
+    /// Runs the exchange `kx` asks for. `start(pq)` makes a `Tauth2` (or
+    /// a `Tauth`) and `send` sends it and gives the reply; a refused
+    /// hybrid exchange in [`Kx::Auto`] is followed by a classical one
+    /// marked as the fallback.
+    pub fn run<E>(
+        self,
+        mut start: impl FnMut(bool) -> (Vec<u8>, AuthPending),
+        mut send: impl FnMut(&[u8]) -> Result<Vec<u8>, E>,
+        local: u64,
+    ) -> Result<Result<Session, String>, E> {
+        let (frame, pending) = start(self != Kx::Classical);
+        let reply = send(&frame)?;
+        match pending.finish(&reply, local) {
+            Err(e) if self == Kx::Auto && e == NO_PQ => {
+                let (frame, pending) = start(false);
+                let reply = send(&frame)?;
+                Ok(pending.fallback().finish(&reply, local))
+            }
+            r => Ok(r),
+        }
+    }
+}
+
 /// A client: credentials, what it asks for, and its current ticket.
 pub struct Client {
     pub creds: Creds,
@@ -350,8 +449,9 @@ pub struct Client {
     pub session: Option<Session>,
     /// Tickets obtained, renewals included.
     pub tickets: u32,
-    /// Use and require the hybrid exchange ([`auth_pq`]).
-    pub pq: bool,
+    /// The ticket exchange: by default the hybrid one when the server
+    /// can do it.
+    pub kx: Kx,
     next: u32,
 }
 
@@ -363,7 +463,7 @@ impl Client {
             prefix: String::from(prefix),
             session: None,
             tickets: 0,
-            pq: false,
+            kx: Kx::default(),
             next: 1,
         }
     }
@@ -380,18 +480,24 @@ impl Client {
         local: u64,
         random: &mut dyn FnMut(&mut [u8]),
     ) -> Result<(), CallError> {
-        let mut r = [0u8; 32];
-        random(&mut r);
-        let id = self.id();
-        let (frame, pending) = if self.pq {
-            let mut seed = [0u8; purg_auth::kem::SEED];
-            random(&mut seed);
-            auth_pq(&self.creds, id, self.rights, &self.prefix, r, &seed)
-        } else {
-            auth(&self.creds, id, self.rights, &self.prefix, r)
+        let kx = self.kx;
+        let mut start = |pq: bool| {
+            let mut r = [0u8; 32];
+            random(&mut r);
+            let id = self.id();
+            if pq {
+                let mut seed = [0u8; purg_auth::kem::SEED];
+                random(&mut seed);
+                auth_pq(&self.creds, id, self.rights, &self.prefix, r, &seed)
+            } else {
+                auth(&self.creds, id, self.rights, &self.prefix, r)
+            }
         };
-        let reply = t.exchange(&frame).map_err(CallError::Transport)?;
-        self.session = Some(pending.finish(&reply, local).map_err(CallError::Remote)?);
+        let mut send = |f: &[u8]| t.exchange(f).map_err(CallError::Transport);
+        let s = kx
+            .run(&mut start, &mut send, local)?
+            .map_err(CallError::Remote)?;
+        self.session = Some(s);
         self.tickets += 1;
         Ok(())
     }

@@ -76,11 +76,7 @@ fn corpus() -> Vec<Vec<u8>> {
             .encode(),
         );
     }
-    let creds = purg_lethe::client::Creds {
-        user: String::from("u"),
-        seed: lethe::SEED,
-        cert: None,
-    };
+    let creds = purg_lethe::client::Creds::ed25519("u", lethe::SEED, None);
     let (auth, _) = purg_lethe::client::auth(&creds, 1, 1, "/", [3; 32]);
     v.push(lethe::handle(&auth));
     v.push(auth);
@@ -136,7 +132,7 @@ fn corpus() -> Vec<Vec<u8>> {
                 uname: "",
                 kind: 9,
                 body: b"",
-                signature: [0; 64],
+                signature: &[0; 64],
             }),
         }
         .encode(),

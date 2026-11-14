@@ -633,21 +633,13 @@ fn tampered_and_replayed_requests_are_rejected() {
     );
     let mut w = Wire(TcpStream::connect(("127.0.0.1", l.port)).unwrap());
     // An unknown key gets no ticket.
-    let stranger = Creds {
-        user: String::from("glenda"),
-        seed: [3; 32],
-        cert: None,
-    };
+    let stranger = Creds::ed25519("glenda", [3; 32], None);
     let (f, pending) = client::auth(&stranger, 1, 1, "/", [8; 32]);
     assert_eq!(
         pending.finish(&w.send(&f), now()).err().as_deref(),
         Some("authentication failed")
     );
-    let creds = Creds {
-        user: String::from("glenda"),
-        seed: TEST_SEED,
-        cert: None,
-    };
+    let creds = Creds::ed25519("glenda", TEST_SEED, None);
     let (f, pending) = client::auth(&creds, 2, 1, "/", [8; 32]);
     let session = pending.finish(&w.send(&f), now()).unwrap();
     let op = Op::Read {
@@ -894,11 +886,7 @@ end
         Owned::Stat(d) => assert_eq!(d.name, "hello.txt"),
         o => panic!("{o:?}"),
     }
-    let creds = Creds {
-        user: String::from("glenda"),
-        seed: TEST_SEED,
-        cert: None,
-    };
+    let creds = Creds::ed25519("glenda", TEST_SEED, None);
     let (f, pending) = client::auth(&creds, 3, 1, "/", [8; 32]);
     assert_eq!(
         pending.finish(&w.send(&f), now()).err().as_deref(),
@@ -1009,9 +997,10 @@ echo done",
 
 /// `lethe -C x25519mlkem768` gets its tickets from the hybrid exchange,
 /// on the emu here and in the kernel's `#λ` alike; `lethed -C
-/// x25519mlkem768` refuses a client that does not ask for it, and the
-/// client that asks refuses a server that will not give it (`lethed -A`
-/// answers clear requests only).
+/// x25519mlkem768` refuses a client that asks only for the classical one
+/// (`-C x25519`) and takes the default, which asks for the hybrid one;
+/// the client that requires it refuses a server that will not give it
+/// (`lethed -A` answers clear requests only).
 #[test]
 fn post_quantum_exchange() {
     let s = Scratch::new("pq");
@@ -1032,7 +1021,9 @@ fn post_quantum_exchange() {
     let script = format!(
         "lethe -C x25519mlkem768 {lax} {g}/n && cat {g}/n/hello.txt && unmount {g}/n
 lethe -C x25519mlkem768 {strict} {g}/n && cat {g}/n/hello.txt && unmount {g}/n
-lethe {strict} {g}/n
+lethe {strict} {g}/n && cat {g}/n/hello.txt && unmount {g}/n
+lethe -C x25519 {strict} {g}/n
+lethe -C x25519 {lax} {g}/n && cat {g}/n/hello.txt && unmount {g}/n
 lethe -C x25519mlkem768 {clear} {g}/n
 lethe -A -C x25519mlkem768 {lax} {g}/n
 lethe -C x448 {lax} {g}/n",
@@ -1041,10 +1032,68 @@ lethe -C x448 {lax} {g}/n",
         clear = clear.addr(),
     );
     let want = format!(
-        "{HELLO}{HELLO}lethe: post-quantum key exchange required
-lethe: authentication not required
+        "{HELLO}{HELLO}{HELLO}lethe: post-quantum key exchange required
+{HELLO}lethe: authentication not required
 usage: lethe [-abc] [-A] [-C alg] [-k keyfile] [-t ms] [-u user] addr mtpt [path]
 lethe: unknown algorithm: x448
+"
+    );
+    for vm in VMS {
+        let (out, _) = emu(vm, &script);
+        assert_eq!(out, want, "{vm}");
+    }
+}
+
+/// A hybrid Ed25519 + ML-DSA-65 key for `glenda`, from a fixed seed: its
+/// seed file and public key file under `dir`.
+fn hybrid_key(dir: &Path) -> purg_auth::sig::Secret {
+    let mut seed = [0u8; purg_auth::sig::HYBRID_SEED];
+    for (i, b) in seed.iter_mut().enumerate() {
+        *b = 0x50 ^ i as u8;
+    }
+    let k = purg_auth::sig::Secret::Hybrid(purg_auth::sig::HybridSecret(seed));
+    std::fs::write(dir.join("hkey"), k.seed_bytes()).unwrap();
+    std::fs::write(dir.join("hkey.pub"), k.public().bytes()).unwrap();
+    k
+}
+
+/// `lethe -k` with a hybrid seed file: the kernel's `#λ` signs the
+/// `Tauth` with the hybrid key, and `lethed` takes it from a hybrid key
+/// file, also under `-C mldsa65`, which refuses the Ed25519 test key.
+#[test]
+fn hybrid_signatures() {
+    let s = Scratch::new("pqsig");
+    hybrid_key(&s.host);
+    let hpub = s.host.join("hkey.pub").display().to_string();
+    let lax = Lethed::start(&["-a", "127.0.0.1:0", "-k", &hpub], &s.srv());
+    let strict = Lethed::start(
+        &[
+            "-a",
+            "127.0.0.1:0",
+            "-C",
+            "mldsa65",
+            "-k",
+            &hpub,
+            "-k",
+            &test_key(),
+        ],
+        &s.srv(),
+    );
+    let g = &s.guest;
+    // A seed file, as lethe's -k takes an authinfo: put it where the
+    // default key is read, for a user of its own.
+    let script = format!(
+        "mkdir -p {g}/usr/glenda && cp {g}/hkey {g}/usr/glenda/key && bind -a {g} /
+lethe -u glenda {lax} {g}/n && cat {g}/n/hello.txt && unmount {g}/n
+lethe -u glenda {strict} {g}/n && cat {g}/n/hello.txt && unmount {g}/n
+lethe {strict} {g}/n
+lethe {lax} {g}/n",
+        lax = lax.addr(),
+        strict = strict.addr(),
+    );
+    let want = format!(
+        "{HELLO}{HELLO}lethe: post-quantum signature required
+lethe: authentication failed
 "
     );
     for vm in VMS {

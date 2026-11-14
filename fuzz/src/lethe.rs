@@ -95,11 +95,7 @@ fn handle_with(server: &Server, frame: &[u8]) -> Vec<u8> {
 
 /// A session with the target's server, made through the real exchange.
 pub fn session() -> Session {
-    let creds = Creds {
-        user: String::from("u"),
-        seed: SEED,
-        cert: None,
-    };
+    let creds = Creds::ed25519("u", SEED, None);
     let (frame, pending) = client::auth(&creds, 1, purg_lethe::rights::READ, "/", [3; 32]);
     pending
         .finish(&handle(&frame), NOW)
@@ -164,11 +160,7 @@ pub fn lethe(data: &[u8]) {
     let _ = s.reply(&pending, data);
     let (_, pending) = client::clear(9, &Op::Stat { path: "/" });
     let _ = pending.reply(data);
-    let creds = Creds {
-        user: String::from("u"),
-        seed: SEED,
-        cert: None,
-    };
+    let creds = Creds::ed25519("u", SEED, None);
     let (_, pending) = client::auth(&creds, 1, purg_lethe::rights::READ, "/", [3; 32]);
     let _ = pending.finish(data, NOW);
 }

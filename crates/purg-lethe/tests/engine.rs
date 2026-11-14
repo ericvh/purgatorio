@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
 use purg_auth::cert::Cert;
-use purg_lethe::client::{self, CallError, Client, Creds, Transport};
+use purg_lethe::client::{self, CallError, Client, Creds, Kx, Transport};
 use purg_lethe::msg::{Frame, Msg, Op, Owned};
 use purg_lethe::server::{Config, Env, Event, Server, Tree, Trust};
 use purg_lethe::{NONCE, error, rights};
@@ -183,11 +183,7 @@ fn direct() -> Trust {
 }
 
 fn creds(cert: Option<Cert>) -> Creds {
-    Creds {
-        user: String::from("glenda"),
-        seed: USER,
-        cert,
-    }
+    Creds::ed25519("glenda", USER, cert)
 }
 
 fn cert(expires: u64) -> Cert {
@@ -460,6 +456,7 @@ fn renewal_window_tampering_and_replicas() {
         window: 10,
         allow: rights::READ,
         pq: false,
+        pqsig: false,
     };
     let server = Server::new(cfg.clone(), [9; 32]);
     let t = tree();
@@ -828,7 +825,7 @@ fn clear_and_sealed_do_not_mix() {
     );
     assert_eq!(error::AUTH_NOT_REQUIRED, "authentication not required");
     assert_eq!(r.sent.len(), 1);
-    assert_eq!(r.sent[0][5], purg_lethe::kind::TAUTH);
+    assert_eq!(r.sent[0][5], purg_lethe::kind::TAUTH2);
     assert!(c.session.is_none());
     // A clear client takes no sealed reply, a sealed client no clear one.
     let mut r = rig(&clear_only, &t, &now, direct());
@@ -891,11 +888,7 @@ fn mixed_mode() {
         remote("permission denied")
     );
     // A stranger still gets no ticket: `-A` does not weaken the check.
-    let stranger = Creds {
-        user: String::from("glenda"),
-        seed: [5; 32],
-        cert: None,
-    };
+    let stranger = Creds::ed25519("glenda", [5; 32], None);
     let mut c = Client::new(stranger, rights::READ, "/");
     assert_eq!(
         read(&mut c, &mut r, "/hello", None),
@@ -998,7 +991,7 @@ fn post_quantum_exchange() {
     let server = Server::new(Config::default(), [9; 32]);
     let mut r = rig(&server, &t, &now, direct());
     let mut c = Client::new(creds(None), rights::READ, "/");
-    c.pq = true;
+    c.kx = Kx::Require;
     assert!(read(&mut c, &mut r, "/hello", None).is_ok());
     assert_eq!(r.sent[0][5], purg_lethe::kind::TAUTH2);
     // A ticket from it carries the mark, which the grant does not.
@@ -1014,6 +1007,7 @@ fn post_quantum_exchange() {
     );
     let mut r = rig(&strict, &t, &now, direct());
     let mut plain = Client::new(creds(None), rights::READ, "/");
+    plain.kx = Kx::Classical;
     assert_eq!(
         read(&mut plain, &mut r, "/hello", None),
         remote("post-quantum key exchange required")
@@ -1022,6 +1016,7 @@ fn post_quantum_exchange() {
     // A classic ticket from a server with the same key is refused.
     let mut lax = rig(&server, &t, &now, direct());
     let mut plain = Client::new(creds(None), rights::READ, "/");
+    plain.kx = Kx::Classical;
     assert!(read(&mut plain, &mut lax, "/hello", None).is_ok());
     assert_eq!(
         read(&mut plain, &mut r, "/hello", None),
@@ -1072,6 +1067,250 @@ fn post_quantum_exchange() {
     let mut changed = frame.clone();
     changed[purg_lethe::HEADER + 32 + 100] ^= 1;
     let reply = lr.send(&changed);
+    assert!(matches!(
+        Msg::decode(&reply).unwrap().frame,
+        Frame::Rerror {
+            ename: "authentication failed"
+        }
+    ));
+}
+
+/// Answers a `Tauth2` as a server built before it would, and passes
+/// everything else on: an attacker trying to strip the hybrid exchange.
+struct Strip<'a, 'b>(&'a mut Rig<'b>);
+
+impl Transport for Strip<'_, '_> {
+    fn exchange(&mut self, f: &[u8]) -> Result<Vec<u8>, String> {
+        if f[5] == purg_lethe::kind::TAUTH2 {
+            return Ok(purg_lethe::msg::rerror(
+                purg_lethe::msg::frame_id(f),
+                error::MESSAGE,
+            ));
+        }
+        self.0.exchange(f)
+    }
+}
+
+/// A server built before the hybrid exchange: it calls a `Tauth2` a bad
+/// message, and its `Rauth` has a random nonce, with no mark. It checks
+/// no signature; the client does not need it to.
+struct Old;
+
+impl Transport for Old {
+    fn exchange(&mut self, f: &[u8]) -> Result<Vec<u8>, String> {
+        use purg_lethe::crypto::{self, Keys};
+        let m = Msg::decode(f).unwrap();
+        let Frame::Tauth(t) = m.frame else {
+            return Ok(purg_lethe::msg::rerror(m.id, error::MESSAGE));
+        };
+        let eph = purg_auth::session::Ephemeral::new([6; 32]);
+        let shared = eph.shared(&t.eph).unwrap();
+        let master = crypto::master(&shared, &crypto::transcript(&t.message(), &eph.public));
+        let grant = purg_lethe::msg::Grant {
+            now: T0,
+            expires: T0 + 3600,
+            rights: rights::READ,
+            prefix: "/",
+            ticket: b"opaque",
+        }
+        .encode();
+        let keys = Keys::from_master(&master);
+        Ok(crypto::rauth(&keys, m.id, &eph.public, &[7; NONCE], &grant))
+    }
+}
+
+/// The default exchange (`docs/lethe.md`, "The default exchange"): a
+/// client asks for the hybrid exchange and gets it from a server that can
+/// do it, and the classical one from a server built before it. A refusal
+/// of the `Tauth2` that a current server did not send is caught by the
+/// mark under the seal of its `Rauth`; naming the classical exchange is
+/// no downgrade, and requiring the hybrid one takes no fallback.
+#[test]
+fn the_default_exchange() {
+    let t = tree();
+    let now = Cell::new(T0);
+    let server = Server::new(Config::default(), [9; 32]);
+    let mut r = rig(&server, &t, &now, direct());
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    assert_eq!(c.kx, Kx::Auto);
+    assert!(read(&mut c, &mut r, "/hello", None).is_ok());
+    assert_eq!(r.sent[0][5], purg_lethe::kind::TAUTH2);
+    assert_eq!(c.tickets, 1);
+
+    // Stripped on the way: the fallback's Rauth says the server could do
+    // the hybrid exchange.
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    let mut s = Strip(&mut r);
+    assert_eq!(
+        c.authenticate(&mut s, T0, &mut random),
+        Err(CallError::Remote(String::from(
+            "no post-quantum key offered"
+        )))
+    );
+    assert!(c.session.is_none());
+    c.kx = Kx::Classical;
+    assert_eq!(c.authenticate(&mut s, T0, &mut random), Ok(()));
+    c.kx = Kx::Require;
+    c.session = None;
+    assert_eq!(
+        c.authenticate(&mut s, T0, &mut random),
+        Err(CallError::Remote(String::from(
+            "no post-quantum key offered"
+        )))
+    );
+
+    // An old server: the classical exchange, after one refused Tauth2.
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    assert_eq!(c.authenticate(&mut Old, T0, &mut random), Ok(()));
+    assert_eq!(c.tickets, 1);
+    assert_eq!(c.session.as_ref().map(|s| s.ticket()), Some(&b"opaque"[..]));
+    c.kx = Kx::Require;
+    assert_eq!(
+        c.authenticate(&mut Old, T0, &mut random),
+        Err(CallError::Remote(String::from(
+            "no post-quantum key offered"
+        )))
+    );
+    // The mark is in every current Rauth.
+    let (frame, _) = purg_lethe::client::auth(&creds(None), 9, rights::READ, "/", [1; 32]);
+    let reply = r.send(&frame);
+    let Frame::Rauth { nonce, .. } = Msg::decode(&reply).unwrap().frame else {
+        panic!()
+    };
+    assert!(purg_lethe::offers_pq(&nonce));
+}
+
+fn hybrid_creds(cert: Option<purg_auth::cert::AnyCert>) -> Creds {
+    let mut s = [0u8; purg_auth::sig::HYBRID_SEED];
+    for (i, b) in s.iter_mut().enumerate() {
+        *b = 0x30 ^ i as u8;
+    }
+    Creds {
+        user: String::from("glenda"),
+        secret: purg_auth::sig::Secret::Hybrid(purg_auth::sig::HybridSecret(s)),
+        cert,
+    }
+}
+
+/// A `Tauth` signed with a hybrid Ed25519 + ML-DSA-65 key (`docs/lethe.md`,
+/// "Hybrid signatures"): a server that holds the key's id, or trusts the
+/// hybrid signer of its pgcert2, issues a ticket; one that lists the id
+/// as an Ed25519 key does not; `pqsig` refuses an Ed25519 Tauth; and the
+/// Ed25519 half alone does not verify.
+#[test]
+fn hybrid_signatures() {
+    use purg_auth::sig::{Id, Public, Secret};
+    let t = tree();
+    let now = Cell::new(T0);
+    let server = Server::new(Config::default(), [9; 32]);
+    let h = hybrid_creds(None);
+    let id = h.secret.public().id();
+    let held = Trust {
+        keys: vec![id],
+        signers: vec![],
+        revoked: Some(vec![]),
+    };
+    let mut r = rig(&server, &t, &now, held.clone());
+    let mut c = Client::new(h.clone(), rights::READ, "/");
+    assert!(read(&mut c, &mut r, "/hello", None).is_ok());
+    let tauth = Msg::decode(&r.sent[0]).unwrap();
+    let Frame::Tauth2 { t: ta, .. } = &tauth.frame else {
+        panic!()
+    };
+    assert_eq!(ta.kind, purg_abi::auth::KIND_HYBRID_KEY);
+    assert_eq!(ta.signature.len(), purg_abi::auth::HYBRID_SIGNATURE);
+    // The frame decodes and encodes back to the same bytes.
+    assert_eq!(tauth.encode(), r.sent[0]);
+    // Classical exchange, hybrid signature.
+    let mut c = Client::new(h.clone(), rights::READ, "/");
+    c.kx = Kx::Classical;
+    assert!(read(&mut c, &mut r, "/hello", None).is_ok());
+
+    // The id without its marker is an Ed25519 entry.
+    let Id::Hybrid(raw) = id else { panic!() };
+    let confused = Trust {
+        keys: vec![Id::Ed25519(raw)],
+        signers: vec![],
+        revoked: Some(vec![]),
+    };
+    let mut r2 = rig(&server, &t, &now, confused);
+    let mut c = Client::new(h.clone(), rights::READ, "/");
+    assert_eq!(
+        read(&mut c, &mut r2, "/hello", None),
+        remote("authentication failed")
+    );
+
+    // A pgcert2 from a hybrid signer.
+    let mut sk = [0u8; purg_auth::sig::HYBRID_SEED];
+    sk[0] = 9;
+    let signer = Secret::Hybrid(purg_auth::sig::HybridSecret(sk));
+    let Public::Hybrid(key) = h.secret.public() else {
+        panic!()
+    };
+    let mut cert =
+        purg_auth::cert::AnyCert::V2(purg_auth::cert::Cert2::new("glenda", key, 0).unwrap());
+    cert.sign(&signer).unwrap();
+    let signed = Trust {
+        keys: vec![],
+        signers: vec![signer.public().id()],
+        revoked: Some(vec![]),
+    };
+    let mut r3 = rig(&server, &t, &now, signed);
+    let mut c = Client::new(hybrid_creds(Some(cert)), rights::READ, "/");
+    assert!(read(&mut c, &mut r3, "/hello", None).is_ok());
+    assert_eq!(
+        Msg::decode(&r3.sent[0]).map(|m| match m.frame {
+            Frame::Tauth2 { t, .. } => t.kind,
+            _ => 0,
+        }),
+        Ok(purg_abi::auth::KIND_HYBRID_CERT)
+    );
+
+    // A server that requires hybrid signatures.
+    let strict = Server::new(
+        Config {
+            pqsig: true,
+            ..Config::default()
+        },
+        [9; 32],
+    );
+    let mut r4 = rig(&strict, &t, &now, direct());
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    assert_eq!(
+        read(&mut c, &mut r4, "/hello", None),
+        remote("post-quantum signature required")
+    );
+    let mut r5 = rig(&strict, &t, &now, held);
+    let mut c = Client::new(h.clone(), rights::READ, "/");
+    assert!(read(&mut c, &mut r5, "/hello", None).is_ok());
+
+    // The Ed25519 half alone, as an Ed25519 Tauth by the Ed25519 half of
+    // the key: it signed the framed message, not this one.
+    let edkey: [u8; 32] = h.secret.public().bytes()[..32].try_into().unwrap();
+    let (frame, _) = purg_lethe::client::auth(&h, 3, rights::READ, "/", [2; 32]);
+    let m = Msg::decode(&frame).unwrap();
+    let Frame::Tauth(ta) = m.frame else { panic!() };
+    let cut = Msg {
+        id: 3,
+        frame: Frame::Tauth(purg_lethe::msg::Tauth {
+            kind: purg_abi::auth::KIND_KEY,
+            body: &edkey,
+            signature: &ta.signature[..64],
+            ..ta
+        }),
+    }
+    .encode();
+    let mut r6 = rig(
+        &server,
+        &t,
+        &now,
+        Trust {
+            keys: vec![Id::Ed25519(edkey)],
+            signers: vec![],
+            revoked: Some(vec![]),
+        },
+    );
+    let reply = r6.send(&cut);
     assert!(matches!(
         Msg::decode(&reply).unwrap().frame,
         Frame::Rerror {

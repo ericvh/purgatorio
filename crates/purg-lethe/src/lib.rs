@@ -47,6 +47,18 @@ pub const KEM_PUBLIC: usize = purg_abi::auth::KEM_PUBLIC;
 /// An ML-KEM-768 ciphertext.
 pub const KEM_CT: usize = purg_abi::auth::KEM_CIPHERTEXT;
 
+/// What a server that can do the hybrid exchange puts in the last bytes
+/// of an `Rauth`'s nonce (`docs/lethe.md`, "The default exchange"). The
+/// nonce is the seal's, so it cannot be changed without failing the
+/// seal: a client that fell back to `Tauth` after its `Tauth2` was
+/// refused sees that the refusal was not the server's.
+pub const PQ_MARK: [u8; 8] = *b"lethe2pq";
+
+/// Whether an `Rauth`'s nonce carries [`PQ_MARK`].
+pub fn offers_pq(nonce: &[u8; NONCE]) -> bool {
+    nonce[NONCE - PQ_MARK.len()..] == PQ_MARK
+}
+
 /// The user a clear request runs as: Inferno's unauthenticated identity.
 pub const NONE: &str = "none";
 

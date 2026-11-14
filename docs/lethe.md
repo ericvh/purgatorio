@@ -288,7 +288,10 @@ grant   = now u64 expires u64 rights u8 prefix s[2] ticket s[2]
 ```
 
 - `eph_c` is a fresh X25519 key. `kind` and `body` are as in a mount
-  proof: a public key (0) or a `pgcert1` line (1).
+  proof: a public key (0) or a `pgcert1` line (1), or for a hybrid
+  Ed25519 + ML-DSA-65 key the hybrid key (2) or a `pgcert2` line (3).
+  The signature is then a hybrid one, 3,373 bytes where an Ed25519
+  signature has 64 ("Hybrid signatures" below).
 - The signature is by the body's key over
 
   ```
@@ -339,7 +342,8 @@ strict decoder would refuse the longer grant, never receives it.
 
 ### The post-quantum exchange
 
-`lethe -C x25519mlkem768` asks for a hybrid X25519 + ML-KEM-768 exchange,
+`lethe` asks for a hybrid X25519 + ML-KEM-768 exchange by default ("The
+default exchange" below), and `lethe -C x25519mlkem768` requires it,
 as `mount -C x25519mlkem768` does (`docs/auth.md`, "Hybrid key exchange
 (version 4)"), so a recorded `Tauth` and its traffic stay closed to
 someone who later breaks X25519, as long as ML-KEM-768 holds. Lethe has
@@ -365,11 +369,13 @@ are frame types 11 and 12, from the reserved range. The ticket's rights
 byte gets bit 6 (`rights::PQ`), which no client can ask for, so a server
 can tell a ticket from the hybrid exchange from one that is not.
 
-There is no "use it if the other end can" mode:
+A client that requires it (`lethe -C x25519mlkem768`, `kx
+x25519mlkem768`) gets nothing else:
 
-- A client that asked takes only an `Rauth2`. An `Rauth` fails with `no
-  post-quantum key offered`, and so does `bad lethe message`, which is
-  what a server built before this answers a frame type it does not know.
+- A client that requires it takes only an `Rauth2`. An `Rauth` fails with
+  `no post-quantum key offered`, and so does `bad lethe message`, which
+  is what a server built before this answers a frame type it does not
+  know.
 - `lethed -C x25519mlkem768` refuses a `Tauth`, and a request on a ticket
   without `rights::PQ`, with `post-quantum key exchange required`.
   Without it a server takes either exchange.
@@ -378,7 +384,65 @@ There is no "use it if the other end can" mode:
   fails the signature or the grant's seal.
 
 The kernel's `#λ` does the client's side (`kx x25519mlkem768` in the
-`clone` write). The cost is one ML-KEM key generation and decapsulation
+`clone` write).
+
+### The default exchange
+
+Without `kx` (or `-C`) a client asks for the hybrid exchange and takes
+the classical one only from a server that cannot do it:
+
+1. It sends a `Tauth2`. A current server answers with an `Rauth2`, and
+   that is the ticket.
+2. A server built before `Tauth2` answers `bad lethe message`. The client
+   then sends a `Tauth` and takes the `Rauth`, unless the `Rauth` says
+   the server could have done the hybrid exchange: every current server
+   puts `PQ_MARK` (`"lethe2pq"`) in the last 8 bytes of an `Rauth`'s
+   nonce. Such an `Rauth` after a refused `Tauth2` fails with `no
+   post-quantum key offered`.
+
+The `Rerror` is in the clear, so someone in between can forge it. The
+nonce cannot be changed without failing the grant's seal, whose key
+needs the client's ephemeral secret, so a forged refusal in front of a
+current server ends in an error, not in a classical ticket. The client
+checks the mark only after the seal opens. Against a server built before
+this the client gets the classical exchange after one extra round trip,
+which is all such a server can give. What remains:
+
+- Someone who can forge the server's whole `Rauth` is the server, as
+  far as the client knows: Lethe does not authenticate servers yet, so a
+  client that dials an impostor talks to the impostor (Section 6).
+- An attacker who can break X25519 and forge the user's signature while
+  the exchange runs could answer for the real server. That is a quantum
+  computer at the time of the exchange, not a recording; a hybrid key
+  ("Hybrid signatures") leaves it with ML-DSA to forge too.
+- `kx x25519` (`lethe -C x25519`) asks only for the classical exchange.
+  That is the user's choice, and the mark is not checked.
+
+A server built before this ignores the mark, and an old client reads the
+nonce as a nonce. `lethed -C x25519mlkem768` still refuses a `Tauth`.
+The cost of the default against a current server is the hybrid
+exchange's, below; against an old one, one more round trip per ticket.
+
+### Hybrid signatures
+
+A `Tauth` (or `Tauth2`) can be signed with a hybrid Ed25519 + ML-DSA-65
+key (`docs/auth.md`, "Post-quantum signatures"), with `kind` 2 (the
+1,984-byte key) or 3 (a `pgcert2`) and a 3,373-byte hybrid signature over
+the same `lethe1 auth` or `lethe2 auth` message. The server checks it
+with the same trust files, which name a hybrid key by its `mldsa65:` id
+(`lethed -k` and `-U` take a 1,984-byte key file). Cut down to its
+Ed25519 half and sent as kind 0, the signature does not verify: both
+halves signed the framed message. `lethed -C mldsa65` takes only hybrid
+signatures and refuses an Ed25519 one with `post-quantum signature
+required`; names join with `/`, as for `mount -C`
+(`x25519mlkem768/mldsa65`). A `Tauth` with a hybrid certificate is about
+18 KB, well inside a frame's 64 KiB.
+
+`lethe` takes a hybrid authinfo or seed file as it takes an Ed25519 one
+and writes it to `clone` as `key mldsa65:<hex>` with its `cert
+<pgcert2>`. The kernel signs with it on a 512 KiB stack
+(`Platform::deep`), as it does a mount proof; a hybrid signature takes
+about 1.7 ms natively, once per ticket. The cost is one ML-KEM key generation and decapsulation
 for the client and one encapsulation for the server per ticket, about 0.1
 ms natively, and 2.3 KB more on the wire per ticket; requests do not
 change.
@@ -757,7 +821,9 @@ lethed [-v] [-A] [-C alg] [-a addr] [-u owner] [-t ticketkey] [-e lifetime] [-w 
   request window, in seconds.
 - `-C x25519mlkem768`: issue tickets only from the hybrid exchange and
   take requests only on such tickets ("The post-quantum exchange");
-  `-C x25519` names the default.
+  `-C x25519` names the default, which takes either. `-C mldsa65`:
+  take only hybrid signatures ("Hybrid signatures"). Names join with
+  `/`.
 - `-u`: the name host files are owned by in stat entries and permission
   checks; by default each file's host owner, as `#U` shows it.
 - `-v`: log each ticket issued and each request on standard error. Clear
@@ -786,14 +852,16 @@ then the test key), and writes the connection to `#λ/clone`:
 ```
 dial tcp!10.0.2.2!5640
 user glenda
-key <seed hex>
-cert <pgcert1 line>       (with an authinfo)
+key <seed hex>            (mldsa65:<hex> for a hybrid key)
+cert <pgcert1 line>       (with an authinfo; pgcert2 for a hybrid key)
 path /lib                 (optional: the subtree, which is also the ticket's prefix)
 cache 1000                (optional: the attribute lifetime in ms, from -t)
 ```
 
 `lethe -C x25519mlkem768` adds `kx x25519mlkem768`: every ticket comes
-from the hybrid exchange ("The post-quantum exchange"). It does not go
+from the hybrid exchange ("The post-quantum exchange"). `lethe -C x25519`
+adds `kx x25519`: only the classical one. Without either, the device
+uses the default exchange ("The default exchange"). `-C` does not go
 with `-A`.
 
 `lethe -A` asks for the clear mode. It reads no key and writes
