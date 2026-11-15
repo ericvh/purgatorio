@@ -7,13 +7,13 @@ echo same > $d/a
 echo same > $d/b
 echo other > $d/c
 cmp $d/a $d/b && echo cmp same
-cmp $d/a $d/c >[2] /dev/null
+cmp -s $d/a $d/c
 echo cmp differ $status
 cmp $d/a $d/a2 >[2] /dev/null
 echo cmp missing $status
 echo 'same
 more' > $d/prefix
-cmp $d/a $d/prefix >[2] /dev/null
+cmp $d/a $d/prefix > /dev/null
 echo cmp eof $status
 diff $d/a $d/b && echo diff same
 diff $d/a $d/c > /dev/null

@@ -82,7 +82,7 @@ mk -f mk4 X=cmd show
 # P: the program decides whether the target is out of date.
 echo same > p1
 echo same > p2
-echo 'p1:Pcmp >[2] /dev/null: p2
+echo 'p1:Pcmp -s: p2
 	echo copy $prereq
 ' > mk5
 mk -f mk5

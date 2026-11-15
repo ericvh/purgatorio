@@ -1,5 +1,5 @@
 stdin first same
 stdin second same
-cmp: files differ: byte 1
+- /tmp/sh-cmpstdin/b differ: char 1
 stdin differ differ|
 redirected differ differ

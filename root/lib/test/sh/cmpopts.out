@@ -1,0 +1,16 @@
+/tmp/sh-cmpopts/a /tmp/sh-cmpopts/b differ: char 7
+status differ
+/tmp/sh-cmpopts/a /tmp/sh-cmpopts/b differ: char 7 line 2
+     7 0x6f 0x58
+    12 0x65 0x59
+status differ
+status differ
+EOF on /tmp/sh-cmpopts/c after 4 bytes
+EOF on /tmp/sh-cmpopts/c after 4 bytes
+EOF on /tmp/sh-cmpopts/c after 4 bytes
+EOF on /tmp/sh-cmpopts/short after 4 bytes
+status EOF
+an offset that does not parse is 0
+Usage: cmp [-lsL] file1 file2 [offset1 [offset2] ]
+Usage: cmp [-lsL] file1 file2 [offset1 [offset2] ]
+status usage
