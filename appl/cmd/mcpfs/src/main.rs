@@ -17,6 +17,8 @@
 //! mntpt/prompts/list       the server's prompts/list result, as JSON
 //! mntpt/prompts/get        write the parameters ({"name": ...,
 //!                          "arguments": {...}}), then read the prompt
+//! mntpt/log                the server's log and progress notifications,
+//!                          one JSON line each, as they came
 //! ```
 //!
 //! Each open of `call` is one call. What is written to it is the
@@ -34,7 +36,9 @@
 //!
 //! Calls do not hold up the mount (`serve`): a read that needs the
 //! server waits for its answer while other requests are served. A
-//! changed tool list is fetched again; progress is not served.
+//! changed tool list is fetched again. Log messages
+//! (`notifications/message`) and progress (`notifications/progress`) are
+//! kept in `log`, the last [`MAX_LOG`] bytes of them.
 
 #[allow(dead_code)]
 #[path = "../../mcpd/src/json.rs"]
@@ -74,6 +78,10 @@ const RREAD: u64 = 5;
 const PROMPTS: u64 = 6;
 const PLIST: u64 = 7;
 const PGET: u64 = 8;
+const LOG: u64 = 9;
+
+/// How much of the server's log `log` keeps: older lines go first.
+const MAX_LOG: usize = 64 * 1024;
 /// Tool `i` is `TOOL + 4i` (its directory), `+ 1` (schema), `+ 2` (call).
 const TOOL: u64 = 16;
 
@@ -244,6 +252,8 @@ struct McpFs {
     server: Vec<u8>,
     tools: Vec<Tool>,
     refresh: Option<Refresh>,
+    /// The server's log and progress notifications, one JSON line each.
+    log: Vec<u8>,
     fids: BTreeMap<u32, Fid>,
     iounit: u32,
 }
@@ -320,6 +330,7 @@ impl McpFs {
                 "tools" => Some(TOOLS),
                 "resources" => Some(RESOURCES),
                 "prompts" => Some(PROMPTS),
+                "log" => Some(LOG),
                 _ => None,
             },
             (PROMPTS, _) => match name {
@@ -348,7 +359,7 @@ impl McpFs {
 
     fn children(&self, path: u64) -> Vec<u64> {
         match (path, self.tool_of(path)) {
-            (ROOT, _) => vec![SERVER, TOOLS, RESOURCES, PROMPTS],
+            (ROOT, _) => vec![SERVER, TOOLS, RESOURCES, PROMPTS, LOG],
             (PROMPTS, _) => vec![PLIST, PGET],
             (RESOURCES, _) => vec![RLIST, RREAD],
             (TOOLS, _) => (0..self.tools.len())
@@ -371,6 +382,7 @@ impl McpFs {
             (PROMPTS, _) => (String::from("prompts"), DMDIR | 0o555, 0),
             (PLIST, _) => (String::from("list"), 0o444, 0),
             (PGET, _) => (String::from("get"), 0o666, 0),
+            (LOG, _) => (String::from("log"), 0o444, self.log.len()),
             (_, Some((t, 0))) => (self.tools[t].name.clone(), DMDIR | 0o555, 0),
             (_, Some((t, 1))) => (String::from("schema"), 0o444, self.tools[t].schema.len()),
             _ => (String::from("call"), 0o666, 0),
@@ -546,6 +558,23 @@ impl McpFs {
         Ok(true)
     }
 
+    /// Keeps a log or progress notification in `log`, dropping whole old
+    /// lines past [`MAX_LOG`].
+    fn note(&mut self, v: &Value) {
+        let mut line = v.encode().into_bytes();
+        line.truncate(MAX_LOG - 1);
+        line.push(b'\n');
+        self.log.extend_from_slice(&line);
+        if self.log.len() > MAX_LOG {
+            let over = self.log.len() - MAX_LOG;
+            let cut = self.log[over..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(self.log.len(), |i| over + i + 1);
+            self.log.drain(..cut);
+        }
+    }
+
     /// Tells the server to stop call `id` (`notifications/cancelled`).
     fn cancel(&mut self, id: i64, reason: &str) {
         let _ = self.client.send(&json::obj([
@@ -681,6 +710,7 @@ impl StyxFs for McpFs {
         }
         match (path, self.tool_of(path)) {
             (SERVER, _) => Ok(slice(&self.server, offset, count)),
+            (LOG, _) => Ok(slice(&self.log, offset, count)),
             (_, Some((t, 1))) => Ok(slice(&self.tools[t].schema, offset, count)),
             _ if self.asks(path) => {
                 let result = match f.call.result {
@@ -812,6 +842,7 @@ fn connect(argv: &[String]) -> Result<McpFs, String> {
         server,
         tools,
         refresh: None,
+        log: Vec::new(),
         fids: BTreeMap::new(),
         iounit: 8192,
     })

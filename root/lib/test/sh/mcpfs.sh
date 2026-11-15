@@ -61,6 +61,8 @@ mcpfs -m $d sh /lib/test/mcp/changing
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 {test -d $d/tools/b || sleep 0.5}
 ls $d/tools | sed 's/.*\///'
 test -d $d/tools/a || echo a gone
+# The server's log message, kept in log.
+cat $d/log
 unmount $d
 rm -r $d
 mcpfs -m /n nosuchcommand

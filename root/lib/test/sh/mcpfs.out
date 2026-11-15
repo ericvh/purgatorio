@@ -1,3 +1,4 @@
+log
 prompts
 resources
 server
@@ -33,5 +34,6 @@ cat: timed out
 16
 b
 a gone
+{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"tools changing"}}
 mcpfs: nosuchcommand: /bin/nosuchcommand.wasm: file does not exist
 status nosuchcommand: /bin/nosuchcommand.wasm: file does not exist

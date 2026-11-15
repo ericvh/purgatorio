@@ -594,6 +594,7 @@ lists the tools (following `nextCursor`), and mounts on `mntpt` (default
 | `resources/read` | Write a resource's URI, then read its contents on the same open file. |
 | `prompts/list` | The server's `prompts/list` result as JSON. |
 | `prompts/get` | Write the parameters (`{"name": ..., "arguments": {...}}`), then read the `prompts/get` result as JSON. |
+| `log` | The server's log (`notifications/message`) and progress (`notifications/progress`) notifications, one JSON line each, the last 64 KiB. |
 
 Each open of `call` is one call. Nothing written means `{}`. The first
 read sends `tools/call` and returns the `CallToolResult` as one line of
@@ -642,6 +643,5 @@ both engines, the probe and the kernel) with `mcpd` as the far end, and
 
 What remains of stage 4:
 
-- Progress and log notifications are dropped.
 - Revision 2026-07-28 (stateless, with `_meta` on every request) is not
   spoken; 2025-11-25 is, and `mcpd` and most servers answer it.

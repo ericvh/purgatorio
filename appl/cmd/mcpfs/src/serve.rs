@@ -172,6 +172,9 @@ fn mcp_line(fs: &mut McpFs, io: &File, pending: &mut BTreeMap<i64, Pending>) -> 
             None if method == "notifications/tools/list_changed" => {
                 fs.tools_changed().map_err(Error)?;
             }
+            None if method == "notifications/message" || method == "notifications/progress" => {
+                fs.note(&v);
+            }
             None => {}
         }
         return Ok(());
