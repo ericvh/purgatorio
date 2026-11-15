@@ -26,9 +26,9 @@ echo files
 # A prog started without counting has empty files.
 trace test/debug nap &
 sleep 0.2
-pid=`{ps | grep ' running +debug$' | sed 's/^ *([0-9]+) .*/\1/'}
+pid=`{ps | grep ' (ready|release) +[0-9]+K debug$' | sed 's/^ *([0-9]+) .*/\1/'}
 cat /prog/$pid/cprof /prog/$pid/mprof
 kill $pid
 wait
-echo broken `{ps | grep -c ' broken +debug$'}
+echo broken `{ps | grep -c ' broken +[0-9]+K debug$'}
 echo done

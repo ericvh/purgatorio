@@ -7,7 +7,7 @@ me=`{cat /dev/user}
 runas bob cat /dev/user; echo
 runas bob sh -c 'cat /dev/user; echo; cat /dev/user; echo'
 if {~ `{cat /dev/user} $me} {echo still the host owner}
-runas bob ps | grep ' ps$' | sed 's/^ *[0-9]+ +[0-9]+ +[0-9]+ +//' | sed 's/ +[a-z]+ +.*//'
+runas bob ps | grep ' ps$' | sed 's/^ *[0-9]+ +[0-9]+ +//' | sed 's/ .*//'
 
 echo refused
 runas bob runas alice cat /dev/user

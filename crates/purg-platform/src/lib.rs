@@ -139,6 +139,18 @@ pub trait Platform: Send + Sync {
     fn net(&self) -> Option<&dyn net::Net> {
         None
     }
+    /// A handle on the calling thread's CPU clock, which
+    /// [`Platform::cpu_ns`] reads from any thread: a prog's thread records
+    /// it when the prog starts, and `/prog/n/status` shows the time.
+    /// `None` where the platform keeps no CPU time per thread.
+    fn cpu_clock(&self) -> Option<u64> {
+        None
+    }
+    /// The CPU time, in ns, of the thread whose clock is `clock`; `None`
+    /// once that thread has gone, or where the platform keeps none.
+    fn cpu_ns(&self, _clock: u64) -> Option<u64> {
+        None
+    }
     /// Starts a host command for `#C` (cmd(3)'s `exec`). Platforms without
     /// host commands fail with `"not implemented"`.
     fn command(&self, _spec: &net::CmdSpec<'_>) -> Result<alloc::sync::Arc<dyn net::Command>> {

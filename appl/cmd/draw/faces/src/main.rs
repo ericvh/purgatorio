@@ -36,17 +36,18 @@ struct Prog {
     name: String,
 }
 
-/// Parses `/prog/<pid>/status`: pid, parent, group, user, state, name.
+/// Parses `/prog/<pid>/status` as prog(3) has it: pid, group, user,
+/// time, state, size, module.
 fn parse_status(s: &str) -> Option<Prog> {
     let f: Vec<&str> = s.split_whitespace().collect();
-    if f.len() < 6 {
+    if f.len() < 7 {
         return None;
     }
     Some(Prog {
         pid: f[0].parse().ok()?,
-        user: f[3].to_string(),
+        user: f[2].to_string(),
         state: f[4].to_string(),
-        name: f[5..].join(" "),
+        name: f[6..].join(" "),
     })
 }
 
@@ -542,7 +543,8 @@ mod tests {
 
     #[test]
     fn status() {
-        let p = parse_status("12 1 12 inferno running draw-faces\n").unwrap();
+        let p = parse_status("      12       12    inferno    0:00.0      ready     0K draw-faces")
+            .unwrap();
         assert_eq!(
             (p.pid, p.user.as_str(), p.name.as_str()),
             (12, "inferno", "draw-faces")
@@ -555,7 +557,7 @@ mod tests {
         let p = |pid, name: &str| Prog {
             pid,
             user: String::from("u"),
-            state: String::from("running"),
+            state: String::from("ready"),
             name: name.to_string(),
         };
         let g = group(&[p(1, "sh"), p(2, "sleep"), p(3, "sh")]);

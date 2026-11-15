@@ -95,6 +95,9 @@ pub struct Proc {
     memlimit: AtomicU64,
     /// The wasm memory it holds now, as its engine reported it.
     mem: AtomicU64,
+    /// Its thread's CPU clock, from [`Platform::cpu_clock`] when it
+    /// started, for the time in `status`.
+    cpu_clock: Mutex<Option<u64>>,
 }
 
 impl Proc {
@@ -212,6 +215,16 @@ impl Proc {
 
     pub fn set_name(&self, name: &str) {
         *self.name.lock() = String::from(name);
+    }
+
+    /// Records the CPU clock of the thread that runs this prog.
+    pub fn set_cpu_clock(&self, clock: Option<u64>) {
+        *self.cpu_clock.lock() = clock;
+    }
+
+    /// The prog's CPU clock, if its platform keeps one.
+    pub fn cpu_clock(&self) -> Option<u64> {
+        *self.cpu_clock.lock()
     }
 
     pub fn egrp(&self) -> Arc<Egrp> {
@@ -345,6 +358,11 @@ pub struct Procs {
 }
 
 impl Procs {
+    /// The platform the progs run on.
+    pub fn platform(&self) -> &Arc<dyn Platform> {
+        &self.platform
+    }
+
     pub fn new(platform: Arc<dyn Platform>) -> Arc<Procs> {
         Arc::new(Procs {
             user: platform.user(),
@@ -521,6 +539,7 @@ impl Procs {
             domains: Mutex::new(Arc::from([])),
             memlimit: AtomicU64::new(UNLIMITED),
             mem: AtomicU64::new(0),
+            cpu_clock: Mutex::new(None),
         });
         self.table.lock().insert(pid, p.clone());
         p

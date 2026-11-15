@@ -465,7 +465,7 @@ on_each_vm! {
     /// the emu after every other prog has gone, until it is killed.
     fn a_broken_prog_keeps_the_emu(vm) {
         let script = "trace test/debug trap > /dev/null >[2=1]
-{sleep 1; ps | grep -c ' broken +debug$'; kill debug > /dev/null; echo killed} &";
+{sleep 1; ps | grep -c ' broken +[0-9]+K debug$'; kill debug > /dev/null; echo killed} &";
         let o = emu_inferno(vm, &["sh", "-c", script], b"");
         assert_eq!(stdout(&o), "1\nkilled\n", "{vm}: {o:?}");
         assert!(o.status.success(), "{vm}: {o:?}");

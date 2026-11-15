@@ -807,17 +807,16 @@ fn the_session_is_confined() {
     }
 }
 
-/// The status line of prog `pid` as `(pid, ppid, group)`, read by `run`.
+/// Prog `pid` as `(pid, ppid, group)`, read by `run`: pid and group from
+/// its status line (prog(3): pid, group, ...), the parent from `ppid`.
 fn status_of(m: &mut Mcp, pid: i64) -> (i64, i64, i64) {
-    let r = m.run(&format!("cat /prog/{pid}/status"));
-    let f: Vec<i64> = r
-        .stdout
-        .split_whitespace()
-        .take(3)
-        .map(|w| w.parse().unwrap_or(-1))
-        .collect();
-    assert_eq!(f.len(), 3, "{}: {r:?}", m.vm);
-    (f[0], f[1], f[2])
+    let r = m.run(&format!(
+        "cat /prog/{pid}/status; echo; cat /prog/{pid}/ppid"
+    ));
+    let f: Vec<&str> = r.stdout.split_whitespace().collect();
+    let num = |i: usize| f.get(i).and_then(|w| w.parse().ok()).unwrap_or(-1);
+    assert!(f.len() >= 8, "{}: {r:?}", m.vm);
+    (num(0), num(f.len() - 1), num(1))
 }
 
 #[test]
@@ -1032,7 +1031,7 @@ fn reset_and_recovery() {
         m.run("echo x > survivor");
         let e = m.fails(
             "run",
-            r#"{"command":"load std; l=`{ps | grep ' sh$'}; p=${index 2 $l}; l=`{cat /prog/$p/status}; echo kill > /prog/${index 2 $l}/ctl; sleep 30"}"#,
+            r#"{"command":"load std; l=`{ps | grep ' sh$'}; p=`{cat /prog/${index 1 $l}/ppid}; echo kill > /prog/`{cat /prog/$p/ppid}^/ctl; sleep 30"}"#,
         );
         if e.contains("the session ended") {
             assert_eq!(m.run("ls /tmp; echo fresh").stdout, "fresh\n", "{vm}");

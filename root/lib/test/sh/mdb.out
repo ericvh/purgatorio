@@ -24,7 +24,7 @@ stopped in debug::tick
 ADDR 2b 00 00 00
 stopped in std::thread::functions::sleep
 mdb: bad command: zap; h for help
-PID PPID PGRP USER running debug
+PID PGRP USER TIME release SIZE debug
 kill
 stopped
 debug 0

@@ -49,7 +49,8 @@ fn owner_becomes_another_user_once() {
     assert_eq!(p.kernel.procs.user(), "inferno");
     let path = format!("/prog/{}/status", p.pid);
     let status = read_all(&mut p, &path);
-    assert_eq!(status.split(' ').nth(3), Some("bob"));
+    // prog(3): pid, group, user, ...
+    assert_eq!(status.split_whitespace().nth(2), Some("bob"));
     assert_eq!(p.stat(&format!("/prog/{}/ctl", p.pid)).unwrap().uid, "bob");
 
     let grandchild = p.spawn(0, &[]).unwrap();

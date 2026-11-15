@@ -79,6 +79,7 @@ const QMEM: u64 = 11;
 const QCPROF: u64 = 12;
 const QMPROF: u64 = 13;
 const QHEAP: u64 = 14;
+const QPPID: u64 = 15;
 
 use crate::debug::{Access, Kind, MAX_ACCESS, Resume};
 pub use crate::debug::{ENOTSTOPPED, ENOTTRACED};
@@ -94,6 +95,7 @@ const FILES: &[(&str, u64, u32)] = &[
     ("module", QMODULE, 0o444),
     ("mprof", QMPROF, 0o444),
     ("ns", QNS, 0o444),
+    ("ppid", QPPID, 0o444),
     ("prof", QPROF, 0o444),
     ("stack", QSTACK, 0o444),
     ("status", QSTATUS, 0o444),
@@ -116,6 +118,45 @@ fn view(c: &Chan) -> Option<u32> {
 impl DevProg {
     pub fn new(procs: Arc<Procs>) -> DevProg {
         DevProg { procs }
+    }
+
+    /// `status` as prog(3) has it: pid and process group, each 8 wide;
+    /// the user, 10 wide; the CPU time as `m:ss.t`; the state, 10 wide;
+    /// the wasm memory in KiB, 5 wide, and `K`; the module. No newline,
+    /// as Inferno's has none. The parent pid is in `ppid` (an addition).
+    fn status(&self, p: &crate::prog::Proc) -> String {
+        let ms = p
+            .cpu_clock()
+            .and_then(|c| self.procs.platform().cpu_ns(c))
+            .unwrap_or(0)
+            / 1_000_000;
+        let tenths = ms / 100;
+        let sec = tenths / 10;
+        // Inferno's states: a prog asleep in a call is `release` (the
+        // interpreter released while it waits), a killed one `exiting`.
+        let state = if p.debug.broken() {
+            "broken"
+        } else if p.note.killed() {
+            "exiting"
+        } else if p.debug.stopped() {
+            "debug"
+        } else if p.note.waiting_at().is_some() {
+            "release"
+        } else {
+            "ready"
+        };
+        format!(
+            "{:>8} {:>8} {:>10} {:4}:{:02}.{} {:>10} {:>5}K {}",
+            p.pid,
+            p.group(),
+            p.user(),
+            sec / 60,
+            sec % 60,
+            tenths % 10,
+            state,
+            p.mem() / 1024,
+            p.name()
+        )
     }
 
     /// Prog `pid`, when it exists and `c`'s view shows it.
@@ -280,15 +321,8 @@ impl Dev for DevProg {
             return Ok(n);
         }
         let text = match kind {
-            QSTATUS => format!(
-                "{} {} {} {} {} {}\n",
-                p.pid,
-                p.ppid,
-                p.group(),
-                p.user(),
-                p.state(),
-                p.name()
-            ),
+            QSTATUS => self.status(&p),
+            QPPID => format!("{}\n", p.ppid),
             QNS => p.pgrp().namespace(),
             QFD => fd_text(&p),
             QMODULE => module_text(&p),
