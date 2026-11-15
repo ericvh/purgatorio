@@ -15,5 +15,11 @@ cat: the arguments must be a JSON object
 {"content":[{"type":"text","text":"arguments.command is required"}],"isError":true}
 cat: tools/nosuch/call: file does not exist
 sh: tools/run/schema: permission denied
+16
+stat schema meanwhile
+slow call not yet answered
+slow call answered
+cat: timed out
+16
 mcpfs: nosuchcommand: /bin/nosuchcommand.wasm: file does not exist
 status nosuchcommand: /bin/nosuchcommand.wasm: file does not exist
