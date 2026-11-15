@@ -101,6 +101,14 @@ jobs:
       - name: allow unprivileged ICMP sockets (ip/ping's tests)
         if: runner.os == 'Linux'
         run: sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+      - name: load 9p for the Linux v9fs interop test (tests/v9fs.rs)
+        if: runner.os == 'Linux'
+        run: |
+          if sudo modprobe 9p && sudo modprobe 9pnet_fd; then
+            echo PURG_V9FS=1 >> "$GITHUB_ENV"
+          else
+            echo "::warning::this runner's kernel has no 9p; the v9fs test is skipped"
+          fi
       - name: unit and acceptance tests (wasmtime and wasmi)
         run: cargo test --workspace
       - name: root/fonts is what fontgen makes, on every host (docs/graphics.md 9.1)
