@@ -90,4 +90,13 @@ allow-git = []
 [advisories]
 version = 2
 # RustSec advisory ids we have looked at and accepted, each with a reason.
-ignore = []
+ignore = [
+    # 2026-11-15, #89: crypto-bigint 0.5.5 (through embedded-tls 0.19,
+    # ecdsa 0.16, p256 0.13) has secret-dependent branches in some
+    # constant-time operations; the fix is 0.7.6. No embedded-tls release
+    # moves to it yet. Only the TLS client device (#D) uses it: its
+    # ephemeral P-256 key share is the secret at risk, to a local timing
+    # observer; the server's signature is checked with public values.
+    # Drop this when embedded-tls takes p256 0.14.
+    { id = "RUSTSEC-2026-0387", reason = "no fixed embedded-tls yet; TLS client key share only (#89)" },
+]
