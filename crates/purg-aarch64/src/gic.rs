@@ -6,14 +6,16 @@
 //!   group 0 (the reset value), which a GIC without security extensions,
 //!   such as QEMU `virt` with `secure=off`, signals as IRQ.
 //! - GICv3: distributor and redistributor are MMIO; the CPU interface is the
-//!   `ICC_*` system registers. All interrupts go to group 1 non-secure and
-//!   are routed to the boot CPU, as Linux does.
+//!   `ICC_*` system registers. All interrupts go to group 1 non-secure.
 //!
 //! The boot CPU calls [`Gic::init`], which sets up the distributor and its
 //! own interface; every other CPU calls [`Gic::init_cpu`] for its own
 //! (GICv2 banks the CPU interface and the SGI and PPI registers per CPU at
 //! the same addresses; GICv3 gives each CPU a redistributor). Peripheral
-//! interrupts (SPIs) all go to the boot CPU. SGIs, which the kernel uses
+//! interrupts (SPIs) start on the boot CPU; [`Gic::enable`] gives each one
+//! a CPU of its own, round robin over the CPUs whose interface is up, as
+//! Linux spreads fixed affinities (one target each: KVM's GIC does not do
+//! the one-of-N routing GICv3 offers). SGIs, which the kernel uses
 //! as IPIs, are sent with [`Gic::send_sgi`] to CPUs named by their index,
 //! which [`Gic::init`] and [`Gic::init_cpu`] record.
 //!
@@ -111,6 +113,8 @@ pub struct Ack {
 static CPU_RD: [AtomicUsize; MAX_CPUS] = [const { AtomicUsize::new(0) }; MAX_CPUS];
 /// By CPU index: MPIDR affinity, for GICv3 SGIs.
 static CPU_AFF: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+/// Counts the SPIs [`Gic::enable`] has given a CPU, for the round robin.
+static NEXT_SPI: AtomicUsize = AtomicUsize::new(0);
 
 fn r32(addr: usize) -> u32 {
     // SAFETY: callers pass addresses inside the GIC frames that the `Gic`
@@ -412,8 +416,54 @@ impl Gic {
     /// Unmasks `intid` at the GIC: for an SGI or PPI, on the calling CPU
     /// only.
     pub fn enable(&self, intid: u32) {
+        if intid >= 32 {
+            self.spread(intid);
+        }
         let (base, off, bit) = self.bank(intid);
         w32(base + GICD_ISENABLER + off, bit);
+    }
+
+    /// Routes SPI `intid` to the next CPU, round robin over those whose
+    /// interface [`Gic::init`] or [`Gic::init_cpu`] has set up. Drivers
+    /// register their interrupts after the other CPUs have started, so
+    /// devices end up on different CPUs; before that, or with one CPU,
+    /// everything stays on the boot CPU.
+    fn spread(&self, intid: u32) {
+        let mut online = [0usize; MAX_CPUS];
+        let mut n = 0;
+        for (i, rd) in CPU_RD.iter().enumerate() {
+            if rd.load(Ordering::Acquire) != 0 {
+                online[n] = i;
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return;
+        }
+        let to = online[NEXT_SPI.fetch_add(1, Ordering::Relaxed) % n];
+        match *self {
+            // GICD_ITARGETSR is byte-accessible: one byte per INTID,
+            // holding the target CPU interfaces' bits.
+            Gic::V2 { dist, .. } => {
+                let bit = CPU_RD[to].load(Ordering::Acquire) as u8;
+                // SAFETY: a byte of the distributor's GICD_ITARGETSR for
+                // an SPI the GIC has (the caller registers a DTB INTID).
+                unsafe {
+                    core::ptr::write_volatile(
+                        (dist + GICD_ITARGETSR + intid as usize) as *mut u8,
+                        bit,
+                    )
+                };
+            }
+            // GICD_IROUTER<n>: Aff3 in bits 39:32 and Aff2..Aff0 in
+            // 23:0, as CPU_AFF holds them; mode 0, that one CPU.
+            Gic::V3 { dist, .. } => {
+                w64(
+                    dist + GICD_IROUTER + intid as usize * 8,
+                    CPU_AFF[to].load(Ordering::Relaxed),
+                );
+            }
+        }
     }
 
     /// Masks `intid` at the GIC. On GICv3 this waits until the change has
