@@ -538,7 +538,7 @@ from it runs no image file until its operator lists a key.
 
 ## Decisions and open questions
 
-Decided here, for the owner to confirm:
+Decided, and confirmed by the owner (2026-11-15):
 
 1. **Separate anchor list** `/lib/keys/modules`, shared revocation list.
 2. **`ctl` message, tighten-only, inherited, namespace pinned** when the
@@ -553,16 +553,19 @@ Decided here, for the owner to confirm:
 4. **A guest reads its own digest** from `/prog/<pid>/module`. Any prog
    that can see `/prog` can read any prog's digest and signers, as it can
    read `status` and `ns`.
+5. **Scripts are not checked.** Under `require`, `sh`, `mash` and `mk`
+   run unsigned scripts: the policy confines which WASM runs, not what a
+   signed interpreter is told to do ("Interpreted code" above). The owner
+   chose to document this rather than have the shells check scripts.
+6. **The probe's first prog** is trusted as part of its boot image: the
+   probe has no command line for a policy. The kernel takes `modules=`
+   in its bootargs.
 
-Still open:
+Deferred (later ideas, not planned):
 
-1. **Boot-time default for the probe.** The kernel has `modules=` in
-   its bootargs; the probe has no command line, so its boot image is the
-   trust root.
-2. **Thresholds.** One trusted signature is enough. Should a policy be
-   able to ask for two (a builder and a reviewer)?
-3. **Signed attributes** (name, version, a signing time) and with them
-   rollback protection that does not need the digest list.
-4. **A purpose field in certificates** (`pgcert2`), so one signer list
-   could serve mounts and modules safely.
-5. **Scripts.** Should `sh` refuse unsigned scripts under `require`?
+- **Thresholds.** One trusted signature is enough. A policy could ask
+  for two (a builder and a reviewer).
+- **Signed attributes** (name, version, a signing time), and with them
+  rollback protection that does not need the digest list.
+- **A purpose field in certificates** (`pgcert2`), so one signer list
+  could serve mounts and modules safely.
