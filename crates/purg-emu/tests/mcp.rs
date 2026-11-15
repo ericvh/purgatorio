@@ -1591,3 +1591,56 @@ fn session_limits_and_domain_teardown() {
         m.finish();
     }
 }
+
+/// `mcpfs os command`: a host MCP server through `#C` (`docs/mcp.md`).
+/// The host server is another emu running `mcpd`; the guest mounts its
+/// tools as files and calls `run` through them.
+#[test]
+fn mcpfs_mounts_a_host_server() {
+    let emu = env!("CARGO_BIN_EXE_emu");
+    let root = root();
+    let root = root.to_str().expect("utf-8 root");
+    for vm in VMS {
+        let script = format!(
+            "d=/tmp/mcpfs-host-{vm}
+mkdir -p $d
+mcpfs -m $d os {emu} -r {root} mcpd
+ls -d $d/tools/run $d/tools/stat
+{{echo '{{\"command\":\"echo from the host\"}}' >[1=0]; cat}} <> $d/tools/run/call
+unmount $d
+rm -r $d"
+        );
+        let o = common::output(
+            Command::new(emu)
+                .arg("-r")
+                .arg(root)
+                .arg(format!("--vm={vm}"))
+                .args(["sh", "-c", &script]),
+            b"",
+        );
+        let out = String::from_utf8_lossy(&o.stdout);
+        assert!(
+            o.status.success(),
+            "{vm}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let mut lines = out.lines();
+        assert_eq!(
+            lines.next(),
+            Some(&*format!("/tmp/mcpfs-host-{vm}/tools/run")),
+            "{vm}: {out}"
+        );
+        assert_eq!(
+            lines.next(),
+            Some(&*format!("/tmp/mcpfs-host-{vm}/tools/stat")),
+            "{vm}: {out}"
+        );
+        let reply = json::parse(lines.next().unwrap_or("")).expect("a JSON result");
+        let structured = reply.get("structuredContent").expect("structuredContent");
+        assert_eq!(
+            str_of(structured, "stdout"),
+            "from the host\n",
+            "{vm}: {out}"
+        );
+    }
+}

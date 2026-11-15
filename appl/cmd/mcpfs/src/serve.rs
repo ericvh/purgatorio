@@ -166,15 +166,22 @@ fn mcp_line(fs: &mut McpFs, io: &File, pending: &mut BTreeMap<i64, Pending>) -> 
     let Ok(v) = json::parse(String::from_utf8_lossy(&line).trim()) else {
         return Ok(());
     };
-    if v.get("method").is_some() {
-        if let Some(rid) = v.get("id") {
-            fs.client.answer(&v, rid.clone()).map_err(Error)?;
+    if let Some(method) = v.get("method").and_then(Value::as_str) {
+        match v.get("id") {
+            Some(rid) => fs.client.answer(&v, rid.clone()).map_err(Error)?,
+            None if method == "notifications/tools/list_changed" => {
+                fs.tools_changed().map_err(Error)?;
+            }
+            None => {}
         }
         return Ok(());
     }
     let Some(id) = v.get("id").and_then(Value::as_i64) else {
         return Ok(());
     };
+    if fs.refreshed(id, v.get("result")).map_err(Error)? {
+        return Ok(());
+    }
     let Some(p) = pending.remove(&id) else {
         return Ok(());
     };

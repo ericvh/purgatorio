@@ -161,6 +161,48 @@ impl Client {
 struct Tool {
     name: String,
     schema: Vec<u8>,
+    /// No longer listed by the server (`notifications/tools/list_changed`):
+    /// it keeps its place, so other tools keep their qids, but cannot be
+    /// walked to or listed.
+    gone: bool,
+}
+
+/// Adds the tools of one `tools/list` page to `tools`, and returns the
+/// cursor of the next page, if there is one.
+fn add_page(tools: &mut Vec<Tool>, page: &Value) -> Option<Value> {
+    if let Some(Value::Array(list)) = page.get("tools") {
+        for t in list {
+            let Some(name) = t.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            // A name that cannot be a file name is left out.
+            if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+                continue;
+            }
+            if tools.iter().any(|x: &Tool| x.name == name) {
+                continue;
+            }
+            let mut schema = t.encode().into_bytes();
+            schema.push(b'\n');
+            tools.push(Tool {
+                name: String::from(name),
+                schema,
+                gone: false,
+            });
+        }
+    }
+    match page.get("nextCursor") {
+        Some(c @ Value::Str(_)) => Some(c.clone()),
+        _ => None,
+    }
+}
+
+/// A `tools/list` made again after the server said its tools changed.
+struct Refresh {
+    /// The id of the page request out.
+    id: i64,
+    pages: usize,
+    seen: Vec<Tool>,
 }
 
 /// One open of a `call` file.
@@ -187,6 +229,7 @@ struct McpFs {
     user: String,
     server: Vec<u8>,
     tools: Vec<Tool>,
+    refresh: Option<Refresh>,
     fids: BTreeMap<u32, Fid>,
     iounit: u32,
 }
@@ -228,7 +271,7 @@ impl McpFs {
     fn tool_of(&self, path: u64) -> Option<(usize, u64)> {
         let i = path.checked_sub(TOOL)?;
         let t = (i / 4) as usize;
-        (t < self.tools.len()).then_some((t, i % 4))
+        (t < self.tools.len() && !self.tools[t].gone).then_some((t, i % 4))
     }
 
     fn parent(&self, path: u64) -> u64 {
@@ -249,7 +292,7 @@ impl McpFs {
             (TOOLS, _) => self
                 .tools
                 .iter()
-                .position(|t| t.name == name)
+                .position(|t| t.name == name && !t.gone)
                 .map(|t| TOOL + 4 * t as u64),
             (_, Some((t, 0))) => match name {
                 "schema" => Some(TOOL + 4 * t as u64 + 1),
@@ -263,7 +306,10 @@ impl McpFs {
     fn children(&self, path: u64) -> Vec<u64> {
         match (path, self.tool_of(path)) {
             (ROOT, _) => vec![SERVER, TOOLS],
-            (TOOLS, _) => (0..self.tools.len()).map(|t| TOOL + 4 * t as u64).collect(),
+            (TOOLS, _) => (0..self.tools.len())
+                .filter(|&t| !self.tools[t].gone)
+                .map(|t| TOOL + 4 * t as u64)
+                .collect(),
             (_, Some((t, 0))) => vec![TOOL + 4 * t as u64 + 1, TOOL + 4 * t as u64 + 2],
             _ => Vec::new(),
         }
@@ -350,6 +396,65 @@ impl McpFs {
             f.call.inflight = Some(id);
         }
         Ok(id)
+    }
+
+    /// Sends a request without waiting for its answer, and returns its id.
+    fn send_request(&mut self, method: &str, params: Value) -> Result<i64, String> {
+        let id = self.client.next;
+        self.client.next += 1;
+        self.client.send(&json::obj([
+            ("jsonrpc", "2.0".into()),
+            ("id", id.into()),
+            ("method", method.into()),
+            ("params", params),
+        ]))?;
+        Ok(id)
+    }
+
+    /// The server's tools changed: asks for the list again, unless that is
+    /// already under way.
+    fn tools_changed(&mut self) -> Result<(), String> {
+        if self.refresh.is_none() {
+            let id = self.send_request("tools/list", Value::Object(Vec::new()))?;
+            self.refresh = Some(Refresh {
+                id,
+                pages: 1,
+                seen: Vec::new(),
+            });
+        }
+        Ok(())
+    }
+
+    /// A reply to the refresh's request `id`, if it is one: adds its
+    /// page and asks for the next, or, at the last page, makes the new
+    /// list the tree's. True if the reply was the refresh's.
+    fn refreshed(&mut self, id: i64, result: Option<&Value>) -> Result<bool, String> {
+        let Some(mut r) = self.refresh.take_if(|r| r.id == id) else {
+            return Ok(false);
+        };
+        // A failed list leaves the tools as they were.
+        let Some(page) = result else {
+            return Ok(true);
+        };
+        if let Some(c) = add_page(&mut r.seen, page)
+            && r.pages < MAX_PAGES
+        {
+            r.id = self.send_request("tools/list", json::obj([("cursor", c)]))?;
+            r.pages += 1;
+            self.refresh = Some(r);
+            return Ok(true);
+        }
+        for t in &mut self.tools {
+            match r.seen.iter().position(|n| n.name == t.name) {
+                Some(i) => {
+                    t.schema = r.seen.remove(i).schema;
+                    t.gone = false;
+                }
+                None => t.gone = true,
+            }
+        }
+        self.tools.append(&mut r.seen);
+        Ok(true)
     }
 
     /// Tells the server to stop call `id` (`notifications/cancelled`).
@@ -610,29 +715,9 @@ fn connect(argv: &[String]) -> Result<McpFs, String> {
             None => Value::Object(Vec::new()),
         };
         let page = client.request("tools/list", params)?;
-        if let Some(Value::Array(list)) = page.get("tools") {
-            for t in list {
-                let Some(name) = t.get("name").and_then(Value::as_str) else {
-                    continue;
-                };
-                // A name that cannot be a file name is left out.
-                if name.is_empty() || name == "." || name == ".." || name.contains('/') {
-                    continue;
-                }
-                if tools.iter().any(|x: &Tool| x.name == name) {
-                    continue;
-                }
-                let mut schema = t.encode().into_bytes();
-                schema.push(b'\n');
-                tools.push(Tool {
-                    name: String::from(name),
-                    schema,
-                });
-            }
-        }
-        match page.get("nextCursor") {
-            Some(c @ Value::Str(_)) => cursor = Some(c.clone()),
-            _ => break,
+        match add_page(&mut tools, &page) {
+            Some(c) => cursor = Some(c),
+            None => break,
         }
     }
     let mut server = init.encode().into_bytes();
@@ -643,6 +728,7 @@ fn connect(argv: &[String]) -> Result<McpFs, String> {
         user: String::from(user.trim()),
         server,
         tools,
+        refresh: None,
         fids: BTreeMap::new(),
         iounit: 8192,
     })

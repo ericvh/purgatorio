@@ -44,5 +44,14 @@ mcpfs -t 300 -m $d mcpd
 ls $d/tools | grep -c .
 unmount $d
 rm -r $d
+# A server that says its tools changed is asked for them again: tool a
+# goes and b comes (/lib/test/mcp/changing).
+mkdir $d
+mcpfs -m $d sh /lib/test/mcp/changing
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 {test -d $d/tools/b || sleep 0.5}
+ls $d/tools | sed 's/.*\///'
+test -d $d/tools/a || echo a gone
+unmount $d
+rm -r $d
 mcpfs -m /n nosuchcommand
 echo status $status
