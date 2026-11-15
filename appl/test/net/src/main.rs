@@ -2,7 +2,9 @@
 //!
 //! `net --accept dir` accepts one connection and serves `/` on it, then
 //! waits for another that never comes. `net --udp addr` checks a UDP echo
-//! server. `net --park dir` blocks in a read of `dir/listen`. With no arguments the checks run.
+//! server. `net --park dir` blocks in a read of `dir/listen`. `net --icmp`
+//! checks that an echo reply from 127.0.0.1 carries the identifier
+//! `local` shows (`ok icmp_skip` where the host refuses ICMP sockets). With no arguments the checks run.
 //! A platform with no network prints `ok net_skip` and still succeeds.
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -21,6 +23,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some("--accept") => accept(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--wasi-dial") => wasi_dial(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--udp") => udp_echo(args.get(2).map(String::as_str).unwrap_or("")),
+        Some("--icmp") => icmp(),
         // Fails once the listener is closed under it; that is the point.
         Some("--park") => {
             let _ = dial::listen(args.get(2).map(String::as_str).unwrap_or(""));
@@ -187,6 +190,43 @@ fn udp_headers() -> Result<(), Error> {
     if !buf[..n].ends_with(b"ping") {
         return Err(Error(format!("udp headers: got {:?}", &buf[..n])));
     }
+    Ok(())
+}
+
+/// `net --icmp`: one echo to 127.0.0.1. The reply, after its IPv4
+/// header, has the identifier that `local` names.
+fn icmp() -> Result<(), Error> {
+    let conn = match dial::dial("icmp!127.0.0.1!1") {
+        Ok(c) => c,
+        Err(e) if e.to_string().contains("permission denied") => {
+            println!("ok icmp_skip");
+            return Ok(());
+        }
+        Err(e) => return Err(Error(format!("icmp: {e}"))),
+    };
+    let ident: u16 = local(&conn.dir)?
+        .rsplit('!')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .ok_or_else(|| Error::from("icmp: bad local"))?;
+    let mut data = open_data(&conn.dir)?;
+    // Room for the IPv4 header, then the echo request.
+    let mut req = vec![0u8; 20];
+    req.extend_from_slice(&[8, 0, 0, 0, 0, 0, 0, 1, b'h', b'i']);
+    data.write_all(&req)?;
+    let mut buf = [0u8; 256];
+    let n = data.read(&mut buf)?;
+    let msg = buf.get(20..n).unwrap_or(&[]);
+    if msg.len() < 8 || msg[0] != 0 {
+        return Err(Error(format!("icmp: reply {:?}", &buf[..n])));
+    }
+    let got = u16::from_be_bytes([msg[4], msg[5]]);
+    if got != ident {
+        return Err(Error(format!(
+            "icmp: reply identifier {got}, local {ident}"
+        )));
+    }
+    println!("ok icmp");
     Ok(())
 }
 

@@ -92,6 +92,48 @@ pub fn icmp_socket() -> io::Result<OwnedFd> {
     Ok(fd)
 }
 
+/// Binds an [`icmp_socket`] so that its echo identifier, which Linux
+/// takes from the bound port, is `want`; if another socket has it, the
+/// host picks one. Returns the identifier the host will use.
+pub fn icmp_ident(fd: &impl AsRawFd, want: u16) -> io::Result<u16> {
+    let bind = |port: u16| {
+        // SAFETY: a zeroed sockaddr_in is valid; bind(2) reads it with the
+        // size given.
+        let mut sa: libc::sockaddr_in = unsafe { core::mem::zeroed() };
+        sa.sin_family = libc::AF_INET as libc::sa_family_t;
+        sa.sin_port = port.to_be();
+        let r = unsafe {
+            libc::bind(
+                fd.as_raw_fd(),
+                (&sa as *const libc::sockaddr_in).cast(),
+                core::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            )
+        };
+        if r < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    };
+    if bind(want).is_err() {
+        bind(0)?;
+    }
+    // SAFETY: getsockname(2) fills in the zeroed sockaddr_in up to len.
+    let mut sa: libc::sockaddr_in = unsafe { core::mem::zeroed() };
+    let mut len = core::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+    let r = unsafe {
+        libc::getsockname(
+            fd.as_raw_fd(),
+            (&mut sa as *mut libc::sockaddr_in).cast(),
+            &mut len,
+        )
+    };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(u16::from_be(sa.sin_port))
+}
+
 /// One ICMP message received: it is `buf[start..start + len]`.
 pub struct IcmpIn {
     pub start: usize,
