@@ -52,8 +52,8 @@ echo breakpoints
 	echo zap
 	echo q
 } | mdb $pid >[2=1] | sed 's/^stopped in (debug::inner|__wasi_poll_oneoff)$/stopped/' | sed 's/^[0-9a-f]+ /ADDR /'
-# Detached, it runs on.
-sed 's/^ *[0-9]+ +[0-9]+ +[^ ]+ +[0-9]+:[0-9.]+ +([a-z]+) +[0-9]+K /PID PGRP USER TIME \1 SIZE /' /prog/$pid/status; echo
+# Detached, it runs on: asleep (release) or, at that moment, ready.
+sed 's/^ *[0-9]+ +[0-9]+ +[^ ]+ +[0-9]+:[0-9.]+ +(ready|release) +[0-9]+K /PID PGRP USER TIME release SIZE /' /prog/$pid/status; echo
 
 echo kill
 echo k | mdb $pid | sed 's/^stopped in (debug::inner|__wasi_poll_oneoff)$/stopped/'
