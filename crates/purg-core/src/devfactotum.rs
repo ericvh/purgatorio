@@ -1,6 +1,14 @@
 //! `#¤`: a factotum-like agent. It holds one Ed25519 seed, and optionally a
-//! certificate for it, and signs whatever a prog writes to `rpc`. The seed
-//! never has to sit in a file the guest can read.
+//! certificate for it. The seed never has to sit in a file the guest can
+//! read.
+//!
+//! A prog writes to `rpc` the message a module signature signs
+//! (`purg_auth::modsig::message`: `pgmodsig1\0`, the digest, the ABI
+//! version) and reads the signature and public key. Anything else written
+//! there is refused with `permission denied`, so the agent's key cannot be
+//! made to sign a mount proof or a certificate for a prog. The kernel's
+//! own mount authentication signs through [`Dev::agent_proof`] instead,
+//! after opening `rpc` as the prog would.
 //!
 //! `ctl` takes `key <hex>`, a bare 32-byte seed, `cert <pgcert1 line>` or
 //! `delkey`, and reads as `key <public hex>` and the certificate line.
@@ -97,6 +105,22 @@ impl DevFactotum {
     }
 }
 
+/// Whether `msg` is exactly the message a module signature signs: the
+/// context, a digest, and an ABI version of the length it gives.
+fn module_message(msg: &[u8]) -> bool {
+    use purg_auth::modsig::{CONTEXT, DIGEST, message};
+    let Some(rest) = msg.strip_prefix(CONTEXT) else {
+        return false;
+    };
+    let (Some(digest), Some(abi)) = (rest.get(..DIGEST), rest.get(DIGEST + 1..)) else {
+        return false;
+    };
+    let Ok(digest) = <[u8; DIGEST]>::try_from(digest) else {
+        return false;
+    };
+    message(&digest, abi).is_some_and(|m| m == msg)
+}
+
 fn trim_ascii(data: &[u8]) -> &[u8] {
     let mut s = data;
     while s.first().is_some_and(|b| b.is_ascii_whitespace()) {
@@ -131,6 +155,10 @@ fn hex_val(b: u8) -> Result<u8> {
 }
 
 impl Dev for DevFactotum {
+    fn agent_proof(&self, msg: &[u8]) -> Option<[u8; auth::PROOF]> {
+        self.proof(msg).ok()
+    }
+
     fn dc(&self) -> char {
         '¤'
     }
@@ -229,6 +257,9 @@ impl Dev for DevFactotum {
                 let msg = rpc.msg.lock().clone();
                 if msg.is_empty() {
                     return Err(Error::new(error::EBADARG));
+                }
+                if !module_message(&msg) {
+                    return Err(Error::new(error::EPERM));
                 }
                 let proof = self.proof(&msg)?;
                 Ok(read_str(&proof, buf, offset))

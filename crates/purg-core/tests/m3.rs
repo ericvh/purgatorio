@@ -248,24 +248,42 @@ fn export_mount_loopback() {
     server.join().unwrap();
 }
 
+/// A prog has the agent sign a module message through `rpc`, and only
+/// that: other bytes, such as a challenge a mount proof would sign, are
+/// refused.
 #[test]
-fn factotum_signs_a_challenge() {
+fn factotum_signs_module_messages_only() {
     let (mut p, _) = setup();
     let seed = [purg_core::auth::FIXTURE; purg_core::auth::SEED];
     let fd = p.open("#¤/ctl", mode::OWRITE).unwrap();
     assert_eq!(p.write(fd, &seed).unwrap(), seed.len());
     p.close(fd).unwrap();
-    let msg = b"challenge";
+    let msg = purg_auth::modsig::message(&[9u8; purg_auth::modsig::DIGEST], b"0.13").unwrap();
     let fd = p.open("#¤/rpc", mode::ORDWR).unwrap();
-    assert_eq!(p.write(fd, msg).unwrap(), msg.len());
+    assert_eq!(p.write(fd, &msg).unwrap(), msg.len());
     p.seek(fd, 0, 0).unwrap();
     let mut buf = [0u8; purg_core::auth::PROOF];
     assert_eq!(p.read(fd, &mut buf).unwrap(), buf.len());
     let public = purg_core::auth::public_key(&seed);
     let signature: [u8; purg_core::auth::SIGNATURE] =
         buf[..purg_core::auth::SIGNATURE].try_into().unwrap();
-    assert!(purg_core::auth::verify(&public, msg, &signature));
+    assert!(purg_core::auth::verify(&public, &msg, &signature));
     assert_eq!(&buf[purg_core::auth::SIGNATURE..], &public);
+    // A challenge, a module message with a wrong length byte, and one
+    // with bytes after it are not module messages.
+    let mut short = msg.clone();
+    short.pop();
+    let mut long = msg.clone();
+    long.push(b'x');
+    for bad in [b"challenge".to_vec(), short, long] {
+        p.seek(fd, 0, 0).unwrap();
+        assert_eq!(p.write(fd, &bad).unwrap(), bad.len());
+        p.seek(fd, 0, 0).unwrap();
+        assert_eq!(
+            p.read(fd, &mut buf).unwrap_err().as_str(),
+            purg_abi::error::EPERM
+        );
+    }
 }
 
 #[cfg(feature = "std")]

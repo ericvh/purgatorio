@@ -15,8 +15,9 @@ Inferno peers still mount with `-A`.
   tree: `usr/<uname>/key.pub` and the test key `lib/test/auth.key.pub`.
   (It now reads them in its own namespace instead; see below.)
   With no key it answers `Tauth` with `authentication not required`.
-- The client signs through `#¤/rpc` (a kernel agent holding one seed) or
-  with a seed file: `/usr/<user>/key`, then `/lib/test/auth.key`.
+- The client signs through `#¤` (a kernel agent holding one seed; the
+  kernel signs a proof with its key directly, after opening `#¤/rpc` as
+  the prog would) or with a seed file: `/usr/<user>/key`, then `/lib/test/auth.key`.
 - `MNOAUTH` (`-A`) skips `Tauth`.
 
 Every server must therefore hold the public key of every user. There is no
@@ -1543,10 +1544,11 @@ still signs what is written to it. The SDK tries `/mnt/factotum` first.
   for one user cannot attach as another.
 - **Key confusion.** Every signed message starts with a distinct context
   string (`pgcert1`, `pgauth2`, `pgauth3`), so a signature made for one purpose never
-  verifies for another. Two gaps remain, both from the version 1 path:
-  `#¤/rpc` signs any bytes, and a version 1 proof signs a raw challenge
-  the server chose. A hostile server can therefore get a signature over
-  32 bytes of its choosing from a key in `#¤`. That cannot forge a
+  verifies for another. One gap remains, from the version 1 path: a
+  version 1 proof signs a raw challenge the server chose. A hostile
+  server can therefore get a signature over 32 bytes of its choosing
+  from a key in `#¤`, through the kernel's own mount authentication.
+  (A prog cannot: `#¤/rpc` signs only `pgmodsig1` module messages.) That cannot forge a
   certificate (a certificate body is longer than 32 bytes and starts with
   `pgcert1`) but the rule is still: **never load a signer key into `#¤`
   or factotum**; signer keys stay in seed files the signer reads. The guest

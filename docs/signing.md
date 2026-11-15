@@ -332,9 +332,11 @@ stays 0.6.
 
 Signing through an agent:
 
-- **`#¤`** signs the bytes written to `rpc`. `auth/sign` builds the
-  `pgmodsig1` message itself and reads the public key and certificate from
-  `#¤/ctl`.
+- **`#¤`** signs a `pgmodsig1` message written to `rpc`, and nothing
+  else: other bytes are refused with `permission denied`. `auth/sign`
+  builds the message itself and reads the public key and certificate
+  from `#¤/ctl`. The kernel's mount authentication signs its proofs with
+  the agent's key directly, so `rpc` need not sign them.
 - **`auth/factotum`** gains a role: `start proto=ed25519 role=modsign`
   (or `proto=hybrid` for its hybrid key),
   then `write <digest[32] || abi>`, then `read` returns `ok <entry>`, one
@@ -382,10 +384,11 @@ host and compares the hashes with the rest.
   unsigned scripts. `require` confines which WASM runs, not what a signed
   interpreter is told to do. `#C` (host commands on the emu) is outside it
   too.
-- **Keys in agents.** `#¤/rpc` signs any bytes for any prog that can open
-  it, so a key held there can sign a module for any local prog. Do not
-  load a key that this system's own `modules` list trusts into `#¤` on a
-  system that relies on `require`. The guest factotum is mounted in a
+- **Keys in agents.** `#¤/rpc` signs module messages for any prog that
+  can open it (the host owner's progs), so a key held there can sign a
+  module for any of them. It signs nothing else: not a certificate, not
+  a mount proof. Do not load a key that this system's own `modules` list
+  trusts into `#¤` on a system that relies on `require`. The guest factotum is mounted in a
   namespace and so reaches only the progs that see it.
 - **Certificates not meant for code.** `pgcert1` does not say what a
   certificate is for. Separation comes only from which list a key is in
