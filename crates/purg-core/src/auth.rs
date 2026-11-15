@@ -406,16 +406,15 @@ fn client_key(pgrp: &Pgrp, user: &str) -> crate::error::Result<(Signer, Option<A
     Err(crate::error::Error::new(NO_KEY))
 }
 
-/// Asks `#¤/rpc` to sign `msg`. `None` when the agent has no key.
+/// Has the agent (`#¤`) sign `msg`, a mount's proof. `rpc` is opened as
+/// the prog would open it, so the namespace and the user checks apply,
+/// and the signature comes from the device's kernel-only
+/// [`Dev::agent_proof`](crate::dev::Dev::agent_proof): `rpc` itself
+/// signs module messages only. `None` when the agent has no key.
 fn factotum_sign(pgrp: &Pgrp, msg: &[u8]) -> Option<[u8; PROOF]> {
     let c = pgrp.namec("#¤/rpc", "/").ok()?;
     let c = open(c, purg_abi::mode::ORDWR).ok()?;
-    if c.dev.write(&c, msg, 0).ok()? != msg.len() {
-        return None;
-    }
-    let mut buf = [0u8; PROOF];
-    let n = c.dev.read(&c, &mut buf, 0).ok()?;
-    (n == buf.len()).then_some(buf)
+    c.dev.agent_proof(msg)
 }
 
 #[cfg(test)]

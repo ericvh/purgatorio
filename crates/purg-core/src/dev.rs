@@ -50,6 +50,15 @@ pub trait Dev: Send + Sync {
     /// Called once when the device table is built.
     fn init(&self, _tab: &DevTab) {}
 
+    /// The kernel's own signing through the agent (`#¤`): a signature
+    /// and public key over `msg`, for a mount's proof. Only kernel code
+    /// calls this, after opening the agent's `rpc` as the prog would;
+    /// a prog's own writes to `rpc` sign module messages only. `None`
+    /// for every other device, and when the agent holds no key.
+    fn agent_proof(&self, _msg: &[u8]) -> Option<[u8; crate::auth::PROOF]> {
+        None
+    }
+
     fn attach(&self, spec: &str) -> Result<Walked>;
     /// The device instance (`Chan::devno`) an attach to `spec` gives, so
     /// that the files of two instances never share a mount-table key.
