@@ -1,0 +1,18 @@
+[package]
+name = "appl-cmd-gif2bit"
+description = "gif2bit: convert between Inferno image files and GIF"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gif2bit"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+gif.workspace = true
+
+[lints]
+workspace = true
