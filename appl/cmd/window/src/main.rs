@@ -1,17 +1,16 @@
 //! window [-r minx miny maxx maxy] [-dx n] [-dy n] [-minx n] [-miny n]
-//! [cmd arg ...]: make a new window in the rio this prog runs under, as
-//! Plan 9's window(1). It writes `new`, the options and the command to
-//! `/dev/wctl` (rio(4)); with no command the window runs a shell. rio
-//! checks the request, and its error is window's. Plan 9's `-m`,
-//! `-scroll`, `-noscroll`, `-hide` and `-cd` are not taken: rio's `new`
-//! does not have them yet.
+//! [-hide] [-scroll | -noscroll] [-cd dir] [cmd arg ...]: make a new
+//! window in the rio this prog runs under, as Plan 9's window(1). It
+//! writes `new`, the options and the command to `/dev/wctl` (rio(4));
+//! with no command the window runs a shell. rio checks the request, and
+//! its error is window's. Plan 9's `-m` (a window in another rio, through
+//! `/srv/rio`) is not taken.
 
 use std::io::Write;
 
 use purgatorio::{Context, Error};
 
-const USAGE: &str =
-    "usage: window [-r minx miny maxx maxy] [-dx n] [-dy n] [-minx n] [-miny n] [cmd arg ...]";
+const USAGE: &str = "usage: window [-r minx miny maxx maxy] [-dx n] [-dy n] [-minx n] [-miny n] [-hide] [-scroll|-noscroll] [-cd dir] [cmd arg ...]";
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -21,6 +20,19 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let n = match o.as_str() {
             "-r" => 4,
             "-dx" | "-dy" | "-minx" | "-miny" => 1,
+            "-hide" | "-scroll" | "-noscroll" => 0,
+            "-cd" => {
+                rest.next();
+                match rest.next() {
+                    // rio's request is split at white space.
+                    Some(d) if !d.is_empty() && !d.contains(char::is_whitespace) => {
+                        req.push_str(" -cd ");
+                        req.push_str(d);
+                    }
+                    _ => usage(),
+                }
+                continue;
+            }
             "--" => {
                 rest.next();
                 break;

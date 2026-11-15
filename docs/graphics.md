@@ -2070,7 +2070,7 @@ So each window's process group sees, before the rest of `/dev`:
 | `label` | the window's label, which the menu shows when it is hidden |
 | `screen` | rio's screen, as an uncompressed image(6) file: a 60-byte header (channels and rectangle) and the pixels |
 | `text` | everything in the window's text |
-| `wctl` | reads `x0 y0 x1 y1 visible\|hidden current\|notcurrent` in 12-character fields; takes `new [-r x0 y0 x1 y1] [cmd]`, `resize [-r ...] [-dx n] [-dy n]`, `move [-minx n] [-miny n]`, `top`, `bottom`, `current`, `hide`, `unhide`, `delete`, `scroll`, `noscroll` |
+| `wctl` | reads `x0 y0 x1 y1 visible\|hidden current\|notcurrent` in 12-character fields; takes `new [-r x0 y0 x1 y1] [-hide] [-scroll\|-noscroll] [-cd dir] [cmd]`, `resize [-r ...] [-dx n] [-dy n]`, `move [-minx n] [-miny n]`, `top`, `bottom`, `current`, `hide`, `unhide`, `delete`, `scroll`, `noscroll` |
 | `window` | the window's image, border included, as an image(6) file like `screen` |
 | `winid` | the window's number |
 | `winname` | the name of the window's image, for `n` |
@@ -2169,8 +2169,7 @@ either.
 ### 12.5 Differences from Plan 9's rio
 
 - No `/srv/rio`. `window(1)` makes a window only from inside rio (it
-  writes `new` to `/dev/wctl`), and takes `-r`, `-dx`, `-dy`, `-minx`
-  and `-miny` but not `-m`, `-scroll`, `-noscroll`, `-hide` or `-cd`.
+  writes `new` to `/dev/wctl`), so it does not take `-m`.
 - Typing goes at the selection only when the selection is in typing not
   yet sent; rio also lets typing go into text before the output point.
   The view does not scroll while sweeping a selection past the window's

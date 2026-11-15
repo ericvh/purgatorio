@@ -163,13 +163,17 @@ pub struct Wctl {
     pub dy: Option<i32>,
     pub minx: Option<i32>,
     pub miny: Option<i32>,
+    /// For `new`: `-hide`, `-scroll` or `-noscroll`, and `-cd dir`.
+    pub hide: bool,
+    pub scroll: Option<bool>,
+    pub cd: Option<String>,
     /// For `new`: the command, the rest of the line.
     pub cmd: String,
 }
 
 /// Parses a wctl request, as rio(4) writes them: a verb, then options
 /// `-r x0 y0 x1 y1`, `-dx n`, `-dy n`, `-minx n`, `-miny n`, and for
-/// `new` a command.
+/// `new` `-hide`, `-scroll`, `-noscroll`, `-cd dir` and a command.
 pub fn parse_wctl(s: &str) -> R<Wctl> {
     let mut t = s.split_whitespace().peekable();
     let mut w = Wctl {
@@ -207,6 +211,15 @@ pub fn parse_wctl(s: &str) -> R<Wctl> {
             "-miny" => {
                 t.next();
                 w.miny = Some(num(t.next())?);
+            }
+            "-hide" | "-scroll" | "-noscroll" | "-cd" if w.verb == "new" => {
+                t.next();
+                match o {
+                    "-hide" => w.hide = true,
+                    "-scroll" => w.scroll = Some(true),
+                    "-noscroll" => w.scroll = Some(false),
+                    _ => w.cd = Some(t.next().ok_or(EBADWCTL)?.to_string()),
+                }
             }
             _ => break,
         }
@@ -788,6 +801,12 @@ mod tests {
         assert_eq!(w.verb, "new");
         assert_eq!(w.r, Some(Rect::new(10, 20, 300, 400)));
         assert_eq!(w.cmd, "echo hi");
+        let w = parse_wctl("new -hide -noscroll -cd /tmp cat").unwrap();
+        assert!(w.hide);
+        assert_eq!(w.scroll, Some(false));
+        assert_eq!(w.cd.as_deref(), Some("/tmp"));
+        assert_eq!(w.cmd, "cat");
+        assert_eq!(parse_wctl("new -cd").unwrap_err(), EBADWCTL);
         let w = parse_wctl("move -minx 5 -miny 6").unwrap();
         assert_eq!((w.minx, w.miny), (Some(5), Some(6)));
         assert_eq!(parse_wctl("resize -r 1 2").unwrap_err(), EBADRECT);
