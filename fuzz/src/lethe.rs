@@ -89,6 +89,7 @@ fn handle_with(server: &Server, frame: &[u8]) -> Vec<u8> {
         now: NOW,
         random: &mut random,
         trust: &mut t,
+        refs: None,
     };
     server.handle(&Small, &mut env, frame).0
 }

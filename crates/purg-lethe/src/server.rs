@@ -90,6 +90,27 @@ pub struct Env<'a> {
     pub random: &'a mut dyn FnMut(&mut [u8]),
     /// The trust for a user name.
     pub trust: &'a mut dyn FnMut(&str) -> Trust,
+    /// The tickets this server holds, for `Treqref`: `None` for a server
+    /// that keeps none, which then does not offer references
+    /// ([`rights::REFS`]).
+    pub refs: Option<&'a dyn RefCache>,
+}
+
+/// Tickets a server has opened, by their reference ([`crate::tref`]), so
+/// that a client can send the reference in place of the ticket. Soft
+/// state, like the server's other caches: losing an entry costs the
+/// client one `unknown ticket reference` and a new ticket.
+pub trait RefCache {
+    /// The ticket with this reference, if held and not expired at `now`.
+    fn get(&self, tref: &[u8; crate::TREF], now: u64) -> Option<Ticket>;
+    /// Holds `ticket` under `tref` until it expires (or is let go).
+    fn put(&self, tref: [u8; crate::TREF], ticket: &Ticket);
+}
+
+/// How a request names its ticket.
+enum Src<'a> {
+    Ticket(&'a [u8]),
+    Ref([u8; crate::TREF]),
 }
 
 /// What happened, for a log.
@@ -233,7 +254,15 @@ impl Server {
                 ticket,
                 nonce,
                 sealed,
-            } => match self.request(tree, env, frame, id, ticket, &nonce, sealed) {
+            } => match self.request(tree, env, frame, id, Src::Ticket(ticket), &nonce, sealed) {
+                Ok(r) => r,
+                Err(e) => refuse(e),
+            },
+            Frame::Treqref {
+                tref,
+                nonce,
+                sealed,
+            } => match self.request(tree, env, frame, id, Src::Ref(tref), &nonce, sealed) {
                 Ok(r) => r,
                 Err(e) => refuse(e),
             },
@@ -371,10 +400,13 @@ impl Server {
         let mut n = [0u8; NONCE];
         (env.random)(&mut n);
         let sealed = self.keys.first().ok_or(FAILED)?.seal(&tk, &n);
+        // A server that holds tickets says so in the grant, so a client
+        // sends references only to a server that takes them.
+        let refs = if env.refs.is_some() { rights::REFS } else { 0 };
         let grant = Grant {
             now: env.now,
             expires,
-            rights: granted,
+            rights: granted | refs,
             prefix: t.prefix,
             ticket: &sealed,
         }
@@ -407,11 +439,17 @@ impl Server {
         env: &mut Env<'_>,
         frame: &[u8],
         id: u32,
-        ticket: &[u8],
+        src: Src<'_>,
         nonce: &[u8; NONCE],
         sealed: &[u8],
     ) -> Result<(Vec<u8>, Event), &'static str> {
-        let tk = ticket::open(&self.keys, ticket)?;
+        let tk = match &src {
+            Src::Ticket(t) => ticket::open(&self.keys, t)?,
+            Src::Ref(r) => env
+                .refs
+                .and_then(|c| c.get(r, env.now))
+                .ok_or(crate::error::TICKET_REF)?,
+        };
         if env.now >= tk.expires {
             return Err(TICKET_EXPIRED);
         }
@@ -419,7 +457,16 @@ impl Server {
             return Err(PQ_REQUIRED);
         }
         let keys = Keys::from_master(&tk.master);
-        let plain = crypto::open_treq(&keys, frame, ticket, nonce, sealed)?;
+        let aad: &[u8] = match &src {
+            Src::Ticket(t) => t,
+            Src::Ref(r) => r,
+        };
+        let plain = crypto::open_treq(&keys, frame, aad, nonce, sealed)?;
+        // A ticket the request opened under is one the client holds:
+        // keep it, so the client may send its reference from now on.
+        if let (Src::Ticket(t), Some(c)) = (&src, env.refs) {
+            c.put(crate::tref(t), &tk);
+        }
         let decoded = Request::decode(&plain);
         let time = match &decoded {
             Ok(r) => Some(r.time),

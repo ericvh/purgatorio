@@ -128,6 +128,12 @@ nonce, a tag and the qid. On reads that is 3% against Styx v3's 0.9%;
 for small requests Lethe sends two to four times the bytes, but at these
 sizes the round trip, not the bytes, is the cost.
 
+Since then a request may name its ticket by an 8-byte reference once
+the server holds it (`docs/lethe.md`, "Ticket references"). The figures
+above are for a request carrying the ticket. A request by reference is
+about 100 bytes shorter: a stat or an 8 KiB read request is then about
+80 to 90 bytes, two to four times Styx v3's rather than four times.
+
 The warm `read1m` on Lethe sent half the data (492 KiB of 1 MiB): the
 block cache holds 1 MiB and is emptied when it fills, so only part of a
 1 MiB file stays. Every warm read still costs its round trip (a

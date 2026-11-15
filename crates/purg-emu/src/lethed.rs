@@ -37,7 +37,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use purg_abi::error::{ENONEXIST, ENOTDIR};
 use purg_lethe::client::read_frame;
-use purg_lethe::server::{Config, Env, Event, Server, Tree, Trust};
+use purg_lethe::server::{Config, Env, Event, RefCache, Server, Tree, Trust};
+use purg_lethe::ticket::Ticket;
 use purg_styx::{Dir, Qid};
 
 use crate::devfs;
@@ -431,7 +432,36 @@ fn log(o: &Options, ev: &Event) {
     eprintln!("lethed: {line}");
 }
 
-fn serve(o: &Options, server: &Server, tree: &HostTree, mut s: TcpStream) {
+/// The tickets `lethed` has opened, by reference, for `Treqref`: at most
+/// [`MAX_REFS`], expired ones dropped first.
+#[derive(Default)]
+struct Refs(std::sync::Mutex<std::collections::HashMap<[u8; purg_lethe::TREF], Ticket>>);
+
+/// How many tickets `lethed` holds for references.
+const MAX_REFS: usize = 4096;
+
+impl RefCache for Refs {
+    fn get(&self, tref: &[u8; purg_lethe::TREF], now: u64) -> Option<Ticket> {
+        let m = self.0.lock().ok()?;
+        m.get(tref).filter(|t| now < t.expires).cloned()
+    }
+
+    fn put(&self, tref: [u8; purg_lethe::TREF], ticket: &Ticket) {
+        let Ok(mut m) = self.0.lock() else { return };
+        if m.len() >= MAX_REFS && !m.contains_key(&tref) {
+            let now = now();
+            m.retain(|_, t| now < t.expires);
+            if m.len() >= MAX_REFS
+                && let Some(k) = m.keys().next().copied()
+            {
+                m.remove(&k);
+            }
+        }
+        m.insert(tref, ticket.clone());
+    }
+}
+
+fn serve(o: &Options, server: &Server, tree: &HostTree, refs: &Refs, mut s: TcpStream) {
     s.set_nodelay(true).ok();
     loop {
         let frame = {
@@ -447,6 +477,7 @@ fn serve(o: &Options, server: &Server, tree: &HostTree, mut s: TcpStream) {
             now: now(),
             random: &mut random,
             trust: &mut t,
+            refs: Some(refs),
         };
         let (reply, ev) = server.handle(tree, &mut env, &frame);
         log(o, &ev);
@@ -472,11 +503,11 @@ pub fn run(o: Options) -> Result<(), String> {
     let addr = listener.local_addr().map_err(err)?;
     println!("lethed: listening on {addr}");
     std::io::stdout().flush().ok();
-    let shared = Arc::new((o, server, tree));
+    let shared = Arc::new((o, server, tree, Refs::default()));
     for s in listener.incoming() {
         let Ok(s) = s else { continue };
         let shared = shared.clone();
-        std::thread::spawn(move || serve(&shared.0, &shared.1, &shared.2, s));
+        std::thread::spawn(move || serve(&shared.0, &shared.1, &shared.2, &shared.3, s));
     }
     Ok(())
 }

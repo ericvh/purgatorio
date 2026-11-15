@@ -167,6 +167,13 @@ pub enum Frame<'a> {
         nonce: [u8; NONCE],
         sealed: &'a [u8],
     },
+    /// A ticket's reference ([`crate::tref`]) and a sealed [`Request`]:
+    /// a `Treq` to a server that holds the ticket.
+    Treqref {
+        tref: [u8; crate::TREF],
+        nonce: [u8; NONCE],
+        sealed: &'a [u8],
+    },
     /// A sealed [`Reply`].
     Rreq {
         nonce: [u8; NONCE],
@@ -264,6 +271,11 @@ impl<'a> Msg<'a> {
                 nonce: r.array()?,
                 sealed: sealed(&mut r)?,
             },
+            kind::TREQREF => Frame::Treqref {
+                tref: r.array()?,
+                nonce: r.array()?,
+                sealed: sealed(&mut r)?,
+            },
             kind::RREQ => Frame::Rreq {
                 nonce: r.array()?,
                 sealed: sealed(&mut r)?,
@@ -285,6 +297,7 @@ impl<'a> Msg<'a> {
             Frame::Tauth2 { .. } => kind::TAUTH2,
             Frame::Rauth2 { .. } => kind::RAUTH2,
             Frame::Treq { .. } => kind::TREQ,
+            Frame::Treqref { .. } => kind::TREQREF,
             Frame::Rreq { .. } => kind::RREQ,
             Frame::Rerror { .. } => kind::RERROR,
             Frame::Tclear { .. } => kind::TCLEAR,
@@ -338,6 +351,15 @@ impl<'a> Msg<'a> {
                 sealed,
             } => {
                 w.data16(ticket);
+                w.bytes(nonce);
+                w.bytes(sealed);
+            }
+            Frame::Treqref {
+                tref,
+                nonce,
+                sealed,
+            } => {
+                w.bytes(tref);
                 w.bytes(nonce);
                 w.bytes(sealed);
             }

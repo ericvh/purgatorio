@@ -111,7 +111,10 @@ a few reads on one connection before reading their replies (Section 14).
 | 6-8 | reserved | | streams (Section 11) | |
 | 9 | `Tclear` | C -> S | `request`: `op u8 fields` | no |
 | 10 | `Rclear` | S -> C | `reply`: `op u8 fields` | no |
-| 11-15 | reserved | | later outer frames | |
+| 11 | `Tauth2` | C -> S | the hybrid exchange (Section 6) | no (signed) |
+| 12 | `Rauth2` | S -> C | the hybrid exchange's reply | under `s2c` |
+| 13 | `Treqref` | C -> S | `tref[8] nonce[24] sealed(request)` ("Ticket references") | under `c2s` |
+| 14-15 | reserved | | later outer frames | |
 
 `Rerror` in the clear is only for failures before the server can seal: a
 bad frame, a ticket that does not open or has expired, a request that does
@@ -490,6 +493,48 @@ The server opens the ticket (`bad ticket` / `unknown ticket key` /
 checks its time (`request expired`), checks rights and prefix, and only
 then looks at the tree.
 
+### Ticket references
+
+A ticket is about 100 bytes and every `Treq` carries it, though it does
+not change while it lasts: with the request's nonce, tag and `time`, it
+was most of a request's 150 bytes of overhead (issue #138). A server
+that keeps the tickets it has opened lets a client send a ticket's
+reference instead:
+
+```
+tref    = first 8 bytes of SHA-256("lethe1 ticket ref" 0x00 || ticket)
+Treqref = tref[8] nonce[24] XChaCha20-Poly1305(c2s, aad = header || tref, request)
+```
+
+- A server with a ticket cache sets `REFS` (0x20) in the rights of every
+  grant it seals. The bit is in the grant only, never in a ticket.
+  Clients that do not know it ignore it, and a client sends references
+  only to a server whose grant has it, so a server from before
+  references never sees one.
+- The client sends its first request with the ticket, as a `Treq`. Once
+  the server has answered one, it holds the ticket (it keeps every
+  ticket a request opened under), and the client sends `Treqref`s from
+  then on. Requests already on the wire before that answer carry the
+  ticket.
+- The server finds the ticket by its reference, checks its expiry, and
+  goes on as for a `Treq`: the keys come from the ticket, the request is
+  opened with the reference in place of the ticket in its associated
+  data, and the reply is an `Rreq`.
+- The cache is soft state, as `lethed`'s other caches are: bounded
+  (4,096 tickets), losing expired tickets first, and gone at a restart.
+  A server that does not hold the ticket answers `unknown ticket
+  reference`. The client then sends that request again with the ticket,
+  once, and the ticket itself still works, after a restart with the same
+  ticket key too. A replica that has not seen the ticket answers the
+  same, so references do not tie a client to one server.
+- A reference is not a secret, and it does not need to be: the request
+  still opens only with `c2s`, which only the ticket's holders can
+  derive. A replayed `Treqref` is a replayed `Treq` (Section 8).
+
+A request by reference is about 104 bytes shorter than one with the
+ticket (8 bytes in place of the ticket and its length). The version byte
+stays 1: `Treqref` is one of the outer types the design kept in reserve.
+
 ## 7. Errors
 
 Errors are Inferno strings, as Styx carries them. File errors come from
@@ -504,6 +549,7 @@ the tree: `file does not exist`, `permission denied`, `not a directory`,
 | `unknown ticket key` | clear | authenticate again |
 | `ticket expired` | clear | authenticate again |
 | `request expired` | clear | resynchronise the clock (authenticate again) and resend |
+| `unknown ticket reference` | clear | resend the request with the ticket ("Ticket references") |
 | `bad record mac` | clear | give up on this request (tampering) |
 | `not implemented` | sealed | give up |
 | `authentication required` | clear | give up: a clear request (`lethe -A`) reached a server not started with `-A` |
