@@ -2165,9 +2165,10 @@ either.
 
 ### 12.5 Differences from Plan 9's rio
 
-- No hold mode (`holdon` is accepted and ignored), no `/dev/kbdin`, no
-  `/srv/rio` and no `window(1)` command: `echo new ... > /dev/wctl` in a
-  window makes one.
+- No hold mode (`holdon` is accepted and ignored), no `/dev/kbdin` and
+  no `/srv/rio`. `window(1)` makes a window only from inside rio (it
+  writes `new` to `/dev/wctl`), and takes `-r`, `-dx`, `-dy`, `-minx`
+  and `-miny` but not `-m`, `-scroll`, `-noscroll`, `-hide` or `-cd`.
 - Typing goes at the selection only when the selection is in typing not
   yet sent; rio also lets typing go into text before the output point.
   The view does not scroll while sweeping a selection past the window's
