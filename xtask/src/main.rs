@@ -1198,7 +1198,7 @@ fn aot(args: &[String]) -> Result<()> {
 /// hosts with /dev/kvm), which has no semihosting, through PSCI
 /// `SYSTEM_OFF` (`-append exit=psci`), so QEMU's status is 0 either way and
 /// pass/fail comes from the serial output alone.
-fn probe(kvm: bool) -> Result<()> {
+fn probe(kvm: bool, smp: usize) -> Result<()> {
     if kvm && (env::consts::ARCH != "aarch64" || !Path::new("/dev/kvm").exists()) {
         eprintln!("probe: skipping the KVM run: needs an aarch64 host with /dev/kvm");
         return Ok(());
@@ -1230,7 +1230,8 @@ fn probe(kvm: bool) -> Result<()> {
     } else {
         vec!["-M", "virt", "-cpu", "cortex-a72"]
     };
-    args.extend(["-m", "512M", "-nographic"]);
+    let smp = smp.to_string();
+    args.extend(["-m", "512M", "-smp", &smp, "-nographic"]);
     if kvm {
         args.extend(["-append", "exit=psci"]);
     } else {
@@ -2816,10 +2817,33 @@ fn main() -> ExitCode {
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
         Some("sign") => sign(&rest).map(|()| ExitCode::SUCCESS),
         Some("aot") => aot(&rest).map(|()| ExitCode::SUCCESS),
-        Some("probe") => match image_flags(&rest, true) {
-            Some(kvm) => probe(kvm).map(|()| ExitCode::SUCCESS),
-            None => Err(String::from("usage: cargo xtask probe [--kvm] [--names]")),
-        },
+        Some("probe") => {
+            // `--smp N` boots QEMU with N CPUs; the rest are image flags.
+            let mut smp = 1;
+            let mut flags = Vec::new();
+            let mut it = rest.iter();
+            let mut bad = false;
+            while let Some(a) = it.next() {
+                if a == "--smp" {
+                    match it
+                        .next()
+                        .and_then(|n| n.parse().ok())
+                        .filter(|&n| (1..=8).contains(&n))
+                    {
+                        Some(n) => smp = n,
+                        None => bad = true,
+                    }
+                } else {
+                    flags.push(a.clone());
+                }
+            }
+            match image_flags(&flags, true).filter(|_| !bad) {
+                Some(kvm) => probe(kvm, smp).map(|()| ExitCode::SUCCESS),
+                None => Err(String::from(
+                    "usage: cargo xtask probe [--kvm] [--names] [--smp N]",
+                )),
+            }
+        }
         Some("kernel") => match KernelOpts::parse(&rest) {
             Some(o) => kernel(&o).map(|()| ExitCode::SUCCESS),
             None => Err(String::from(
@@ -2833,7 +2857,7 @@ fn main() -> ExitCode {
         Some("small") => small().map(|()| ExitCode::SUCCESS),
         Some("bench") => bench::cmd(&rest).map(|()| ExitCode::SUCCESS),
         _ => Err(String::from(
-            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] [--aot] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | fonts [--check] [--vm=...] | timezones [--check] | clippy-guests | check-wasm file.wasm... | sign module --key seed | aot [--kind native|pulley]",
+            "usage: cargo xtask build-root | run-emu [-- emu args] | lethed [-- lethed args] | lethe-perf [--reps N] [--parts ...] | probe [--kvm] [--names] [--smp N] | kernel [--kvm] [--names] [--mem SIZE] [--smp N] [--stress SECS [--sh LIST]] [--only NAME] [--repeat N] [--aot] | initrd [--names] | diskimg [--size SIZE] [--bsize N] OUT [DIR] | size [--guests] [--small] | small | bench [--emu] [--kernel] [--kvm] [--tcg] [--vm=...] [--rounds N] | fonts [--check] [--vm=...] | timezones [--check] | clippy-guests | check-wasm file.wasm... | sign module --key seed | aot [--kind native|pulley]",
         )),
     };
     match res {
