@@ -24,7 +24,24 @@ cat tools/job_list/call
 {echo '{"nonsense":1}' >[1=0]; cat} <> tools/run/call
 cat tools/nosuch/call
 echo x > tools/run/schema
+# A call does not hold up the mount: while one sleeps, the tree is
+# listed and read (mcpd itself runs its run calls one at a time).
+{echo '{"command":"sleep 2; echo slow"}' >[1=0]; cat} <> tools/run/call > $d.slow &
+slow=$apid
+sleep 0
+ls tools | grep -c .
+grep -s '"name":"stat"' tools/stat/schema && echo stat schema meanwhile
+grep -s '"stdout":"slow' $d.slow || echo slow call not yet answered
+wait $slow
+grep -s '"stdout":"slow' $d.slow && echo slow call answered
 cd /
+unmount $d
+rm -r $d $d.slow
+# With -t, a call not answered in time fails, and the mount goes on.
+mkdir $d
+mcpfs -t 300 -m $d mcpd
+{echo '{"command":"sleep 5"}' >[1=0]; cat} <> $d/tools/run/call
+ls $d/tools | grep -c .
 unmount $d
 rm -r $d
 mcpfs -m /n nosuchcommand

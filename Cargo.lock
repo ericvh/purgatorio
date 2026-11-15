@@ -1081,6 +1081,7 @@ dependencies = [
 name = "appl-cmd-mcpfs"
 version = "0.1.0"
 dependencies = [
+ "purg-styx",
  "purgatorio",
 ]
 

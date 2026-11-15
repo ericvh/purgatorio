@@ -574,7 +574,7 @@ server's tools, so that sh scripts and programs in Purgatorio can call
 them.
 
 ```
-mcpfs [-m mntpt] command [arg ...]
+mcpfs [-m mntpt] [-t ms] command [arg ...]
 ```
 
 `command` is started with pipes for its standard input and output and
@@ -606,8 +606,18 @@ cat /n/mcp/tools/run/schema
 mcpfs -m /n/far rcmd tcp!host!rstyx mcpd
 ```
 
-`mcpfs` exits when the mount goes (`unmount`), and the server's input
-then ends, so `mcpd` exits too. Tests: `root/lib/test/sh/mcpfs.sh` (on
+Calls do not hold up the mount. The file server waits on the mount's
+9P and the MCP server's replies at once: a read of `call` sends
+`tools/call` and is answered when the reply with its id comes, and
+meanwhile the tree is listed and read and other calls go out. A flushed
+read (an interrupted `cat`) ends at once and the server is sent
+`notifications/cancelled`. With `-t ms` a call not answered in time
+fails with `timed out` and is cancelled the same way. `mcpd` itself runs
+its `run` calls one at a time, so two of those still go in turn.
+
+`mcpfs` exits when the mount goes (`unmount`), at once, with calls
+outstanding or not, and the server's input then ends, so `mcpd` exits
+too. Tests: `root/lib/test/sh/mcpfs.sh` (on
 both engines, the probe and the kernel) with `mcpd` as the far end, and
 `mcpfs_over_rcmd` in `crates/purg-emu/tests/rcmd.rs`.
 
@@ -620,10 +630,5 @@ What remains of stage 4:
 - Resources (`resources/list` and `read` as files), prompts, and
   notifications: a changed tool list is not seen until the next mount;
   progress and log messages are dropped; cancellation is not sent.
-- One request at a time: the file server is one prog, so a long call
-  holds up every other request to the mount, `ls` included. Calls in
-  their own progs, as `mcpd`'s file workers do, would fix that.
-- No timeout: a server that never answers holds the mount until it is
-  unmounted, and then `mcpfs` waits for the answer before it exits.
 - Revision 2026-07-28 (stateless, with `_meta` on every request) is not
   spoken; 2025-11-25 is, and `mcpd` and most servers answer it.

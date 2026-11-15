@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 purgatorio.workspace = true
+purg-styx.workspace = true
 
 [lints]
 workspace = true

@@ -31,6 +31,7 @@
 #[allow(dead_code)]
 #[path = "../../mcpd/src/json.rs"]
 mod json;
+mod serve;
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -41,10 +42,10 @@ use json::Value;
 use purgatorio::abi::mount::MREPL;
 use purgatorio::abi::{error, mode, pctl};
 use purgatorio::arg::Arg;
-use purgatorio::styx::{self, IOHDRSZ, StyxFs};
+use purgatorio::styx::{IOHDRSZ, StyxFs};
 use purgatorio::{Context, DMDIR, Dir, Error, Qid};
 
-const USAGE: &str = "mcpfs [-m mntpt] command [arg ...]";
+const USAGE: &str = "mcpfs [-m mntpt] [-t ms] command [arg ...]";
 const SELF: &str = "/bin/mcpfs.wasm";
 /// The revision mcpfs asks for. `mcpd` and most servers answer it.
 const PROTOCOL: &str = "2025-11-25";
@@ -169,6 +170,8 @@ struct Call {
     /// The offset after the last write.
     end: u64,
     result: Option<Result<Vec<u8>, String>>,
+    /// The id of the `tools/call` sent for it and not yet answered.
+    inflight: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -301,19 +304,93 @@ impl McpFs {
             .ok_or_else(|| String::from("unknown fid"))
     }
 
-    /// Makes the call a `call` fid holds the arguments for.
-    fn call(&mut self, tool: usize, args: &[u8]) -> Result<Vec<u8>, String> {
-        let text = String::from_utf8_lossy(args);
-        let text = text.trim();
-        let arguments = if text.is_empty() {
-            Value::Object(Vec::new())
-        } else {
-            match json::parse(text) {
-                Ok(v) if v.is_object() => v,
-                Ok(_) => return Err(String::from("the arguments must be a JSON object")),
-                Err(e) => return Err(format!("the arguments are not JSON: {e}")),
+    /// Whether a read of `fid` must wait for a call: it is a `call` file
+    /// whose result is not yet known.
+    fn needs_call(&self, fid: u32) -> bool {
+        self.fids.get(&fid).is_some_and(|f| {
+            matches!(self.tool_of(f.path), Some((_, 2))) && f.call.result.is_none()
+        })
+    }
+
+    /// The call already sent for `fid`, if one is.
+    fn in_flight(&self, fid: u32) -> Option<i64> {
+        self.fids.get(&fid).and_then(|f| f.call.inflight)
+    }
+
+    /// Sends `tools/call` with the arguments `fid` holds and returns its
+    /// id, without waiting for the answer. Arguments that are not a JSON
+    /// object are the read's error, kept as the call's result.
+    fn start_call(&mut self, fid: u32) -> Result<i64, String> {
+        let f = self.fid(fid)?.clone();
+        let Some((tool, 2)) = self.tool_of(f.path) else {
+            return Err(String::from(error::EPERM));
+        };
+        let arguments = match arguments(&f.call.args) {
+            Ok(a) => a,
+            Err(e) => {
+                if let Some(f) = self.fids.get_mut(&fid) {
+                    f.call.result = Some(Err(e.clone()));
+                }
+                return Err(e);
             }
         };
+        let id = self.client.next;
+        self.client.next += 1;
+        let name = self.tools[tool].name.clone();
+        self.client.send(&json::obj([
+            ("jsonrpc", "2.0".into()),
+            ("id", id.into()),
+            ("method", "tools/call".into()),
+            (
+                "params",
+                json::obj([("name", name.into()), ("arguments", arguments)]),
+            ),
+        ]))?;
+        if let Some(f) = self.fids.get_mut(&fid) {
+            f.call.inflight = Some(id);
+        }
+        Ok(id)
+    }
+
+    /// Tells the server to stop call `id` (`notifications/cancelled`).
+    fn cancel(&mut self, id: i64, reason: &str) {
+        let _ = self.client.send(&json::obj([
+            ("jsonrpc", "2.0".into()),
+            ("method", "notifications/cancelled".into()),
+            (
+                "params",
+                json::obj([("requestId", id.into()), ("reason", reason.into())]),
+            ),
+        ]));
+    }
+
+    /// Forgets call `id` on `fid`, flushed before it was answered: a
+    /// later read sends the call again.
+    fn forget(&mut self, fid: u32, id: i64) {
+        if let Some(f) = self.fids.get_mut(&fid)
+            && f.call.inflight == Some(id)
+        {
+            f.call.inflight = None;
+        }
+    }
+
+    /// Keeps call `id`'s result on `fid`, if the fid still waits for it,
+    /// and returns where the writes to it ended.
+    fn settle(&mut self, fid: u32, id: i64, result: Result<Vec<u8>, String>) -> u64 {
+        match self.fids.get_mut(&fid) {
+            Some(f) if f.call.inflight == Some(id) => {
+                f.call.inflight = None;
+                f.call.result = Some(result);
+                f.call.end
+            }
+            Some(f) => f.call.end,
+            None => 0,
+        }
+    }
+
+    /// Makes the call a `call` fid holds the arguments for.
+    fn call(&mut self, tool: usize, args: &[u8]) -> Result<Vec<u8>, String> {
+        let arguments = arguments(args)?;
         let name = self.tools[tool].name.clone();
         let result = self.client.request(
             "tools/call",
@@ -479,6 +556,21 @@ impl StyxFs for McpFs {
     }
 }
 
+/// The arguments written to a `call` file, as the JSON object
+/// `tools/call` sends: nothing is `{}`.
+fn arguments(args: &[u8]) -> Result<Value, String> {
+    let text = String::from_utf8_lossy(args);
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Value::Object(Vec::new()));
+    }
+    match json::parse(text) {
+        Ok(v) if v.is_object() => Ok(v),
+        Ok(_) => Err(String::from("the arguments must be a JSON object")),
+        Err(e) => Err(format!("the arguments are not JSON: {e}")),
+    }
+}
+
 /// Starts `argv` with pipes for its standard input and output, and makes
 /// the handshake and the tool list.
 fn connect(argv: &[String]) -> Result<McpFs, String> {
@@ -556,9 +648,15 @@ fn connect(argv: &[String]) -> Result<McpFs, String> {
     })
 }
 
-/// `mcpfs --serve command...`: the file server. 9P comes on fd 0; fd 1
-/// gets `ok` or why the server could not be reached, then is closed.
+/// `mcpfs --serve ms command...`: the file server, with a call timeout of
+/// `ms` (0 for none). 9P comes on fd 0; fd 1 gets `ok` or why the server
+/// could not be reached, then is closed.
 fn serve(argv: &[String]) -> Result<(), Error> {
+    let timeout = argv
+        .first()
+        .and_then(|t| t.parse::<u64>().ok())
+        .filter(|&t| t > 0);
+    let argv = argv.get(1..).unwrap_or(&[]);
     // SAFETY: fds 0 and 1 are the pipes the mounting prog gave this one.
     let (io, mut status) = unsafe { (File::from_raw_fd(0), File::from_raw_fd(1)) };
     let mut fs = match connect(argv) {
@@ -570,7 +668,7 @@ fn serve(argv: &[String]) -> Result<(), Error> {
     };
     let _ = writeln!(status, "ok");
     drop(status);
-    styx::serve(io, &mut fs)
+    serve::serve(io, &mut fs, timeout)
 }
 
 #[purgatorio::main]
@@ -580,9 +678,16 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let mut arg = Arg::new(args, USAGE);
     let mut mntpt = String::from("/n/mcp");
+    let mut timeout = String::from("0");
     while let Some(c) = arg.opt() {
         match c {
             'm' => mntpt = arg.earg()?,
+            't' => {
+                timeout = arg.earg()?;
+                if timeout.parse::<u64>().is_err() {
+                    return Err(arg.usage());
+                }
+            }
             _ => return Err(arg.usage()),
         }
     }
@@ -592,7 +697,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let [fs_r, fs_w] = purgatorio::pipe()?;
     let [st_r, st_w] = purgatorio::pipe()?;
-    let mut sargv = vec![String::from("mcpfs"), String::from("--serve")];
+    let mut sargv = vec![String::from("mcpfs"), String::from("--serve"), timeout];
     sargv.extend(argv);
     purgatorio::spawn(
         SELF,
