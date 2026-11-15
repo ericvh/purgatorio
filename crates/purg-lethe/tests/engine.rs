@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use purg_auth::cert::Cert;
 use purg_lethe::client::{self, CallError, Client, Creds, Kx, Transport};
 use purg_lethe::msg::{Frame, Msg, Op, Owned};
-use purg_lethe::server::{Config, Env, Event, Server, Tree, Trust};
-use purg_lethe::{NONCE, error, rights};
+use purg_lethe::server::{Config, Env, Event, RefCache, Server, Tree, Trust};
+use purg_lethe::{NONCE, error, kind, rights};
 use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 
 const USER: [u8; 32] = [1; 32];
@@ -132,6 +132,8 @@ struct Rig<'a> {
     sent: Vec<Vec<u8>>,
     /// Changes the next frame on the way when set.
     tamper: Option<usize>,
+    /// The tickets the server holds, for `Treqref`; none by default.
+    refs: Option<&'a dyn RefCache>,
 }
 
 fn random(buf: &mut [u8]) {
@@ -156,6 +158,7 @@ impl Rig<'_> {
             now: self.now.get(),
             random: &mut random,
             trust: &mut t,
+            refs: self.refs,
         };
         let (reply, ev) = self.server.handle(self.tree, &mut env, frame);
         self.events.push(ev);
@@ -224,6 +227,24 @@ fn rig<'a>(server: &'a Server, tree: &'a Mem, now: &'a Cell<u64>, trust: Trust) 
         events: vec![],
         sent: vec![],
         tamper: None,
+        refs: None,
+    }
+}
+
+/// A server's ticket cache for the tests: every ticket, until it expires.
+#[derive(Default)]
+struct Refs(std::cell::RefCell<std::collections::BTreeMap<[u8; 8], purg_lethe::ticket::Ticket>>);
+
+impl RefCache for Refs {
+    fn get(&self, tref: &[u8; 8], now: u64) -> Option<purg_lethe::ticket::Ticket> {
+        self.0
+            .borrow()
+            .get(tref)
+            .filter(|t| now < t.expires)
+            .cloned()
+    }
+    fn put(&self, tref: [u8; 8], ticket: &purg_lethe::ticket::Ticket) {
+        self.0.borrow_mut().insert(tref, ticket.clone());
     }
 }
 
@@ -1317,4 +1338,75 @@ fn hybrid_signatures() {
             ename: "authentication failed"
         }
     ));
+}
+
+/// Ticket references (`docs/lethe.md`, "Ticket references"): a server with
+/// a cache offers them in the grant; the first request carries the ticket
+/// and later ones its 8-byte reference, which is about 100 bytes less.
+/// A server that let the ticket go answers `unknown ticket reference`,
+/// and the client resends with the ticket and goes on. A server without a cache
+/// offers none, and a reference to it is a bad message.
+#[test]
+fn ticket_references() {
+    let server = Server::new(Config::default(), [9; 32]);
+    let t = tree();
+    let now = Cell::new(T0);
+    let refs = Refs::default();
+    let mut r = rig(&server, &t, &now, direct());
+    r.refs = Some(&refs);
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    for _ in 0..3 {
+        assert!(matches!(
+            read(&mut c, &mut r, "/hello", None),
+            Ok(Owned::Read { .. })
+        ));
+    }
+    // Tauth, then a Treq with the ticket, then two Treqrefs.
+    let kinds: Vec<u8> = r.sent.iter().map(|f| f[5]).collect();
+    assert_eq!(
+        kinds,
+        [kind::TAUTH2, kind::TREQ, kind::TREQREF, kind::TREQREF]
+    );
+    let (full, by_ref) = (r.sent[1].len(), r.sent[2].len());
+    assert!(full >= by_ref + 90, "{full} against {by_ref}");
+    assert!(c.session.as_ref().unwrap().by_ref());
+
+    // The server forgets (a restart with the same ticket key): one
+    // refusal, the same request resent with the ticket, and on by
+    // reference again, with no new ticket.
+    refs.0.borrow_mut().clear();
+    for _ in 0..2 {
+        assert!(matches!(
+            read(&mut c, &mut r, "/hello", None),
+            Ok(Owned::Read { .. })
+        ));
+    }
+    assert_eq!(c.tickets, 1);
+    let kinds: Vec<u8> = r.sent[4..].iter().map(|f| f[5]).collect();
+    assert_eq!(kinds, [kind::TREQREF, kind::TREQ, kind::TREQREF]);
+    assert!(matches!(
+        r.events[4],
+        Event::Refused(e) if e == purg_lethe::error::TICKET_REF
+    ));
+
+    // No cache, no references.
+    let mut plain = rig(&server, &t, &now, direct());
+    let mut c = Client::new(creds(None), rights::READ, "/");
+    for _ in 0..2 {
+        assert!(matches!(
+            read(&mut c, &mut plain, "/hello", None),
+            Ok(Owned::Read { .. })
+        ));
+    }
+    let kinds: Vec<u8> = plain.sent.iter().map(|f| f[5]).collect();
+    assert_eq!(kinds, [kind::TAUTH2, kind::TREQ, kind::TREQ]);
+    let reply = plain.send(&tamper_kind(&plain.sent[2], kind::TREQREF));
+    assert_eq!(reply[5], kind::RERROR);
+}
+
+/// A frame with another type byte, the rest as it was.
+fn tamper_kind(frame: &[u8], ty: u8) -> Vec<u8> {
+    let mut f = frame.to_vec();
+    f[5] = ty;
+    f
 }

@@ -171,6 +171,26 @@ pub fn open_treq(
     open(&keys.c2s, nonce, &concat(h, ticket), sealed)
 }
 
+/// A `Treqref` frame: as [`treq`], with the ticket's reference in place
+/// of the ticket, both in the frame and in the associated data.
+pub fn treqref(
+    keys: &Keys,
+    id: u32,
+    tref: &[u8; crate::TREF],
+    nonce: &[u8; NONCE],
+    request: &[u8],
+) -> Vec<u8> {
+    sealed_frame(
+        kind::TREQREF,
+        id,
+        &[tref, nonce],
+        &keys.c2s,
+        nonce,
+        tref,
+        request,
+    )
+}
+
 /// An `Rreq` frame answering the request sealed with `req_nonce`.
 pub fn rreq(
     keys: &Keys,

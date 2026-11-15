@@ -11,7 +11,9 @@
 //! its keys, so a request can go out on any connection, to any replica.
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use purg_abi::auth::{FAILED, NO_PQ};
 use purg_auth::cert::AnyCert;
@@ -79,6 +81,16 @@ impl Creds {
 #[derive(Clone)]
 pub struct Session {
     ticket: Vec<u8>,
+    /// The ticket's reference ([`crate::tref`]).
+    tref: [u8; crate::TREF],
+    /// The server offered references ([`crate::rights::REFS`] in the
+    /// grant).
+    refs: bool,
+    /// The server has answered a request carrying the ticket, so it holds
+    /// it: requests send the reference from then on. Shared by the
+    /// session's clones (a connection pool), and cleared when the server
+    /// says it no longer holds the ticket.
+    held: Arc<AtomicBool>,
     keys: Keys,
     /// The server's clock minus the client's, in seconds.
     skew: i64,
@@ -251,6 +263,9 @@ impl AuthPending {
         }
         Ok(Session {
             ticket: g.ticket.to_vec(),
+            tref: crate::tref(g.ticket),
+            refs: g.rights & crate::rights::REFS != 0,
+            held: Arc::new(AtomicBool::new(false)),
             keys,
             skew: (g.now as i64).wrapping_sub(local as i64),
             expires: g.expires,
@@ -264,6 +279,8 @@ impl AuthPending {
 pub struct ReqPending {
     id: u32,
     nonce: [u8; NONCE],
+    /// It carried the ticket's reference, not the ticket.
+    by_ref: bool,
 }
 
 /// Why a request got no answer.
@@ -321,12 +338,22 @@ impl Session {
     }
 
     /// A `Treq` carrying `plain`, an encoded request, as it is: for ops
-    /// this version has no type for (writes, streams) and for tests.
+    /// this version has no type for (writes, streams) and for tests. Once
+    /// the server holds the ticket it is a `Treqref`, with the ticket's
+    /// reference in place of the ticket.
     pub fn seal(&self, id: u32, plain: &[u8], nonce: [u8; NONCE]) -> (Vec<u8>, ReqPending) {
-        (
-            crypto::treq(&self.keys, id, &self.ticket, &nonce, plain),
-            ReqPending { id, nonce },
-        )
+        let by_ref = self.refs && self.held.load(Ordering::Acquire);
+        let frame = if by_ref {
+            crypto::treqref(&self.keys, id, &self.tref, &nonce, plain)
+        } else {
+            crypto::treq(&self.keys, id, &self.ticket, &nonce, plain)
+        };
+        (frame, ReqPending { id, nonce, by_ref })
+    }
+
+    /// Whether requests now carry the ticket's reference.
+    pub fn by_ref(&self) -> bool {
+        self.refs && self.held.load(Ordering::Acquire)
     }
 
     /// Opens the reply to `p`.
@@ -337,11 +364,21 @@ impl Session {
         }
         let (nonce, sealed) = match m.frame {
             Frame::Rreq { nonce, sealed } => (nonce, sealed),
-            Frame::Rerror { ename } => return Err(Failure::Clear(String::from(ename))),
+            Frame::Rerror { ename } => {
+                // The server let the ticket go: send it again next time.
+                if p.by_ref && ename == crate::error::TICKET_REF {
+                    self.held.store(false, Ordering::Release);
+                }
+                return Err(Failure::Clear(String::from(ename)));
+            }
             _ => return Err(Failure::Bad(MESSAGE)),
         };
         let plain =
             crypto::open_rreq(&self.keys, frame, &p.nonce, &nonce, sealed).map_err(Failure::Bad)?;
+        // A sealed answer to the ticket itself: the server holds it now.
+        if self.refs && !p.by_ref {
+            self.held.store(true, Ordering::Release);
+        }
         Reply::decode(&plain)
             .map_err(Failure::Bad)?
             .owned()
@@ -511,7 +548,9 @@ impl Client {
         now: &dyn Fn() -> u64,
         random: &mut dyn FnMut(&mut [u8]),
     ) -> Result<Owned, CallError> {
-        for attempt in 0..2 {
+        let mut resent = false;
+        let mut attempt = 0;
+        while attempt < 2 {
             if self.session.as_ref().is_none_or(|s| s.expiring(now())) {
                 self.authenticate(t, now(), random)?;
             }
@@ -525,11 +564,18 @@ impl Client {
             let reply = t.exchange(&frame).map_err(CallError::Transport)?;
             match s.reply(&pending, &reply) {
                 Ok(o) => return Ok(o),
+                // The server let the ticket go: the next request carries
+                // it again, once.
+                Err(Failure::Clear(e)) if !resent && crate::error::resend(&e) => {
+                    resent = true;
+                    continue;
+                }
                 Err(Failure::Clear(e)) if attempt == 0 && crate::error::renew(&e) => {
                     self.session = None;
                 }
                 Err(f) => return Err(CallError::Remote(String::from(f.text()))),
             }
+            attempt += 1;
         }
         Err(CallError::Remote(String::from(crate::error::TICKET)))
     }

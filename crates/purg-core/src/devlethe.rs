@@ -400,6 +400,9 @@ enum Attempt {
     Transport(String),
     /// The ticket was refused: get a new one and resend.
     Renew,
+    /// The server no longer holds the ticket its reference named: resend
+    /// with the ticket itself (the session already knows to).
+    Resend,
     /// The answer.
     Done(core::result::Result<Owned, String>),
 }
@@ -547,6 +550,9 @@ impl Remote {
         match r {
             Ok(o) => Attempt::Done(Ok(o)),
             Err(Failure::Clear(e)) if s.is_some() && purg_lethe::error::renew(&e) => Attempt::Renew,
+            Err(Failure::Clear(e)) if s.is_some() && purg_lethe::error::resend(&e) => {
+                Attempt::Resend
+            }
             Err(f) => Attempt::Done(Err(String::from(f.text()))),
         }
     }
@@ -583,6 +589,7 @@ impl Remote {
     fn call_tries(&self, op: &Op<'_>, attempts: u32) -> Result<Owned> {
         let mut pause = FIRST_PAUSE_NS;
         let mut renewed = false;
+        let mut resent = false;
         let mut last = String::from(EHUNGUP);
         let mut tries = 0;
         while tries < attempts {
@@ -600,6 +607,14 @@ impl Remote {
                 Attempt::Done(r) => {
                     self.idle(c);
                     return r.map_err(Error::from);
+                }
+                Attempt::Resend if !resent => {
+                    resent = true;
+                    self.idle(c);
+                }
+                Attempt::Resend => {
+                    self.idle(c);
+                    return Err(Error::new(purg_lethe::error::TICKET_REF));
                 }
                 Attempt::Renew if !renewed => {
                     renewed = true;
@@ -669,6 +684,9 @@ impl Remote {
             };
             match Remote::reply(s.as_ref(), &waiting[i].1, &reply) {
                 Attempt::Done(r) => answers[i] = Some(r),
+                // The server let the ticket go: the caller's ordinary
+                // call sends it again.
+                Attempt::Resend => {}
                 // The ticket was refused: the caller's ordinary call gets
                 // a new one.
                 _ => renew = true,

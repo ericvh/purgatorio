@@ -54,6 +54,22 @@ pub const KEM_CT: usize = purg_abi::auth::KEM_CIPHERTEXT;
 /// refused sees that the refusal was not the server's.
 pub const PQ_MARK: [u8; 8] = *b"lethe2pq";
 
+/// The length of a ticket's reference.
+pub const TREF: usize = 8;
+
+/// A ticket's reference: the first [`TREF`] bytes of SHA-256 over a
+/// context string and the ticket, as the client holds it.
+pub fn tref(ticket: &[u8]) -> [u8; TREF] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"lethe1 ticket ref\0");
+    h.update(ticket);
+    let d = h.finalize();
+    let mut out = [0u8; TREF];
+    out.copy_from_slice(&d[..TREF]);
+    out
+}
+
 /// Whether an `Rauth`'s nonce carries [`PQ_MARK`].
 pub fn offers_pq(nonce: &[u8; NONCE]) -> bool {
     nonce[NONCE - PQ_MARK.len()..] == PQ_MARK
@@ -73,6 +89,10 @@ pub mod rights {
     /// exchange (`Tauth2`). A server that requires that exchange refuses
     /// tickets without it. Never granted on request.
     pub const PQ: u8 = 0x40;
+    /// In a grant only: the server keeps the tickets it has opened, so a
+    /// client may send a ticket's reference in its place (`Treqref`,
+    /// `docs/lethe.md`, "Ticket references"). Never in a ticket.
+    pub const REFS: u8 = 0x20;
     /// The bits a server may grant.
     pub const GRANTABLE: u8 = READ | WRITE | STREAM;
 }
@@ -95,8 +115,10 @@ pub mod kind {
     pub const TAUTH2: u8 = 11;
     /// `Rauth` with the server's ML-KEM-768 ciphertext.
     pub const RAUTH2: u8 = 12;
-    /// Reserved for streams and later frames: 6 to 15, less the clear
-    /// and the post-quantum frames above.
+    /// `Treq` with the ticket's reference in place of the ticket.
+    pub const TREQREF: u8 = 13;
+    /// Reserved for streams and later frames: 6 to 15, less the clear,
+    /// the post-quantum and the reference frames above.
     pub const RESERVED: core::ops::RangeInclusive<u8> = 6..=15;
 }
 
@@ -130,6 +152,9 @@ pub mod error {
     pub const TICKET_KEY: &str = "unknown ticket key";
     pub const TICKET_EXPIRED: &str = "ticket expired";
     pub const REQUEST_EXPIRED: &str = "request expired";
+    /// A `Treqref` whose ticket the server does not hold (it restarted,
+    /// or let it go): the client sends the ticket again.
+    pub const TICKET_REF: &str = "unknown ticket reference";
     pub const MAC: &str = purg_auth::record::BAD_MAC;
     /// A clear request (`Tclear`) to a server that was not started with
     /// `-A`: Styx's answer to an attach without a proof.
@@ -142,5 +167,13 @@ pub mod error {
     /// again and resend.
     pub fn renew(e: &str) -> bool {
         [TICKET, TICKET_KEY, TICKET_EXPIRED, REQUEST_EXPIRED].contains(&e)
+    }
+
+    /// Whether a client that gets `e` in the clear should resend the
+    /// request with its ticket (the server no longer holds it): the
+    /// ticket itself may still be good, as after a restart with the same
+    /// ticket key.
+    pub fn resend(e: &str) -> bool {
+        e == TICKET_REF
     }
 }
