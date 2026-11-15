@@ -55,6 +55,7 @@ members = [
     "appl/cmd/auth/getpk",
     "appl/cmd/auth/keyfs",
     "appl/cmd/auth/keysrv",
+    "appl/cmd/auth/authsrv",
     "appl/cmd/auth/mkauthinfo",
     "appl/cmd/auth/modpolicy",
     "appl/cmd/auth/passwd",

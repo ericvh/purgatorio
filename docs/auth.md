@@ -1403,7 +1403,29 @@ The Inferno page each one takes its role from is in brackets.
 | `crypt [-d] [-C m,t] [-k secret \| -f secretfile \| -r pubkey \| -s keyfile \| -g keyfile]` | [crypt(1)] Encrypts or decrypts standard input to standard output with ChaCha20-Poly1305 in 64 KiB chunks, under an Argon2id key. An addition: `-g` makes a hybrid X25519 + ML-KEM-768 key pair, `-r` encrypts to its public key, and `-d -s` (or `-d` with the key in factotum) decrypts (see "crypt's public-key mode"). |
 | `auth/aescbc -e\|-d [-k key] [-f keyfile]` | [secstore(1)] Encrypts or decrypts standard input in the file format of Plan 9's and Inferno's secstore, for files shared with them (below). Without `-k` or `-f` the key is read from `/dev/cons`. |
 | `auth/ai2key [-t tag] keyfile ...` | [ai2key(8)] Prints each authinfo as the `key proto=ed25519 [tag] user=... !seed=... cert=...` line that loads it into `auth/factotum`'s `ctl`, so keys can be kept in a store and loaded later. |
+| `auth/authsrv [-k keyfile]` | [authsrv(6)] Plan 9's ticket service for `p9sk1`, for one conversation on fd 0 (run under `listen` on port 567): answers ticket requests with tickets sealed with the host's and the server's keys from `keyfile` (factotum `proto=p9sk1` key lines, default `/lib/keys/p9sk1`). See "Plan 9's p9any". |
 | `netkey` | [netkey(1)] Reads a password, then challenges, and prints each response: the first 8 hex digits of HMAC-SHA256 keyed with SHA-256 of the password. It replaces the DES SecureNet calculator; it is only useful with a server that computes the same. |
+
+### Plan 9's p9any
+
+For authenticated interop with Plan 9, `9export -k keyfile` and `import
+-k keyfile -9 tree [-T authsrv]` authenticate the connection with
+Plan 9's `p9any` negotiation and its `p9sk1` protocol before the
+exportfs opening (`purg_auth::p9sk1`, `purgatorio::p9any`). The keys are
+factotum key lines, `key proto=p9sk1 dom=<dom> user=<user>
+!password=<password>` (or `!hex=` 14 hex digits). The client gets its
+tickets from the domain's auth server, `auth/authsrv` here or Plan 9's,
+or makes them itself when its key is the server's, as Plan 9's factotum
+does. The server then serves as the user the client proved.
+
+p9sk1 is DES with 56-bit keys, so it is for talking to Plan 9 only;
+nothing else here uses it. What is not done: `dp9ik` (9front's PAKE,
+which 9front prefers), the encryption after authentication (`import
+-e`), Plan 9's `speaksfor` in `auth/authsrv` (a host gets tickets for
+itself only), and p9sk1 keys in `auth/factotum` (the key file is read
+directly). The test is `plan9.sh`, both ends ours; the formats and DES
+are checked against the DES standard's example and Plan 9's
+definitions, not yet against a running Plan 9.
 
 ### Merged, dropped or deferred
 

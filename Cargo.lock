@@ -198,6 +198,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-auth-authsrv"
+version = "0.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-auth-changelogin"
 version = "0.1.0"
 dependencies = [
@@ -2613,6 +2620,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
+name = "des"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffdd80ce8ce993de27e9f063a444a4d53ce8e8db4c1f00cc03af5ad5a9867a1e"
+dependencies = [
+ "cipher 0.4.4",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4120,6 +4136,7 @@ dependencies = [
  "argon2",
  "chacha20poly1305",
  "curve25519-dalek",
+ "des",
  "ed25519-dalek",
  "hkdf",
  "hmac",

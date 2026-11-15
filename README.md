@@ -63,7 +63,7 @@ a `; ` prompt.
 | Admin commands: `cron logfile mntgen ndb/query`; `mount {command}` | done |
 | Namespace and Styx tools: `styxchat styxmon iostats nsbuild lockfs trfs fcp tarfs archfs` | done |
 | Remote commands: `rcmd cpu auxi/rstyxd auxi/cpuslave`, authenticated with the mount proof both ways (`-S` requires the server's) and encrypted after it; the hybrid post-quantum key exchange is the default with a server that can do it, and `rcmd -e x25519mlkem768`, `cpu -C x25519mlkem768` and `rstyxd -C x25519mlkem768` require it; `-e mldsa65` (`-C mldsa65`) requires hybrid Ed25519 + ML-DSA-65 signatures at either end; `rcmd host mcpd` is a remote MCP server. See [docs/rcmd.md](docs/rcmd.md) | done |
-| Plan 9 interop: `9export -A` and `import -9 tree` (exportfs's opening, no `p9any`) | tested against each other only |
+| Plan 9 interop: `9export` and `import -9 tree` (exportfs's opening, `p9any`/`p9sk1` with `auth/authsrv`) | tested against each other only |
 | `dbfs` and `rawdbfs`: the records of a text file, or of an append-only binary log, as files (dbfs(4)) | done; rawdbfs's file format is its own |
 | `fs`: trees as values, with all of fs(1)'s modules (`walk filter select merge write bundle unbundle exec pipe proto run setroot chstat compose mergewrite void log` and the gates), `@{...}` command blocks | done; `mergewrite` takes its selector as `-c` |
 | Network commands: `ndb/cs ndb/csquery ndb/dns ndb/dnsquery ndb/registry ndb/regquery webgrab telnet whois ip/sntp ip/tftpd ip/ping ip/dhcp ip/virgild`. `ip/dhcp` is for the kernel (QEMU's DHCP server) and does not renew its lease | done |

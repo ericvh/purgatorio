@@ -1,0 +1,17 @@
+[package]
+name = "appl-cmd-auth-authsrv"
+description = "auth/authsrv: Plan 9's p9sk1 ticket service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "authsrv"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

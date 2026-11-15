@@ -24,6 +24,7 @@ pub mod draw;
 pub mod env;
 pub mod file2chan;
 pub mod ns;
+pub mod p9any;
 pub mod styx;
 pub mod sys;
 pub mod task;
