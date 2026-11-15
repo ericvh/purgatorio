@@ -74,6 +74,8 @@ const MINSIZE: i32 = 50;
 const CORNER: i32 = 20;
 /// The most milliseconds between the clicks of a double click.
 const DOUBLE: u32 = 500;
+/// How often a sweep held past a window's text scrolls it a line.
+const SWEEP_SCROLL_MS: i32 = 50;
 /// The snarf buffer.
 const SNARF: &str = "/dev/snarf";
 /// Pointer events kept for a program that does not read them.
@@ -860,13 +862,20 @@ impl Rio {
             }
             self.show(id)?;
             while self.m.buttons == 1 {
-                let m = self.read_mouse()?;
+                // Past the text's top or bottom it scrolls on a timer
+                // while the pointer is still: the pointer sends nothing
+                // then, and moves with a button held are merged.
+                let still = self.outside(id, self.m.xy)
+                    && purgatorio::ready(&[Ready::Read(self.mouse.fd())], SWEEP_SCROLL_MS)?
+                        .is_none();
+                let m = if still { self.m } else { self.read_mouse()? };
                 if m.buttons != 1 {
                     break;
                 }
+                let scrolled = self.sweep_scroll(id, m.xy);
                 let q1 = self.rune_at(id, m.xy);
                 if let Some(w) = self.win_mut(id)
-                    && (w.text.q0, w.text.q1) != (q.min(q1), q.max(q1))
+                    && (scrolled || (w.text.q0, w.text.q1) != (q.min(q1), q.max(q1)))
                 {
                     w.text.select(q, q1);
                     self.show(id)?;
@@ -877,6 +886,35 @@ impl Rio {
             }
         }
         self.chords(id)
+    }
+
+    /// Whether `p` is above or below window `id`'s text.
+    fn outside(&self, id: u32, p: Point) -> bool {
+        self.win(id).is_some_and(|w| {
+            let area = Text::area(w.r, BORDER);
+            p.y < area.min.y || p.y >= area.max.y
+        })
+    }
+
+    /// A sweep past the top or bottom of window `id`'s text scrolls it a
+    /// line, for each pointer event out there and every
+    /// [`SWEEP_SCROLL_MS`] while the pointer stays, so a selection can
+    /// reach text not shown. True if it scrolled.
+    fn sweep_scroll(&mut self, id: u32, p: Point) -> bool {
+        let Some(w) = self.wins.iter_mut().find(|w| w.id == id) else {
+            return false;
+        };
+        let area = Text::area(w.r, BORDER);
+        let n = if p.y < area.min.y {
+            -1
+        } else if p.y >= area.max.y {
+            1
+        } else {
+            return false;
+        };
+        let org = w.text.org;
+        w.text.scroll(n, area.dx().max(1), &mut self.widths);
+        w.text.org != org
     }
 
     /// While button 1 is held after a selection, button 2 cuts and button

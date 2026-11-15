@@ -1922,7 +1922,8 @@ files; no Plan 9 or Inferno code was used, and the look is its own.
   the view to the end unless the window is in `noscroll` mode; the wheel
   scrolls three lines. Text beyond 256K runes is dropped from the front.
 - **Selection.** Button 1 in the current text window sweeps a selection
-  from the rune pressed on to the rune released on; the selection has a
+  from the rune pressed on to the rune released on, and held above or
+  below the text it scrolls a line every 50 ms; the selection has a
   pale yellow background, and an empty one shows as the tick. A second
   click on the same rune within half a second selects the word there
   (letters, digits and `_`), or the whole line, newline included, when
@@ -2172,8 +2173,6 @@ either.
   writes `new` to `/dev/wctl`), so it does not take `-m`.
 - Typing goes at the selection only when the selection is in typing not
   yet sent; rio also lets typing go into text before the output point.
-  The view does not scroll while sweeping a selection past the window's
-  edge.
 - No sweeping with buttons other than 3, no button 2 on a border, and
   no minimum-size window made from a click.
 - `plumb` sends from rio's directory: rio does not know the shell's.
