@@ -23,6 +23,7 @@ cargo test --workspace           # unit + acceptance tests, wasmtime and wasmi
 cargo xtask run-emu -- sh -c 'ls /bin | wc -l'
 cargo xtask probe                # bare-metal aarch64 image in QEMU (qemu-system-aarch64)
 cargo xtask probe --kvm          # the same under KVM (aarch64 host, PSCI exit)
+cargo xtask probe --smp 4        # the probe on four CPUs
 cargo xtask kernel               # purg-kernel under QEMU TCG: GICv2, GICv3, EL2 boot
 cargo xtask kernel --kvm         # the same under KVM (aarch64 host, GICv3 only, PSCI exit)
 cargo xtask initrd               # the kernel's root as target/initrd/root.tar

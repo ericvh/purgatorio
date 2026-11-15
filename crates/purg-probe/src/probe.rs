@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use purg_aarch64::board::{board, exit_method, heap_region};
+use purg_aarch64::board::{board, exit_method, heap_region, psci_smc};
 use purg_aarch64::boot::{self, DtbError, find_dtb};
 use purg_aarch64::console::{self, Input};
 use purg_aarch64::dtb::{BootInfo, Fdt};
@@ -20,6 +20,7 @@ use purg_aarch64::mmu::{self, Region};
 use purg_aarch64::net::{Ipv4Config, NetStack};
 use purg_aarch64::platform::MetalPlatform;
 use purg_aarch64::sched::Scheduler;
+use purg_aarch64::smp;
 use purg_abi::mode;
 use purg_core::devram::RamTree;
 use purg_core::{Error, Platform, Prog};
@@ -214,7 +215,7 @@ extern "C" fn purg_main(dtb_phys: usize) -> ! {
     };
     exit::set_method(exit_method(&fdt, &info));
     if purg_aarch64::cpu::has_sha256() {
-        // SAFETY: the probe runs on the boot CPU only, which has them.
+        // SAFETY: every CPU of the machine has them, as the boot CPU does.
         unsafe { purg_auth::sha256::use_hardware() };
     }
     if info.uart.base as usize != board().uart {
@@ -234,6 +235,12 @@ extern "C" fn purg_main(dtb_phys: usize) -> ! {
     // end of input.
     let cons: &'static dyn Console = console::init(&info, Input::Polled);
     println!("purg-probe: aarch64 bare metal, wasmi");
+    // Every CPU the DTB lists runs threads, as in the kernel; with one
+    // (QEMU's default) this does nothing. Nothing is printed, so the
+    // output is the same however many there are.
+    if let (_, Some(e)) = smp::start(&fdt, &SCHED, psci_smc(&fdt), usize::MAX) {
+        finish(1, format_args!("probe: smp: a cpu did not start: {e:?}"));
+    }
     let net = NetStack::open(&fdt, &Ipv4Config::QEMU_USER);
     let platform = MetalPlatform::new(
         cons,

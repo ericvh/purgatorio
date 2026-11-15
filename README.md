@@ -411,6 +411,7 @@ cargo build --target aarch64-unknown-none \
   -p purg-vm -p purg-vm-wasmi -p purg-aarch64
 cargo xtask probe         # needs qemu-system-aarch64
 cargo xtask probe --kvm   # the same under KVM on an aarch64 Linux host with /dev/kvm
+cargo xtask probe --smp 4 # the same on four CPUs (with --kvm too)
 RUSTFLAGS="--cfg loom" CARGO_TARGET_DIR=target/loom \
   cargo test -p purg-core --features std --test loom --release
 ```
@@ -420,7 +421,8 @@ embeds `root/bin` and `root/lib` and runs the milestone's portable test
 subset on `purg-core` and wasmi, with `#c` on the PL011 UART. Below the
 shared core it is built from `purg-aarch64`, as the kernel is: the same
 boot path and link script, the GIC and a 100 Hz timer from the DTB, and
-preemptive kernel threads with their own stacks for its kprocs. Its `#I` is
+preemptive kernel threads with their own stacks for its kprocs, on every
+CPU QEMU gives it (`--smp N`; one by default). Its `#I` is
 smoltcp over virtio-net (`purg_aarch64::net`). Its `#U` is a writable RAM tree seeded with the embedded
 files, so it boots the emu's namespace (`#U` after `#/`, `#c`, `#e`, `#p`).
 It runs the ABI and procs conformance guests, then every script in the `sh`
