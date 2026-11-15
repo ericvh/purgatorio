@@ -422,8 +422,9 @@ directory` below a file).
   be answered out of order on such a file, and a short reply in the
   middle leaves the later ones' data with nowhere to go. Inferno's
   `devmnt` sends one read at a time for this reason, and caches only with
-  `mount -C`. Readahead would fit behind such a flag (`MCACHE`, which
-  purgatorio does not have yet), for trees the user says are disk-like.
+  `mount -C`. Readahead now sits behind that flag: a mount made with
+  `MCACHE` (ABI 0.13, `docs/abi.md`) follows each read of a plain file
+  with one sent ahead.
   Lethe can read ahead because a Lethe file is always a file: `lethed`
   serves a host directory, and its reads are ranges.
 

@@ -222,9 +222,13 @@ impl Prog {
     /// server must prove itself with a hybrid Ed25519 + ML-DSA-65 key
     /// (`docs/auth.md`, "Post-quantum signatures").
     ///
+    /// With `MCACHE` the tree is disk-like: each read of a plain file is
+    /// followed by one sent ahead for the next bytes
+    /// ([`crate::devmnt::set_cache`]).
+    ///
     /// Returns the mount id, as [`Prog::bind`] does.
     pub fn mount(&self, fd: i32, afd: i32, old: &str, flags: u32, aname: &str) -> Result<u64> {
-        use purg_abi::mount::{MNOAUTH, MPQ, MPQSIG, MSRVAUTH};
+        use purg_abi::mount::{MCACHE, MNOAUTH, MPQ, MPQSIG, MSRVAUTH};
         let noauth = flags & MNOAUTH != 0;
         // A hybrid server proof is still a server proof.
         let hybrid = flags & MPQSIG != 0;
@@ -233,7 +237,7 @@ impl Prog {
         if noauth && (srvauth || pq) {
             return Err(Error::new(error::EBADARG));
         }
-        let bind = flags & !(MNOAUTH | MSRVAUTH | MPQ | MPQSIG);
+        let bind = flags & !(MNOAUTH | MSRVAUTH | MPQ | MPQSIG | MCACHE);
         let fd = self.fgrp.get(fd)?;
         let user = self.proc.user();
         let pgrp = self.pgrp.clone();
@@ -262,6 +266,9 @@ impl Prog {
             )?
         };
         let old = absolute(old, &self.dot());
+        if flags & MCACHE != 0 {
+            crate::devmnt::set_cache(&root);
+        }
         self.pgrp.bind_chan(root, &old, bind)
     }
 

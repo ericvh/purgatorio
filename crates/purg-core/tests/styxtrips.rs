@@ -15,7 +15,7 @@ use std::thread;
 use std::time::Duration;
 
 use common::{Mock, enter, setup};
-use purg_abi::mount::{MAFTER, MNOAUTH, MREPL};
+use purg_abi::mount::{MAFTER, MCACHE, MNOAUTH, MREPL};
 use purg_abi::{error, mode, pctl};
 use purg_core::Prog;
 use purg_core::rw::{read_msg, write_full};
@@ -80,6 +80,11 @@ impl Rig {
     /// A tree in `#R` exported by a child prog, and mounted by `p` on
     /// `#R/mnt` through the relay.
     fn new() -> Rig {
+        Rig::with_flags(0)
+    }
+
+    /// The rig, its mount made with `extra` beside `MREPL | MNOAUTH`.
+    fn with_flags(extra: u32) -> Rig {
         let (mut p, mock) = setup();
         let mut dir = String::from("#R/deep");
         let fd = p
@@ -156,7 +161,8 @@ impl Rig {
                 }
             }
         });
-        p.mount(far, -1, "#R/mnt", MREPL | MNOAUTH, "").unwrap();
+        p.mount(far, -1, "#R/mnt", MREPL | MNOAUTH | extra, "")
+            .unwrap();
         p.close(far).unwrap();
         Rig {
             p,
@@ -495,4 +501,64 @@ fn an_interrupt_survives_a_mount_being_dropped() {
     assert_eq!(unmount, Ok(()));
     assert_eq!(read, Err(error::EINTR.to_string()));
     assert!(!note.killed());
+}
+
+/// On a mount with `MCACHE`, a read of a plain file sends the next one
+/// before it returns: two `Tread`s for one read. Without it, one.
+#[test]
+fn a_cached_mount_reads_ahead() {
+    for (flags, want) in [(MCACHE, 2), (0, 1)] {
+        let mut r = Rig::with_flags(flags);
+        let sent = r.sent(|p| {
+            let fd = p.open("#R/mnt/big", mode::OREAD).unwrap();
+            let mut buf = vec![0u8; 64 * 1024];
+            assert_eq!(p.read(fd, &mut buf).unwrap(), buf.len());
+            assert!(buf.iter().enumerate().all(|(i, &b)| b == (i % 251) as u8));
+            p.close(fd).unwrap();
+        });
+        assert_eq!(
+            count(&sent, "Tread 65536"),
+            want,
+            "flags {flags:#x}: {sent:?}"
+        );
+    }
+}
+
+/// Read ahead, a sequential reader still gets every byte in order, in
+/// reads of any size, and the same number of `Tread`s as without.
+#[test]
+fn a_cached_sequential_read_is_whole() {
+    let mut r = Rig::with_flags(MCACHE);
+    let sent = r.sent(|p| {
+        let fd = p.open("#R/mnt/big", mode::OREAD).unwrap();
+        let mut got = Vec::new();
+        let mut buf = vec![0u8; 40000];
+        loop {
+            let n = p.read(fd, &mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n]);
+        }
+        assert_eq!(got.len(), 1 << 20);
+        assert!(got.iter().enumerate().all(|(i, &b)| b == (i % 251) as u8));
+        p.close(fd).unwrap();
+    });
+    assert!(count(&sent, "Tread 65536") <= 18, "{sent:?}");
+}
+
+/// A write drops a read sent ahead, so a read after it sees what was
+/// written, not what the server held before.
+#[test]
+fn a_write_drops_the_read_ahead() {
+    let mut r = Rig::with_flags(MCACHE);
+    let p = &mut r.p;
+    let fd = p.open("#R/mnt/one", mode::ORDWR).unwrap();
+    let mut buf = [0u8; 16];
+    assert_eq!(p.pread(fd, &mut buf, 0).unwrap(), 16);
+    assert_eq!(p.pwrite(fd, b"written", 16).unwrap(), 7);
+    assert_eq!(p.pread(fd, &mut buf, 16).unwrap(), 16);
+    assert_eq!(&buf[..7], b"written");
+    assert_eq!(&buf[7..], &[b'1'; 9]);
+    p.close(fd).unwrap();
 }
