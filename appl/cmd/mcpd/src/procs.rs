@@ -305,7 +305,8 @@ pub struct ProgInfo {
     pub group: u32,
 }
 
-/// The progs listed in `dir` (a `#p`), from their `status` files.
+/// The progs listed in `dir` (a `#p`): pid and process group from their
+/// `status` files (prog(3): pid, group, ...) and the parent from `ppid`.
 pub fn progs(dir: &str) -> Vec<ProgInfo> {
     let Ok(fd) = purgatorio::open(dir, OREAD) else {
         return Vec::new();
@@ -319,9 +320,13 @@ pub fn progs(dir: &str) -> Vec<ProgInfo> {
             let Ok(text) = std::fs::read_to_string(format!("{dir}/{}/status", d.name)) else {
                 continue;
             };
+            let Ok(ppid) = std::fs::read_to_string(format!("{dir}/{}/ppid", d.name)) else {
+                continue;
+            };
             let f: Vec<&str> = text.split_whitespace().collect();
-            if let [pid, ppid, group, ..] = f.as_slice()
-                && let (Ok(pid), Ok(ppid), Ok(group)) = (pid.parse(), ppid.parse(), group.parse())
+            if let [pid, group, ..] = f.as_slice()
+                && let (Ok(pid), Ok(ppid), Ok(group)) =
+                    (pid.parse(), ppid.trim().parse(), group.parse())
             {
                 out.push(ProgInfo { pid, ppid, group });
             }

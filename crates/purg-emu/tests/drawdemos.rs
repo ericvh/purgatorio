@@ -207,8 +207,9 @@ impl Emu {
         let mut names: Vec<String> = out
             .lines()
             .filter_map(|l| {
+                // prog(3): pid group user time state size module.
                 let f: Vec<&str> = l.split_whitespace().collect();
-                (f.len() >= 6 && f[0].parse::<u32>().is_ok()).then(|| f[5..].join(" "))
+                (f.len() >= 7 && f[0].parse::<u32>().is_ok()).then(|| f[6..].join(" "))
             })
             .collect();
         // The emu's sh -i and ps itself.

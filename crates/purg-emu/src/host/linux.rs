@@ -178,3 +178,32 @@ pub fn fault_registers(uc: *mut libc::c_void) -> super::unix::FaultRegisters {
     let _ = uc;
     regs
 }
+
+/// The calling thread's CPU clock, as a handle [`cpu_ns`] reads from any
+/// thread: the clock id `pthread_getcpuclockid` gives (negative on Linux,
+/// so kept as its bits).
+pub fn cpu_clock() -> Option<u64> {
+    let mut id: libc::clockid_t = 0;
+    // SAFETY: pthread_self is the calling thread; `id` is written on
+    // success.
+    if unsafe { libc::pthread_getcpuclockid(libc::pthread_self(), &mut id) } != 0 {
+        return None;
+    }
+    Some(u64::from(id as u32))
+}
+
+/// The CPU time in ns on a clock from [`cpu_clock`]; `None` once its
+/// thread has gone.
+pub fn cpu_ns(clock: u64) -> Option<u64> {
+    let id = clock as u32 as libc::clockid_t;
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime writes `ts`; an id whose thread has gone is
+    // EINVAL.
+    if unsafe { libc::clock_gettime(id, &mut ts) } != 0 {
+        return None;
+    }
+    Some((ts.tv_sec as u64).saturating_mul(1_000_000_000) + ts.tv_nsec as u64)
+}

@@ -17,11 +17,11 @@ kill $apid
 wait
 test/debug trap >[2] /dev/null
 echo $status | sed 's/trap: .*unreachable.*/trap: unreachable/'
-echo broken `{ps | grep -c ' broken +debug$'}
+echo broken `{ps | grep -c ' broken +[0-9]+K debug$'}
 
 echo trapped
 trace test/debug trap >[2=1] | sed 's/^trace: [0-9]+ /trace: PID /' | sed 's/trap: .*unreachable.*/trap: unreachable/'
-pid=`{pidof ' broken +debug$'}
+pid=`{pidof ' broken +[0-9]+K debug$'}
 echo broken $#pid
 # Innermost first. The frames above main are the runtime's.
 stack $pid | grep '^(exception|debug::)' | sed 's/trap: .*unreachable.*/trap: unreachable/'
@@ -30,12 +30,12 @@ stack $pid | grep -c '^_start$'
 sed 's/trap: .*unreachable.*/trap: unreachable/' /prog/$pid/exception
 # A broken prog keeps its stack, not its files.
 cat /prog/$pid/fd
-sed 's/^[0-9]+ [0-9]+ [0-9]+ [^ ]+ /PID PPID PGRP USER /' /prog/$pid/status
+sed 's/^ *[0-9]+ +[0-9]+ +[^ ]+ +[0-9]+:[0-9.]+ +([a-z]+) +[0-9]+K /PID PGRP USER TIME \1 SIZE /' /prog/$pid/status; echo
 # broke prints the commands that kill broken progs and kills nothing.
-broke | sed 's/^echo kill>\/prog\/[0-9]+\/ctl # +[0-9]+ +[0-9]+ +[0-9]+ [^ ]+ +broken +debug$/echo kill>\/prog\/PID\/ctl # PS LINE/'
-echo broken `{ps | grep -c ' broken +debug$'}
+broke | sed 's/^echo kill>\/prog\/[0-9]+\/ctl # +[0-9]+ +[0-9]+ +[^ ]+ +[0-9]+:[0-9.]+ +broken +[0-9]+K debug$/echo kill>\/prog\/PID\/ctl # PS LINE/'
+echo broken `{ps | grep -c ' broken +[0-9]+K debug$'}
 broke | sh
-echo broken `{ps | grep -c ' broken +debug$'}
+echo broken `{ps | grep -c ' broken +[0-9]+K debug$'}
 broke
 broke a b >[2=1]
 
@@ -45,14 +45,14 @@ trace test/debug nap &
 pid=()
 while {~ $#pid 0} {
 	sleep 0.1
-	pid=`{pidof ' running +debug$'}
+	pid=`{pidof ' (ready|release) +[0-9]+K debug$'}
 }
 while {! stack $pid | grep '^debug::inner$' > /dev/null} {sleep 0.1}
 stack $pid | grep '^debug::'
 cat /prog/$pid/exception
 kill $pid
 wait
-echo broken `{ps | grep -c ' broken +debug$'}
+echo broken `{ps | grep -c ' broken +[0-9]+K debug$'}
 
 echo real commands run traced
 trace sh -c 'ls /bin/echo.wasm; echo a b c | wc -w | sed ''s/ *//''; load add; echo ${add 20 22}'
@@ -65,6 +65,6 @@ prof -n 1 test/debug hot >[2=1] | sed 's/ +[0-9]+$/ N/' | sed 's/^ *[0-9.]+% +[0
 prof -n 1 sh -c 'test/debug hot; test/debug spin' >[2=1] | grep 'debug(\.wasm|::)' | sed 's/ +[0-9]+$/ N/' | sed 's/^ *[0-9.]+% +[0-9]+ //'
 # A profiled prog that traps is reported and reaped.
 prof test/debug trap >[2=1] | grep '^prof' | sed 's/^prof: [0-9]+ /prof: PID /' | sed 's/trap: .*unreachable.*/trap: unreachable/'
-echo broken `{ps | grep -c ' broken +debug$'}
+echo broken `{ps | grep -c ' broken +[0-9]+K debug$'}
 prof >[2=1]
 echo done

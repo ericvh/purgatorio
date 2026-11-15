@@ -21,7 +21,7 @@ trace test/debug tick >[2] $d/addr &
 pid=()
 while {~ $#pid 0} {
 	sleep 0.1
-	pid=`{pidof ' running +debug$'}
+	pid=`{pidof ' (ready|release) +[0-9]+K debug$'}
 }
 # The line is written in pieces (stderr is unbuffered): wait for all of it.
 while {! ~ `{wc -l < $d/addr} 1} {sleep 0.1}
@@ -53,7 +53,7 @@ echo breakpoints
 	echo q
 } | mdb $pid >[2=1] | sed 's/^stopped in (debug::inner|__wasi_poll_oneoff)$/stopped/' | sed 's/^[0-9a-f]+ /ADDR /'
 # Detached, it runs on.
-sed 's/^[0-9]+ [0-9]+ [0-9]+ [^ ]+ /PID PPID PGRP USER /' /prog/$pid/status
+sed 's/^ *[0-9]+ +[0-9]+ +[^ ]+ +[0-9]+:[0-9.]+ +([a-z]+) +[0-9]+K /PID PGRP USER TIME \1 SIZE /' /prog/$pid/status; echo
 
 echo kill
 echo k | mdb $pid | sed 's/^stopped in (debug::inner|__wasi_poll_oneoff)$/stopped/'

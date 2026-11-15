@@ -274,8 +274,8 @@ fn children(ppid: u32) -> Vec<u32> {
     };
     dir.filter_map(|e| e.ok()?.file_name().into_string().ok()?.parse::<u32>().ok())
         .filter(|pid| {
-            std::fs::read_to_string(format!("/prog/{pid}/status"))
-                .is_ok_and(|s| s.split_whitespace().nth(1) == Some(&*ppid.to_string()))
+            std::fs::read_to_string(format!("/prog/{pid}/ppid"))
+                .is_ok_and(|s| s.trim() == ppid.to_string())
         })
         .collect()
 }

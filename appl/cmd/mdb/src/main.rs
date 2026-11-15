@@ -170,7 +170,7 @@ impl Mdb {
             let Ok(status) = prog_file(self.pid, "status") else {
                 return Ok(State::Exited);
             };
-            match status.split(' ').nth(4) {
+            match status.split_whitespace().nth(4) {
                 Some("debug") => return Ok(State::Stopped),
                 Some("broken") => {
                     let e = prog_file(self.pid, "exception").unwrap_or_default();

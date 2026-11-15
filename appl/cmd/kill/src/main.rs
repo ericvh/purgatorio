@@ -63,8 +63,9 @@ fn kill_module(name: &str, msg: &str) -> usize {
                 continue;
             }
         };
+        // pid group user time state size module, as prog(3) has it.
         let f: Vec<&str> = text.split_whitespace().collect();
-        if f.len() < 6 || f[5..].join(" ") != name {
+        if f.len() < 7 || f[6..].join(" ") != name {
             continue;
         }
         found = true;

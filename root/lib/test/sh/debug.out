@@ -13,7 +13,7 @@ debug::main
 debug::inner N /bin/test/debug.wasm
 1
 trap: unreachable
-PID PPID PGRP USER broken debug
+PID PGRP USER TIME broken SIZE debug
 echo kill>/prog/PID/ctl # PS LINE
 broken 1
 broken 0

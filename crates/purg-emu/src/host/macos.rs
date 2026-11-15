@@ -232,3 +232,37 @@ mod tests {
         }
     }
 }
+
+/// The calling thread's CPU clock, as a handle [`cpu_ns`] reads from any
+/// thread: its Mach thread port.
+pub fn cpu_clock() -> Option<u64> {
+    // SAFETY: pthread_self is the calling thread.
+    let port = unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) };
+    (port != 0).then_some(u64::from(port))
+}
+
+/// The CPU time in ns (user and system) of the thread whose Mach port
+/// [`cpu_clock`] gave; `None` once it has gone.
+pub fn cpu_ns(clock: u64) -> Option<u64> {
+    let port = libc::mach_port_t::try_from(clock).ok()?;
+    // SAFETY: an all-zero thread_basic_info is valid; thread_info fills
+    // at most `count` words of it.
+    let mut info: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+    let mut count = libc::THREAD_BASIC_INFO_COUNT;
+    // SAFETY: `info` is a thread_basic_info, `count` its size in words.
+    let r = unsafe {
+        libc::thread_info(
+            port,
+            libc::THREAD_BASIC_INFO as libc::thread_flavor_t,
+            (&raw mut info).cast(),
+            &mut count,
+        )
+    };
+    if r != libc::KERN_SUCCESS {
+        return None;
+    }
+    let us = |t: libc::time_value_t| {
+        (t.seconds as u64).saturating_mul(1_000_000) + t.microseconds as u64
+    };
+    Some((us(info.user_time) + us(info.system_time)).saturating_mul(1000))
+}

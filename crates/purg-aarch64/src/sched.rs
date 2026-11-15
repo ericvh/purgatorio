@@ -234,6 +234,10 @@ struct Thread {
     timed_out: AtomicBool,
     /// PC and link register where the timer last preempted it.
     preempted_at: (u64, u64),
+    /// Time it has run, in ns, up to when it last left its CPU.
+    ran_ns: u64,
+    /// When it last came onto a CPU, in monotonic ns.
+    since: u64,
     /// Where it sleeps on a `Rendez` ([`Sched::set_waiting`]), or null.
     /// Only the thread itself writes it; reports read it.
     waiting_at: AtomicPtr<Location<'static>>,
@@ -274,6 +278,8 @@ impl Thread {
             deadline: 0,
             timed_out: AtomicBool::new(false),
             preempted_at: (0, 0),
+            ran_ns: 0,
+            since: 0,
             waiting_at: AtomicPtr::new(core::ptr::null_mut()),
             tls: AtomicUsize::new(0),
         }
@@ -815,6 +821,8 @@ impl Scheduler {
                 th.preempted_at = crate::irq::interrupted();
             }
             th.pending.store(false, Ordering::Relaxed);
+            let now = timer::ticks_to_ns(timer::counter());
+            th.ran_ns += now.saturating_sub(th.since);
             t.outgoing[cpu] = Some(Outgoing {
                 id: cur,
                 done,
@@ -825,6 +833,7 @@ impl Scheduler {
             t.switches += 1;
             let to = t.all[next].as_mut().expect("ready thread");
             to.runs += 1;
+            to.since = now;
             let counted = to.idle_of.is_none();
             let to_th: *const Thread = &**to;
             let to: *const Context = &to.ctx;
@@ -999,6 +1008,24 @@ impl Scheduler {
                 asleep_at: unsafe { th.waiting_at.load(Ordering::Relaxed).as_ref() },
             })
             .collect()
+    }
+
+    /// The time, in ns, thread `id` has spent on a CPU, its current turn
+    /// included; `None` when there is no such thread.
+    pub fn ran_ns(&self, id: usize) -> Option<u64> {
+        let _g = IrqGuard::new();
+        let t = self.threads.lock();
+        let th = t.all.get(id)?.as_ref().filter(|th| !th.done)?;
+        let now = timer::ticks_to_ns(timer::counter());
+        let running = t.cpu_of(id).is_some();
+        Some(
+            th.ran_ns
+                + if running {
+                    now.saturating_sub(th.since)
+                } else {
+                    0
+                },
+        )
     }
 
     pub fn current_pid(&self) -> u32 {

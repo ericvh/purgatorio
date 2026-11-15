@@ -10,4 +10,4 @@ echo traced $status
 # one that would not die.
 trace test/debug trap >[2] /dev/null
 echo $status | sed 's/trap: .*unreachable.*/trap: unreachable/'
-echo broken `{ps | grep -c ' broken +debug$'}
+echo broken `{ps | grep -c ' broken +[0-9]+K debug$'}

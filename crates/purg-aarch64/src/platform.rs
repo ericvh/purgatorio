@@ -95,6 +95,15 @@ impl MetalPlatform {
 }
 
 impl Platform for MetalPlatform {
+    /// The running kernel thread, which the scheduler's run time names.
+    fn cpu_clock(&self) -> Option<u64> {
+        Some(purg_platform::sync::Sched::current(self.sched) as u64)
+    }
+
+    fn cpu_ns(&self, clock: u64) -> Option<u64> {
+        self.sched.ran_ns(usize::try_from(clock).ok()?)
+    }
+
     fn now_ns(&self) -> u64 {
         self.boot_epoch_ns + self.monotonic_ns()
     }

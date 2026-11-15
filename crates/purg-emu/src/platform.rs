@@ -149,6 +149,14 @@ impl Platform for Emu {
         Some(&self.net)
     }
 
+    fn cpu_clock(&self) -> Option<u64> {
+        host::cpu_clock()
+    }
+
+    fn cpu_ns(&self, clock: u64) -> Option<u64> {
+        host::cpu_ns(clock)
+    }
+
     fn command(&self, spec: &purg_platform::net::CmdSpec<'_>) -> Result<Arc<dyn Command>> {
         host::start_command(spec, self.root.as_deref())
     }

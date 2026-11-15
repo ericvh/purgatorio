@@ -4,7 +4,7 @@
 //!
 //! Inferno's broke is a script that edits ps(1)'s output into one line
 //! per broken prog: `echo kill>/prog/pid/ctl # ` and the prog's ps line.
-//! This prints the same, from our ps's line.
+//! This prints the same, from the prog's status line.
 //!
 //! A prog is broken when it trapped while traced (`docs/debug.md`): it
 //! stays in `/prog`, holding only its last stack, until it is killed.
@@ -28,26 +28,18 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let Ok(status) = std::fs::read_to_string(format!("/prog/{pid}/status")) else {
             continue;
         };
-        // pid ppid pgrp user state name. Only a prog with an exception is
-        // broken for good: one that is merely being killed says `broken`
-        // too, on its way out.
+        // pid group user time state size module, as prog(3) has it. Only
+        // a prog with an exception is broken for good: one that is merely
+        // being killed says `exiting` on its way out.
         let f: Vec<&str> = status.split_whitespace().collect();
-        if f.len() < 6 || f[3] != user || f[4] != "broken" {
+        if f.len() < 7 || f[2] != user || f[4] != "broken" {
             continue;
         }
         let trapped =
             std::fs::read_to_string(format!("/prog/{pid}/exception")).is_ok_and(|e| !e.is_empty());
         if trapped {
-            // The line as ps prints it.
-            println!(
-                "echo kill>/prog/{pid}/ctl # {:>5} {:>5} {:>5} {:<10} {:<8} {}",
-                f[0],
-                f[1],
-                f[2],
-                f[3],
-                f[4],
-                f[5..].join(" ")
-            );
+            // Inferno's broke: the kill command, then the ps line.
+            println!("echo kill>/prog/{pid}/ctl # {status}");
         }
     }
     Ok(())

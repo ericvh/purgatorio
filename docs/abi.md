@@ -564,6 +564,17 @@ bytes written to `dst`. This follows Inferno's `stream`:
 - `bufsiz = 0` copies nothing and returns 0. A negative `bufsiz` or a bad
   fd returns -1.
 
+## `/prog/<pid>/status` and `ppid`
+
+`status` is prog(3)'s line, with no newline: pid and process group
+(8 wide), the user (10 wide), the CPU time as `m:ss.t`, the state
+(10 wide: `ready`, `release` while asleep in a call, `debug`, `exiting`
+once killed, `broken`), the wasm memory in KiB (5 wide, then `K`), and
+the module. The CPU time is the prog's thread's, which each platform
+keeps (Linux and macOS per host thread, the kernel per kernel thread);
+`ps` prints these lines as Inferno's does. Inferno's line has no parent
+pid; `/prog/<pid>/ppid` (an addition) holds it.
+
 ## Killed progs
 
 A kill (`kill` or `killgrp` on `/prog/<pid>/ctl`, or `proc_raise`) ends

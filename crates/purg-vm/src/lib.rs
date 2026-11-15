@@ -194,6 +194,7 @@ pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, E
     platform.set_current_pid(ctx.prog.pid);
     platform.set_note(Some(ctx.prog.proc.note.clone()));
     ctx.prog.proc.set_name(module_name(path));
+    ctx.prog.proc.set_cpu_clock(platform.cpu_clock());
     // Killed before it started: the module never runs.
     if ctx.prog.proc.note.killed() {
         platform.set_note(None);
