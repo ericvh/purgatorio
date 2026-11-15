@@ -4,7 +4,7 @@ usage: sort [-nr] [file]
 	sort usage
 usage: ls [-dlp] [name ...]
 	ls usage
-usage: cmp a b
+Usage: cmp [-lsL] file1 file2 [offset1 [offset2] ]
 	cmp usage
 usage: mv file ... target
 	mv usage
