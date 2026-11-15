@@ -1,7 +1,8 @@
 # An MCP server for mcpfs.sh whose tools change: the first tools/list
-# has tool a; then it says its tools changed (list_changed), and the
-# next tools/list has tool b alone. Requests come one JSON message to a
-# line, with no spaces, so each is one word of what read returns.
+# has tool a; then it logs a message and says its tools changed
+# (list_changed), and the next tools/list has tool b alone. Requests come
+# one JSON message to a line, with no spaces, so each is one word of what
+# read returns.
 load std
 lists=0
 while {chunk=`{read}; ! ~ $#chunk 0} {
@@ -13,6 +14,7 @@ while {chunk=`{read}; ! ~ $#chunk 0} {
 		if {echo $m | grep -s '"method":"tools/list"'} {
 			if {~ $lists 0} {
 				echo '{"jsonrpc":"2.0","id":'^$id^',"result":{"tools":[{"name":"a","inputSchema":{"type":"object"}}]}}'
+				echo '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"tools changing"}}'
 				echo '{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}'
 				lists=1
 			} {
