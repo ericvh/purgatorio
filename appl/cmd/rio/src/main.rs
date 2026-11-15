@@ -65,6 +65,8 @@ const MENUHI: u32 = 0x448844FF;
 const SWEEP: u32 = 0xDD2222FF;
 /// The selection's background in text windows.
 const HIGH: u32 = 0xEEEE9EFF;
+/// Text in hold mode: medium blue, as Plan 9's rio.
+const HOLD: u32 = 0x000099FF;
 /// The smallest window a sweep makes.
 const MINSIZE: i32 = 50;
 /// How near a corner, along an edge, a press on the border drags the
@@ -112,14 +114,31 @@ pub struct Win {
     pub kbd_opens: u32,
     pub rawq: Vec<u8>,
     pub raw: bool,
+    /// Hold mode: typing is kept in the window, not read, until it ends
+    /// (Esc, or `holdon` and `holdoff` on `consctl`).
+    pub hold: bool,
     pub consctl_opens: u32,
     /// Stacking order: higher is nearer the top.
     z: u64,
 }
 
+impl Win {
+    /// Starts or ends hold mode. Ending it lets everything typed be read,
+    /// a line not yet ended too, as Plan 9's rio sends it.
+    pub fn set_hold(&mut self, on: bool) {
+        if self.hold && !on {
+            self.text.ready = self.text.s.len();
+        }
+        self.hold = on;
+        self.dirty = true;
+    }
+}
+
 struct Colours {
     bg: Image,
     black: Image,
+    /// The text of a window in hold mode.
+    hold: Image,
     high: Image,
     white: Image,
     focus: Image,
@@ -225,6 +244,7 @@ impl Rio {
         let c = Colours {
             bg,
             black: d.color(0x000000FF)?,
+            hold: d.color(HOLD)?,
             high: d.color(HIGH)?,
             white: d.color(WHITE)?,
             focus: d.color(FOCUS)?,
@@ -350,6 +370,7 @@ impl Rio {
             None
         };
         let img = w.img.clone();
+        let ink = if w.hold { &self.c.hold } else { &self.c.black };
         let inner = inset(w.r, BORDER);
         self.d
             .draw(&img, inner, &self.c.white, None, Point::new(0, 0))?;
@@ -357,14 +378,8 @@ impl Rio {
             self.d.draw(&img, r, &self.c.high, None, Point::new(0, 0))?;
         }
         for (t, p) in runs {
-            self.d.string(
-                &img,
-                p,
-                &self.c.black,
-                Point::new(0, 0),
-                &mut self.widths.font,
-                &t,
-            )?;
+            self.d
+                .string(&img, p, ink, Point::new(0, 0), &mut self.widths.font, &t)?;
         }
         if let Some(p) = tick {
             let p = Point::new(area.min.x + p.x, area.min.y + p.y);
@@ -472,6 +487,7 @@ impl Rio {
             kbd_opens: 0,
             rawq: Vec::new(),
             raw: false,
+            hold: false,
             consctl_opens: 0,
             z: self.z,
         });
@@ -1256,6 +1272,8 @@ impl Rio {
             w.kbdq.extend_from_slice(bytes);
         } else if w.raw {
             w.rawq.extend_from_slice(bytes);
+        } else if c == '\x1B' {
+            w.set_hold(!w.hold);
         } else if c == '\x7F' {
             w.text.flush_input();
             w.dirty = true;
