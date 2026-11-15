@@ -1572,6 +1572,60 @@ fn nonet_boot(k: &KernelRun, opts: &KernelOpts, image: &Path, initrd: &str) -> R
     }
 }
 
+/// Boots run `k` again with `modules=require` and no test mode: the
+/// system's policy is set before the first prog, so the unsigned
+/// `emuinit` is refused (`docs/signing.md`). Passes if the kernel names
+/// the refusal; it then fails, as a failed `emuinit` does.
+fn modules_boot(k: &KernelRun, opts: &KernelOpts, image: &Path, initrd: &str) -> Result<()> {
+    let kvm = opts.kvm;
+    let smp = opts.smp.to_string();
+    let bootargs = format!("{}modules=require", if kvm { "exit=psci " } else { "" });
+    let mut args: Vec<&str> = k.args.to_vec();
+    args.extend(["-m", &opts.mem, "-smp", &smp, "-nographic"]);
+    if k.initrd {
+        args.extend(["-initrd", initrd]);
+    }
+    if !kvm {
+        args.push("-semihosting");
+    }
+    args.extend(["-append", &bootargs, "-kernel"]);
+    eprintln!(
+        "kernel: {}: boot with modules=require: qemu-system-aarch64 {}",
+        k.name,
+        args.join(" ")
+    );
+    let r = run_qemu(&args, image, opts.scale(KERNEL_SMOKE_TIMEOUT), &[], |_| {
+        Ok(())
+    })?;
+    let refused = r
+        .serial
+        .lines()
+        .any(|l| l.starts_with("kernel: emuinit: ") && l.ends_with(": module not signed"));
+    let problem = if let Some(e) = &r.killed {
+        Some(e.clone())
+    } else if !refused {
+        Some(String::from(
+            "no `kernel: emuinit: ...: module not signed` line",
+        ))
+    } else {
+        None
+    };
+    match problem {
+        Some(p) => Err(format!(
+            "the boot with modules=require: {p}; its console:\n{}",
+            r.serial.trim_end()
+        )),
+        None => {
+            eprintln!(
+                "kernel: {}: boot with modules=require passed in {:.2}s",
+                k.name,
+                r.elapsed.as_secs_f64()
+            );
+            Ok(())
+        }
+    }
+}
+
 /// Boots run `k`'s machine once in the kernel's stress mode
 /// (`stress=SECS`, see `crates/purg-kernel/src/stress.rs`), with no
 /// network, host directory or disk, printing the serial console as it
@@ -2058,7 +2112,9 @@ fn kernel(opts: &KernelOpts) -> Result<()> {
         {
             Some(e)
         } else if k.nonet {
-            nonet_boot(k, opts, &image, &initrd).err()
+            nonet_boot(k, opts, &image, &initrd)
+                .and_then(|()| modules_boot(k, opts, &image, &initrd))
+                .err()
         } else {
             None
         };

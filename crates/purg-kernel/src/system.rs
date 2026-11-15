@@ -327,7 +327,10 @@ pub enum Mode {
 /// thread (wasmi needs more stack than the boot stack has). The boot
 /// thread sleeps until it is done; the result is the number of failures
 /// in test mode, or 0 or 1 for the shell's exit status, and what failed
-/// (`purg_system::System::failures`).
+/// (`purg_system::System::failures`). `modules` (the `modules=`
+/// bootarg) is the system's module policy, pinned to the boot namespace
+/// and set before any prog runs, as `emu --modules` does.
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     initrd: &'static [u8],
     console: &'static dyn Console,
@@ -336,6 +339,7 @@ pub fn start(
     host: Option<host9p::Host>,
     blks: disk::Blks,
     mode: Mode,
+    modules: Option<(purg_core::modsig::Level, bool)>,
 ) -> (usize, String) {
     use core::sync::atomic::AtomicUsize;
     use purg_platform::sync::Rendez;
@@ -362,6 +366,9 @@ pub fn start(
             root.add_tar(initrd).map(|_| ())
         });
         let disks = disks.unwrap_or_default();
+        if let (Ok(sys), Some((level, hybrid))) = (&booted, modules) {
+            sys.kernel.procs.set_module_policy(level, hybrid, &sys.pgrp);
+        }
         let result = match &booted {
             Err(e) => crate::kernel::fail(format_args!("boot: {e}")),
             Ok(sys) => match (mode, sys.mount_host9p(p9.as_deref()), sys.bind_disk(&disks)) {

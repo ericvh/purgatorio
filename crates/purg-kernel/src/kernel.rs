@@ -452,12 +452,21 @@ pub extern "C" fn purg_main(dtb_phys: usize) -> ! {
     if !crate::aot::set_engine(bootarg(&info, "engine")) {
         println!("kernel: aot: engine= takes wasmi, aot or auto; using auto");
     }
+    // A policy that does not parse stops the boot rather than run
+    // unchecked.
+    let modules = bootarg(&info, "modules").map(|v| {
+        purg_core::modsig::parse_policy(&v.replace(',', " ")).unwrap_or_else(|| {
+            fail(format_args!(
+                "modules= takes none, warn or require, with ,hybrid"
+            ))
+        })
+    });
     let net = system::net::open(&fdt, &info);
     let host = system::host9p::find(&fdt);
     let blks = system::disk::find(&fdt);
     system::disk::set_root(bootarg(&info, "root") == Some("disk"));
     let rtc = info.rtc.map(|r| r.base as usize);
-    let (failed, what) = system::start(archive, cons, rtc, net, host, blks, mode);
+    let (failed, what) = system::start(archive, cons, rtc, net, host, blks, mode, modules);
     if failed != 0 {
         // The one line a failed run always ends with: what was counted.
         fail(format_args!("{failed} failed: {}", what));
