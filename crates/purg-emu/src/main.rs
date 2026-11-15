@@ -166,7 +166,10 @@ fn boot(
     (modules, hybrid): (Level, bool),
     screen: Arc<dyn Screen>,
 ) -> Result<Prog, Error> {
-    let platform: Arc<dyn Platform> = Arc::new(platform::Emu::with_screen(screen));
+    let platform: Arc<dyn Platform> = Arc::new(
+        platform::Emu::with_screen(screen)
+            .with_root(root.canonicalize().unwrap_or_else(|_| root.clone())),
+    );
     let procs = Procs::new(platform.clone());
     let mut devs: Vec<Arc<dyn Dev>> = vec![Arc::new(StaticTree::root(procs.user()))];
     let portable = purg_core::portable_devices(&platform, &procs);

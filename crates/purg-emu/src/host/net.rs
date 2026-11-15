@@ -584,6 +584,7 @@ impl Conn for IcmpConn {
 
 /// A host process behind `#C`.
 struct Proc {
+    pid: u32,
     stdin: Mutex<Option<ChildStdin>>,
     stdout: Mutex<ChildStdout>,
     stderr: Mutex<ChildStderr>,
@@ -605,9 +606,34 @@ impl net::Command for Proc {
     fn write_stdin(&self, buf: &[u8]) -> Result<usize> {
         let mut stdin = self.stdin.lock().map_err(|_| poison())?;
         let Some(stdin) = stdin.as_mut() else {
-            return Err(std::borrow::Cow::Borrowed("connection closed"));
+            return Err(std::borrow::Cow::Borrowed(purg_abi::error::EHUNGUP));
         };
         stdin.write(buf).map_err(io_err)
+    }
+
+    fn close_stdin(&self) {
+        if let Ok(mut stdin) = self.stdin.lock() {
+            stdin.take();
+        }
+    }
+
+    fn kill(&self) -> Result<()> {
+        if self.done.lock().map_err(|_| poison())?.is_some() {
+            return Ok(());
+        }
+        // The child is taken by a waiter, so kill it by its pid; the
+        // waiter reaps it.
+        let pid = libc::pid_t::try_from(self.pid).map_err(|_| poison())?;
+        // SAFETY: kill(2) with a pid this emu started and has not reaped
+        // (`done` is unset).
+        if unsafe { libc::kill(pid, libc::SIGKILL) } != 0 {
+            return Err(io_err(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
+
+    fn pid(&self) -> u32 {
+        self.pid
     }
 
     fn wait(&self) -> Result<String> {
@@ -645,15 +671,37 @@ impl net::Command for Proc {
     }
 }
 
-pub fn start_command(line: &str) -> Result<Arc<dyn net::Command>> {
-    let mut child = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(line)
+/// Starts `spec` for `#C`: its argv run directly (cmd(3) passes the
+/// arguments as written, with no shell), in `spec.dir` or else `root`, at
+/// lower priority when `spec.nice` is set.
+pub fn start_command(
+    spec: &net::CmdSpec<'_>,
+    root: Option<&std::path::Path>,
+) -> Result<Arc<dyn net::Command>> {
+    let Some((prog, args)) = spec.argv.split_first() else {
+        return Err(std::borrow::Cow::Borrowed("read or write too small"));
+    };
+    let mut cmd = Command::new(prog);
+    cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    match (spec.dir, root) {
+        (Some(d), _) => {
+            cmd.current_dir(d);
+        }
+        (None, Some(r)) => {
+            cmd.current_dir(r);
+        }
+        (None, None) => {}
+    }
+    if spec.nice > 0 {
+        super::unix::lower_priority(&mut cmd);
+    }
+    let mut child = cmd
         .spawn()
-        .map_err(io_err)?;
+        .map_err(|e| std::borrow::Cow::Owned(super::unix::error_string(&e)))?;
+    let pid = child.id();
     let stdin = child.stdin.take();
     let stdout = child
         .stdout
@@ -664,6 +712,7 @@ pub fn start_command(line: &str) -> Result<Arc<dyn net::Command>> {
         .take()
         .ok_or(std::borrow::Cow::Borrowed("no stderr"))?;
     Ok(Arc::new(Proc {
+        pid,
         stdin: Mutex::new(stdin),
         stdout: Mutex::new(stdout),
         stderr: Mutex::new(stderr),

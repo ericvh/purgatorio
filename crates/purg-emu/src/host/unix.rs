@@ -515,3 +515,18 @@ pub struct FaultRegisters {
     pub fp: usize,
     pub lr: usize,
 }
+
+/// Makes `cmd` run at the lowest priority once started, as Inferno's emu
+/// does for a host command after cmd(3)'s `nice`
+/// (`setpriority(PRIO_PROCESS, 0, 19)` in the child).
+pub fn lower_priority(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the child between fork and exec, and
+    // only calls setpriority(2), which is async-signal-safe.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+            Ok(())
+        });
+    }
+}

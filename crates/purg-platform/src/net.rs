@@ -229,11 +229,33 @@ pub fn icmp_echo_reply(msg: &[u8]) -> Option<Vec<u8>> {
     Some(r)
 }
 
+/// What `#C` asks the platform to run: cmd(3)'s `exec`, `dir` and
+/// `nice`.
+pub struct CmdSpec<'a> {
+    /// The command and its arguments, as written to `ctl`. They reach the
+    /// command as they are: it is run directly, not through a shell.
+    pub argv: &'a [String],
+    /// The host directory to run it in; `None` is the platform's default
+    /// (the emu's root on the host).
+    pub dir: Option<&'a str>,
+    /// cmd(3)'s niceness: 0 is normal priority, 1 to 3 lower.
+    pub nice: u8,
+}
+
 /// A host command started by `#C`.
 pub trait Command: Send + Sync {
     fn read_stdout(&self, buf: &mut [u8]) -> Result<usize>;
     fn read_stderr(&self, buf: &mut [u8]) -> Result<usize>;
     fn write_stdin(&self, buf: &[u8]) -> Result<usize>;
+    /// Closes the command's standard input, so that its reads see end of
+    /// file: the last close of `data` opened for writing.
+    fn close_stdin(&self);
+    /// Kills the command (cmd(3)'s `kill`).
+    fn kill(&self) -> Result<()>;
+    /// The host process id, or 0 if unknown.
+    fn pid(&self) -> u32 {
+        0
+    }
     /// Blocks until the command exits. The string is its status (`""` or
     /// `"exit N"`).
     fn wait(&self) -> Result<String>;

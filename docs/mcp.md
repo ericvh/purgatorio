@@ -613,11 +613,10 @@ both engines, the probe and the kernel) with `mcpd` as the far end, and
 
 What remains of stage 4:
 
-- A host MCP server through `#C`. `#C` here gives a command's output and
-  status but no way to write its input (`os` has none either), so a host
-  server cannot be spoken to yet. That needs `data` in `#C` to take
-  writes, as Inferno's cmd(3) does, and the platform's command to carry
-  them.
+- A host MCP server, on the emu, is `mcpfs os command ...`: `#C`'s
+  `data` takes writes as Inferno's cmd(3) does, and `os` copies its input
+  to the command, so the server's stdio reaches mcpfs. There is no test
+  of a real host MCP server yet.
 - Resources (`resources/list` and `read` as files), prompts, and
   notifications: a changed tool list is not seen until the next mount;
   progress and log messages are dropped; cancellation is not sent.
