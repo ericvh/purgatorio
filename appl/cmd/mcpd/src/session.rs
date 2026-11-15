@@ -101,6 +101,8 @@ pub struct Limits {
     pub mem: u64,
     /// How many progs it may have at once.
     pub progs: u64,
+    /// Seconds of CPU time its progs may use between them, if limited.
+    pub cpu_secs: Option<u64>,
 }
 
 impl Limits {
@@ -354,7 +356,13 @@ impl Session {
         // Binding #pdomain founded the domain; it holds this prog, its file
         // servers and all it starts.
         let ctl = format!("/prog/{me}/ctl");
-        for (what, n) in [("memlimit", limits.mem), ("proglimit", limits.progs)] {
+        let cpu = limits.cpu_secs.map(|s| format!("{s}s"));
+        let mut set = vec![
+            ("memlimit", limits.mem.to_string()),
+            ("proglimit", limits.progs.to_string()),
+        ];
+        set.extend(cpu.map(|c| ("cpulimit", c)));
+        for (what, n) in set {
             std::fs::write(&ctl, format!("domain {what} {n}"))
                 .map_err(|e| err(&format!("domain {what}"), Error::from(e)))?;
         }

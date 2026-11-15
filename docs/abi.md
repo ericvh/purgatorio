@@ -279,7 +279,7 @@ fails with `mount/attach disallowed`. Inferno has no such message; it is
 how `mcpd` keeps a session from `#¤`, which `NODEVS` allows. It is a
 `ctl` message, so the ABI version is unchanged.
 
-### Memory and prog limits (K4)
+### Memory, prog and CPU limits (K4)
 
 A prog's wasm memory can be limited, and so can a domain's. Inferno has
 no direct analogue (its pools are system-wide). The limits are `ctl`
@@ -298,6 +298,15 @@ reached is ordinary wasm behavior, so the ABI version is unchanged.
   admitted one at a time, so two cannot both take the last place. A prog
   in no domain gets `bad arg in system call`. A prog is held to its own limit and to the limit of every domain it is
   in, so a domain founded inside a limited one cannot escape it.
+- `cpulimit N` limits the CPU time the prog uses, and `domain cpulimit
+  N` the time all members of its innermost domain use between them. `N`
+  is seconds, or milliseconds with `ms`. Progs the prog starts afterwards
+  get its own limit. Each engine charges a prog's CPU time, from its
+  thread's clock (`/prog/<pid>/status`), to the prog and its domains at
+  the end of every slice of guest code. A prog past its own limit is
+  killed; a domain past its limit has every member killed, sleeping ones
+  too, so its parent sees `killed`. This is how `mcpd -C` ends a
+  session that has spent its budget.
 - A limit can only be lowered. Writing a higher one fails with
   `permission denied` and changes nothing.
 - `/prog/<pid>/mem` reads `<bytes held> <limit>`, with `-` for no limit.

@@ -36,11 +36,13 @@ pub const TABLE_ELEM_BYTES: u64 = 8;
 
 /// The limits of a prog domain (`#pdomain`), set through the `ctl` of a
 /// prog in it: the most wasm memory its members may hold between them,
-/// and the most members it may have.
+/// the most members it may have, and the most CPU time, in ns, its
+/// members may use between them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DomainLimits {
     pub mem: u64,
     pub progs: u64,
+    pub cpu: u64,
 }
 
 impl Default for DomainLimits {
@@ -48,6 +50,7 @@ impl Default for DomainLimits {
         DomainLimits {
             mem: UNLIMITED,
             progs: UNLIMITED,
+            cpu: UNLIMITED,
         }
     }
 }
@@ -98,6 +101,10 @@ pub struct Proc {
     /// Its thread's CPU clock, from [`Platform::cpu_clock`] when it
     /// started, for the time in `status`.
     cpu_clock: Mutex<Option<u64>>,
+    /// The most CPU time, in ns, it may use (`cpulimit`).
+    cpulimit: AtomicU64,
+    /// Its CPU time when it was last charged to its domains.
+    cpu_charged: AtomicU64,
 }
 
 impl Proc {
@@ -227,6 +234,22 @@ impl Proc {
         *self.cpu_clock.lock()
     }
 
+    /// The most CPU time, in ns, the prog may use.
+    pub fn cpulimit(&self) -> u64 {
+        self.cpulimit.load(Ordering::Acquire)
+    }
+
+    /// Lowers the prog's CPU limit to `ns`; raising it is
+    /// [`error::EPERM`], as for [`Proc::set_memlimit`].
+    pub fn set_cpulimit(&self, ns: u64) -> Result<()> {
+        self.cpulimit
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+                (ns <= cur).then_some(ns)
+            })
+            .map(drop)
+            .map_err(|_| Error::new(error::EPERM))
+    }
+
     pub fn egrp(&self) -> Arc<Egrp> {
         self.egrp.lock().clone()
     }
@@ -349,6 +372,8 @@ pub struct Procs {
     /// The limits set on prog domains, by domain. The lock also makes
     /// each memory charge to a limited domain atomic with its check.
     domain_limits: Mutex<BTreeMap<u32, DomainLimits>>,
+    /// The CPU time, in ns, each domain's members have charged to it.
+    domain_cpu: Mutex<BTreeMap<u32, u64>>,
     /// Held by a spawn into a domain with a prog limit from the check until
     /// the child is counted as a member, so two spawns cannot both take
     /// the last place.
@@ -371,6 +396,7 @@ impl Procs {
             table: Mutex::new(BTreeMap::new()),
             modpolicy: Mutex::new(ModPolicy::default()),
             domain_limits: Mutex::new(BTreeMap::new()),
+            domain_cpu: Mutex::new(BTreeMap::new()),
             admit: Mutex::new(()),
             gone: Rendez::new(),
         })
@@ -396,7 +422,7 @@ impl Procs {
     pub fn set_domain_limits(&self, id: u32, new: DomainLimits) -> Result<()> {
         let mut all = self.domain_limits.lock();
         let cur = all.get(&id).copied().unwrap_or_default();
-        if new.mem > cur.mem || new.progs > cur.progs {
+        if new.mem > cur.mem || new.progs > cur.progs || new.cpu > cur.cpu {
             return Err(Error::new(error::EPERM));
         }
         all.insert(id, new);
@@ -408,6 +434,66 @@ impl Procs {
         let table = self.table.lock();
         let members = table.values().filter(|p| p.in_domain(id));
         members.fold((0, 0), |(n, mem), p| (n + 1, mem + p.mem()))
+    }
+
+    /// The CPU time, in ns, the members of domain `id` have used between
+    /// them, as they have charged it.
+    pub fn domain_cpu(&self, id: u32) -> u64 {
+        self.domain_cpu.lock().get(&id).copied().unwrap_or(0)
+    }
+
+    /// Starts counting `p`'s CPU time from now: its thread's clock as it
+    /// begins to run the prog.
+    pub fn start_cpu(&self, p: &Proc) {
+        let now = p
+            .cpu_clock()
+            .and_then(|c| self.platform.cpu_ns(c))
+            .unwrap_or(0);
+        p.cpu_charged.store(now, Ordering::Release);
+    }
+
+    /// Charges the CPU time `p` has used since its last charge to it and
+    /// to every domain it is in. A prog past its own `cpulimit` is killed;
+    /// a domain past its `cpulimit` has every member killed, sleeping ones
+    /// too. The engines call this at each slice of guest code, so the
+    /// limit holds within a slice whatever the engine.
+    pub fn charge_cpu(&self, p: &Proc) {
+        let Some(now) = p.cpu_clock().and_then(|c| self.platform.cpu_ns(c)) else {
+            return;
+        };
+        let last = p.cpu_charged.swap(now, Ordering::AcqRel);
+        if now > p.cpulimit() {
+            p.kill();
+        }
+        let delta = now.saturating_sub(last);
+        let domains = p.domains();
+        if delta == 0 || domains.is_empty() {
+            return;
+        }
+        let mut over = Vec::new();
+        {
+            let limits = self.domain_limits.lock();
+            let mut spent = self.domain_cpu.lock();
+            for d in domains.iter() {
+                let s = spent.entry(*d).or_insert(0);
+                *s = s.saturating_add(delta);
+                if limits.get(d).is_some_and(|l| *s > l.cpu) {
+                    over.push(*d);
+                }
+            }
+        }
+        for d in over {
+            let members: Vec<Arc<Proc>> = self
+                .table
+                .lock()
+                .values()
+                .filter(|m| m.in_domain(d))
+                .cloned()
+                .collect();
+            for m in members {
+                m.kill();
+            }
+        }
     }
 
     /// Asks whether `p` may grow its wasm memory from `current` to
@@ -540,6 +626,8 @@ impl Procs {
             memlimit: AtomicU64::new(UNLIMITED),
             mem: AtomicU64::new(0),
             cpu_clock: Mutex::new(None),
+            cpulimit: AtomicU64::new(UNLIMITED),
+            cpu_charged: AtomicU64::new(0),
         });
         self.table.lock().insert(pid, p.clone());
         p
@@ -823,6 +911,7 @@ impl Prog {
         );
         // Set before the child runs, so nothing has charged it yet.
         proc.memlimit.store(self.proc.memlimit(), Ordering::Release);
+        proc.cpulimit.store(self.proc.cpulimit(), Ordering::Release);
         let user = self.proc.user.lock().clone();
         *proc.user.lock() = user;
         proc.debug.inherit(&self.proc.debug);

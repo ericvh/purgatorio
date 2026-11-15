@@ -1,4 +1,4 @@
-//! mcpd [-l logfile] [-n nsfile] [-t filetimeout] [-M memory] [-P progs]: a Model Context Protocol server on
+//! mcpd [-l logfile] [-n nsfile] [-t filetimeout] [-M memory] [-P progs] [-C seconds]: a Model Context Protocol server on
 //! standard input and output, for driving a sandboxed Purgatorio session
 //! from an LLM client.
 //!
@@ -21,7 +21,9 @@
 //! A session is a prog domain (`#pdomain`): the session prog and every prog
 //! started from it, whatever their process groups. `-M` and `-P` limit the
 //! wasm memory the domain's progs may hold between them and how many there
-//! may be. The front end ends a session by killing every member of its
+//! may be. `-C` limits the CPU time they may use between them: a session
+//! past it has every member killed, so it ends, and the next request
+//! starts another. The front end ends a session by killing every member of its
 //! domain, which it sees through `#pdomain=<session pid>`.
 //!
 //! `-n nsfile` names a namespace(6) file that `nsbuild` applies in the new
@@ -51,7 +53,8 @@ use json::Value;
 use session::{ms_until, wait_readable};
 
 const SELF: &str = "/bin/mcpd.wasm";
-const USAGE: &str = "mcpd [-l logfile] [-n nsfile] [-t filetimeout] [-M memory] [-P progs]";
+const USAGE: &str =
+    "mcpd [-l logfile] [-n nsfile] [-t filetimeout] [-M memory] [-P progs] [-C seconds]";
 /// A longer request line is refused; it bounds the memory a client can make
 /// the server hold.
 const MAX_LINE: usize = 16 << 20;
@@ -208,6 +211,7 @@ impl Front {
             config.file_ms.to_string(),
             config.limits.mem.to_string(),
             config.limits.progs.to_string(),
+            config.limits.cpu_secs.unwrap_or(0).to_string(),
         ];
         argv.extend(config.nsfile.clone());
         // The session gets copies of the namespace and the environment and
@@ -713,8 +717,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             let limits = session::Limits {
                 mem: num(3, SESSION_MEM),
                 progs: num(4, SESSION_PROGS),
+                cpu_secs: Some(num(5, 0)).filter(|&s| s > 0),
             };
-            let policy = args.get(5).map(|path| {
+            let policy = args.get(6).map(|path| {
                 std::fs::read_to_string(path).map_err(|e| format!("{path}: {}", Error::from(e)))
             });
             let built = policy
@@ -743,6 +748,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         limits: session::Limits {
             mem: SESSION_MEM,
             progs: SESSION_PROGS,
+            cpu_secs: None,
         },
     };
     while let Some(c) = arg.opt() {
@@ -769,6 +775,15 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                     .ok()
                     .filter(|&n| n > 0)
                     .ok_or_else(usage)?;
+            }
+            'C' => {
+                config.limits.cpu_secs = Some(
+                    arg.earg()?
+                        .parse()
+                        .ok()
+                        .filter(|&n: &u64| n > 0)
+                        .ok_or_else(usage)?,
+                );
             }
             _ => return Err(arg.usage()),
         }

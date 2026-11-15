@@ -593,7 +593,7 @@ fn call_sliced<P: WasmParams, R: WasmResults>(
                     debug_instance(&mut ctx, instance, true)
                         .map_err(|s| wasmi::Error::host(HostStop(s)))?;
                 }
-                if ctx.as_context().data().prog.proc.note.killed() {
+                if purg_vm::checkpoint(ctx.as_context().data()) {
                     return Err(wasmi::Error::host(HostStop(Stop::killed())));
                 }
                 ctx.as_context_mut()
