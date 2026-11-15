@@ -15,7 +15,8 @@
 //! A second run (`editing_*`) selects text with button 1 (a double click
 //! and a sweep), snarfs it with button 2's menu and checks `/dev/snarf`,
 //! sends and pastes it into another window, holds a typed line there
-//! with Esc (hold mode), resizes a window by dragging its border, reads
+//! with Esc (hold mode), sweeps a selection past the window's top so the
+//! view scrolls, resizes a window by dragging its border, reads
 //! `/dev/window` and `/dev/screen` as images, hides and shows a window,
 //! checks that a program that draws once and exits leaves its picture (a
 //! window made with `window`), and resizes the window a second rio runs
@@ -172,6 +173,16 @@ impl Mirror {
     fn ink(&self, r: Rect) -> bool {
         let g = self.0.lock().unwrap();
         (r.1..r.3).any(|y| (r.0..r.2).any(|x| g[(y * SIZE.0 + x) as usize] == 0))
+    }
+
+    /// Which pixels in `r` are black: the text there, whatever its
+    /// background.
+    fn inks(&self, r: Rect) -> Vec<bool> {
+        let g = self.0.lock().unwrap();
+        (r.1..r.3)
+            .flat_map(|y| (r.0..r.2).map(move |x| (x, y)))
+            .map(|(x, y)| g[(y * SIZE.0 + x) as usize] == 0)
+            .collect()
     }
 
     /// Whether any pixel in `r` is `colour`.
@@ -646,6 +657,40 @@ fn editing(vm: &str) {
     p.typed("\x1b");
     p.file("held");
     p.see("the window's text black again", |s| !s.any(inner, HOLD));
+
+    // A sweep held above the window's top scrolls the view a line at a
+    // time, so the selection reaches text that was not shown: more lines
+    // than the window holds. The top line's ink changes with each scroll.
+    p.typed("ls /bin; echo > /tmp/rio/listed\n");
+    p.file("listed");
+    let (bx, by) = text_at(w2);
+    let last = w2.3 - 4 - 2 * FH;
+    let shown = (w2.3 - w2.1) / FH;
+    let top = (bx, by, w2.2 - 8, by + FH);
+    p.pointer(bx, last, 0);
+    p.pointer(bx, last, 1);
+    p.pointer(bx, w2.1 - 10, 1);
+    let (mut seen, mut was) = (0, p.screen.inks(top));
+    let start = Instant::now();
+    while seen < shown + 8 {
+        assert!(
+            start.elapsed() < WAIT,
+            "{vm}: the view scrolled {seen} lines"
+        );
+        let now = p.screen.inks(top);
+        if now != was {
+            seen += 1;
+            was = now;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    p.pointer(bx, w2.1 - 10, 0);
+    p.menu2((600, 150), SNARF);
+    p.until(
+        "cat /dev/snarf",
+        "a selection taller than the window",
+        |t| t.lines().count() as i32 > shown + 5,
+    );
 
     // Button 1 on the first window's bottom right corner drags it.
     let old = w1;
