@@ -1916,9 +1916,11 @@ files; no Plan 9 or Inferno code was used, and the look is its own.
   to it readable; `^D` makes what is typed readable without one, or
   alone gives an end of file. Backspace, `^U` and `^W` erase typing
   that has not been sent. Delete throws away unread typing and sends
-  `interruptgrp` to the window's processes. Output scrolls the view to
-  the end unless the window is in `noscroll` mode; the wheel scrolls
-  three lines. Text beyond 256K runes is dropped from the front.
+  `interruptgrp` to the window's processes. Esc starts hold mode: the
+  text turns blue and nothing typed is read, newlines included, until a
+  second Esc (or `holdoff`) makes all of it readable. Output scrolls
+  the view to the end unless the window is in `noscroll` mode; the wheel
+  scrolls three lines. Text beyond 256K runes is dropped from the front.
 - **Selection.** Button 1 in the current text window sweeps a selection
   from the rune pressed on to the rune released on; the selection has a
   pale yellow background, and an empty one shows as the tick. A second
@@ -2061,7 +2063,7 @@ So each window's process group sees, before the rest of `/dev`:
 | File | |
 |---|---|
 | `cons` | reads take lines typed in the window (or keys as typed in raw mode); writes are shown |
-| `consctl` | `rawon`, `rawoff`; `holdon` and `holdoff` are taken and do nothing; raw mode ends when it is closed |
+| `consctl` | `rawon`, `rawoff`, `holdon`, `holdoff` (hold mode, as Esc); raw mode ends when it is closed |
 | `keyboard` | while open, keys typed in the window come here as UTF-8 instead |
 | `pointer` | pointer(3)'s 49-byte `m` records for the window, `r` after a resize or move; writing `m x y` moves the pointer |
 | `label` | the window's label, which the menu shows when it is hidden |
@@ -2165,8 +2167,7 @@ either.
 
 ### 12.5 Differences from Plan 9's rio
 
-- No hold mode (`holdon` is accepted and ignored), no `/dev/kbdin` and
-  no `/srv/rio`. `window(1)` makes a window only from inside rio (it
+- No `/dev/kbdin` and no `/srv/rio`. `window(1)` makes a window only from inside rio (it
   writes `new` to `/dev/wctl`), and takes `-r`, `-dx`, `-dy`, `-minx`
   and `-miny` but not `-m`, `-scroll`, `-noscroll`, `-hide` or `-cd`.
 - Typing goes at the selection only when the selection is in typing not

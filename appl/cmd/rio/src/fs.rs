@@ -652,7 +652,7 @@ impl Rio {
             Q::Pointer => w.mouseq.pop_front().map(String::into_bytes),
             Q::Keyboard if !w.kbdq.is_empty() => Some(take_runes(&mut w.kbdq, count)),
             Q::Cons if w.raw && !w.rawq.is_empty() => Some(take_runes(&mut w.rawq, count)),
-            Q::Cons if !w.raw => w.text.read(count),
+            Q::Cons if !w.raw && !w.hold => w.text.read(count),
             _ => None,
         }
     }
@@ -719,7 +719,8 @@ impl Rio {
                     match c {
                         "rawon" => w.raw = true,
                         "rawoff" => w.raw = false,
-                        "holdon" | "holdoff" => {}
+                        "holdon" => w.set_hold(true),
+                        "holdoff" => w.set_hold(false),
                         _ => return err("unknown control message"),
                     }
                 }
