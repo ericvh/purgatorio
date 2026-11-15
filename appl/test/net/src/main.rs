@@ -224,7 +224,7 @@ fn os_echo() -> Result<(), Error> {
     let mut idbuf = [0u8; 32];
     let n = clone.read(&mut idbuf)?;
     let id = std::str::from_utf8(&idbuf[..n]).unwrap_or("").trim();
-    clone.write_all(b"echo hello-os")?;
+    clone.write_all(b"exec echo hello-os")?;
     let mut data = std::fs::File::open(format!("/cmd/{id}/data"))?;
     let mut out = String::new();
     data.read_to_string(&mut out)?;

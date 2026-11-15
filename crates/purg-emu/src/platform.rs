@@ -56,6 +56,9 @@ pub struct Emu {
     sysname: String,
     net: host::HostNet,
     screen: Arc<dyn Screen>,
+    /// The root directory on the host (`-r`), where `#C` runs host
+    /// commands by default.
+    root: Option<std::path::PathBuf>,
 }
 
 /// The size of the screen when there is no window (`emu` without `-g`).
@@ -76,7 +79,15 @@ impl Emu {
             user: host::user_name(),
             sysname: host::host_name(),
             net: host::HostNet,
+            root: None,
         }
+    }
+
+    /// The emu, with host commands started in `root` unless `#C` says
+    /// otherwise (cmd(3): "the Inferno root directory on the host").
+    pub fn with_root(mut self, root: std::path::PathBuf) -> Emu {
+        self.root = Some(root);
+        self
     }
 }
 
@@ -138,8 +149,8 @@ impl Platform for Emu {
         Some(&self.net)
     }
 
-    fn command(&self, line: &str) -> Result<Arc<dyn Command>> {
-        host::start_command(line)
+    fn command(&self, spec: &purg_platform::net::CmdSpec<'_>) -> Result<Arc<dyn Command>> {
+        host::start_command(spec, self.root.as_deref())
     }
 
     fn screen(&self) -> Option<Arc<dyn Screen>> {

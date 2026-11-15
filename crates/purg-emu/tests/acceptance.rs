@@ -690,3 +690,64 @@ fn auth_tools() {
     assert_eq!(scripts, ["certs", "crypt", "login"]);
     run_corpus(&corpus_jobs(&scripts), "lib/test/auth");
 }
+
+/// os(1) and cmd(3) on the host: output, input copied to the command and
+/// closed at its end, error output, a host exit status, `-d`, `-n`, a
+/// command that cannot start, and `#C`'s `ctl` messages and `status`.
+#[test]
+fn os_and_the_command_device() {
+    let script = "load std
+os echo hello world
+echo st $status
+echo piped input | os tr a-z A-Z
+os sh -c 'echo to stderr 1>&2; exit 3' >[2=1]
+echo st $status
+os -d /tmp pwd
+os -n sh -c 'echo niced'
+os 'a b' >[2=1]
+echo st $status
+os -N 7 true >[2=1]
+{echo nosuch > /cmd/clone} >[2=1] | sed 's/^.*: //'
+{echo dir > /cmd/clone} >[2=1] | sed 's/^.*: //'
+{echo exec > /cmd/clone} >[2=1] | sed 's/^.*: //'
+{
+	read 8 > /tmp/cmdid
+	c=`{cat /tmp/cmdid}
+	cat /cmd/$c/status
+	echo 'exec sh -c ''read x; echo got $x''' >[1=0]
+	cat /cmd/$c/status | sed 's/ Execute / X /'
+	echo exec true >[2=1] >[1=0] | sed 's/^.*: //'
+	echo line > /cmd/$c/data
+	cat /cmd/$c/data
+	cat /cmd/$c/wait | sed 's/^[0-9]+ 0 0 [0-9]+ //'
+} <> /cmd/clone
+ls /cmd";
+    for vm in VMS {
+        let o = emu(vm, &["sh", "-c", script], b"");
+        assert_eq!(
+            stdout(&o),
+            "hello world
+st 
+PIPED INPUT
+to stderr
+st host: exit 3
+/tmp
+niced
+os: cannot exec: file does not exist
+st cannot exec: file does not exist
+usage: os [-b] [-m mountpoint] [-d dir] [-n] [-N level] cmd [arg ...]
+unknown control message \"nosuch\"
+wrong #args in control message \"dir\"
+read or write too small
+cmd/0 1 Open '' ''
+cmd/0 1 X '' sh
+device or object already in use
+got line
+''
+/cmd/clone
+",
+            "{vm}: {}",
+            common::failure(o.status, &o.stderr)
+        );
+    }
+}

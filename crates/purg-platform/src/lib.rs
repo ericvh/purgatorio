@@ -139,9 +139,9 @@ pub trait Platform: Send + Sync {
     fn net(&self) -> Option<&dyn net::Net> {
         None
     }
-    /// Starts a host command for `#C`. Platforms without a host shell fail
-    /// with `"not implemented"`.
-    fn command(&self, _line: &str) -> Result<alloc::sync::Arc<dyn net::Command>> {
+    /// Starts a host command for `#C` (cmd(3)'s `exec`). Platforms without
+    /// host commands fail with `"not implemented"`.
+    fn command(&self, _spec: &net::CmdSpec<'_>) -> Result<alloc::sync::Arc<dyn net::Command>> {
         Err(Cow::Borrowed("not implemented"))
     }
     /// The display, if this platform has one. With one, the core serves
