@@ -202,37 +202,6 @@ pub fn fault_registers(uc: *mut libc::c_void) -> super::unix::FaultRegisters {
     regs
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{clipboard_get, clipboard_put};
-
-    /// A string goes onto the pasteboard and comes back. The pasteboard
-    /// is the user's, so its text is put back afterwards (only the text:
-    /// other types on it, such as an image, are lost). If the pasteboard
-    /// refuses the write, as it might with no login session, the test
-    /// says so and passes; GitHub's macOS runners have one.
-    #[test]
-    fn pasteboard_round_trip() {
-        let before = clipboard_get().unwrap_or_default();
-        let text = "purgatorio snarf test: αβγ ☃";
-        if !clipboard_put(text) {
-            eprintln!("skipped: the pasteboard refused a write");
-            return;
-        }
-        let got = clipboard_get();
-        clipboard_put(&before);
-        assert_eq!(got.as_deref(), Some(text));
-        // The 1 MiB limit holds on the way in.
-        let big = "é".repeat(purg_core::devsnarf::MAXSNARF / 2 + 1);
-        if clipboard_put(&big) {
-            let got = clipboard_get().unwrap_or_default();
-            clipboard_put(&before);
-            assert!(got.len() <= purg_core::devsnarf::MAXSNARF);
-            assert!(big.starts_with(&got));
-        }
-    }
-}
-
 /// The calling thread's CPU clock, as a handle [`cpu_ns`] reads from any
 /// thread: its Mach thread port.
 pub fn cpu_clock() -> Option<u64> {
@@ -265,4 +234,35 @@ pub fn cpu_ns(clock: u64) -> Option<u64> {
         (t.seconds as u64).saturating_mul(1_000_000) + t.microseconds as u64
     };
     Some((us(info.user_time) + us(info.system_time)).saturating_mul(1000))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clipboard_get, clipboard_put};
+
+    /// A string goes onto the pasteboard and comes back. The pasteboard
+    /// is the user's, so its text is put back afterwards (only the text:
+    /// other types on it, such as an image, are lost). If the pasteboard
+    /// refuses the write, as it might with no login session, the test
+    /// says so and passes; GitHub's macOS runners have one.
+    #[test]
+    fn pasteboard_round_trip() {
+        let before = clipboard_get().unwrap_or_default();
+        let text = "purgatorio snarf test: αβγ ☃";
+        if !clipboard_put(text) {
+            eprintln!("skipped: the pasteboard refused a write");
+            return;
+        }
+        let got = clipboard_get();
+        clipboard_put(&before);
+        assert_eq!(got.as_deref(), Some(text));
+        // The 1 MiB limit holds on the way in.
+        let big = "é".repeat(purg_core::devsnarf::MAXSNARF / 2 + 1);
+        if clipboard_put(&big) {
+            let got = clipboard_get().unwrap_or_default();
+            clipboard_put(&before);
+            assert!(got.len() <= purg_core::devsnarf::MAXSNARF);
+            assert!(big.starts_with(&got));
+        }
+    }
 }
