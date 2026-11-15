@@ -101,6 +101,13 @@ pub trait Platform: Send + Sync {
     /// on hosted, a kernel thread on bare metal. Fails with `"no free
     /// procs"` when none can be created.
     fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()>;
+    /// The memory a prog's kproc stack takes when it is made, which is
+    /// charged to the prog's memory limit (`docs/abi.md`). 0, the
+    /// default, where a stack is address space the host commits only as
+    /// it is used, as on the hosted emu.
+    fn prog_stack(&self) -> usize {
+        0
+    }
     /// Runs `f` on a stack of at least `size` bytes and waits for it to
     /// return. For work that needs more stack than a kproc has, such as
     /// ML-DSA (`purg_auth::sig`). The default runs it on the calling
