@@ -8,7 +8,10 @@
 //! hybrid key whole, `mldsa65:<hex of 1984 bytes>`, as a `pgcert2` holds
 //! it. A `crypt -g` key file gives its public key line (`pgkempub1 <hex>`).
 //!
-//! `-x` and the hybrid forms are additions.
+//! `-c` prints the certificate line of each authinfo or certificate
+//! instead, for `auth/sign -c` and `auth/mkauthinfo`'s chains.
+//!
+//! `-x`, `-c` and the hybrid forms are additions.
 
 use authlib::fmt::cert::AnyCert;
 use authlib::fmt::keys::AuthInfo;
@@ -48,12 +51,33 @@ fn key(path: &str, bytes: &[u8]) -> Result<Public, Error> {
     }
 }
 
+/// The certificate in an authinfo or a certificate file, as a line.
+fn cert(path: &str) -> Result<String, Error> {
+    let bytes = std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    if let Ok(info) = AuthInfo::parse(&bytes) {
+        return Ok(info.cert.encode());
+    }
+    AnyCert::parse(&bytes)
+        .map(|c| c.encode())
+        .map_err(|_| Error(format!("{path}: no certificate")))
+}
+
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let whole = args.get(1).is_some_and(|a| a == "-x");
-    let files = &args[1 + usize::from(whole)..];
+    let flag = args.get(1).map(String::as_str);
+    let (whole, certs) = (flag == Some("-x"), flag == Some("-c"));
+    let files = &args[1 + usize::from(whole || certs)..];
     if files.is_empty() {
-        return Err(Error::from("usage: auth/getpk [-x] file ..."));
+        return Err(Error::from("usage: auth/getpk [-x|-c] file ..."));
+    }
+    if certs {
+        for path in files {
+            match cert(path) {
+                Ok(c) => println!("{c}"),
+                Err(e) => eprintln!("auth/getpk: {e}"),
+            }
+        }
+        return Ok(());
     }
     // As Inferno's getpk: a file it cannot read is reported and skipped,
     // with no status.

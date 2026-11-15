@@ -6,7 +6,9 @@
 //! or with a hybrid signer key (`createsignerkey -a hybrid`) a hybrid
 //! Ed25519 + ML-DSA-65 key with a `pgcert2`. `-a` names the kind, and one
 //! the signer key is not is refused: a signer certifies only keys of its
-//! own kind.
+//! own kind. `signerkey` may also be an authinfo: its key, certified by
+//! another signer, then certifies this one, and `auth/getpk -c` gives the
+//! certificate to pass on beside the new one (a chain; an addition).
 
 use authlib::fmt::cert::{AnyCert, Cert, Cert2};
 use authlib::fmt::keys::AuthInfo;
@@ -35,7 +37,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let [user, keyfile] = rest.as_slice() else {
         return Err(Error(format!("usage: {USAGE}")));
     };
-    let signer = purgatorio::auth::read_secret(&signerkey)?;
+    let signer = match std::fs::read(&signerkey)
+        .ok()
+        .and_then(|b| authlib::fmt::keys::AuthInfo::parse(&b).ok())
+    {
+        Some(info) => info.key,
+        None => purgatorio::auth::read_secret(&signerkey)?,
+    };
     let hybrid = signer.is_hybrid();
     if alg.is_some_and(|a| a != hybrid) {
         return Err(Error(format!(
