@@ -5,9 +5,9 @@
 //! see.
 //!
 //! It sweeps a window with the menu's `New`, types `echo hello` into it
-//! and reads the window's text back through `/dev/text`, runs
-//! `draw/demo` in it and checks that the demo's pixels land inside the
-//! window, makes a second window, resizes and moves the first (the demo
+//! and reads the window's text back through `/dev/text`, types a command
+//! through `/dev/kbdin`, runs `draw/demo` in it and checks that the
+//! demo's pixels land inside the window, makes a second window, resizes and moves the first (the demo
 //! draws again each time), deletes it and checks with `ps`, typed in the
 //! second, that its progs are gone, and ends rio with `Exit`.
 //!
@@ -16,8 +16,9 @@
 //! sends and pastes it into another window, resizes a window by dragging
 //! its border, reads `/dev/window` and `/dev/screen` as images, hides
 //! and shows a window, checks that a program that draws once and exits
-//! leaves its picture (a window made with `window`), and resizes the window a second rio runs in and
-//! checks that rio's window is scaled to stay on its screen.
+//! leaves its picture (a window made with `window`), and resizes the
+//! window a second rio runs in and checks that rio's window is scaled to
+//! stay on its screen.
 //!
 //! Each step waits for something it can see (a pixel, a file a command
 //! wrote) with a bound, never for a fixed time. Keys and pointer events
@@ -463,6 +464,10 @@ fn run(vm: &str) {
         w1.0, w1.1, w1.2, w1.3
     );
     assert_eq!(wctl, want, "{vm}: wctl");
+    // What is written to /dev/kbdin is typed at rio: into the current
+    // window, this one, whose shell runs it once its own echo is done.
+    p.typed("echo 'echo > /tmp/rio/kbdin' > /dev/kbdin\n");
+    p.file("kbdin");
 
     // The demo draws in the window, not on the screen.
     p.typed("draw/demo\n");
