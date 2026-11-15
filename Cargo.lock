@@ -347,6 +347,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-cmd-bit2gif"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-gif",
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-cmd-broke"
 version = "0.1.0"
 dependencies = [
@@ -775,6 +783,14 @@ name = "appl-cmd-gettar"
 version = "0.1.0"
 dependencies = [
  "appl-archive",
+ "purgatorio",
+]
+
+[[package]]
+name = "appl-cmd-gif2bit"
+version = "0.1.0"
+dependencies = [
+ "appl-lib-gif",
  "purgatorio",
 ]
 
@@ -1727,6 +1743,10 @@ version = "0.1.0"
 dependencies = [
  "purgatorio",
 ]
+
+[[package]]
+name = "appl-lib-gif"
+version = "0.1.0"
 
 [[package]]
 name = "appl-lib-iso9660"
