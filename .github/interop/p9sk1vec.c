@@ -7,6 +7,7 @@
 #include <u.h>
 #include <libc.h>
 #include <authsrv.h>
+#include <libsec.h>	/* encrypt() in lib9 needs its DES */
 
 static void
 hex(uchar *p, int n)
