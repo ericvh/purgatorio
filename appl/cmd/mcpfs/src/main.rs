@@ -12,6 +12,11 @@
 //! mntpt/tools/NAME/schema  the tool's definition from tools/list, as JSON
 //! mntpt/tools/NAME/call    write the arguments (a JSON object), then read
 //!                          the result
+//! mntpt/resources/list     the server's resources/list result, as JSON
+//! mntpt/resources/read     write a resource's URI, then read its contents
+//! mntpt/prompts/list       the server's prompts/list result, as JSON
+//! mntpt/prompts/get        write the parameters ({"name": ...,
+//!                          "arguments": {...}}), then read the prompt
 //! ```
 //!
 //! Each open of `call` is one call. What is written to it is the
@@ -23,10 +28,13 @@
 //! on the same open file. A request the server answers with a JSON-RPC
 //! error fails the read with the error's message.
 //!
-//! The file server is one prog that answers one request at a time, so a
-//! call holds up every other request to the mount until the server
-//! answers. Resources, prompts, notifications (such as a changed tool
-//! list) and progress are not served yet.
+//! `resources/read` works the same way with a URI for the arguments
+//! (`purg:///tmp/f` for mcpd): the read returns the contents themselves,
+//! text as it is and a blob decoded, each content after the other.
+//!
+//! Calls do not hold up the mount (`serve`): a read that needs the
+//! server waits for its answer while other requests are served. A
+//! changed tool list is fetched again; progress is not served.
 
 #[allow(dead_code)]
 #[path = "../../mcpd/src/json.rs"]
@@ -60,6 +68,12 @@ const QTFILE: u8 = 0;
 const ROOT: u64 = 0;
 const SERVER: u64 = 1;
 const TOOLS: u64 = 2;
+const RESOURCES: u64 = 3;
+const RLIST: u64 = 4;
+const RREAD: u64 = 5;
+const PROMPTS: u64 = 6;
+const PLIST: u64 = 7;
+const PGET: u64 = 8;
 /// Tool `i` is `TOOL + 4i` (its directory), `+ 1` (schema), `+ 2` (call).
 const TOOL: u64 = 16;
 
@@ -235,7 +249,11 @@ struct McpFs {
 }
 
 fn qid(path: u64) -> Qid {
-    let dir = path == ROOT || path == TOOLS || (path >= TOOL && (path - TOOL).is_multiple_of(4));
+    let dir = path == ROOT
+        || path == TOOLS
+        || path == RESOURCES
+        || path == PROMPTS
+        || (path >= TOOL && (path - TOOL).is_multiple_of(4));
     Qid {
         path,
         vers: 0,
@@ -278,8 +296,21 @@ impl McpFs {
         match self.tool_of(path) {
             Some((_, 0)) => TOOLS,
             Some((t, _)) => TOOL + 4 * t as u64,
+            None if path == RLIST || path == RREAD => RESOURCES,
+            None if path == PLIST || path == PGET => PROMPTS,
             None => ROOT,
         }
+    }
+
+    /// Whether a read of `path` asks the server: a tool's `call`, or a
+    /// file of `resources` or `prompts`.
+    fn asks(&self, path: u64) -> bool {
+        matches!(self.tool_of(path), Some((_, 2))) || [RLIST, RREAD, PLIST, PGET].contains(&path)
+    }
+
+    /// Whether `path` takes writes: the arguments of a request.
+    fn takes_writes(&self, path: u64) -> bool {
+        matches!(self.tool_of(path), Some((_, 2))) || path == RREAD || path == PGET
     }
 
     fn child(&self, path: u64, name: &str) -> Option<u64> {
@@ -287,6 +318,18 @@ impl McpFs {
             (ROOT, _) => match name {
                 "server" => Some(SERVER),
                 "tools" => Some(TOOLS),
+                "resources" => Some(RESOURCES),
+                "prompts" => Some(PROMPTS),
+                _ => None,
+            },
+            (PROMPTS, _) => match name {
+                "list" => Some(PLIST),
+                "get" => Some(PGET),
+                _ => None,
+            },
+            (RESOURCES, _) => match name {
+                "list" => Some(RLIST),
+                "read" => Some(RREAD),
                 _ => None,
             },
             (TOOLS, _) => self
@@ -305,7 +348,9 @@ impl McpFs {
 
     fn children(&self, path: u64) -> Vec<u64> {
         match (path, self.tool_of(path)) {
-            (ROOT, _) => vec![SERVER, TOOLS],
+            (ROOT, _) => vec![SERVER, TOOLS, RESOURCES, PROMPTS],
+            (PROMPTS, _) => vec![PLIST, PGET],
+            (RESOURCES, _) => vec![RLIST, RREAD],
             (TOOLS, _) => (0..self.tools.len())
                 .filter(|&t| !self.tools[t].gone)
                 .map(|t| TOOL + 4 * t as u64)
@@ -320,6 +365,12 @@ impl McpFs {
             (ROOT, _) => (String::from("/"), DMDIR | 0o555, 0),
             (SERVER, _) => (String::from("server"), 0o444, self.server.len()),
             (TOOLS, _) => (String::from("tools"), DMDIR | 0o555, 0),
+            (RESOURCES, _) => (String::from("resources"), DMDIR | 0o555, 0),
+            (RLIST, _) => (String::from("list"), 0o444, 0),
+            (RREAD, _) => (String::from("read"), 0o666, 0),
+            (PROMPTS, _) => (String::from("prompts"), DMDIR | 0o555, 0),
+            (PLIST, _) => (String::from("list"), 0o444, 0),
+            (PGET, _) => (String::from("get"), 0o666, 0),
             (_, Some((t, 0))) => (self.tools[t].name.clone(), DMDIR | 0o555, 0),
             (_, Some((t, 1))) => (String::from("schema"), 0o444, self.tools[t].schema.len()),
             _ => (String::from("call"), 0o666, 0),
@@ -353,9 +404,9 @@ impl McpFs {
     /// Whether a read of `fid` must wait for a call: it is a `call` file
     /// whose result is not yet known.
     fn needs_call(&self, fid: u32) -> bool {
-        self.fids.get(&fid).is_some_and(|f| {
-            matches!(self.tool_of(f.path), Some((_, 2))) && f.call.result.is_none()
-        })
+        self.fids
+            .get(&fid)
+            .is_some_and(|f| self.asks(f.path) && f.call.result.is_none())
     }
 
     /// The call already sent for `fid`, if one is.
@@ -363,16 +414,60 @@ impl McpFs {
         self.fids.get(&fid).and_then(|f| f.call.inflight)
     }
 
-    /// Sends `tools/call` with the arguments `fid` holds and returns its
-    /// id, without waiting for the answer. Arguments that are not a JSON
-    /// object are the read's error, kept as the call's result.
+    /// The request a read of `path` with `args` written makes: its method
+    /// and parameters. Arguments that do not fit are the read's error.
+    fn query(&self, path: u64, args: &[u8]) -> Result<(&'static str, Value), String> {
+        match (path, self.tool_of(path)) {
+            (_, Some((tool, 2))) => {
+                let arguments = arguments(args)?;
+                let name = self.tools[tool].name.clone();
+                Ok((
+                    "tools/call",
+                    json::obj([("name", name.into()), ("arguments", arguments)]),
+                ))
+            }
+            (RLIST, _) => Ok(("resources/list", Value::Object(Vec::new()))),
+            (RREAD, _) => {
+                let uri = String::from_utf8_lossy(args).trim().to_string();
+                if uri.is_empty() {
+                    return Err(String::from("no resource URI written"));
+                }
+                Ok(("resources/read", json::obj([("uri", uri.into())])))
+            }
+            (PLIST, _) => Ok(("prompts/list", Value::Object(Vec::new()))),
+            (PGET, _) => Ok(("prompts/get", arguments(args)?)),
+            _ => Err(String::from(error::EPERM)),
+        }
+    }
+
+    /// What a read of `path` returns for the server's `result`: the JSON,
+    /// or for `resources/read` the contents themselves.
+    fn render(&self, path: u64, result: &Value) -> Vec<u8> {
+        if path == RREAD {
+            let mut out = Vec::new();
+            if let Some(Value::Array(contents)) = result.get("contents") {
+                for c in contents {
+                    if let Some(t) = c.get("text").and_then(Value::as_str) {
+                        out.extend_from_slice(t.as_bytes());
+                    } else if let Some(b) = c.get("blob").and_then(Value::as_str) {
+                        out.extend(json::base64_decode(b).unwrap_or_default());
+                    }
+                }
+            }
+            return out;
+        }
+        let mut out = result.encode().into_bytes();
+        out.push(b'\n');
+        out
+    }
+
+    /// Sends the request a read of `fid` makes and returns its id,
+    /// without waiting for the answer. Arguments that do not fit are the
+    /// read's error, kept as the call's result.
     fn start_call(&mut self, fid: u32) -> Result<i64, String> {
         let f = self.fid(fid)?.clone();
-        let Some((tool, 2)) = self.tool_of(f.path) else {
-            return Err(String::from(error::EPERM));
-        };
-        let arguments = match arguments(&f.call.args) {
-            Ok(a) => a,
+        let (method, params) = match self.query(f.path, &f.call.args) {
+            Ok(q) => q,
             Err(e) => {
                 if let Some(f) = self.fids.get_mut(&fid) {
                     f.call.result = Some(Err(e.clone()));
@@ -380,22 +475,16 @@ impl McpFs {
                 return Err(e);
             }
         };
-        let id = self.client.next;
-        self.client.next += 1;
-        let name = self.tools[tool].name.clone();
-        self.client.send(&json::obj([
-            ("jsonrpc", "2.0".into()),
-            ("id", id.into()),
-            ("method", "tools/call".into()),
-            (
-                "params",
-                json::obj([("name", name.into()), ("arguments", arguments)]),
-            ),
-        ]))?;
+        let id = self.send_request(method, params)?;
         if let Some(f) = self.fids.get_mut(&fid) {
             f.call.inflight = Some(id);
         }
         Ok(id)
+    }
+
+    /// The path `fid` is open on, for rendering its answer.
+    fn path_of(&self, fid: u32) -> Option<u64> {
+        self.fids.get(&fid).map(|f| f.path)
     }
 
     /// Sends a request without waiting for its answer, and returns its id.
@@ -493,17 +582,12 @@ impl McpFs {
         }
     }
 
-    /// Makes the call a `call` fid holds the arguments for.
-    fn call(&mut self, tool: usize, args: &[u8]) -> Result<Vec<u8>, String> {
-        let arguments = arguments(args)?;
-        let name = self.tools[tool].name.clone();
-        let result = self.client.request(
-            "tools/call",
-            json::obj([("name", name.into()), ("arguments", arguments)]),
-        )?;
-        let mut out = result.encode().into_bytes();
-        out.push(b'\n');
-        Ok(out)
+    /// Makes the request a read of `path` with `args` written makes, and
+    /// waits for it.
+    fn call(&mut self, path: u64, args: &[u8]) -> Result<Vec<u8>, String> {
+        let (method, params) = self.query(path, args)?;
+        let result = self.client.request(method, params)?;
+        Ok(self.render(path, &result))
     }
 }
 
@@ -568,8 +652,7 @@ impl StyxFs for McpFs {
     fn open(&mut self, fid: u32, omode: u8) -> Result<(Qid, u32), String> {
         let path = self.fid(fid)?.path;
         let access = omode & mode::ACCESS;
-        let is_call = matches!(self.tool_of(path), Some((_, 2)));
-        let ok = if is_call {
+        let ok = if self.takes_writes(path) {
             access != mode::OEXEC
         } else {
             access == mode::OREAD && omode & mode::OTRUNC == 0
@@ -599,11 +682,11 @@ impl StyxFs for McpFs {
         match (path, self.tool_of(path)) {
             (SERVER, _) => Ok(slice(&self.server, offset, count)),
             (_, Some((t, 1))) => Ok(slice(&self.tools[t].schema, offset, count)),
-            (_, Some((t, 2))) => {
+            _ if self.asks(path) => {
                 let result = match f.call.result {
                     Some(r) => r,
                     None => {
-                        let r = self.call(t, &f.call.args);
+                        let r = self.call(path, &f.call.args);
                         if let Some(f) = self.fids.get_mut(&fid) {
                             f.call.result = Some(r.clone());
                         }
@@ -624,7 +707,7 @@ impl StyxFs for McpFs {
 
     fn write(&mut self, fid: u32, offset: u64, data: &[u8]) -> Result<u32, String> {
         let path = self.fid(fid)?.path;
-        if !matches!(self.tool_of(path), Some((_, 2))) {
+        if !self.takes_writes(path) {
             return Err(String::from(error::EPERM));
         }
         let f = self

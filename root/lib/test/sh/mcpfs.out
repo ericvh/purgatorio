@@ -1,3 +1,5 @@
+prompts
+resources
 server
 tools
 16
@@ -15,6 +17,14 @@ cat: the arguments must be a JSON object
 {"content":[{"type":"text","text":"arguments.command is required"}],"isError":true}
 cat: tools/nosuch/call: file does not exist
 sh: tools/run/schema: permission denied
+resource list
+hello from the probe root
+cat: Resource not found
+cat: resources/read: no resource URI written
+sh: resources/list: permission denied
+prompt list
+prompt
+cat: Invalid params: unknown prompt: nosuch
 16
 stat schema meanwhile
 slow call not yet answered
