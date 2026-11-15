@@ -22,4 +22,8 @@ echo bad $status
 	echo not reached
 }
 echo domain $status
+# The sleeper is killed with the domain, but it may exit a moment after.
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 {
+	~ `{ps | grep -c ' sleep$'} 0 || sleep 0.1
+}
 echo sleepers left `{ps | grep -c ' sleep$'}
