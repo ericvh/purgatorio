@@ -6,16 +6,17 @@ tools
 16
 tools/run/call
 tools/run/schema
+discovered
 server info
 run schema
 read_file schema
-{"content":[{"type":"text","text":"{\"stdout\":\"hello from the far end\\n2\\n\",\"stderr\":\"\",\"ok\":true,\"status\":\"\",\"timed_out\":false,\"stdout_truncated\":false,\"stderr_truncated\":false}"}],"structuredContent":{"stdout":"hello from the far end\n2\n","stderr":"","ok":true,"status":"","timed_out":false,"stdout_truncated":false,"stderr_truncated":false},"isError":false}
+{"resultType":"complete","content":[{"type":"text","text":"{\"stdout\":\"hello from the far end\\n2\\n\",\"stderr\":\"\",\"ok\":true,\"status\":\"\",\"timed_out\":false,\"stdout_truncated\":false,\"stderr_truncated\":false}"}],"structuredContent":{"stdout":"hello from the far end\n2\n","stderr":"","ok":true,"status":"","timed_out":false,"stdout_truncated":false,"stderr_truncated":false},"isError":false}
 read_file result
-{"content":[{"type":"text","text":"{\"jobs\":[]}"}],"structuredContent":{"jobs":[]},"isError":false}
-{"content":[{"type":"text","text":"/nonexistent: file does not exist"}],"isError":true}
+{"resultType":"complete","content":[{"type":"text","text":"{\"jobs\":[]}"}],"structuredContent":{"jobs":[]},"isError":false}
+{"resultType":"complete","content":[{"type":"text","text":"/nonexistent: file does not exist"}],"isError":true}
 cat: the arguments are not JSON: bad literal at byte 0
 cat: the arguments must be a JSON object
-{"content":[{"type":"text","text":"arguments.command is required"}],"isError":true}
+{"resultType":"complete","content":[{"type":"text","text":"arguments.command is required"}],"isError":true}
 cat: tools/nosuch/call: file does not exist
 sh: tools/run/schema: permission denied
 resource list
@@ -35,5 +36,7 @@ cat: timed out
 b
 a gone
 {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"tools changing"}}
+b
+modern server
 mcpfs: nosuchcommand: /bin/nosuchcommand.wasm: file does not exist
 status nosuchcommand: /bin/nosuchcommand.wasm: file does not exist

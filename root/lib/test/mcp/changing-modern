@@ -1,0 +1,26 @@
+# The changing server of mcpfs.sh in revision 2026-07-28: it answers
+# server/discover with tools.listChanged, refuses requests without the
+# revision in _meta, and on subscriptions/listen says its tools changed:
+# the first tools/list has tool a, the next has tool b alone.
+load std
+lists=0
+while {chunk=`{read}; ! ~ $#chunk 0} {
+	for m in $chunk {
+		id=`{echo $m | sed -n 's/.*"id":([0-9]+).*/\1/p'}
+		if {! echo $m | grep -s '"io.modelcontextprotocol/protocolVersion":"2026-07-28"'} {
+			echo '{"jsonrpc":"2.0","id":'^$id^',"error":{"code":-32602,"message":"Invalid params: no protocolVersion in _meta"}}'
+		} {echo $m | grep -s '"method":"server/discover"'} {
+			echo '{"jsonrpc":"2.0","id":'^$id^',"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true}},"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"changing-modern","version":"0"}}}}'
+		} {echo $m | grep -s '"method":"subscriptions/listen"'} {
+			echo '{"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":'^$id^'}}}'
+			echo '{"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":'^$id^'}}}'
+		} {echo $m | grep -s '"method":"tools/list"'} {
+			if {~ $lists 0} {
+				echo '{"jsonrpc":"2.0","id":'^$id^',"result":{"resultType":"complete","tools":[{"name":"a","inputSchema":{"type":"object"}}],"ttlMs":0,"cacheScope":"private"}}'
+				lists=1
+			} {
+				echo '{"jsonrpc":"2.0","id":'^$id^',"result":{"resultType":"complete","tools":[{"name":"b","inputSchema":{"type":"object"}}],"ttlMs":0,"cacheScope":"private"}}'
+			}
+		}
+	}
+}

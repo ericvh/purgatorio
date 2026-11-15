@@ -580,13 +580,18 @@ mcpfs [-m mntpt] [-t ms] command [arg ...]
 `command` is started with pipes for its standard input and output and
 must speak MCP's stdio transport on them. It is any guest program:
 `mcpd` for a local sandbox, or `rcmd host mcpd` for one on another
-system. mcpfs makes the `initialize` handshake (revision 2025-11-25),
-lists the tools (following `nextCursor`), and mounts on `mntpt` (default
-`/n/mcp`):
+system. mcpfs first asks `server/discover` under revision 2026-07-28,
+as that revision's stdio rules say. A server that answers with
+2026-07-28 among its versions is spoken to in it: no handshake, and the
+client's `_meta` (revision, `clientInfo`, empty `clientCapabilities`, and
+`logLevel` `info`) on every request. A server that answers with another
+error, or not within 5 seconds, gets the `initialize` handshake of
+2025-11-25 instead. mcpfs then lists the tools (following `nextCursor`)
+and mounts on `mntpt` (default `/n/mcp`):
 
 | Name | What it is |
 |---|---|
-| `server` | The server's `initialize` result as JSON: its `serverInfo`, `capabilities` and `instructions`. |
+| `server` | The server's `server/discover` result (2026-07-28) or `initialize` result (2025-11-25) as JSON: its versions or version, server info, `capabilities` and `instructions`. |
 | `tools/NAME/` | A directory per tool. A name that cannot be a file name (empty, `.`, `..`, or with `/`) is left out. |
 | `tools/NAME/schema` | The tool's definition from `tools/list` as JSON: `name`, `description`, `inputSchema`, `outputSchema`, `annotations`. |
 | `tools/NAME/call` | Write the arguments, a JSON object, then read the result on the same open file. |
@@ -641,7 +646,8 @@ too. Tests: `root/lib/test/sh/mcpfs.sh` (on
 both engines, the probe and the kernel) with `mcpd` as the far end, and
 `mcpfs_over_rcmd` in `crates/purg-emu/tests/rcmd.rs`.
 
-What remains of stage 4:
-
-- Revision 2026-07-28 (stateless, with `_meta` on every request) is not
-  spoken; 2025-11-25 is, and `mcpd` and most servers answer it.
+Under 2026-07-28, a changed tool list comes only on a subscription:
+when the server's capabilities have `tools.listChanged`, mcpfs opens
+`subscriptions/listen` for `toolsListChanged` and follows the changes as
+above. A result that asks for input (`resultType` `input_required`)
+fails the read: mcpfs has no one to ask. Stage 4 has nothing left.
