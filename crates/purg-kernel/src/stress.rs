@@ -74,10 +74,14 @@ struct Job {
 /// Corpus scripts left out of the stress mode. `modsig` puts a key in
 /// the factotum `#¤`, which every mount that authenticates then signs
 /// with. `ping` counts a reply as lost after a second, and under the
-/// stress load a reply can take longer than that. (`plumb`, `mash` and
-/// `netcs` take a namespace and a `/chan` of their own, and `netcmds`
-/// takes its ports from the system, so they run with the rest.)
-const SHARED: &[&str] = &["modsig", "ping"];
+/// stress load a reply can take longer than that. `iproute` and `rip`
+/// change the route table, which is the kernel's, one for every prog as
+/// in Inferno: overlapping runs see each other's routes, and `rip.sh`
+/// waits for its own route to come and go. `snarf` writes the one snarf
+/// buffer `#^`. (`plumb`, `mash` and `netcs`
+/// take a namespace and a `/chan` of their own, and `netcmds` takes its
+/// ports from the system, so they run with the rest.)
+const SHARED: &[&str] = &["modsig", "ping", "iproute", "rip", "snarf"];
 
 /// The lines of a failed guest's output that are printed: its `FAIL`
 /// lines, or else its last lines.
