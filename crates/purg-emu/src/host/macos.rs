@@ -80,6 +80,12 @@ pub fn icmp_socket() -> io::Result<OwnedFd> {
     Ok(fd)
 }
 
+/// The echo identifier an [`icmp_socket`] uses: macOS leaves the one
+/// the emu writes, so it is `want`.
+pub fn icmp_ident(_fd: &impl AsRawFd, want: u16) -> io::Result<u16> {
+    Ok(want)
+}
+
 /// One ICMP message received: it is `buf[start..start + len]`.
 pub struct IcmpIn {
     pub start: usize,

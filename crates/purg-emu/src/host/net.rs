@@ -506,6 +506,11 @@ fn dial_icmp(host: &str) -> Result<Arc<dyn Conn>> {
             io_err(e)
         }
     })?;
+    let ident = (std::process::id() as u16)
+        .wrapping_add(ICMP_IDENT.fetch_add(1, Ordering::AcqRel).wrapping_mul(7919));
+    // On Linux the host sets the identifier; ask for this one, so that
+    // `local` shows what goes on the wire.
+    let ident = os::icmp_ident(&fd, ident).map_err(io_err)?;
     let sock = UdpSocket::from(fd);
     sock.set_read_timeout(Some(TCP_POLL)).map_err(io_err)?;
     // The address the host sends from, found with a UDP socket that is
@@ -520,8 +525,6 @@ fn dial_icmp(host: &str) -> Result<Arc<dyn Conn>> {
             std::net::IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
         })
         .unwrap_or(Ipv4Addr::UNSPECIFIED);
-    let ident = (std::process::id() as u16)
-        .wrapping_add(ICMP_IDENT.fetch_add(1, Ordering::AcqRel).wrapping_mul(7919));
     Ok(Arc::new(IcmpConn {
         sock,
         remote,
