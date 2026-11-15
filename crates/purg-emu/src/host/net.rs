@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use purg_abi::error::EINTR;
 use purg_platform::Result;
-use purg_platform::net::{self, Conn, Listener, UdpDemux};
+use purg_platform::net::{self, Conn, EHUNGUP, Listener, UdpDemux};
 use purg_platform::sync::current_note;
 
 use super::os;
@@ -61,6 +61,7 @@ impl net::Net for HostNet {
                 demux: Mutex::new(UdpDemux::new(true)),
             }),
             local,
+            closed: AtomicBool::new(false),
         }))
     }
 
@@ -353,11 +354,19 @@ impl UdpPort {
 struct UdpListen {
     port: Arc<UdpPort>,
     local: String,
+    closed: AtomicBool,
 }
 
 impl Listener for UdpListen {
     fn accept(&self) -> Result<Arc<dyn Conn>> {
-        let (id, remote) = self.port.wait(|d| d.accept())?;
+        let got = self.port.wait(|d| {
+            if self.closed.load(Ordering::Acquire) {
+                Some(None)
+            } else {
+                d.accept().map(Some)
+            }
+        })?;
+        let (id, remote) = got.ok_or(std::borrow::Cow::Borrowed(EHUNGUP))?;
         Ok(Arc::new(UdpChild {
             port: Arc::clone(&self.port),
             id,
@@ -369,6 +378,10 @@ impl Listener for UdpListen {
 
     fn local(&self) -> String {
         self.local.clone()
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
     }
 }
 

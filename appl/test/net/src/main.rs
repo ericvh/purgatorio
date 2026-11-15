@@ -2,7 +2,7 @@
 //!
 //! `net --accept dir` accepts one connection and serves `/` on it, then
 //! waits for another that never comes. `net --udp addr` checks a UDP echo
-//! server. With no arguments the checks run.
+//! server. `net --park dir` blocks in a read of `dir/listen`. With no arguments the checks run.
 //! A platform with no network prints `ok net_skip` and still succeeds.
 
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -21,6 +21,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Some("--accept") => accept(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--wasi-dial") => wasi_dial(args.get(2).map(String::as_str).unwrap_or("")),
         Some("--udp") => udp_echo(args.get(2).map(String::as_str).unwrap_or("")),
+        // Fails once the listener is closed under it; that is the point.
+        Some("--park") => {
+            let _ = dial::listen(args.get(2).map(String::as_str).unwrap_or(""));
+            Ok(())
+        }
         _ => checks(),
     }
 }
@@ -96,6 +101,8 @@ fn checks() -> Result<(), Error> {
     println!("ok dial");
     udp()?;
     println!("ok udp");
+    udp_headers()?;
+    println!("ok udp_headers");
     wasi_accept(&ann)?;
     println!("ok sock_accept");
     export_mount()?;
@@ -148,6 +155,37 @@ fn udp() -> Result<(), Error> {
     let n = out.read(&mut buf)?;
     if &buf[..n] != b"pong" {
         return Err(Error(format!("udp: reply {:?}", &buf[..n])));
+    }
+    Ok(())
+}
+
+/// `headers` on an announced UDP port while another prog waits in its
+/// `listen`: the port is announced again in headers mode, and the read of
+/// `listen` fails rather than keeping the port.
+fn udp_headers() -> Result<(), Error> {
+    let ann = dial::announce("udp!127.0.0.1!0").map_err(|e| Error(format!("udp: {e}")))?;
+    let here = local(&ann.dir)?;
+    let port = here.rsplit('!').next().unwrap_or("0").to_string();
+    purgatorio::spawn(
+        SELF,
+        &[SELF.into(), "--park".into(), ann.dir.clone()],
+        0,
+        &[],
+    )
+    .map_err(|e| Error(format!("spawn: {e}")))?;
+    // Give it time to block in listen.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let dir = ann.dir.clone();
+    let mut ctl = std::fs::File::from(ann.ctl);
+    ctl.write_all(b"headers")
+        .map_err(|e| Error(format!("headers: {}", Error::from(e))))?;
+    let mut data = open_data(&dir)?;
+    let client = dial::dial(&format!("udp!127.0.0.1!{port}"))?;
+    open_data(&client.dir)?.write_all(b"ping")?;
+    let mut buf = [0u8; 128];
+    let n = data.read(&mut buf)?;
+    if !buf[..n].ends_with(b"ping") {
+        return Err(Error(format!("udp headers: got {:?}", &buf[..n])));
     }
     Ok(())
 }
