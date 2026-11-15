@@ -702,7 +702,7 @@ echo st $status
 echo piped input | os tr a-z A-Z
 os sh -c 'echo to stderr 1>&2; exit 3' >[2=1]
 echo st $status
-os -d /tmp pwd
+os -d / pwd
 os -n sh -c 'echo niced'
 os 'a b' >[2=1]
 echo st $status
@@ -731,7 +731,7 @@ st
 PIPED INPUT
 to stderr
 st host: exit 3
-/tmp
+/
 niced
 os: cannot exec: file does not exist
 st cannot exec: file does not exist
