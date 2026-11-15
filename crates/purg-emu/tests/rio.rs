@@ -7,18 +7,19 @@
 //! It sweeps a window with the menu's `New`, types `echo hello` into it
 //! and reads the window's text back through `/dev/text`, types a command
 //! through `/dev/kbdin`, runs `draw/demo` in it and checks that the
-//! demo's pixels land inside the window, makes a second window, resizes and moves the first (the demo
-//! draws again each time), deletes it and checks with `ps`, typed in the
-//! second, that its progs are gone, and ends rio with `Exit`.
+//! demo's pixels land inside the window, makes a second window, resizes
+//! and moves the first (the demo draws again each time), deletes it and
+//! checks with `ps`, typed in the second, that its progs are gone, and
+//! ends rio with `Exit`.
 //!
 //! A second run (`editing_*`) selects text with button 1 (a double click
 //! and a sweep), snarfs it with button 2's menu and checks `/dev/snarf`,
-//! sends and pastes it into another window, resizes a window by dragging
-//! its border, reads `/dev/window` and `/dev/screen` as images, hides
-//! and shows a window, checks that a program that draws once and exits
-//! leaves its picture (a window made with `window`), and resizes the
-//! window a second rio runs in and checks that rio's window is scaled to
-//! stay on its screen.
+//! sends and pastes it into another window, holds a typed line there
+//! with Esc (hold mode), resizes a window by dragging its border, reads
+//! `/dev/window` and `/dev/screen` as images, hides and shows a window,
+//! checks that a program that draws once and exits leaves its picture (a
+//! window made with `window`), and resizes the window a second rio runs
+//! in and checks that rio's window is scaled to stay on its screen.
 //!
 //! Each step waits for something it can see (a pixel, a file a command
 //! wrote) with a bound, never for a fixed time. Keys and pointer events
@@ -66,6 +67,8 @@ const ACME_TAG: u32 = 0xEAFFFF;
 const ACME_BODY: u32 = 0xFFFFEA;
 /// The colour of `draw/demo`'s first bar.
 const DEMO_RED: u32 = 0xDD2222;
+/// Text in a window in hold mode.
+const HOLD: u32 = 0x000099;
 
 type Rect = (i32, i32, i32, i32);
 
@@ -171,6 +174,12 @@ impl Mirror {
         (r.1..r.3).any(|y| (r.0..r.2).any(|x| g[(y * SIZE.0 + x) as usize] == 0))
     }
 
+    /// Whether any pixel in `r` is `colour`.
+    fn any(&self, r: Rect, colour: u32) -> bool {
+        let g = self.0.lock().unwrap();
+        (r.1..r.3).any(|y| (r.0..r.2).any(|x| g[(y * SIZE.0 + x) as usize] == colour))
+    }
+
     /// Whether every pixel in `draw/demo`'s red is inside window `r`.
     fn red_only_inside(&self, r: Rect) -> bool {
         let g = self.0.lock().unwrap();
@@ -274,6 +283,7 @@ impl Page {
             let mut m = vec![b'k', 0];
             match c {
                 '\n' => m.extend_from_slice(b"Enter"),
+                '\x1b' => m.extend_from_slice(b"Escape"),
                 c => m.extend_from_slice(c.to_string().as_bytes()),
             }
             self.send(&m);
@@ -626,6 +636,16 @@ fn editing(vm: &str) {
     p.focus(w2);
     p.menu2((600, 150), PASTE);
     p.file("sent2");
+
+    // Esc starts hold mode: a line typed then is shown in blue and not
+    // read until Esc ends it.
+    p.typed("\x1becho > /tmp/rio/held\n");
+    let inner = (w2.0 + 4, w2.1 + 4, w2.2 - 4, w2.3 - 4);
+    p.see("the held line in blue", |s| s.any(inner, HOLD));
+    assert!(!p.tmp.join("held").exists(), "{vm}: a held line was read");
+    p.typed("\x1b");
+    p.file("held");
+    p.see("the window's text black again", |s| !s.any(inner, HOLD));
 
     // Button 1 on the first window's bottom right corner drags it.
     let old = w1;
