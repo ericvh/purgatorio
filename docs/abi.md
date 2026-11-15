@@ -291,6 +291,13 @@ reached is ordinary wasm behavior, so the ABI version is unchanged.
   a table element. `N` may end in `k`, `m` or `g` (2^10, 2^20, 2^30).
   The limit applies to growth from then on, and every prog the prog
   starts afterwards gets the same limit for itself.
+- A prog's kproc stack is charged too, when it is spawned, where the
+  platform allocates it then: on the kernel, the scheduler's stack (256
+  KiB) from the heap. A spawn whose stack would pass the child's limit,
+  or a domain's, fails with `out of memory: main`. The hosted emu does
+  not charge it: a host thread's stack is address space the host commits
+  only as it is used. Compiled code (wasmtime's, the kernel's AOT
+  images) and the contents of RAM file systems are not charged.
 - `domain memlimit N` limits the memory all members of the prog's
   innermost domain (`#pdomain`) hold between them, and `domain proglimit
   N` the number of members. A spawn that would pass the prog limit fails

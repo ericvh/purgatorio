@@ -570,6 +570,11 @@ fn running() -> Option<&'static Thread> {
 }
 
 impl Scheduler {
+    /// The size of the stack a new thread gets.
+    pub fn stack_size(&self) -> usize {
+        self.stack_size
+    }
+
     /// A scheduler whose new threads get `stack_size`-byte stacks.
     pub const fn new(stack_size: usize) -> Scheduler {
         Scheduler {

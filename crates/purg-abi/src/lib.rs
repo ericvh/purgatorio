@@ -484,6 +484,9 @@ pub mod error {
     pub const EUNMOUNT: &str = "not mounted";
     pub const EISMOUNT: &str = "inconsistent mount";
     pub const ENOPROC: &str = "no free procs";
+    /// Inferno's `Enomem`: also a spawn whose thread stack would take a
+    /// prog past its memory limit.
+    pub const ENOMEM: &str = "out of memory: main";
     pub const EINUSE: &str = "device or object already in use";
     pub const EXDEV: &str = "rename across directories";
 }

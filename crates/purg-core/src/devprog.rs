@@ -10,8 +10,9 @@
 //! `ctl` and `heap` (`docs/abi.md`, "Users").
 //!
 //! Memory limits (`docs/abi.md`): `memlimit N` on `ctl` limits the wasm
-//! memory the prog holds (linear memory, and tables at
-//! [`TABLE_ELEM_BYTES`](crate::prog::TABLE_ELEM_BYTES) an element) to `N`
+//! memory the prog holds (linear memory, tables at
+//! [`TABLE_ELEM_BYTES`](crate::prog::TABLE_ELEM_BYTES) an element, and
+//! its kproc stack where the platform charges one) to `N`
 //! bytes (`k`, `m` and `g` multiply by 1024s); the progs it starts later
 //! inherit the limit. `domain memlimit N` and `domain proglimit N` limit
 //! the innermost domain the prog is in: the memory its members hold

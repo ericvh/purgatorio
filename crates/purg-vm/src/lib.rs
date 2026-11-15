@@ -276,6 +276,11 @@ pub fn spawn(
     if parent.proc.note.killed() {
         return Err(Error::new(purg_abi::error::EINTR));
     }
+    // The child's kproc stack is memory it holds, within its limits.
+    let stack = child.kernel.platform.prog_stack() as u64;
+    if stack != 0 && !child.kernel.procs.charge_mem(&child.proc, 0, stack) {
+        return Err(Error::new(purg_abi::error::ENOMEM));
+    }
     let wasm =
         load_module(&mut child, path).map_err(|e| Error::from(alloc::format!("{path}: {e}")))?;
     // A child started under tracing runs a module that keeps a call stack.

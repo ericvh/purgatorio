@@ -146,6 +146,12 @@ impl Platform for MetalPlatform {
         self.sched.set_current_pid(pid);
     }
 
+    /// A prog's kproc gets the scheduler's stack, allocated from the heap
+    /// when the thread is made.
+    fn prog_stack(&self) -> usize {
+        self.sched.stack_size()
+    }
+
     fn spawn_kproc(&self, name: &str, f: Box<dyn FnOnce() + Send>) -> Result<()> {
         if self.kproc_stack != 0 && SERVICE_KPROCS.contains(&name) {
             self.sched.spawn_named_sized(name, self.kproc_stack, f);
