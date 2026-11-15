@@ -512,7 +512,7 @@ impl purg_vm::Engine for Aot {
         let mut store = Store::new(&self.inner.engine, ctx);
         host::limit(&mut store);
         store.epoch_deadline_callback(|state| {
-            if state.data().prog.proc.note.killed() {
+            if purg_vm::checkpoint(state.data()) {
                 return Err(wasmtime_runtime::Error::new(Stop::killed()));
             }
             Ok(UpdateDeadline::Continue(1))

@@ -54,7 +54,10 @@ Options, after `mcpd`:
 - `-M bytes` is the most wasm memory all of a session's programs may hold
   between them (default `256m`; `k`, `m` and `g` multiply by 2^10, 2^20
   and 2^30). `-P progs` is how many programs a session may have at once
-  (default 128). See "Limits".
+  (default 128). `-C seconds` is the CPU time a session's programs may
+  use between them (no limit by default); a session past it has every
+  program killed, so it ends and the next call starts a fresh one. See
+  "Limits".
 
 You can try it by hand:
 
@@ -554,14 +557,11 @@ What is not limited, and why:
   minutes), a file tool has `-t`, a `mount` has its own timeout, and a
   job now takes an optional `timeout_ms`. At each the program's group is
   killed. A job without one runs until `job_kill`, `reset` or the end of
-  the session, which is what a job is for. A CPU-time or fuel budget per
-  domain would need both engines to meter every prog and charge its
-  domain, which neither does yet (wasmi has fuel, wasmtime epochs, and
-  the kernel's scheduler has no per-domain account). With the prog limit,
-  a session can keep at most `-P` threads busy, and only until the
-  timeouts or the client end them; that is a bound, if a coarse one. A
-  per-domain CPU share is the next step if sessions must be isolated from
-  each other's load, not only from each other's files.
+  the session, which is what a job is for. `mcpd -C seconds` now gives a
+  session a CPU budget: the domain's `cpulimit` (`docs/abi.md`), charged
+  by every engine from the prog's thread clock at the end of each slice,
+  so the budget is the same on wasmi, wasmtime and the AOT engine. A
+  session past it has every program killed.
 - Kernel memory the session's files use: the session's `#e` (sh keeps
   every variable there, so `s=$s^$s` in a loop grows it without limit),
   pipes and `#s` buffers. `#e` is the one a session can grow at will;

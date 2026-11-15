@@ -230,7 +230,7 @@ impl purg_vm::Engine for Wasmtime {
             if let Some(mems) = mems {
                 debug_point(&state, mems, true).map_err(wasmtime::Error::new)?;
             }
-            if state.data().prog.proc.note.killed() {
+            if purg_vm::checkpoint(state.data()) {
                 return Err(wasmtime::Error::new(Stop::killed()));
             }
             Ok(UpdateDeadline::Continue(1))

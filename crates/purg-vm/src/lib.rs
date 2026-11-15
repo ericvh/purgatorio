@@ -76,6 +76,14 @@ pub fn host_call<T>(ctx: &mut Ctx, f: impl FnOnce(&mut Ctx) -> HostResult<T>) ->
     r
 }
 
+/// What every engine does at the end of a slice of guest code: charges
+/// the CPU time the prog used to it and its domains (which can kill it,
+/// `cpulimit`), then says whether it has been killed.
+pub fn checkpoint(ctx: &Ctx) -> bool {
+    ctx.prog.kernel.procs.charge_cpu(&ctx.prog.proc);
+    ctx.prog.proc.note.killed()
+}
+
 /// Host-side state of a running prog: Inferno's `Prog` plus the WASI view of
 /// its arguments and environment, and the engine that runs it (and any
 /// progs it spawns).
@@ -195,6 +203,7 @@ pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, E
     platform.set_note(Some(ctx.prog.proc.note.clone()));
     ctx.prog.proc.set_name(module_name(path));
     ctx.prog.proc.set_cpu_clock(platform.cpu_clock());
+    ctx.prog.kernel.procs.start_cpu(&ctx.prog.proc);
     // Killed before it started: the module never runs.
     if ctx.prog.proc.note.killed() {
         platform.set_note(None);

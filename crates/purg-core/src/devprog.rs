@@ -454,7 +454,10 @@ impl Dev for DevProg {
                 }
                 p.debug.set_break(func, on)?;
             }
-            _ if cmd.starts_with("memlimit ") || cmd.starts_with("domain ") => {
+            _ if cmd.starts_with("memlimit ")
+                || cmd.starts_with("cpulimit ")
+                || cmd.starts_with("domain ") =>
+            {
                 self.limit(&p, cmd)?
             }
             _ if cmd.starts_with("nodev ") => {
@@ -477,7 +480,8 @@ impl Dev for DevProg {
 }
 
 impl DevProg {
-    /// `memlimit N`, `domain memlimit N` or `domain proglimit N`.
+    /// `memlimit N`, `cpulimit N`, or `domain` and `memlimit`,
+    /// `proglimit` or `cpulimit` and `N`.
     fn limit(&self, p: &crate::prog::Proc, cmd: &str) -> Result<()> {
         let bad = || Error::new(error::EBADARG);
         let mut words = cmd.split_ascii_whitespace();
@@ -486,25 +490,45 @@ impl DevProg {
             Some(w) => (false, w),
             None => return Err(bad()),
         };
-        let n = words.next().and_then(parse_size).ok_or_else(bad)?;
+        let word = words.next().ok_or_else(bad)?;
+        let n = if what == "cpulimit" {
+            parse_time(word)
+        } else {
+            parse_size(word)
+        }
+        .ok_or_else(bad)?;
         if words.next().is_some() {
             return Err(bad());
         }
         match (domain, what) {
             (false, "memlimit") => p.set_memlimit(n),
-            (true, "memlimit" | "proglimit") => {
+            (false, "cpulimit") => p.set_cpulimit(n),
+            (true, "memlimit" | "proglimit" | "cpulimit") => {
                 let d = *p.domains().last().ok_or_else(bad)?;
                 let mut l = self.procs.domain_limits(d);
-                if what == "memlimit" {
-                    l.mem = n;
-                } else {
-                    l.progs = n;
+                match what {
+                    "memlimit" => l.mem = n,
+                    "proglimit" => l.progs = n,
+                    _ => l.cpu = n,
                 }
                 self.procs.set_domain_limits(d, l)
             }
             _ => Err(bad()),
         }
     }
+}
+
+/// A CPU time, in ns: digits for seconds, or digits and `ms` for
+/// milliseconds.
+pub fn parse_time(s: &str) -> Option<u64> {
+    let (digits, scale) = match s.strip_suffix("ms") {
+        Some(d) => (d, 1_000_000u64),
+        None => (s.strip_suffix('s').unwrap_or(s), 1_000_000_000u64),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok()?.checked_mul(scale)
 }
 
 /// A count of bytes or progs: digits, then `k`, `m` or `g` (either case)
