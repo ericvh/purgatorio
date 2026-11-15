@@ -192,9 +192,10 @@ fn mcp_line(fs: &mut McpFs, io: &File, pending: &mut BTreeMap<i64, Pending>) -> 
         (Some(e), _) => Err(String::from(
             e.get("message").and_then(Value::as_str).unwrap_or("error"),
         )),
-        (None, Some(r)) => Ok(fs
-            .path_of(p.fid)
-            .map_or_else(Vec::new, |path| fs.render(path, r))),
+        (None, Some(r)) => crate::complete(r.clone()).map(|r| {
+            fs.path_of(p.fid)
+                .map_or_else(Vec::new, |path| fs.render(path, &r))
+        }),
         (None, None) => Err(String::from("mcp server: reply without a result")),
     };
     finish(fs, io, p, result, id)

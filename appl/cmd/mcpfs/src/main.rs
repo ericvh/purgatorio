@@ -4,11 +4,14 @@
 //! `command` is started with pipes for its standard input and output and
 //! must speak MCP's stdio transport on them: `mcpd` for a local sandbox,
 //! `rcmd host mcpd` for a remote one, or any other guest program that
-//! does. mcpfs makes the `initialize` handshake (revision 2025-11-25),
+//! does. mcpfs asks `server/discover` under revision 2026-07-28 and, if
+//! the server speaks it, puts the client's `_meta` on every request;
+//! otherwise it makes the `initialize` handshake of 2025-11-25. Then it
 //! lists the tools, and serves:
 //!
 //! ```text
-//! mntpt/server             the server's initialize result, as JSON
+//! mntpt/server             the server's server/discover (or initialize)
+//!                          result, as JSON
 //! mntpt/tools/NAME/schema  the tool's definition from tools/list, as JSON
 //! mntpt/tools/NAME/call    write the arguments (a JSON object), then read
 //!                          the result
@@ -60,7 +63,14 @@ use purgatorio::{Context, DMDIR, Dir, Error, Qid};
 const USAGE: &str = "mcpfs [-m mntpt] [-t ms] command [arg ...]";
 const SELF: &str = "/bin/mcpfs.wasm";
 /// The revision mcpfs asks for. `mcpd` and most servers answer it.
+/// The revision spoken to a server without `server/discover`.
 const PROTOCOL: &str = "2025-11-25";
+/// The stateless revision, spoken to a server that answers
+/// `server/discover` with it among its versions.
+const MODERN: &str = "2026-07-28";
+/// How long `server/discover` waits for an answer before the server is
+/// taken to be of the earlier revision.
+const PROBE_MS: i32 = 5000;
 /// A longer line from the server is refused.
 const MAX_LINE: usize = 16 << 20;
 /// Pages of `tools/list` followed before giving up.
@@ -90,6 +100,8 @@ struct Client {
     to: File,
     from: BufReader<File>,
     next: i64,
+    /// Speaking 2026-07-28: every request carries the client's `_meta`.
+    modern: bool,
 }
 
 impl Client {
@@ -101,12 +113,23 @@ impl Client {
             .map_err(|e| format!("mcp server: {}", Error::from(e)))
     }
 
+    /// `params` with the `_meta` every 2026-07-28 request carries: the
+    /// revision, the client and its (empty) capabilities, and a log level
+    /// so that log messages still come.
+    fn meta(&self, params: Value) -> Value {
+        if !self.modern {
+            return params;
+        }
+        with_meta(params)
+    }
+
     /// Sends a request and returns its result, or the error's message.
     /// Requests from the server meanwhile are answered (`ping`) or refused;
     /// notifications are dropped.
     fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next;
         self.next += 1;
+        let params = self.meta(params);
         self.send(&json::obj([
             ("jsonrpc", "2.0".into()),
             ("id", id.into()),
@@ -141,10 +164,11 @@ impl Client {
                 let msg = e.get("message").and_then(Value::as_str).unwrap_or("error");
                 return Err(String::from(msg));
             }
-            return v
+            let r = v
                 .get("result")
                 .cloned()
-                .ok_or_else(|| String::from("mcp server: reply without a result"));
+                .ok_or_else(|| String::from("mcp server: reply without a result"))?;
+            return complete(r);
         }
     }
 
@@ -177,6 +201,54 @@ impl Client {
             ("jsonrpc", "2.0".into()),
             ("method", method.into()),
         ]))
+    }
+}
+
+/// `params` with the client's 2026-07-28 `_meta` added to any it has.
+fn with_meta(params: Value) -> Value {
+    let meta = [
+        (
+            "io.modelcontextprotocol/protocolVersion",
+            Value::from(MODERN),
+        ),
+        (
+            "io.modelcontextprotocol/clientInfo",
+            json::obj([("name", "mcpfs".into()), ("version", "0".into())]),
+        ),
+        (
+            "io.modelcontextprotocol/clientCapabilities",
+            Value::Object(Vec::new()),
+        ),
+        ("io.modelcontextprotocol/logLevel", Value::from("info")),
+    ];
+    let mut fields = match params {
+        Value::Object(f) => f,
+        _ => Vec::new(),
+    };
+    let mut m = match fields.iter().position(|(k, _)| k == "_meta") {
+        Some(i) => match fields.remove(i).1 {
+            Value::Object(m) => m,
+            _ => Vec::new(),
+        },
+        None => Vec::new(),
+    };
+    for (k, v) in meta {
+        if !m.iter().any(|(n, _)| n == k) {
+            m.push((String::from(k), v));
+        }
+    }
+    fields.push((String::from("_meta"), Value::Object(m)));
+    Value::Object(fields)
+}
+
+/// A result, unless it asks for input (a 2026-07-28 `input_required`
+/// result), which mcpfs cannot give.
+fn complete(r: Value) -> Result<Value, String> {
+    match r.get("resultType").and_then(Value::as_str) {
+        Some("input_required") => Err(String::from(
+            "mcp server: the request needs input, which mcpfs cannot give",
+        )),
+        _ => Ok(r),
     }
 }
 
@@ -503,6 +575,7 @@ impl McpFs {
     fn send_request(&mut self, method: &str, params: Value) -> Result<i64, String> {
         let id = self.client.next;
         self.client.next += 1;
+        let params = self.client.meta(params);
         self.client.send(&json::obj([
             ("jsonrpc", "2.0".into()),
             ("id", id.into()),
@@ -791,6 +864,63 @@ fn arguments(args: &[u8]) -> Result<Value, String> {
 
 /// Starts `argv` with pipes for its standard input and output, and makes
 /// the handshake and the tool list.
+/// Asks the server for `server/discover` under 2026-07-28. The result, if
+/// the server speaks that revision; `None` if it answers with another
+/// error, or not within [`PROBE_MS`], as a server of the earlier revision
+/// would. A 2026-07-28 server that does not take it is an error.
+fn discover(client: &mut Client) -> Result<Option<Value>, String> {
+    let id = client.next;
+    client.next += 1;
+    client.send(&json::obj([
+        ("jsonrpc", "2.0".into()),
+        ("id", id.into()),
+        ("method", "server/discover".into()),
+        ("params", with_meta(Value::Object(Vec::new()))),
+    ]))?;
+    let fd = client.from.get_ref().as_raw_fd();
+    loop {
+        if !client.from.buffer().contains(&b'\n') {
+            match purgatorio::ready(&[purgatorio::Ready::Read(fd)], PROBE_MS) {
+                Ok(Some(_)) => {}
+                _ => return Ok(None),
+            }
+        }
+        let mut line = Vec::new();
+        let n = (&mut client.from)
+            .take(MAX_LINE as u64 + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|e| format!("mcp server: {}", Error::from(e)))?;
+        if n == 0 {
+            return Err(String::from("mcp server: hungup"));
+        }
+        let Ok(v) = json::parse(String::from_utf8_lossy(&line).trim()) else {
+            continue;
+        };
+        if v.get("method").is_some() || v.get("id").and_then(Value::as_i64) != Some(id) {
+            continue;
+        }
+        if let Some(e) = v.get("error") {
+            if e.get("code").and_then(Value::as_i64) == Some(-32022) {
+                let supported = e
+                    .get("data")
+                    .and_then(|d| d.get("supported"))
+                    .map(Value::encode)
+                    .unwrap_or_default();
+                return Err(format!(
+                    "mcp server: does not speak {MODERN}: supports {supported}"
+                ));
+            }
+            return Ok(None);
+        }
+        let Some(r) = v.get("result") else {
+            return Ok(None);
+        };
+        let modern = matches!(r.get("supportedVersions"), Some(Value::Array(vs))
+            if vs.iter().any(|v| v.as_str() == Some(MODERN)));
+        return Ok(modern.then(|| r.clone()));
+    }
+}
+
 fn connect(argv: &[String]) -> Result<McpFs, String> {
     let pipe = || purgatorio::pipe().map_err(|e| format!("pipe: {e}"));
     let [req_r, req_w] = pipe()?;
@@ -807,19 +937,43 @@ fn connect(argv: &[String]) -> Result<McpFs, String> {
         to: File::from(req_w),
         from: BufReader::new(File::from(resp_r)),
         next: 1,
+        modern: false,
     };
-    let init = client.request(
-        "initialize",
-        json::obj([
-            ("protocolVersion", PROTOCOL.into()),
-            ("capabilities", Value::Object(Vec::new())),
-            (
-                "clientInfo",
-                json::obj([("name", "mcpfs".into()), ("version", "0".into())]),
-            ),
-        ]),
-    )?;
-    client.notify("notifications/initialized")?;
+    // 2026-07-28 first, as its stdio rules say: a server that answers
+    // server/discover with that revision has no handshake; any other
+    // answer, or none in time, is a server of the earlier revision.
+    let init = match discover(&mut client)? {
+        Some(d) => {
+            client.modern = true;
+            d
+        }
+        None => {
+            let init = client.request(
+                "initialize",
+                json::obj([
+                    ("protocolVersion", PROTOCOL.into()),
+                    ("capabilities", Value::Object(Vec::new())),
+                    (
+                        "clientInfo",
+                        json::obj([("name", "mcpfs".into()), ("version", "0".into())]),
+                    ),
+                ]),
+            )?;
+            client.notify("notifications/initialized")?;
+            init
+        }
+    };
+    // Under 2026-07-28 a changed tool list comes only on a subscription.
+    let listens = client.modern
+        && init
+            .get("capabilities")
+            .and_then(|c| c.get("tools"))
+            .and_then(|t| t.get("listChanged"))
+            .and_then(|b| match b {
+                Value::Bool(b) => Some(*b),
+                _ => None,
+            })
+            .unwrap_or(false);
     let mut tools = Vec::new();
     let mut cursor: Option<Value> = None;
     for _ in 0..MAX_PAGES {
@@ -836,7 +990,7 @@ fn connect(argv: &[String]) -> Result<McpFs, String> {
     let mut server = init.encode().into_bytes();
     server.push(b'\n');
     let user = std::fs::read_to_string("/dev/user").unwrap_or_else(|_| String::from("none"));
-    Ok(McpFs {
+    let mut fs = McpFs {
         client,
         user: String::from(user.trim()),
         server,
@@ -845,7 +999,15 @@ fn connect(argv: &[String]) -> Result<McpFs, String> {
         log: Vec::new(),
         fids: BTreeMap::new(),
         iounit: 8192,
-    })
+    };
+    if listens {
+        let params = json::obj([(
+            "notifications",
+            json::obj([("toolsListChanged", Value::Bool(true))]),
+        )]);
+        fs.send_request("subscriptions/listen", params)?;
+    }
+    Ok(fs)
 }
 
 /// `mcpfs --serve ms command...`: the file server, with a call timeout of

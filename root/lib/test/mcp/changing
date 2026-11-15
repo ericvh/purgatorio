@@ -11,6 +11,11 @@ while {chunk=`{read}; ! ~ $#chunk 0} {
 		if {echo $m | grep -s '"method":"initialize"'} {
 			echo '{"jsonrpc":"2.0","id":'^$id^',"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"changing","version":"0"}}}'
 		}
+		# server/discover (2026-07-28) is not known here: refused, so
+		# mcpfs speaks 2025-11-25 with its initialize.
+		if {echo $m | grep -s '"method":"server/discover"'} {
+			echo '{"jsonrpc":"2.0","id":'^$id^',"error":{"code":-32601,"message":"Method not found"}}'
+		}
 		if {echo $m | grep -s '"method":"tools/list"'} {
 			if {~ $lists 0} {
 				echo '{"jsonrpc":"2.0","id":'^$id^',"result":{"tools":[{"name":"a","inputSchema":{"type":"object"}}]}}'

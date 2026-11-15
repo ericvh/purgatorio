@@ -9,7 +9,9 @@ cd $d
 ls
 ls tools | grep -c .
 ls tools/run
-grep -s '"serverInfo":{"name":"mcpd"' server && echo server info
+# mcpd speaks 2026-07-28, so server is its server/discover result.
+grep -s '"supportedVersions":\["2026-07-28"' server && echo discovered
+grep -s 'serverInfo":{"name":"mcpd"' server && echo server info
 grep -s '"name":"run"' tools/run/schema && echo run schema
 grep -s '"inputSchema"' tools/read_file/schema && echo read_file schema
 {echo '{"command":"echo hello from the far end; ns | grep -c tmp"}' >[1=0]; cat} <> tools/run/call
@@ -63,6 +65,14 @@ ls $d/tools | sed 's/.*\///'
 test -d $d/tools/a || echo a gone
 # The server's log message, kept in log.
 cat $d/log
+unmount $d
+rm -r $d
+# The same in 2026-07-28: the change comes on subscriptions/listen.
+mkdir $d
+mcpfs -m $d sh /lib/test/mcp/changing-modern
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 {test -d $d/tools/b || sleep 0.5}
+ls $d/tools | sed 's/.*\///'
+grep -s changing-modern $d/server && echo modern server
 unmount $d
 rm -r $d
 mcpfs -m /n nosuchcommand
