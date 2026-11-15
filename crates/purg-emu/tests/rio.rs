@@ -5,7 +5,8 @@
 //! see.
 //!
 //! It sweeps a window with the menu's `New`, types `echo hello` into it
-//! and reads the window's text back through `/dev/text`, runs
+//! and reads the window's text back through `/dev/text`, types a command
+//! through `/dev/kbdin`, runs
 //! `draw/demo` in it and checks that the demo's pixels land inside the
 //! window, makes a second window, resizes and moves the first (the demo
 //! draws again each time), deletes it and checks with `ps`, typed in the
@@ -463,6 +464,10 @@ fn run(vm: &str) {
         w1.0, w1.1, w1.2, w1.3
     );
     assert_eq!(wctl, want, "{vm}: wctl");
+    // What is written to /dev/kbdin is typed at rio: into the current
+    // window, this one, whose shell runs it once its own echo is done.
+    p.typed("echo 'echo > /tmp/rio/kbdin' > /dev/kbdin\n");
+    p.file("kbdin");
 
     // The demo draws in the window, not on the screen.
     p.typed("draw/demo\n");

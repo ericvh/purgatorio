@@ -2062,6 +2062,7 @@ So each window's process group sees, before the rest of `/dev`:
 |---|---|
 | `cons` | reads take lines typed in the window (or keys as typed in raw mode); writes are shown |
 | `consctl` | `rawon`, `rawoff`; `holdon` and `holdoff` are taken and do nothing; raw mode ends when it is closed |
+| `kbdin` | write-only: what is written is typed at rio's keyboard, so it goes to the current window, as rio(4)'s |
 | `keyboard` | while open, keys typed in the window come here as UTF-8 instead |
 | `pointer` | pointer(3)'s 49-byte `m` records for the window, `r` after a resize or move; writing `m x y` moves the pointer |
 | `label` | the window's label, which the menu shows when it is hidden |
@@ -2165,7 +2166,7 @@ either.
 
 ### 12.5 Differences from Plan 9's rio
 
-- No hold mode (`holdon` is accepted and ignored), no `/dev/kbdin`, no
+- No hold mode (`holdon` is accepted and ignored) and no
   `/srv/rio` and no `window(1)` command: `echo new ... > /dev/wctl` in a
   window makes one.
 - Typing goes at the selection only when the selection is in typing not
