@@ -1,0 +1,9 @@
+no certificate
+digest HEX
+abi 0.13
+signer HEX trusted leaf mid
+status 
+digest HEX
+abi 0.13
+signer HEX untrusted leaf
+auth/verify: untrusted signer
