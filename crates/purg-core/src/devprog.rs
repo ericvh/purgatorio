@@ -125,11 +125,7 @@ impl DevProg {
     /// the wasm memory in KiB, 5 wide, and `K`; the module. No newline,
     /// as Inferno's has none. The parent pid is in `ppid` (an addition).
     fn status(&self, p: &crate::prog::Proc) -> String {
-        let ms = p
-            .cpu_clock()
-            .and_then(|c| self.procs.platform().cpu_ns(c))
-            .unwrap_or(0)
-            / 1_000_000;
+        let ms = self.procs.cpu_used(p).unwrap_or(0) / 1_000_000;
         let tenths = ms / 100;
         let sec = tenths / 10;
         // Inferno's states: a prog asleep in a call is `release` (the

@@ -105,6 +105,9 @@ pub struct Proc {
     cpulimit: AtomicU64,
     /// Its CPU time when it was last charged to its domains.
     cpu_charged: AtomicU64,
+    /// Its thread's CPU time when it started: the thread may have run
+    /// other work before, so the prog's own time is counted from here.
+    cpu_start: AtomicU64,
 }
 
 impl Proc {
@@ -449,7 +452,15 @@ impl Procs {
             .cpu_clock()
             .and_then(|c| self.platform.cpu_ns(c))
             .unwrap_or(0);
+        p.cpu_start.store(now, Ordering::Release);
         p.cpu_charged.store(now, Ordering::Release);
+    }
+
+    /// The CPU time, in ns, `p` itself has used: its thread's since the
+    /// prog started. `None` where the platform keeps no CPU time.
+    pub fn cpu_used(&self, p: &Proc) -> Option<u64> {
+        let now = p.cpu_clock().and_then(|c| self.platform.cpu_ns(c))?;
+        Some(now.saturating_sub(p.cpu_start.load(Ordering::Acquire)))
     }
 
     /// Charges the CPU time `p` has used since its last charge to it and
@@ -462,7 +473,8 @@ impl Procs {
             return;
         };
         let last = p.cpu_charged.swap(now, Ordering::AcqRel);
-        if now > p.cpulimit() {
+        let used = now.saturating_sub(p.cpu_start.load(Ordering::Acquire));
+        if used > p.cpulimit() {
             p.kill();
         }
         let delta = now.saturating_sub(last);
@@ -628,6 +640,7 @@ impl Procs {
             cpu_clock: Mutex::new(None),
             cpulimit: AtomicU64::new(UNLIMITED),
             cpu_charged: AtomicU64::new(0),
+            cpu_start: AtomicU64::new(0),
         });
         self.table.lock().insert(pid, p.clone());
         p
