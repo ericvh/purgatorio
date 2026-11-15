@@ -2,21 +2,21 @@ auth/sign: no key
 auth/sign: /tmp/sh-pqmodsig/eroot: not a hybrid key
 verify hybrid
 digest ok
-abi 0.12
+abi 0.13
 signer hybrid trusted builder
 verify classic
 digest ok
-abi 0.12
+abi 0.13
 signer ed25519 classical
 auth/verify: post-quantum signature required
 verify both
 digest ok
-abi 0.12
+abi 0.13
 signer hybrid trusted builder
 signer ed25519 classical
 verify bare
 digest ok
-abi 0.12
+abi 0.13
 signer hybrid untrusted
 auth/verify: untrusted signer
 2

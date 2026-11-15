@@ -1,4 +1,4 @@
-# Purgatorio application ABI (v0.12)
+# Purgatorio application ABI (v0.13)
 
 Apps are WASI preview1 command modules: they export `memory` and `_start`.
 They may import from two modules:
@@ -12,7 +12,7 @@ They may import from two modules:
 
 No non-standard functions are added to the `wasi_snapshot_preview1`
 namespace. Modules built with the SDK also carry a `purgatorio.abi` custom
-section containing `0.12`. The loader rejects a mismatched version. Modules
+section containing `0.13`. The loader rejects a mismatched version. Modules
 without the section, such as third-party WASI programs, are accepted.
 
 The host implements both modules natively over the Purgatorio namespace in
@@ -103,7 +103,7 @@ Each row is marked with the milestone that implemented it.
 | `load` | `purgatorio.load`, `purgatorio.call` (M5) | missing in WASI | See below. |
 | `print`, `sprint`, `tokenize`, UTF helpers | Rust `std` and the SDK | library | No host call. |
 
-## `purgatorio` imports in v0.12
+## `purgatorio` imports in v0.13
 
 ```
 errstr(buf, blen) -> n            copies the errstr, truncated to blen
@@ -126,7 +126,7 @@ bind(name, nlen, old, olen, flags) -> id    the new entry's mount id, positive (
 unmount(name, nlen, old, olen) -> 0     nlen = 0 removes everything at old
 pctl(flags, movefd, n) -> pid     movefd: n i32 fds that NEWFD keeps
 spawn_prog(path, plen, argv, alen, flags, fdmap, n) -> pid
-mount(fd, afd, old, olen, flags, aname, alen) -> id    afd = -1: mount authenticates; id as for bind
+mount(fd, afd, old, olen, flags, aname, alen) -> id    afd = -1: mount authenticates; id as for bind; MCACHE reads ahead (v0.13)
 export(fd, dir, dlen, flags) -> 0
 export_key(fd, dir, dlen, flags, key, klen) -> 0     export -k: the server proof's authinfo (v0.9)
 fversion(fd, msize, ver, vlen) -> n
@@ -457,6 +457,20 @@ own user, or the host owner, may open its `/prog/<pid>/ctl`. On the emu
 the host file tree is still read and written with the host's
 permissions for the host user who runs it. `runas user cmd` is the
 command for this (`docs/auth.md`, "Users").
+
+### `MCACHE` mounts (v0.13)
+
+`mount` with `MCACHE` (`0x10`, Inferno's value) says the tree is
+disk-like: its plain files hold fixed bytes at each offset. The mount
+then follows each read of such a file with one sent ahead for the bytes
+after it, so a sequential reader waits for one round trip less each
+time. Directories, append-only and exclusive files, and the auth file
+are never read ahead, and a write through the file drops a read that is
+out ahead. Without `MCACHE` the mount sends one read at a time, as
+Inferno's `devmnt` does: on a pipe, a stream or a control file a read
+sent early would take data the program did not ask for. Inferno's hosted
+emu accepts `MCACHE` and does nothing with it; its native kernels cache
+file data.
 
 ### Read-only `export`
 

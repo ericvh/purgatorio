@@ -14,7 +14,7 @@
 #![no_std]
 
 /// ABI version, carried by guests in the [`ABI_SECTION`] custom section.
-pub const ABI_VERSION: &str = "0.12";
+pub const ABI_VERSION: &str = "0.13";
 /// Name of the custom section holding [`ABI_VERSION`].
 pub const ABI_SECTION: &str = "purgatorio.abi";
 
@@ -293,6 +293,11 @@ pub mod mount {
     pub const MCREATE: u32 = 0x0004;
     /// Mask selecting the ordering part of the flags.
     pub const MORDER: u32 = 0x0003;
+    /// For `mount`: the tree is disk-like, so the mount may read a plain
+    /// file ahead of the program (Inferno's `MCACHE`; v0.13). A read of a
+    /// pipe or a control file sent early would take data the program did
+    /// not ask for, so a mount without it never reads ahead.
+    pub const MCACHE: u32 = 0x0010;
     /// Skip `Tauth`. The mount and export commands set this for `-A`.
     /// A server that authenticates rejects the attach. An export with
     /// `MNOAUTH` asks for no proof and lets every attach in; without it an

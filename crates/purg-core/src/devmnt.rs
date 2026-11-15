@@ -14,7 +14,8 @@ use purg_platform::sync::{Mutex, Note, Rendez};
 use purg_platform::{Platform, sync};
 use purg_styx::server::{IOHDRSZ, MAX_MSIZE};
 use purg_styx::{
-    DMDIR, Dir, Fcall, MAXWELEM, Msg, NOFID, NOTAG, QTAUTH, QTDIR, QTEXCL, Qid, VERSION, dirs,
+    DMDIR, Dir, Fcall, MAXWELEM, Msg, NOFID, NOTAG, QTAPPEND, QTAUTH, QTDIR, QTEXCL, Qid, VERSION,
+    dirs,
 };
 
 use purg_auth::record::{self, Opener, Sealer};
@@ -199,8 +200,13 @@ struct MntFile {
     /// The fid was opened in a way whose clunk a later request may depend
     /// on, so dropping it waits for `Rclunk` ([`MntFile::settles`]).
     settle: AtomicBool,
-    /// A read sent ahead for `purgatorio.wait` ([`Ahead`]).
+    /// A read sent ahead ([`Ahead`]): for `purgatorio.wait`, or on a
+    /// mount with `MCACHE`, after each read of a plain file.
     ahead: Mutex<Option<Ahead>>,
+    /// The mount was made with `MCACHE`: its files are disk-like, so a
+    /// read may be sent ahead of the program's ([`set_cache`]). Walks
+    /// pass it on.
+    cache: AtomicBool,
 }
 
 /// A `Tread` sent before the prog reads, so that `purgatorio.wait` can
@@ -226,7 +232,16 @@ impl MntFile {
             fresh: AtomicBool::new(false),
             settle: AtomicBool::new(false),
             ahead: Mutex::new(None),
+            cache: AtomicBool::new(false),
         }
+    }
+
+    /// A file for `fid` reached from this one, on the same mount.
+    fn child(&self, fid: u32, spec: &str) -> MntFile {
+        let f = MntFile::new(&self.session, fid, spec);
+        f.cache
+            .store(self.cache.load(Ordering::Acquire), Ordering::Release);
+        f
     }
 
     /// Whether the clunk of a fid opened with `omode` on a file with
@@ -1171,7 +1186,7 @@ impl Dev for DevMnt {
         }
         Ok(WalkedNames {
             qids,
-            aux: Some(Arc::new(MntFile::new(&f.session, newfid, ""))),
+            aux: Some(Arc::new(f.child(newfid, ""))),
             end: WalkEnd::Reached,
         })
     }
@@ -1201,7 +1216,7 @@ impl Dev for DevMnt {
         let shared = c.aux.as_ref().is_some_and(|a| Arc::strong_count(a) > 1);
         if shared {
             let fid = f.session.clone_fid(f.fid)?;
-            let aux: Arc<dyn Any + Send + Sync> = Arc::new(MntFile::new(&f.session, fid, &f.spec));
+            let aux: Arc<dyn Any + Send + Sync> = Arc::new(f.child(fid, &f.spec));
             c.aux = Some(aux);
         }
         let f = file(c)?;
@@ -1249,7 +1264,7 @@ impl Dev for DevMnt {
                 return Err(e);
             }
         };
-        let aux = MntFile::new(&f.session, newfid, "");
+        let aux = f.child(newfid, "");
         aux.fresh.store(true, Ordering::Release);
         aux.settle.store(true, Ordering::Release);
         Ok(Walked {
@@ -1272,47 +1287,11 @@ impl Dev for DevMnt {
             buf[..n].copy_from_slice(&data[..n]);
             return Ok(n);
         }
-        let ahead = f.ahead.lock().take();
-        if let Some(a) = ahead {
-            if a.offset == offset {
-                let mut data = match (a.data, a.tag) {
-                    (Some(d), _) => d,
-                    (None, Some(tag)) => f.session.read_reply(tag)?,
-                    (None, None) => Vec::new(),
-                };
-                let n = data.len().min(buf.len());
-                buf[..n].copy_from_slice(&data[..n]);
-                if n < data.len() {
-                    data.drain(..n);
-                    *f.ahead.lock() = Some(Ahead {
-                        offset: offset + n as u64,
-                        tag: None,
-                        data: Some(data),
-                    });
-                }
-                return Ok(n);
-            }
-            if let Some(tag) = a.tag {
-                f.session.abandon_tag(tag);
-            }
+        let n = read_file(f, buf, offset)?;
+        if n > 0 {
+            prefetch(c, f, offset + n as u64);
         }
-        let count = (buf.len() as u32).min(f.session.iounit().max(1));
-        let reply = f.session.rpc(Fcall::Tread {
-            fid: f.fid,
-            offset,
-            count,
-        })?;
-        let got = match f.session.decode(&reply) {
-            Ok(Fcall::Rread { data }) => {
-                let n = data.len().min(buf.len());
-                buf[..n].copy_from_slice(&data[..n]);
-                Ok(n)
-            }
-            Ok(_) => Err(Error::new(error::EIO)),
-            Err(e) => Err(e),
-        };
-        f.session.bufs.put(reply);
-        got
+        Ok(n)
     }
 
     /// A read is ready once a read sent ahead by [`Dev::watch`] has its
@@ -1395,6 +1374,10 @@ impl Dev for DevMnt {
 
     fn write(&self, c: &Chan, buf: &[u8], offset: u64) -> Result<usize> {
         let f = file(c)?;
+        // A read sent ahead may have read what this write changes.
+        if let Some(tag) = f.ahead.lock().take().and_then(|a| a.tag) {
+            f.session.abandon_tag(tag);
+        }
         let n = buf.len().min(f.session.iounit().max(1) as usize);
         let fcall = Fcall::Twrite {
             fid: f.fid,
@@ -1435,5 +1418,88 @@ impl Dev for DevMnt {
             Fcall::Rwstat => Ok(()),
             _ => Err(Error::new(error::EIO)),
         }
+    }
+}
+
+/// Reads `buf.len()` bytes or fewer at `offset`: from a read sent ahead
+/// at that offset if there is one, else with a `Tread`. A read sent ahead
+/// elsewhere is given up.
+fn read_file(f: &MntFile, buf: &mut [u8], offset: u64) -> Result<usize> {
+    let ahead = f.ahead.lock().take();
+    if let Some(a) = ahead {
+        if a.offset == offset {
+            let mut data = match (a.data, a.tag) {
+                (Some(d), _) => d,
+                (None, Some(tag)) => f.session.read_reply(tag)?,
+                (None, None) => Vec::new(),
+            };
+            let n = data.len().min(buf.len());
+            buf[..n].copy_from_slice(&data[..n]);
+            if n < data.len() {
+                data.drain(..n);
+                *f.ahead.lock() = Some(Ahead {
+                    offset: offset + n as u64,
+                    tag: None,
+                    data: Some(data),
+                });
+            }
+            return Ok(n);
+        }
+        if let Some(tag) = a.tag {
+            f.session.abandon_tag(tag);
+        }
+    }
+    let count = (buf.len() as u32).min(f.session.iounit().max(1));
+    let reply = f.session.rpc(Fcall::Tread {
+        fid: f.fid,
+        offset,
+        count,
+    })?;
+    let got = match f.session.decode(&reply) {
+        Ok(Fcall::Rread { data }) => {
+            let n = data.len().min(buf.len());
+            buf[..n].copy_from_slice(&data[..n]);
+            Ok(n)
+        }
+        Ok(_) => Err(Error::new(error::EIO)),
+        Err(e) => Err(e),
+    };
+    f.session.bufs.put(reply);
+    got
+}
+
+/// On a mount with `MCACHE`, sends the read of a plain file at `next`, the
+/// end of the read just done, before the program asks: a sequential
+/// reader then waits for one round trip less each time. Not for
+/// directories, append-only or exclusive files, or the auth file, whose
+/// reads are not ranges of fixed bytes; and only when no read is already
+/// out ahead.
+fn prefetch(c: &Chan, f: &MntFile, next: u64) {
+    if !f.cache.load(Ordering::Acquire)
+        || f.fid == AUTH_FID
+        || c.qid.qtype & (QTDIR | QTAPPEND | QTEXCL | QTAUTH) != 0
+    {
+        return;
+    }
+    let mut a = f.ahead.lock();
+    if a.is_some() {
+        return;
+    }
+    if let Ok(tag) = f.session.read_ahead(f.fid, next) {
+        *a = Some(Ahead {
+            offset: next,
+            tag: Some(tag),
+            data: None,
+        });
+    }
+}
+
+/// Makes the mount whose root is `root` a cached one (`MCACHE`): its
+/// plain files are read ahead ([`prefetch`]). The user says the tree is
+/// disk-like by asking; on a pipe or a control file a read sent ahead
+/// would take data the program did not ask for.
+pub fn set_cache(root: &Chan) {
+    if let Some(f) = root.aux::<MntFile>() {
+        f.cache.store(true, Ordering::Release);
     }
 }
