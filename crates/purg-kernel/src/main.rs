@@ -18,7 +18,10 @@
 //! and compares the serial output with `expected.out`.
 //!
 //! With `memstat` in the bootargs the kernel also reports where its memory
-//! goes ([`memstat`]); `docs/footprint.md` has the numbers.
+//! goes ([`memstat`]); `docs/footprint.md` has the numbers. With
+//! `modules=warn|require` (`,hybrid` for hybrid signatures only) the
+//! system's module policy is set before the first prog, as `emu
+//! --modules` sets it (`docs/signing.md`).
 //!
 //! Memory map (QEMU virt; RAM size from the DTB):
 //! - physical load address 0x4020_0000 (the DTB is at 0x4000_0000);

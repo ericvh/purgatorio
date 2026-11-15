@@ -271,8 +271,10 @@ echo modules require > /prog/<pid>/ctl      (or warn)
   prog that spawned it, at the time of the spawn.
 - The **system default** is the policy of the first prog. `emu
   --modules=warn|require` sets it before the first module is loaded, pinned
-  to the boot namespace, so the first prog is checked too. The probe and
-  the kernel have no command line yet: their first prog comes from the
+  to the boot namespace, so the first prog is checked too. The kernel
+  takes the same setting from its bootargs, `modules=warn|require` (with
+  `,hybrid`), and a value it cannot parse stops the boot. Without it, as
+  on the probe, which has no command line, the first prog comes from the
   boot image and is trusted like the kernel itself, and it sets the policy
   as its first act when the system wants one.
 - `auth/modpolicy level cmd [arg ...]` sets its own level and runs `cmd`,
@@ -518,7 +520,9 @@ from it runs no image file until its operator lists a key.
   `crates/purg-vm/tests/modsig.rs` for each level and each error, the
   tighten-only rule, inheritance and the pinned namespace; emu tests in
   `crates/purg-emu/tests/modsig.rs` for `--modules`, a first prog signed
-  on the host and signing through the guest factotum; the sh corpus
+  on the host and signing through the guest factotum; a boot of the
+  kernel with `modules=require` in `cargo xtask kernel`, which must refuse
+  the unsigned `emuinit`; the sh corpus
   script `modsig.sh`, which signs a module in the system through `#¤`,
   runs it under `require`, and shows an unsigned module, a changed one,
   an untrusted signer and a revoked signer refused, on both VMs, the
@@ -549,9 +553,9 @@ Decided here, for the owner to confirm:
 
 Still open:
 
-1. **Boot-time default for the kernel and the probe.** They need a command
-   line or a build-time setting to check the first prog. Today the boot
-   image is the trust root.
+1. **Boot-time default for the probe.** The kernel has `modules=` in
+   its bootargs; the probe has no command line, so its boot image is the
+   trust root.
 2. **Thresholds.** One trusted signature is enough. Should a policy be
    able to ask for two (a builder and a reviewer)?
 3. **Signed attributes** (name, version, a signing time) and with them
