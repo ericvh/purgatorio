@@ -21,5 +21,7 @@ slow call not yet answered
 slow call answered
 cat: timed out
 16
+b
+a gone
 mcpfs: nosuchcommand: /bin/nosuchcommand.wasm: file does not exist
 status nosuchcommand: /bin/nosuchcommand.wasm: file does not exist

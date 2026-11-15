@@ -615,6 +615,15 @@ read (an interrupted `cat`) ends at once and the server is sent
 fails with `timed out` and is cancelled the same way. `mcpd` itself runs
 its `run` calls one at a time, so two of those still go in turn.
 
+When the server sends `notifications/tools/list_changed`, mcpfs asks
+for `tools/list` again while it goes on serving: new tools appear, and
+tools no longer listed go from `tools` (other tools keep their qids).
+
+A server on the host, on the emu, is reached through `#C`: `mcpfs -m
+/n/srv os command arg ...`. `os` copies its input to the host command
+and its output back, so the server's stdio is mcpfs's. `mcp.rs` mounts
+a host `emu mcpd` this way.
+
 `mcpfs` exits when the mount goes (`unmount`), at once, with calls
 outstanding or not, and the server's input then ends, so `mcpd` exits
 too. Tests: `root/lib/test/sh/mcpfs.sh` (on
@@ -623,12 +632,7 @@ both engines, the probe and the kernel) with `mcpd` as the far end, and
 
 What remains of stage 4:
 
-- A host MCP server, on the emu, is `mcpfs os command ...`: `#C`'s
-  `data` takes writes as Inferno's cmd(3) does, and `os` copies its input
-  to the command, so the server's stdio reaches mcpfs. There is no test
-  of a real host MCP server yet.
-- Resources (`resources/list` and `read` as files), prompts, and
-  notifications: a changed tool list is not seen until the next mount;
-  progress and log messages are dropped; cancellation is not sent.
+- Resources (`resources/list` and `read` as files) and prompts.
+  Progress and log notifications are dropped.
 - Revision 2026-07-28 (stateless, with `_meta` on every request) is not
   spoken; 2025-11-25 is, and `mcpd` and most servers answer it.
