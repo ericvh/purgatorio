@@ -22,4 +22,4 @@ echo bad $status
 	echo not reached
 }
 echo domain $status
-ps | grep -c ' sleep$'
+echo sleepers left `{ps | grep -c ' sleep$'}
