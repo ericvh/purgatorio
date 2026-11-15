@@ -1,0 +1,68 @@
+name: interop
+
+# Interop with Plan 9's own code, from plan9port (issue #43): p9sk1 test
+# vectors from libauthsrv and libsec against purg_auth::p9sk1, and the
+# 9p client against an emu's styxlisten export. plan9port takes several
+# minutes to build, so this runs nightly and on demand, and on pull
+# requests that change what it checks.
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/interop.yml
+      - .github/interop/**
+      - crates/purg-auth/src/p9sk1.rs
+      - crates/purg-auth/tests/plan9_vectors.rs
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  plan9port:
+    name: plan9port (p9sk1 vectors, 9p client)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: build plan9port
+        run: |
+          set -euo pipefail
+          apt="sudo apt-get -q -o Acquire::Retries=3"
+          $apt update && $apt install -y libx11-dev libxt-dev libxext-dev libfontconfig1-dev libfreetype6-dev
+          git clone -q --depth 1 https://github.com/9fans/plan9port "$HOME/plan9"
+          cd "$HOME/plan9" && ./INSTALL > "$RUNNER_TEMP/plan9port.log" 2>&1 || { tail -50 "$RUNNER_TEMP/plan9port.log"; exit 1; }
+          echo "PLAN9=$HOME/plan9" >> "$GITHUB_ENV"
+          # After the system's directories, so plan9port does not shadow them.
+          echo "$HOME/plan9/bin" >> "$GITHUB_PATH"
+      - name: p9sk1 against Plan 9's libauthsrv
+        run: |
+          set -euo pipefail
+          cd .github/interop
+          9c p9sk1vec.c
+          9l -o "$RUNNER_TEMP/p9sk1vec" p9sk1vec.o
+          "$RUNNER_TEMP/p9sk1vec" | tee "$RUNNER_TEMP/p9sk1.vec"
+          cd "$GITHUB_WORKSPACE"
+          PURG_P9SK1_VECTORS="$RUNNER_TEMP/p9sk1.vec" cargo test -p purg-auth --test plan9_vectors -- --nocapture
+      - name: build the emu and the guests
+        run: cargo build -p purg-emu && cargo xtask build-root
+      - name: plan9port's 9p against styxlisten
+        run: |
+          set -euo pipefail
+          target/debug/emu -r root sh -c 'styxlisten -A tcp!127.0.0.1!5640 export /lib' &
+          emu=$!
+          for i in $(seq 60); do (echo > /dev/tcp/127.0.0.1/5640) 2>/dev/null && break; sleep 1; done
+          a='tcp!127.0.0.1!5640'
+          9p -a "$a" ls / | tee "$RUNNER_TEMP/ls"
+          grep -qx probe "$RUNNER_TEMP/ls"
+          test "$(9p -a "$a" read probe/hello.txt)" = "hello from the probe root"
+          9p -a "$a" stat probe/hello.txt | tee "$RUNNER_TEMP/stat"
+          grep -q "hello.txt" "$RUNNER_TEMP/stat"
+          if 9p -a "$a" read nosuch 2>"$RUNNER_TEMP/err"; then echo "read of a missing file worked"; exit 1; fi
+          grep -q "file does not exist" "$RUNNER_TEMP/err"
+          kill $emu
