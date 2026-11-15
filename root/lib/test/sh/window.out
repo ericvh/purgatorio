@@ -1,0 +1,4 @@
+window: can't open /dev/wctl: file does not exist
+status open
+usage: window [-r minx miny maxx maxy] [-dx n] [-dy n] [-minx n] [-miny n] [cmd arg ...]
+status usage

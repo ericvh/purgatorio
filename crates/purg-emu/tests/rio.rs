@@ -16,7 +16,7 @@
 //! sends and pastes it into another window, resizes a window by dragging
 //! its border, reads `/dev/window` and `/dev/screen` as images, hides
 //! and shows a window, checks that a program that draws once and exits
-//! leaves its picture, and resizes the window a second rio runs in and
+//! leaves its picture (a window made with `window`), and resizes the window a second rio runs in and
 //! checks that rio's window is scaled to stay on its screen.
 //!
 //! Each step waits for something it can see (a pixel, a file a command
@@ -669,7 +669,7 @@ fn editing(vm: &str) {
     // A program that draws once and exits leaves its picture.
     let w3 = (440, 300, 760, 580);
     p.typed(&format!(
-        "echo new -r {} {} {} {} 'test/draw -c dd22dd; echo > /tmp/rio/drawn; cat' > /dev/wctl\n",
+        "window -r {} {} {} {} 'test/draw -c dd22dd; echo > /tmp/rio/drawn; cat'\n",
         w3.0, w3.1, w3.2, w3.3
     ));
     p.file("drawn");
