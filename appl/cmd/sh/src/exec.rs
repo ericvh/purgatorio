@@ -951,18 +951,26 @@ impl Shell {
         }
     }
 
+    /// `if cond action [cond action]... [elseaction]`, as sh-std(1): the
+    /// action of the first condition that succeeds runs; if none does,
+    /// the else action, or nothing with an empty status.
     fn std_if(&mut self, argv: &[String], io: &Io) -> Flow<String> {
-        if argv.len() < 3 || argv.len() > 4 {
-            self.status = String::from("usage: if cond then [else]");
+        if argv.len() < 3 {
+            self.status = String::from("usage: if cond action [cond action]... [else]");
             return Ok(self.status.clone());
         }
-        self.run_block_in(&argv[1], io)?;
-        if self.status.is_empty() {
-            self.run_block_in(&argv[2], io)?;
-        } else if argv.len() == 4 {
-            self.run_block_in(&argv[3], io)?;
-        } else {
-            self.status.clear();
+        let mut rest = &argv[1..];
+        while let [cond, action, more @ ..] = rest {
+            self.run_block_in(cond, io)?;
+            if self.status.is_empty() {
+                self.run_block_in(action, io)?;
+                return Ok(self.status.clone());
+            }
+            rest = more;
+        }
+        match rest {
+            [otherwise] => self.run_block_in(otherwise, io)?,
+            _ => self.status.clear(),
         }
         Ok(self.status.clone())
     }
