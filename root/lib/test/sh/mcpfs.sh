@@ -24,6 +24,16 @@ cat tools/job_list/call
 {echo '{"nonsense":1}' >[1=0]; cat} <> tools/run/call
 cat tools/nosuch/call
 echo x > tools/run/schema
+# Resources: the list as JSON, and a resource's contents by its URI.
+grep -s '"resources"' resources/list && echo resource list
+{echo purg:///lib/probe/hello.txt >[1=0]; cat} <> resources/read
+{echo purg:///nonexistent >[1=0]; cat} <> resources/read
+cat resources/read
+echo x > resources/list
+# Prompts: the list as JSON, and one prompt by its parameters.
+grep -s '"name":"inferno-sh"' prompts/list && echo prompt list
+{echo '{"name":"inferno-sh"}' >[1=0]; cat} <> prompts/get | grep -s '"role":"user"' && echo prompt
+{echo '{"name":"nosuch"}' >[1=0]; cat} <> prompts/get
 # A call does not hold up the mount: while one sleeps, the tree is
 # listed and read (mcpd itself runs its run calls one at a time).
 {echo '{"command":"sleep 2; echo slow"}' >[1=0]; cat} <> tools/run/call > $d.slow &

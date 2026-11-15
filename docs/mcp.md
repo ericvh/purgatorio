@@ -590,6 +590,10 @@ lists the tools (following `nextCursor`), and mounts on `mntpt` (default
 | `tools/NAME/` | A directory per tool. A name that cannot be a file name (empty, `.`, `..`, or with `/`) is left out. |
 | `tools/NAME/schema` | The tool's definition from `tools/list` as JSON: `name`, `description`, `inputSchema`, `outputSchema`, `annotations`. |
 | `tools/NAME/call` | Write the arguments, a JSON object, then read the result on the same open file. |
+| `resources/list` | The server's `resources/list` result as JSON. |
+| `resources/read` | Write a resource's URI, then read its contents on the same open file. |
+| `prompts/list` | The server's `prompts/list` result as JSON. |
+| `prompts/get` | Write the parameters (`{"name": ..., "arguments": {...}}`), then read the `prompts/get` result as JSON. |
 
 Each open of `call` is one call. Nothing written means `{}`. The first
 read sends `tools/call` and returns the `CallToolResult` as one line of
@@ -615,6 +619,12 @@ read (an interrupted `cat`) ends at once and the server is sent
 fails with `timed out` and is cancelled the same way. `mcpd` itself runs
 its `run` calls one at a time, so two of those still go in turn.
 
+Resources are two files: `resources/list` reads the server's
+`resources/list` result as JSON, and `resources/read` takes a URI
+written to it (any URI the server's templates allow, such as
+`purg:///lib/probe/hello.txt` for mcpd) and a read on the same open
+returns the contents themselves, text as it is and a blob decoded.
+
 When the server sends `notifications/tools/list_changed`, mcpfs asks
 for `tools/list` again while it goes on serving: new tools appear, and
 tools no longer listed go from `tools` (other tools keep their qids).
@@ -632,7 +642,6 @@ both engines, the probe and the kernel) with `mcpd` as the far end, and
 
 What remains of stage 4:
 
-- Resources (`resources/list` and `read` as files) and prompts.
-  Progress and log notifications are dropped.
+- Progress and log notifications are dropped.
 - Revision 2026-07-28 (stateless, with `_meta` on every request) is not
   spoken; 2025-11-25 is, and `mcpd` and most servers answer it.
