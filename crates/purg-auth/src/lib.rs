@@ -38,6 +38,7 @@ pub mod keys;
 #[cfg(feature = "login")]
 pub mod login;
 pub mod modsig;
+pub mod p9sk1;
 pub mod proof;
 pub mod record;
 pub mod server;

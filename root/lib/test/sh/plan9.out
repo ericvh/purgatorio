@@ -6,5 +6,11 @@ import: bad remote tree: file does not exist
 import: bad remote tree: not a directory
 more
 sh: /tmp/sh-plan9/n/sub/h: permission denied
-9export: Plan 9 authentication (p9any) is not implemented; use -A
-usage: 9export -A [-r]
+hello
+more
+import: p9sk1: key mismatch with auth server
+import: auth server: remote: no key for eve
+import: p9sk1: no auth server for domain pdom, and the server is bootes
+import: -9 needs -k keyfile with p9sk1 keys, or -A
+usage: 9export [-A | -k keyfile] [-r]
+usage: 9export [-A | -k keyfile] [-r]
