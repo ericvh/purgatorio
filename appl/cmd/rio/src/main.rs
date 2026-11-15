@@ -438,7 +438,7 @@ impl Rio {
     // ---- Windows.
 
     /// A new window on `r` running `cmd` (`sh -i` when empty).
-    fn new_window(&mut self, r: Rect, cmd: &str) -> Result<u32, Error> {
+    fn new_window(&mut self, r: Rect, cmd: &str, cd: Option<&str>) -> Result<u32, Error> {
         let id = self.next_id;
         self.next_id += 1;
         let img = self.d.alloc_window(&self.scr, r, WHITE)?;
@@ -449,6 +449,9 @@ impl Rio {
         }
         let [ours, theirs] = purgatorio::pipe()?;
         let mut argv = vec![String::from("rio"), String::from("-W")];
+        if let Some(d) = cd {
+            argv.extend([String::from("-d"), String::from(d)]);
+        }
         if !cmd.is_empty() {
             argv.push(String::from(cmd));
         }
@@ -681,7 +684,14 @@ impl Rio {
         match c.verb.as_str() {
             "new" => {
                 let nr = ok(c.r.unwrap_or_else(|| self.default_rect()))?;
-                self.new_window(nr, &c.cmd).map(drop).map_err(e)
+                let id = self.new_window(nr, &c.cmd, c.cd.as_deref()).map_err(e)?;
+                if let (Some(on), Some(w)) = (c.scroll, self.win_mut(id)) {
+                    w.scroll = on;
+                }
+                if c.hide {
+                    self.hide(id).map_err(e)?;
+                }
+                Ok(())
             }
             "resize" => {
                 let mut nr = c.r.unwrap_or(r);
@@ -1058,7 +1068,7 @@ impl Rio {
             _ if i >= MENU.len() => self.unhide(hidden[i - MENU.len()].0),
             "New" => {
                 if let Some(r) = self.sweep()?
-                    && let Err(e) = self.new_window(r, "")
+                    && let Err(e) = self.new_window(r, "", None)
                 {
                     eprintln!("rio: new window: {e}");
                 }
@@ -1358,8 +1368,16 @@ impl Rio {
 /// `rio -W [cmd]`: the window's side. Mounts the window's files on fd 0
 /// before `/dev`, then runs the command on the window's `cons` and waits
 /// for it.
-fn window_side(cmd: Option<&String>) -> Result<(), Error> {
+fn window_side(mut args: &[String]) -> Result<(), Error> {
     progctl(purgatorio::pid(), "catchint on");
+    // `-d dir`: the window's shell starts there (wctl `new -cd`).
+    if let [d, dir, rest @ ..] = args
+        && d == "-d"
+    {
+        purgatorio::chdir(dir).map_err(|e| Error(format!("rio: can't cd to {dir}: {e}")))?;
+        args = rest;
+    }
+    let cmd = args.first();
     purgatorio::mount(0, -1, "/dev", mount::MBEFORE | mount::MNOAUTH, "")
         .map_err(|e| Error(format!("rio: cannot mount window: {e}")))?;
     let cons = OpenOptions::new()
@@ -1395,7 +1413,7 @@ fn usage() -> Error {
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.get(1).map(String::as_str) == Some("-W") {
-        return window_side(args.get(2));
+        return window_side(&args[2..]);
     }
     let mut font = None;
     let mut init = None;
@@ -1414,7 +1432,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut rio = Rio::new(font)?;
     if let Some(cmd) = init {
         let r = rio.default_rect();
-        rio.new_window(r, &cmd)?;
+        rio.new_window(r, &cmd, None)?;
     }
     rio.run()
 }

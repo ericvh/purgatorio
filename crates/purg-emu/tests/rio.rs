@@ -701,6 +701,22 @@ fn editing(vm: &str) {
     p.see("the program's picture", |s| s.at(600, 440) == 0xDD22DD);
     p.focus(w1);
     assert_eq!(p.screen.at(600, 440), 0xDD22DD, "{vm}: the picture went");
+    // window -hide -cd: a hidden window whose shell starts in that
+    // directory, and goes when its command ends.
+    p.typed("window -hide -cd /tmp/rio 'pwd > cdout'\n");
+    p.file("cdout");
+    p.see("the hidden window drew nothing", |s| {
+        s.at(600, 440) == 0xDD22DD
+    });
+    let start = Instant::now();
+    let dir = loop {
+        let d = std::fs::read_to_string(p.tmp.join("cdout")).unwrap_or_default();
+        if d.ends_with('\n') || start.elapsed() > WAIT {
+            break d;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(dir, "/tmp/rio\n", "{vm}: window -cd");
 
     // rio in the second window, with a window of its own; resizing the
     // second window scales the inner rio's window to its new screen.
