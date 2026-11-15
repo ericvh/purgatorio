@@ -24,7 +24,14 @@ pub trait Conn: Send + Sync {
 pub trait Listener: Send + Sync {
     fn accept(&self) -> Result<Arc<dyn Conn>>;
     fn local(&self) -> String;
+    /// Ends the listener: an [`accept`](Listener::accept) blocked now or
+    /// later fails with `i/o on hungup channel`, so that it lets go of the
+    /// port. Conversations it already returned are not affected.
+    fn close(&self) {}
 }
+
+/// The error an `accept` on a closed listener fails with.
+pub const EHUNGUP: &str = "i/o on hungup channel";
 
 /// What `#I` asks of the platform.
 pub trait Net: Send + Sync {

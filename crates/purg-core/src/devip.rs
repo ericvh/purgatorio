@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use purg_abi::{error, mode};
 use purg_platform::net::{Conn, IPV4_HEADER, Ifc, Listener, Net};
-use purg_platform::sync::{Mutex, MutexGuard};
+use purg_platform::sync::{Mutex, MutexGuard, Rendez};
 use purg_styx::{DMDIR, Dir, QTDIR, QTFILE, Qid};
 
 use crate::Platform;
@@ -95,6 +95,10 @@ struct Conv {
     /// Open Chans on the conversation's files. When the last one closes
     /// the conversation is hung up and forgotten, as in Inferno.
     opens: AtomicU32,
+    /// Reads of `listen` blocked in the listener's accept, and their
+    /// wakeup when one returns.
+    accepting: AtomicU32,
+    accepted: Rendez,
 }
 
 impl Conv {
@@ -110,6 +114,8 @@ impl Conv {
             headers: AtomicBool::new(false),
             announced: Mutex::new(String::new()),
             opens: AtomicU32::new(0),
+            accepting: AtomicU32::new(0),
+            accepted: Rendez::new(),
         }
     }
 }
@@ -579,7 +585,11 @@ impl DevIp {
             .next()
             .and_then(|p| p.parse().ok())
             .ok_or(Error::new("bad port"))?;
-        // The port is free again once its listener is gone.
+        // The port is free again once its listener is gone, which a read
+        // of `listen` blocked in it holds until it fails.
+        listener.close();
+        conv.accepted
+            .sleep(|| conv.accepting.load(Ordering::Acquire) == 0);
         drop(listener);
         let host = conv.announced.lock().clone();
         self.announce_headers(conv, &host, port)
@@ -820,7 +830,12 @@ fn accept(dev: &DevIp, conv: &Conv, buf: &mut [u8]) -> Result<usize> {
         .lock()
         .clone()
         .ok_or(Error::new("not announced"))?;
-    let conn = listener.accept().map_err(Error::from)?;
+    conv.accepting.fetch_add(1, Ordering::AcqRel);
+    let got = listener.accept();
+    drop(listener);
+    conv.accepting.fetch_sub(1, Ordering::AcqRel);
+    conv.accepted.wakeup();
+    let conn = got.map_err(Error::from)?;
     let born = dev.alloc(conv.proto);
     *born.local.lock() = conn.local();
     *born.remote.lock() = conn.remote();

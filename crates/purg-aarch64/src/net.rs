@@ -54,7 +54,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
 use purg_platform::Result;
-use purg_platform::net::{self, Conn, Listener, Net, UdpDemux};
+use purg_platform::net::{self, Conn, EHUNGUP, Listener, Net, UdpDemux};
 use purg_platform::sync::{Mutex, MutexGuard, Rendez};
 use smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet};
 
@@ -321,6 +321,7 @@ impl NetStack {
                 lo,
                 smol: None,
                 any: true,
+                closed: AtomicBool::new(false),
             }));
         };
         let port = self.free_udp_port(smol, port);
@@ -330,6 +331,7 @@ impl NetStack {
             lo,
             smol: Some(smol.udp_port(port, true)?),
             any: true,
+            closed: AtomicBool::new(false),
         }))
     }
 
@@ -717,6 +719,7 @@ impl Smol {
     fn announce_udp(self: &Arc<Self>, port: u16) -> Result<Arc<dyn Listener>> {
         Ok(Arc::new(SmolUdpListen {
             sock: self.udp_port(port, true)?,
+            closed: AtomicBool::new(false),
         }))
     }
 }
@@ -760,11 +763,15 @@ impl Drop for SmolUdp {
 
 struct SmolUdpListen {
     sock: Arc<SmolUdp>,
+    closed: AtomicBool,
 }
 
 impl Listener for SmolUdpListen {
     fn accept(&self) -> Result<Arc<dyn Conn>> {
         let (id, remote) = self.sock.smol.run(|stack| {
+            if self.closed.load(Ordering::Acquire) {
+                return Some(Err(Cow::Borrowed(EHUNGUP)));
+            }
             self.sock.pump(stack);
             self.sock.demux.lock().accept().map(Ok)
         })?;
@@ -778,6 +785,11 @@ impl Listener for SmolUdpListen {
 
     fn local(&self) -> String {
         self.sock.local.clone()
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        kick();
     }
 }
 
@@ -1369,6 +1381,7 @@ impl Loopback {
             lo: self.udp_port(port, true, false)?,
             smol: None,
             any: false,
+            closed: AtomicBool::new(false),
         }))
     }
 
@@ -1631,6 +1644,7 @@ struct AnyUdpListen {
     smol: Option<Arc<SmolUdp>>,
     /// Announced on `*`, not on `127.0.0.1` alone.
     any: bool,
+    closed: AtomicBool,
 }
 
 impl AnyUdpListen {
@@ -1648,17 +1662,25 @@ impl AnyUdpListen {
 
 impl Listener for AnyUdpListen {
     fn accept(&self) -> Result<Arc<dyn Conn>> {
+        let closed = || self.closed.load(Ordering::Acquire);
         loop {
+            if closed() {
+                return Err(Cow::Borrowed(EHUNGUP));
+            }
             if let Some((id, remote)) = self.lo.demux.lock().accept() {
                 return Ok(self.lo_conn(id, remote));
             }
             match &self.smol {
                 None => {
-                    sleep(&self.lo.ready, || self.lo.demux.lock().pending(), None)?;
+                    sleep(
+                        &self.lo.ready,
+                        || closed() || self.lo.demux.lock().pending(),
+                        None,
+                    )?;
                 }
                 Some(s) => {
                     let got = s.smol.run(|stack| {
-                        if self.lo.demux.lock().pending() {
+                        if closed() || self.lo.demux.lock().pending() {
                             return Some(Ok(None));
                         }
                         s.pump(stack);
@@ -1676,6 +1698,12 @@ impl Listener for AnyUdpListen {
     fn local(&self) -> String {
         let host = if self.any { "*" } else { "127.0.0.1" };
         format!("{host}!{}", self.lo.port)
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.lo.ready.wakeup();
+        kick();
     }
 }
 
