@@ -34,6 +34,7 @@ pub enum Q {
     Root = 0,
     Cons,
     Consctl,
+    Kbdin,
     Keyboard,
     Label,
     Pointer,
@@ -52,6 +53,7 @@ pub enum Q {
 const FILES: &[(&str, Q, u32)] = &[
     ("cons", Q::Cons, 0o600),
     ("consctl", Q::Consctl, 0o200),
+    ("kbdin", Q::Kbdin, 0o200),
     ("keyboard", Q::Keyboard, 0o400),
     ("label", Q::Label, 0o600),
     ("pointer", Q::Pointer, 0o600),
@@ -722,6 +724,17 @@ impl Rio {
                         "holdon" | "holdoff" => {}
                         _ => return err("unknown control message"),
                     }
+                }
+                Ok(())
+            }
+            // Typed at rio's keyboard, so it goes to the current window,
+            // whichever window's file was written.
+            Q::Kbdin => {
+                for c in text.chars() {
+                    self.key(c);
+                }
+                if let Some(id) = self.current {
+                    self.redraw(id);
                 }
                 Ok(())
             }
