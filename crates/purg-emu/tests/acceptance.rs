@@ -298,6 +298,16 @@ on_each_vm! {
         assert!(!out.contains("FAIL"), "{vm}:\n{out}");
     }
 
+    fn icmp_identifier_matches_local(vm) {
+        let o = emu(vm, &["/bin/test/net.wasm", "--icmp"], b"");
+        let out = stdout(&o);
+        assert!(
+            o.status.success() && (out.contains("ok icmp\n") || out.contains("ok icmp_skip")),
+            "{vm}:\n{out}\n{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    }
+
     fn tcp_dial_export_and_os(vm) {
         let o = emu(vm, &["/bin/test/net.wasm"], b"");
         let out = stdout(&o);
