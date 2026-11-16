@@ -12,7 +12,8 @@ with `bind`/`mount`, and one protocol, Styx (9P2000).
   grouped by milestone (K1–K4, Phase G) and label. `docs/roadmap.md` only
   points there.
 - `docs/abi.md`: the guest ABI (WASI p1 plus the `purgatorio` module).
-- `docs/wasm64.md`: why we stay on wasm32 and how a later wasm64 port fits.
+- `docs/wasm64.md`: wasm64 guests: the `purgatorio64` module, the SDK's
+  width-neutral `fs`, `fd`, `io` and `time`, and `/bin/64`.
 - `README.md`: user-facing status, layout and build instructions.
 
 ## Commands
@@ -27,7 +28,7 @@ cargo xtask probe --smp 4        # the probe on four CPUs
 cargo xtask kernel               # purg-kernel under QEMU TCG: GICv2, GICv3, EL2 boot
 cargo xtask kernel --kvm         # the same under KVM (aarch64 host, GICv3 only, PSCI exit)
 cargo xtask initrd               # the kernel's root as target/initrd/root.tar
-cargo xtask clippy-guests        # lint the SDK and every guest for wasm32-wasip1
+cargo xtask clippy-guests        # lint the SDK and every guest for wasm32-wasip1 (and wasm64)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --target aarch64-unknown-none \
@@ -75,8 +76,11 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 - Do not add non-standard functions to the `wasi_snapshot_preview1` namespace.
   New host calls go in the `purgatorio` module; bump `purg_abi::ABI_VERSION`
   and update `docs/abi.md` when the ABI changes.
-- Stay on `wasm32-wasip1`. A wasm64 port is a later, separate ABI
-  (`docs/wasm64.md`).
+- `wasm32-wasip1` is the default guest target. wasm64 is a separate ABI,
+  `purgatorio64`, with no WASI (`docs/wasm64.md`): a crate opts in with
+  `wasm64 = true` under `[package.metadata.purgatorio]` and must then use
+  `purgatorio::{fs, fd, io, time}` instead of `std`'s. Host functions that
+  take guest pointers are generic over `purg_vm::Ptr`.
 
 ## Layout
 
@@ -97,7 +101,7 @@ sdk/purgatorio, sdk/purgatorio-macros              guest SDK, #[purgatorio::main
 appl/cmd/<name>/                                   commands -> root/bin/<name>.wasm
 appl/lib/<name>/                                   cdylib crates are loadable reactors -> root/bin/lib/<name>.wasm;
                                                    others (regexp) are ordinary libraries
-appl/test/{abi,procs,m3,net,wasi,draw}/            conformance guests -> root/bin/test/
+appl/test/{abi,procs,m3,net,wasi,draw,wide}/       conformance guests -> root/bin/test/ (wasm64 builds -> root/bin/64/)
 root/                                              the tree emu serves as #U
 root/lib/test/sh/                                  sh script corpus with .out goldens
 xtask/                                             build-root, run-emu, probe, clippy-guests

@@ -1,18 +1,20 @@
 //! cat [file ...]: copy each file, or standard input if none, to standard
 //! output.
 //!
-//! Files are opened with plain `std::fs::File`, which goes through WASI;
+//! Files are opened with `purgatorio::fs::File`, which is `std::fs::File`
+//! through WASI in a wasm32 build and the SDK's own in a wasm64 one;
 //! failures are reported with the exact Inferno error string from
 //! `purgatorio::errstr`. Each read is written to fd 1 as it is, as
 //! Inferno's cat does: not through `std::io::stdout`, whose line
 //! buffering searches every buffer for a newline and copies small writes.
 
-use std::fs::File;
+use purgatorio::io::stdin;
 use std::io::{self, Read, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
 
-use purgatorio::{Context, Error};
+use purgatorio::fd::FromRawFd;
+use purgatorio::fs::File;
+use purgatorio::{Context, Error, eprintln};
 
 fn copy(from: &mut dyn Read, out: &mut dyn Write) -> io::Result<()> {
     let mut buf = [0u8; 8192];
@@ -31,7 +33,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
     let stdout: &mut File = &mut stdout;
     if args.len() <= 1 {
-        copy(&mut io::stdin().lock(), stdout)?;
+        copy(&mut stdin().lock(), stdout)?;
         return Ok(());
     }
     let mut failed = false;

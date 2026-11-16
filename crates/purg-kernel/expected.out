@@ -105,6 +105,35 @@ ok sock
 ok sleep
 ok args
 kernel: ok
+kernel: run /bin/64/test/wide.wasm /tmp
+pointer 64 bits
+ok argv0
+args ["/tmp"]
+ok read_to_string
+ok seek end
+ok seek start
+ok read at offset
+ok lines
+ok stat length
+ok fstat
+ok read_dir
+ok fd2path
+ok errstr
+ok werrstr
+ok not ready
+ok ready
+ok pipe
+ok env
+ok spawn
+ok wait
+ok sleep
+ok clock
+ok random
+ok bad pointer
+ok bad length
+ok open mode
+ok open missing
+kernel: ok
 kernel: rtc: read, set and put back
 eia0: this line went to /dev/eia0
 kernel: eia0: ctl, status and data ok

@@ -157,6 +157,53 @@ on_each_vm! {
         assert!(o.status.success(), "{vm}");
     }
 
+    /// The same guest source built for both widths (`docs/wasm64.md`):
+    /// the wasm64 build, which reaches the host through `purgatorio64`
+    /// alone, prints what the wasm32 build prints through WASI.
+    fn wide_conformance(vm) {
+        let run = |path: &str| {
+            let o = emu(vm, &[path, "/tmp", "x", "y z"], b"");
+            let out = stdout(&o);
+            assert!(o.status.success(), "{vm} {path}:\n{out}");
+            assert!(!out.contains("FAIL"), "{vm} {path}:\n{out}");
+            assert!(out.contains("ok bad pointer\n"), "{vm} {path}:\n{out}");
+            assert!(out.ends_with("ok open missing\n"), "{vm} {path}:\n{out}");
+            out
+        };
+        let narrow = run("/bin/test/wide.wasm");
+        let wide = run("/bin/64/test/wide.wasm");
+        assert!(narrow.starts_with("pointer 32 bits\n"), "{vm}:\n{narrow}");
+        assert!(wide.starts_with("pointer 64 bits\n"), "{vm}:\n{wide}");
+        let rest = |s: &str| s.split_once('\n').map(|(_, r)| r.to_string());
+        assert_eq!(rest(&narrow), rest(&wide), "{vm}");
+    }
+
+    /// wasm64 commands behave as their wasm32 builds do: output, errors
+    /// in Inferno's words and the exit status.
+    fn wide_commands(vm) {
+        let o = emu(vm, &["/bin/64/echo.wasm", "hello", "world"], b"");
+        assert_eq!(stdout(&o), "hello world\n", "{vm}");
+        assert!(o.status.success(), "{vm}");
+        let o = emu(vm, &["/bin/64/cat.wasm"], b"hi\nthere\n");
+        assert_eq!(stdout(&o), "hi\nthere\n", "{vm}");
+        let o = emu(vm, &["/bin/64/cat.wasm", "/no/such"], b"");
+        assert!(!o.status.success(), "{vm}");
+        assert_eq!(stdout(&o), "cat: /no/such: file does not exist\n", "{vm}");
+    }
+
+    /// A name space chooses the width: with `/bin/64` bound before `/bin`,
+    /// a command that has a wasm64 build runs it and one that has none
+    /// runs its wasm32 build, in the same pipeline.
+    fn wide_union_bin(vm) {
+        let o = emu(
+            vm,
+            &["sh", "-c", "bind -b /bin/64 /bin; test/wide /tmp | sed 1q; echo and | cat | tr a-z A-Z"],
+            b"",
+        );
+        assert_eq!(stdout(&o), "pointer 64 bits\nAND\n", "{vm}");
+        assert!(o.status.success(), "{vm}");
+    }
+
     fn abi_conformance(vm) {
         let o = emu(vm, &["/bin/test/abi.wasm"], b"");
         let out = stdout(&o);

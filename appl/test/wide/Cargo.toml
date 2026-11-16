@@ -1,0 +1,20 @@
+[package]
+name = "appl-test-wide"
+description = "SDK conformance for both guest widths, wasm32 and wasm64"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[package.metadata.purgatorio]
+wasm64 = true
+
+[[bin]]
+name = "wide"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
