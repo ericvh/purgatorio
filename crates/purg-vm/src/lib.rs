@@ -23,8 +23,8 @@ use purg_abi::mode;
 use purg_core::{Chan, Error, Prog};
 
 pub use host::{purgatorio, wasi};
-pub use loader::{Malformed, abi_version, load_module};
-pub use mem::{Fault, Mem};
+pub use loader::{Malformed, abi_version, load_module, memory64};
+pub use mem::{Fault, Mem, Ptr};
 
 /// Why the guest stopped before returning from its entry point. Host
 /// functions return this as an error to unwind the guest.
@@ -399,10 +399,65 @@ macro_rules! for_each_import {
     };
 }
 
+/// [`for_each_import!`] for a wasm64 guest: the `purgatorio64` module,
+/// which is the `purgatorio` calls with every pointer and size an `i64`,
+/// and the calls that stand in for WASI (`docs/wasm64.md`).
+#[macro_export]
+macro_rules! for_each_import64 {
+    ($m:ident) => {
+        $m!($crate::PURGATORIO64, "errstr", $crate::purgatorio::errstr::<i64>, (buf: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "werrstr", $crate::purgatorio::werrstr::<i64>, (ptr: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "exits", $crate::purgatorio::exits::<i64>, (ptr: i64, len: i64) -> ());
+        $m!($crate::PURGATORIO64, "stat", $crate::purgatorio::stat::<i64>, (path: i64, plen: i64, buf: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "fstat", $crate::purgatorio::fstat::<i64>, (fd: i32, buf: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "dirread", $crate::purgatorio::dirread::<i64>, (fd: i32, buf: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "open", $crate::purgatorio::open::<i64>, (path: i64, plen: i64, mode: i32) -> i32);
+        $m!($crate::PURGATORIO64, "create", $crate::purgatorio::create::<i64>, (path: i64, plen: i64, mode: i32, perm: i32) -> i32);
+        $m!($crate::PURGATORIO64, "wstat", $crate::purgatorio::wstat::<i64>, (path: i64, plen: i64, dir: i64, dlen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "fwstat", $crate::purgatorio::fwstat::<i64>, (fd: i32, dir: i64, dlen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "remove", $crate::purgatorio::remove::<i64>, (path: i64, plen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "fd2path", $crate::purgatorio::fd2path::<i64>, (fd: i32, buf: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "chdir", $crate::purgatorio::chdir::<i64>, (path: i64, plen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "dup", $crate::purgatorio::dup, (old: i32, new: i32) -> i32);
+        $m!($crate::PURGATORIO64, "pipe", $crate::purgatorio::pipe::<i64>, (fds: i64) -> i32);
+        $m!($crate::PURGATORIO64, "iounit", $crate::purgatorio::iounit, (fd: i32) -> i32);
+        $m!($crate::PURGATORIO64, "bind", $crate::purgatorio::bind::<i64>, (name: i64, nlen: i64, old: i64, olen: i64, flags: i32) -> i32);
+        $m!($crate::PURGATORIO64, "unmount", $crate::purgatorio::unmount::<i64>, (name: i64, nlen: i64, old: i64, olen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "pctl", $crate::purgatorio::pctl::<i64>, (flags: i32, movefd: i64, n: i64) -> i32);
+        $m!($crate::PURGATORIO64, "spawn_prog", $crate::purgatorio::spawn_prog::<i64>, (path: i64, plen: i64, argv: i64, alen: i64, flags: i32, fdmap: i64, n: i64) -> i32);
+        $m!($crate::PURGATORIO64, "mount", $crate::purgatorio::mount::<i64>, (fd: i32, afd: i32, old: i64, olen: i64, flags: i32, aname: i64, alen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "export", $crate::purgatorio::export::<i64>, (fd: i32, dir: i64, dlen: i64, flags: i32) -> i32);
+        $m!($crate::PURGATORIO64, "export_key", $crate::purgatorio::export_key::<i64>, (fd: i32, dir: i64, dlen: i64, flags: i32, key: i64, klen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "fauth", $crate::purgatorio::fauth::<i64>, (fd: i32, aname: i64, alen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "stream", $crate::purgatorio::stream, (src: i32, dst: i32, bufsiz: i32) -> i32);
+        $m!($crate::PURGATORIO64, "fversion", $crate::purgatorio::fversion::<i64>, (fd: i32, msize: i32, ver: i64, vlen: i64) -> i32);
+        $m!($crate::PURGATORIO64, "file2chan", $crate::purgatorio::file2chan::<i64>, (dir: i64, dlen: i64, name: i64, nlen: i64, handles: i64) -> i32);
+        $m!($crate::PURGATORIO64, "chan_new", $crate::purgatorio::chan_new, (cap: i32) -> i32);
+        $m!($crate::PURGATORIO64, "chan_close", $crate::purgatorio::chan_close, (h: i32) -> i32);
+        $m!($crate::PURGATORIO64, "chan_send", $crate::purgatorio::chan_send::<i64>, (h: i32, buf: i64, n: i64, handles: i64, nh: i64) -> i32);
+        $m!($crate::PURGATORIO64, "chan_recv", $crate::purgatorio::chan_recv::<i64>, (h: i32, buf: i64, blen: i64, handles: i64, maxh: i64) -> i32);
+        $m!($crate::PURGATORIO64, "alt", $crate::purgatorio::alt::<i64>, (ops: i64, nops: i64, block: i32) -> i32);
+        $m!($crate::PURGATORIO64, "wait", $crate::purgatorio::wait::<i64>, (ops: i64, nops: i64, timeout_ms: i32) -> i32);
+        $m!($crate::PURGATORIO64, "read", $crate::purgatorio::read::<i64>, (fd: i32, buf: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "write", $crate::purgatorio::write::<i64>, (fd: i32, buf: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "pread", $crate::purgatorio::pread::<i64>, (fd: i32, buf: i64, len: i64, off: i64) -> i32);
+        $m!($crate::PURGATORIO64, "pwrite", $crate::purgatorio::pwrite::<i64>, (fd: i32, buf: i64, len: i64, off: i64) -> i32);
+        $m!($crate::PURGATORIO64, "seek", $crate::purgatorio::seek, (fd: i32, off: i64, whence: i32) -> i64);
+        $m!($crate::PURGATORIO64, "close", $crate::purgatorio::close, (fd: i32) -> i32);
+        $m!($crate::PURGATORIO64, "args", $crate::purgatorio::args::<i64>, (buf: i64, len: i64) -> i32);
+        $m!($crate::PURGATORIO64, "sleep", $crate::purgatorio::sleep, (ms: i32) -> i32);
+        $m!($crate::PURGATORIO64, "nsec", $crate::purgatorio::nsec, () -> i64);
+        $m!($crate::PURGATORIO64, "mono", $crate::purgatorio::mono, () -> i64);
+        $m!($crate::PURGATORIO64, "random", $crate::purgatorio::random::<i64>, (buf: i64, len: i64) -> i32);
+    };
+}
+
 #[doc(hidden)]
 pub const WASI: &str = purg_abi::wasi::MODULE;
 #[doc(hidden)]
 pub const PURGATORIO: &str = purg_abi::MODULE;
+#[doc(hidden)]
+pub const PURGATORIO64: &str = purg_abi::MODULE64;
 
 #[cfg(test)]
 mod tests {

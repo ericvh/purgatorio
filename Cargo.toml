@@ -127,7 +127,7 @@ venti = { package = "appl-lib-venti", path = "appl/lib/venti" }
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "ticket_mutex", "rwlock", "once"] }
 libc = "0.2"
 dlmalloc = { version = "0.2", features = ["global"] }
-wasmi = { version = "2", default-features = false, features = ["stable", "validate", "libm", "auto-dispatch"] }
+wasmi = { version = "2", default-features = false, features = ["stable", "validate", "libm", "auto-dispatch", "memory64"] }
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std"] }
 # The runtime alone, without std, for precompiled modules in the kernel
 # (purg-vm-aot, docs/perf.md). Must be the same version as `wasmtime`.

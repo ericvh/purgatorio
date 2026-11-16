@@ -1932,6 +1932,13 @@ name = "appl-test-wasi"
 version = "1.0.0"
 
 [[package]]
+name = "appl-test-wide"
+version = "1.0.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -9,7 +9,7 @@ use purg_abi::error;
 use purg_core::Error;
 use purg_styx::Dir;
 
-use crate::mem::Mem;
+use crate::mem::{Mem, Ptr};
 use crate::{Ctx, HostResult, Stop};
 
 /// WASI preview1, implemented over the namespace. Calls Inferno cannot
@@ -1058,16 +1058,16 @@ pub mod purgatorio {
     }
 
     /// Copies the errstr into `buf` (truncated to `len`), returning its length.
-    pub fn errstr(ctx: &mut Ctx, mem: &mut Mem<'_>, buf: i32, len: i32) -> HostResult<i32> {
+    pub fn errstr<P: Ptr>(ctx: &mut Ctx, mem: &mut Mem<'_>, buf: P, len: P) -> HostResult<i32> {
         call(ctx, |c| {
             let s = c.prog.errstr.as_bytes();
-            let n = s.len().min(len as u32 as usize);
+            let n = s.len().min(len.size());
             mem.write(buf, &s[..n])?;
             Ok(n as i32)
         })
     }
 
-    pub fn werrstr(ctx: &mut Ctx, mem: &mut Mem<'_>, ptr: i32, len: i32) -> HostResult<i32> {
+    pub fn werrstr<P: Ptr>(ctx: &mut Ctx, mem: &mut Mem<'_>, ptr: P, len: P) -> HostResult<i32> {
         call(ctx, |c| {
             let s = String::from(mem.str(ptr, len)?);
             c.prog.errstr = s;
@@ -1075,7 +1075,7 @@ pub mod purgatorio {
         })
     }
 
-    pub fn exits(_ctx: &mut Ctx, mem: &mut Mem<'_>, ptr: i32, len: i32) -> HostResult<()> {
+    pub fn exits<P: Ptr>(_ctx: &mut Ctx, mem: &mut Mem<'_>, ptr: P, len: P) -> HostResult<()> {
         let status = match mem.str(ptr, len) {
             Ok(s) => String::from(s),
             Err(e) => String::from(e.as_str()),
@@ -1083,22 +1083,22 @@ pub mod purgatorio {
         Err(Stop::Exit(status))
     }
 
-    fn put_dir(mem: &mut Mem<'_>, buf: i32, len: i32, d: &Dir) -> Result<i32, Error> {
+    fn put_dir<P: Ptr>(mem: &mut Mem<'_>, buf: P, len: P, d: &Dir) -> Result<i32, Error> {
         let packed = d.pack().map_err(|_| Error::new(error::EIO))?;
-        if packed.len() > len as u32 as usize {
+        if packed.len() > len.size() {
             return Err(Error::new(error::ESHORTSTAT));
         }
         mem.write(buf, &packed)?;
         Ok(packed.len() as i32)
     }
 
-    pub fn stat(
+    pub fn stat<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        path: i32,
-        plen: i32,
-        buf: i32,
-        len: i32,
+        path: P,
+        plen: P,
+        buf: P,
+        len: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let d = c.prog.stat(mem.str(path, plen)?)?;
@@ -1106,19 +1106,25 @@ pub mod purgatorio {
         })
     }
 
-    pub fn fstat(ctx: &mut Ctx, mem: &mut Mem<'_>, fd: i32, buf: i32, len: i32) -> HostResult<i32> {
+    pub fn fstat<P: Ptr>(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        buf: P,
+        len: P,
+    ) -> HostResult<i32> {
         call(ctx, |c| {
             let d = c.prog.fstat(fd)?;
             put_dir(mem, buf, len, &d)
         })
     }
 
-    pub fn dirread(
+    pub fn dirread<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         fd: i32,
-        buf: i32,
-        len: i32,
+        buf: P,
+        len: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let out = mem.slice_mut(buf, len)?;
@@ -1126,42 +1132,54 @@ pub mod purgatorio {
         })
     }
 
-    fn put_str(mem: &mut Mem<'_>, buf: i32, len: i32, v: &str) -> Result<i32, Error> {
-        if v.len() > len as u32 as usize {
+    fn put_str<P: Ptr>(mem: &mut Mem<'_>, buf: P, len: P, v: &str) -> Result<i32, Error> {
+        if v.len() > len.size() {
             return Err(Error::new(error::ESHORTSTAT));
         }
         mem.write(buf, v.as_bytes())?;
         Ok(v.len() as i32)
     }
 
-    fn get_dir(mem: &Mem<'_>, ptr: i32, len: i32) -> Result<Dir, Error> {
+    fn get_dir<P: Ptr>(mem: &Mem<'_>, ptr: P, len: P) -> Result<Dir, Error> {
         Dir::unpack(mem.slice(ptr, len)?)
             .map(|(d, _)| d)
             .map_err(|_| Error::new(error::EBADARG))
     }
 
-    fn get_i32s(mem: &Mem<'_>, ptr: i32, n: i32) -> Result<Vec<i32>, Error> {
-        if n < 0 {
-            return Err(Error::new(error::EBADARG));
-        }
-        (0..n)
-            .map(|i| Ok(mem.u32(ptr.wrapping_add(4 * i))? as i32))
+    fn get_i32s<P: Ptr>(mem: &Mem<'_>, ptr: P, n: P) -> Result<Vec<i32>, Error> {
+        (0..count(n)?)
+            .map(|i| Ok(mem.u32(ptr.off(4 * i))? as i32))
             .collect()
+    }
+
+    /// A count of elements, which in either width is at most `i32::MAX`:
+    /// a negative wasm32 count is refused here too.
+    fn count<P: Ptr>(n: P) -> Result<u64, Error> {
+        match n.addr() {
+            n if n <= i32::MAX as u64 => Ok(n),
+            _ => Err(Error::new(error::EBADARG)),
+        }
     }
 
     fn omode(m: i32) -> Result<u8, Error> {
         u8::try_from(m).map_err(|_| Error::new(error::EBADARG))
     }
 
-    pub fn open(ctx: &mut Ctx, mem: &mut Mem<'_>, path: i32, plen: i32, m: i32) -> HostResult<i32> {
+    pub fn open<P: Ptr>(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        path: P,
+        plen: P,
+        m: i32,
+    ) -> HostResult<i32> {
         call(ctx, |c| c.prog.open(mem.str(path, plen)?, omode(m)?))
     }
 
-    pub fn create(
+    pub fn create<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        path: i32,
-        plen: i32,
+        path: P,
+        plen: P,
         m: i32,
         perm: i32,
     ) -> HostResult<i32> {
@@ -1170,13 +1188,13 @@ pub mod purgatorio {
         })
     }
 
-    pub fn wstat(
+    pub fn wstat<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        path: i32,
-        plen: i32,
-        dir: i32,
-        dlen: i32,
+        path: P,
+        plen: P,
+        dir: P,
+        dlen: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let d = get_dir(mem, dir, dlen)?;
@@ -1184,12 +1202,12 @@ pub mod purgatorio {
         })
     }
 
-    pub fn fwstat(
+    pub fn fwstat<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         fd: i32,
-        dir: i32,
-        dlen: i32,
+        dir: P,
+        dlen: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let d = get_dir(mem, dir, dlen)?;
@@ -1197,16 +1215,16 @@ pub mod purgatorio {
         })
     }
 
-    pub fn remove(ctx: &mut Ctx, mem: &mut Mem<'_>, path: i32, plen: i32) -> HostResult<i32> {
+    pub fn remove<P: Ptr>(ctx: &mut Ctx, mem: &mut Mem<'_>, path: P, plen: P) -> HostResult<i32> {
         call(ctx, |c| c.prog.remove(mem.str(path, plen)?).map(|()| 0))
     }
 
-    pub fn fd2path(
+    pub fn fd2path<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         fd: i32,
-        buf: i32,
-        len: i32,
+        buf: P,
+        len: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let p = if fd == purg_abi::PREOPEN_DOT_FD {
@@ -1218,7 +1236,7 @@ pub mod purgatorio {
         })
     }
 
-    pub fn chdir(ctx: &mut Ctx, mem: &mut Mem<'_>, path: i32, plen: i32) -> HostResult<i32> {
+    pub fn chdir<P: Ptr>(ctx: &mut Ctx, mem: &mut Mem<'_>, path: P, plen: P) -> HostResult<i32> {
         call(ctx, |c| c.prog.chdir(mem.str(path, plen)?).map(|()| 0))
     }
 
@@ -1226,12 +1244,12 @@ pub mod purgatorio {
         call(ctx, |c| c.prog.dup(old, new))
     }
 
-    pub fn pipe(ctx: &mut Ctx, mem: &mut Mem<'_>, fds: i32) -> HostResult<i32> {
+    pub fn pipe<P: Ptr>(ctx: &mut Ctx, mem: &mut Mem<'_>, fds: P) -> HostResult<i32> {
         call(ctx, |c| {
-            mem.slice(fds, 8)?;
+            mem.slice(fds, P::at(8))?;
             let [a, b] = c.prog.pipe()?;
             mem.put_u32(fds, a as u32)?;
-            mem.put_u32(fds.wrapping_add(4), b as u32)?;
+            mem.put_u32(fds.off(4), b as u32)?;
             Ok(0)
         })
     }
@@ -1246,13 +1264,13 @@ pub mod purgatorio {
         i32::try_from(id).unwrap_or(i32::MAX)
     }
 
-    pub fn bind(
+    pub fn bind<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        name: i32,
-        nlen: i32,
-        old: i32,
-        olen: i32,
+        name: P,
+        nlen: P,
+        old: P,
+        olen: P,
         flags: i32,
     ) -> HostResult<i32> {
         call(ctx, |c| {
@@ -1262,16 +1280,16 @@ pub mod purgatorio {
         })
     }
 
-    pub fn unmount(
+    pub fn unmount<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        name: i32,
-        nlen: i32,
-        old: i32,
-        olen: i32,
+        name: P,
+        nlen: P,
+        old: P,
+        olen: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
-            let name = if nlen == 0 {
+            let name = if nlen.addr() == 0 {
                 None
             } else {
                 Some(mem.str(name, nlen)?)
@@ -1280,12 +1298,12 @@ pub mod purgatorio {
         })
     }
 
-    pub fn pctl(
+    pub fn pctl<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         flags: i32,
-        movefd: i32,
-        n: i32,
+        movefd: P,
+        n: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let keep = get_i32s(mem, movefd, n)?;
@@ -1298,16 +1316,16 @@ pub mod purgatorio {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn spawn_prog(
+    pub fn spawn_prog<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        path: i32,
-        plen: i32,
-        argv: i32,
-        alen: i32,
+        path: P,
+        plen: P,
+        argv: P,
+        alen: P,
         flags: i32,
-        fdmap: i32,
-        n: i32,
+        fdmap: P,
+        n: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let path = crate::command_path(mem.str(path, plen)?);
@@ -1316,11 +1334,7 @@ pub mod purgatorio {
                 .split_terminator('\0')
                 .map(String::from)
                 .collect();
-            let pairs = get_i32s(
-                mem,
-                fdmap,
-                n.checked_mul(2).ok_or(Error::new(error::EBADARG))?,
-            )?;
+            let pairs = get_i32s(mem, fdmap, P::at(count(n)? * 2))?;
             let map: Vec<(i32, i32)> = pairs.chunks(2).map(|p| (p[0], p[1])).collect();
             let engine = c.engine.clone();
             let pid = crate::spawn(&c.prog, &engine, &path, args, flags as u32, &map)?;
@@ -1329,16 +1343,16 @@ pub mod purgatorio {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn mount(
+    pub fn mount<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         fd: i32,
         afd: i32,
-        old: i32,
-        olen: i32,
+        old: P,
+        olen: P,
         flags: i32,
-        aname: i32,
-        alen: i32,
+        aname: P,
+        alen: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             c.prog
@@ -1353,12 +1367,12 @@ pub mod purgatorio {
         })
     }
 
-    pub fn fauth(
+    pub fn fauth<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         fd: i32,
-        aname: i32,
-        alen: i32,
+        aname: P,
+        alen: P,
     ) -> HostResult<i32> {
         call(ctx, |c| c.prog.fauth(fd, mem.str(aname, alen)?))
     }
@@ -1381,12 +1395,12 @@ pub mod purgatorio {
         })
     }
 
-    pub fn export(
+    pub fn export<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         fd: i32,
-        dir: i32,
-        dlen: i32,
+        dir: P,
+        dlen: P,
         flags: i32,
     ) -> HostResult<i32> {
         call(ctx, |c| {
@@ -1397,15 +1411,15 @@ pub mod purgatorio {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn export_key(
+    pub fn export_key<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         fd: i32,
-        dir: i32,
-        dlen: i32,
+        dir: P,
+        dlen: P,
         flags: i32,
-        key: i32,
-        klen: i32,
+        key: P,
+        klen: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let dir = mem.str(dir, dlen)?;
@@ -1414,13 +1428,13 @@ pub mod purgatorio {
         })
     }
 
-    pub fn fversion(
+    pub fn fversion<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         fd: i32,
         msize: i32,
-        ver: i32,
-        vlen: i32,
+        ver: P,
+        vlen: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let version = c.prog.fversion(fd, msize as u32, mem.str(ver, vlen)?)?;
@@ -1428,22 +1442,22 @@ pub mod purgatorio {
         })
     }
 
-    pub fn file2chan(
+    pub fn file2chan<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        dir: i32,
-        dlen: i32,
-        name: i32,
-        nlen: i32,
-        handles: i32,
+        dir: P,
+        dlen: P,
+        name: P,
+        nlen: P,
+        handles: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
-            mem.slice(handles, 8)?;
+            mem.slice(handles, P::at(8))?;
             let (r, w) = c
                 .prog
                 .file2chan(mem.str(dir, dlen)?, mem.str(name, nlen)?)?;
             mem.put_u32(handles, r as u32)?;
-            mem.put_u32(handles.wrapping_add(4), w as u32)?;
+            mem.put_u32(handles.off(4), w as u32)?;
             Ok(0)
         })
     }
@@ -1456,14 +1470,14 @@ pub mod purgatorio {
         call(ctx, |c| c.prog.chan_close(h).map(|()| 0))
     }
 
-    pub fn chan_send(
+    pub fn chan_send<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         h: i32,
-        buf: i32,
-        n: i32,
-        handles: i32,
-        nh: i32,
+        buf: P,
+        n: P,
+        handles: P,
+        nh: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
             let bytes = mem.slice(buf, n)?.to_vec();
@@ -1472,77 +1486,112 @@ pub mod purgatorio {
         })
     }
 
-    pub fn chan_recv(
+    pub fn chan_recv<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
         h: i32,
-        buf: i32,
-        blen: i32,
-        handles: i32,
-        maxh: i32,
+        buf: P,
+        blen: P,
+        handles: P,
+        maxh: P,
     ) -> HostResult<i32> {
         call(ctx, |c| {
-            let max = usize::try_from(blen).map_err(|_| Error::new(error::EBADARG))?;
+            let max = count(blen)? as usize;
             let Some((bytes, caps)) = c.prog.chan_recv(h, max)? else {
                 return Err(Error::new(error::EHUNGUP));
             };
             mem.write(buf, &bytes)?;
-            let slots = usize::try_from(maxh.max(0)).unwrap_or(0);
+            let slots = count(maxh).unwrap_or(0) as usize;
             for i in 0..slots {
                 let id = caps.get(i).copied().unwrap_or(-1);
-                mem.put_u32(handles.wrapping_add(4 * i as i32), id as u32)?;
+                mem.put_u32(handles.off(4 * i as u64), id as u32)?;
             }
             Ok(bytes.len() as i32)
         })
     }
 
-    pub fn alt(
+    /// One arm of an `alt` as the guest lays it out: `handle[4] kind[4]`,
+    /// then `buf len caps ncaps`, each 4 bytes in a wasm32 guest (24 bytes
+    /// an arm) and 8 in a wasm64 one (40 bytes).
+    struct Arm<P> {
+        handle: i32,
+        send: bool,
+        buf: P,
+        len: P,
+        caps: P,
+        ncaps: P,
+    }
+
+    impl<P: Ptr> Arm<P> {
+        const WORD: u64 = if P::WIDE { 8 } else { 4 };
+        const SIZE: u64 = 8 + 4 * Self::WORD;
+
+        fn word(mem: &Mem<'_>, at: P) -> Result<P, Error> {
+            Ok(P::at(if P::WIDE {
+                mem.u64(at)?
+            } else {
+                u64::from(mem.u32(at)?)
+            }))
+        }
+
+        fn read(mem: &Mem<'_>, at: P) -> Result<Arm<P>, Error> {
+            Ok(Arm {
+                handle: mem.u32(at)? as i32,
+                send: mem.u32(at.off(4))? != 0,
+                buf: Self::word(mem, at.off(8))?,
+                len: Self::word(mem, at.off(8 + Self::WORD))?,
+                caps: Self::word(mem, at.off(8 + 2 * Self::WORD))?,
+                ncaps: Self::word(mem, at.off(8 + 3 * Self::WORD))?,
+            })
+        }
+
+        /// Stores the length received in the arm at `at`.
+        fn put_len(mem: &mut Mem<'_>, at: P, n: usize) -> Result<(), Error> {
+            let at = at.off(8 + Self::WORD);
+            if P::WIDE {
+                mem.put_u64(at, n as u64)?;
+            } else {
+                mem.put_u32(at, n as u32)?;
+            }
+            Ok(())
+        }
+    }
+
+    pub fn alt<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        ops: i32,
-        nops: i32,
+        ops: P,
+        nops: P,
         block: i32,
     ) -> HostResult<i32> {
         call(ctx, |c| {
-            if nops < 0 {
-                return Err(Error::new(error::EBADARG));
-            }
             let mut arms = Vec::new();
-            for i in 0..nops {
-                let at = ops.wrapping_add(24 * i);
-                let handle = mem.u32(at)? as i32;
-                let kind = mem.u32(at.wrapping_add(4))? as i32;
-                let buf = mem.u32(at.wrapping_add(8))? as i32;
-                let len = mem.u32(at.wrapping_add(12))? as i32;
-                let caps = mem.u32(at.wrapping_add(16))? as i32;
-                let ncaps = mem.u32(at.wrapping_add(20))? as i32;
-                let bytes = if kind == 0 {
-                    Vec::new()
+            let mut plain = Vec::new();
+            for i in 0..count(nops)? {
+                let arm = Arm::read(mem, ops.off(Arm::<P>::SIZE * i))?;
+                let (bytes, cap_ids) = if arm.send {
+                    (
+                        mem.slice(arm.buf, arm.len)?.to_vec(),
+                        get_i32s(mem, arm.caps, arm.ncaps)?,
+                    )
                 } else {
-                    mem.slice(buf, len)?.to_vec()
+                    (Vec::new(), Vec::new())
                 };
-                let cap_ids = if kind == 0 {
-                    Vec::new()
-                } else {
-                    get_i32s(mem, caps, ncaps)?
-                };
-                arms.push((handle, kind != 0, bytes, cap_ids, buf, len, caps));
+                plain.push((arm.handle, arm.send, bytes, cap_ids));
+                arms.push(arm);
             }
-            let plain: Vec<_> = arms
-                .iter()
-                .map(|a| (a.0, a.1, a.2.clone(), a.3.clone()))
-                .collect();
             match c.prog.chan_alt(&plain, block != 0)? {
                 None => Ok(-1),
                 Some((i, bytes, caps)) => {
                     let arm = &arms[i];
-                    if !arm.1 {
-                        let n = bytes.len().min(arm.5.max(0) as usize);
-                        mem.write(arm.4, &bytes[..n])?;
-                        let at = ops.wrapping_add(24 * i as i32);
-                        mem.put_u32(at.wrapping_add(12), n as u32)?;
+                    if !arm.send {
+                        // A negative wasm32 length holds nothing.
+                        let room = count(arm.len).unwrap_or(0) as usize;
+                        let n = bytes.len().min(room);
+                        mem.write(arm.buf, &bytes[..n])?;
+                        Arm::put_len(mem, ops.off(Arm::<P>::SIZE * i as u64), n)?;
                         for (k, id) in caps.iter().enumerate() {
-                            mem.put_u32(arm.6.wrapping_add(4 * k as i32), *id as u32)?;
+                            mem.put_u32(arm.caps.off(4 * k as u64), *id as u32)?;
                         }
                     }
                     Ok(i as i32)
@@ -1551,26 +1600,175 @@ pub mod purgatorio {
         })
     }
 
-    pub fn wait(
+    pub fn wait<P: Ptr>(
         ctx: &mut Ctx,
         mem: &mut Mem<'_>,
-        ops: i32,
-        nops: i32,
+        ops: P,
+        nops: P,
         timeout_ms: i32,
     ) -> HostResult<i32> {
         call(ctx, |c| {
-            if nops < 0 {
-                return Err(Error::new(error::EBADARG));
-            }
             let mut list = Vec::new();
-            for i in 0..nops {
-                let at = ops.wrapping_add(8 * i);
-                list.push((mem.u32(at)? as i32, mem.u32(at.wrapping_add(4))? as i32));
+            for i in 0..count(nops)? {
+                let at = ops.off(8 * i);
+                list.push((mem.u32(at)? as i32, mem.u32(at.off(4))? as i32));
             }
             Ok(match c.prog.wait_ops(&list, timeout_ms)? {
                 Some(i) => i as i32,
                 None => -1,
             })
+        })
+    }
+
+    // The calls below stand in for WASI in a wasm64 guest, which has no
+    // `wasi_snapshot_preview1` (`docs/wasm64.md`). They are registered
+    // only in the `purgatorio64` module.
+
+    /// [`call`] for a call that returns an `i64`.
+    fn call64(ctx: &mut Ctx, f: impl FnOnce(&mut Ctx) -> Result<i64, Error>) -> HostResult<i64> {
+        Ok(match f(ctx) {
+            Ok(n) => n,
+            Err(e) => {
+                ctx.prog.set_error(&e);
+                -1
+            }
+        })
+    }
+
+    /// The most bytes one read or write moves, so that the count fits the
+    /// `i32` it is returned in. A guest asks again for the rest.
+    const MAX_IO: usize = i32::MAX as usize;
+
+    /// The buffer of a read: all of it must be the guest's, though at most
+    /// [`MAX_IO`] bytes of it are filled.
+    fn io_mut<'m, P: Ptr>(mem: &'m mut Mem<'_>, buf: P, len: P) -> Result<&'m mut [u8], Error> {
+        let b = mem.slice_mut(buf, len)?;
+        let n = b.len().min(MAX_IO);
+        Ok(&mut b[..n])
+    }
+
+    fn io<'m, P: Ptr>(mem: &'m Mem<'_>, buf: P, len: P) -> Result<&'m [u8], Error> {
+        let b = mem.slice(buf, len)?;
+        Ok(&b[..b.len().min(MAX_IO)])
+    }
+
+    /// `sys->read`: one read, which may be short.
+    pub fn read<P: Ptr>(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        buf: P,
+        len: P,
+    ) -> HostResult<i32> {
+        call(ctx, |c| Ok(c.prog.read(fd, io_mut(mem, buf, len)?)? as i32))
+    }
+
+    pub fn write<P: Ptr>(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        buf: P,
+        len: P,
+    ) -> HostResult<i32> {
+        call(ctx, |c| Ok(c.prog.write(fd, io(mem, buf, len)?)? as i32))
+    }
+
+    fn offset(off: i64) -> Result<u64, Error> {
+        u64::try_from(off).map_err(|_| Error::new(error::EBADARG))
+    }
+
+    pub fn pread<P: Ptr>(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        buf: P,
+        len: P,
+        off: i64,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let off = offset(off)?;
+            Ok(c.prog.pread(fd, io_mut(mem, buf, len)?, off)? as i32)
+        })
+    }
+
+    pub fn pwrite<P: Ptr>(
+        ctx: &mut Ctx,
+        mem: &mut Mem<'_>,
+        fd: i32,
+        buf: P,
+        len: P,
+        off: i64,
+    ) -> HostResult<i32> {
+        call(ctx, |c| {
+            let off = offset(off)?;
+            Ok(c.prog.pwrite(fd, io(mem, buf, len)?, off)? as i32)
+        })
+    }
+
+    /// `sys->seek`: the new offset, or -1.
+    pub fn seek(
+        ctx: &mut Ctx,
+        _mem: &mut Mem<'_>,
+        fd: i32,
+        off: i64,
+        whence: i32,
+    ) -> HostResult<i64> {
+        call64(ctx, |c| {
+            let whence = u8::try_from(whence).map_err(|_| Error::new(error::EBADARG))?;
+            let at = c.prog.seek(fd, off, whence)?;
+            i64::try_from(at).map_err(|_| Error::new(error::EBADARG))
+        })
+    }
+
+    pub fn close(ctx: &mut Ctx, _mem: &mut Mem<'_>, fd: i32) -> HostResult<i32> {
+        call(ctx, |c| c.prog.close(fd).map(|()| 0))
+    }
+
+    /// The prog's arguments, each followed by a NUL, as `spawn_prog` takes
+    /// them. Returns their size, and copies them if `len` holds them: a
+    /// guest calls with no buffer for the size, then again.
+    pub fn args<P: Ptr>(ctx: &mut Ctx, mem: &mut Mem<'_>, buf: P, len: P) -> HostResult<i32> {
+        call(ctx, |c| {
+            let mut packed = Vec::new();
+            for a in &c.argv {
+                packed.extend_from_slice(a.as_bytes());
+                packed.push(0);
+            }
+            let size = i32::try_from(packed.len()).map_err(|_| Error::new(error::EBADARG))?;
+            if packed.len() <= len.size() {
+                mem.write(buf, &packed)?;
+            }
+            Ok(size)
+        })
+    }
+
+    /// `sys->sleep`. A kill ends the sleep, and the prog with it (see
+    /// `host_call`).
+    pub fn sleep(ctx: &mut Ctx, _mem: &mut Mem<'_>, ms: i32) -> HostResult<i32> {
+        call(ctx, |_| {
+            if ms > 0 {
+                let rendez = purg_platform::sync::Rendez::new();
+                purg_core::block::park_timeout(&rendez, || false, ms)?;
+            }
+            Ok(0)
+        })
+    }
+
+    /// Nanoseconds since the epoch.
+    pub fn nsec(ctx: &mut Ctx, _mem: &mut Mem<'_>) -> HostResult<i64> {
+        Ok(ctx.prog.platform().now_ns() as i64)
+    }
+
+    /// Nanoseconds on the monotonic clock.
+    pub fn mono(ctx: &mut Ctx, _mem: &mut Mem<'_>) -> HostResult<i64> {
+        Ok(ctx.prog.platform().monotonic_ns() as i64)
+    }
+
+    /// Fills the buffer with random bytes.
+    pub fn random<P: Ptr>(ctx: &mut Ctx, mem: &mut Mem<'_>, buf: P, len: P) -> HostResult<i32> {
+        call(ctx, |c| {
+            c.prog.platform().entropy(mem.slice_mut(buf, len)?);
+            Ok(0)
         })
     }
 }
