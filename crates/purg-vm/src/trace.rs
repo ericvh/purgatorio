@@ -336,6 +336,10 @@ pub fn rewrite(wasm: &[u8], opts: Options) -> Option<(Vec<u8>, Layout)> {
         }
     }
 
+    // `memory.size 0` is an `i64` in a wasm64 module (`docs/wasm64.md`):
+    // `i32.wrap_i64` makes it the `i32` the page counts are kept in. The
+    // stack memory this rewrite adds is a 32-bit one in either width.
+    let wrap: &[u8] = if crate::memory64(wasm) { &[0xa7] } else { &[] };
     let mut code = Vec::new();
     leb(nfuncs * 2, &mut code);
     for (k, &t) in s.funcs.iter().enumerate() {
@@ -391,7 +395,9 @@ pub fn rewrite(wasm: &[u8], opts: Options) -> Option<(Vec<u8>, Layout)> {
         b.extend_from_slice(&[0x0d, 0, 0x0b, 0x0b]);
         // size = memory.size 0
         if pages.is_some() {
-            b.extend_from_slice(&[0x3f, 0, 0x21]);
+            b.extend_from_slice(&[0x3f, 0]);
+            b.extend_from_slice(wrap);
+            b.push(0x21);
             leb(size, &mut b);
         }
         // the original body, with this function's arguments
@@ -405,7 +411,9 @@ pub fn rewrite(wasm: &[u8], opts: Options) -> Option<(Vec<u8>, Layout)> {
         if let Some(at) = pages {
             b.extend_from_slice(&[0x41, 0, 0x41, 0]);
             access(0x28, at + 4 * k, &mut b);
-            b.extend_from_slice(&[0x3f, 0, 0x20]);
+            b.extend_from_slice(&[0x3f, 0]);
+            b.extend_from_slice(wrap);
+            b.push(0x20);
             leb(size, &mut b);
             b.extend_from_slice(&[0x6b, 0x6a]);
             access(0x36, at + 4 * k, &mut b);
@@ -465,9 +473,7 @@ pub fn rewrite(wasm: &[u8], opts: Options) -> Option<(Vec<u8>, Layout)> {
 /// was started under tracing, `wasm` rewritten to keep a call stack, and
 /// to count what the prog's profiles ask for.
 pub fn prepare(proc: &Proc, wasm: Vec<u8>) -> Vec<u8> {
-    // A wasm64 module runs untraced for now: the rewrite's thunks and
-    // its page counts assume `i32` memory operands (`docs/wasm64.md`).
-    if !proc.debug.trace() || crate::memory64(&wasm) {
+    if !proc.debug.trace() {
         return wasm;
     }
     let opts = Options {

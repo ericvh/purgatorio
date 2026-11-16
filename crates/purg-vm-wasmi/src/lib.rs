@@ -50,7 +50,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use purg_abi::error::{EBADADDR, EBADEXEC};
 use purg_core::Error;
-use purg_vm::{Ctx, Mem, Stop, trace};
+use purg_vm::{Ctx, Mem, Ptr, Stop, trace};
 use wasmi::{
     AsContextMut, Caller, Config, CustomFuelCosts, Engine, Extern, Instance, Linker, Memory,
     Module, Store, TypedFunc, TypedResumableCall, WasmParams, WasmResults,
@@ -397,60 +397,66 @@ fn register_modules(
     cache: Option<Arc<Cache>>,
 ) -> Result<Modules, wasmi::Error> {
     let modules: Modules = Arc::new(spin::Mutex::new(BTreeMap::new()));
-    let loading = modules.clone();
-    let calling = modules.clone();
-    linker.func_wrap(
-        purg_abi::MODULE,
-        purg_abi::sys::LOAD,
-        move |mut caller: Caller<'_, Ctx>, path: i32, plen: i32| -> Result<i32, wasmi::Error> {
-            killed(&caller)?;
-            let r = match load_reactor(&mut caller, &loading, cache.as_ref(), path, plen) {
-                Ok(handle) => handle,
-                Err(e) => {
-                    caller.data_mut().prog.set_error(&e);
-                    -1
-                }
-            };
-            killed(&caller)?;
-            Ok(r)
-        },
-    )?;
-    linker.func_wrap(
-        purg_abi::MODULE,
-        purg_abi::sys::CALL,
-        move |mut caller: Caller<'_, Ctx>,
-              handle: i32,
-              name: i32,
-              nlen: i32,
-              args: i32,
-              alen: i32,
-              out: i32,
-              olen: i32|
-              -> Result<i32, wasmi::Error> {
-            killed(&caller)?;
-            let r = match call_reactor(
-                &mut caller,
-                &calling,
-                Call {
-                    handle,
-                    name,
-                    nlen,
-                    args,
-                    alen,
-                    out,
-                    olen,
+    // Once for each width of caller (`docs/wasm64.md`).
+    macro_rules! register {
+        ($module:expr, $p:ty) => {
+            let (cache, loading, calling) = (cache.clone(), modules.clone(), modules.clone());
+            linker.func_wrap(
+                $module,
+                purg_abi::sys::LOAD,
+                move |mut caller: Caller<'_, Ctx>,
+                      path: $p,
+                      plen: $p|
+                      -> Result<i32, wasmi::Error> {
+                    killed(&caller)?;
+                    let r = match load_reactor(&mut caller, &loading, cache.as_ref(), path, plen) {
+                        Ok(handle) => handle,
+                        Err(e) => {
+                            caller.data_mut().prog.set_error(&e);
+                            -1
+                        }
+                    };
+                    killed(&caller)?;
+                    Ok(r)
                 },
-            ) {
-                Ok(n) => n,
-                Err(e) => {
-                    caller.data_mut().prog.set_error(&e);
-                    -1
-                }
-            };
-            killed(&caller)?;
-            Ok(r)
-        },
-    )?;
+            )?;
+            linker.func_wrap(
+                $module,
+                purg_abi::sys::CALL,
+                move |mut caller: Caller<'_, Ctx>,
+                      handle: i32,
+                      name: $p,
+                      nlen: $p,
+                      args: $p,
+                      alen: $p,
+                      out: $p,
+                      olen: $p|
+                      -> Result<i32, wasmi::Error> {
+                    killed(&caller)?;
+                    let call = Call {
+                        handle,
+                        name,
+                        nlen,
+                        args,
+                        alen,
+                        out,
+                        olen,
+                    };
+                    let r = match call_reactor(&mut caller, &calling, call) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            caller.data_mut().prog.set_error(&e);
+                            -1
+                        }
+                    };
+                    killed(&caller)?;
+                    Ok(r)
+                },
+            )?;
+        };
+    }
+    register!(purg_abi::MODULE, i32);
+    register!(purg_abi::MODULE64, i64);
     Ok(modules)
 }
 
@@ -465,24 +471,24 @@ fn killed(caller: &Caller<'_, Ctx>) -> Result<(), wasmi::Error> {
 
 const PAGE: usize = 65536;
 
-fn guest_vec(caller: &mut Caller<'_, Ctx>, ptr: i32, len: i32) -> Result<Vec<u8>, Error> {
+fn guest_vec<P: Ptr>(caller: &mut Caller<'_, Ctx>, ptr: P, len: P) -> Result<Vec<u8>, Error> {
     let (data, _) = memory(caller).map_err(|_| Error::new(EBADADDR))?;
     Ok(Mem(data).slice(ptr, len)?.to_vec())
 }
 
-fn guest_str(caller: &mut Caller<'_, Ctx>, ptr: i32, len: i32) -> Result<String, Error> {
+fn guest_str<P: Ptr>(caller: &mut Caller<'_, Ctx>, ptr: P, len: P) -> Result<String, Error> {
     Ok(String::from(
         core::str::from_utf8(&guest_vec(caller, ptr, len)?)
             .map_err(|_| Error::new(purg_abi::error::EBADARG))?,
     ))
 }
 
-fn load_reactor(
+fn load_reactor<P: Ptr>(
     caller: &mut Caller<'_, Ctx>,
     modules: &Modules,
     cache: Option<&Arc<Cache>>,
-    path: i32,
-    plen: i32,
+    path: P,
+    plen: P,
 ) -> Result<i32, Error> {
     let path = guest_str(caller, path, plen)?;
     let wasm = {
@@ -509,17 +515,33 @@ fn load_reactor(
     Ok(list.len() as i32)
 }
 
-struct Call {
+/// The arguments of `call`; `P` is the caller's pointer width. The
+/// module called is always a wasm32 reactor, with a memory of its own.
+struct Call<P> {
     handle: i32,
-    name: i32,
-    nlen: i32,
-    args: i32,
-    alen: i32,
-    out: i32,
-    olen: i32,
+    name: P,
+    nlen: P,
+    args: P,
+    alen: P,
+    out: P,
+    olen: P,
 }
 
-fn call_reactor(caller: &mut Caller<'_, Ctx>, modules: &Modules, call: Call) -> Result<i32, Error> {
+impl<P: Ptr> Call<P> {
+    /// The room for the result, or `None` for a negative wasm32 length
+    /// (or a wasm64 one as large).
+    fn room(&self) -> Option<usize> {
+        usize::try_from(self.olen.addr())
+            .ok()
+            .filter(|n| *n <= i32::MAX as usize)
+    }
+}
+
+fn call_reactor<P: Ptr>(
+    caller: &mut Caller<'_, Ctx>,
+    modules: &Modules,
+    call: Call<P>,
+) -> Result<i32, Error> {
     let export = guest_str(caller, call.name, call.nlen)?;
     let arguments = guest_vec(caller, call.args, call.alen)?;
     if arguments.len() > PAGE {
@@ -554,7 +576,7 @@ fn call_reactor(caller: &mut Caller<'_, Ctx>, modules: &Modules, call: Call) -> 
         None,
     )
     .map_err(|e| Error::from(format!("trap: {e}")))?;
-    if n < 0 || call.olen < 0 || n as usize > PAGE || n as usize > call.olen as usize {
+    if n < 0 || n as usize > PAGE || call.room().is_none_or(|room| n as usize > room) {
         return Err(Error::from("bad result length"));
     }
     let mut result = vec![0u8; n as usize];
