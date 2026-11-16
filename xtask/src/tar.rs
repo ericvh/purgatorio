@@ -40,10 +40,25 @@ const GRAPHICS: &[&str] = &[
     "bin/rio.",
 ];
 
+/// The wasm64 builds an image carries (`docs/wasm64.md`): enough for a
+/// shell session and the conformance guest. All of `/bin/64` would double
+/// the image.
+const WIDE: &[&str] = &[
+    "bin/64/sh.",
+    "bin/64/echo.",
+    "bin/64/cat.",
+    "bin/64/sed.",
+    "bin/64/tr.",
+    "bin/64/test/wide.",
+];
+
 /// Whether the file at `path` (relative to the root, `/`-separated) goes
 /// into an image; `names` is [`names_wanted`].
 pub fn in_image(path: &str, names: bool) -> bool {
     if GRAPHICS.iter().any(|g| path.starts_with(g)) {
+        return false;
+    }
+    if path.starts_with("bin/64/") && !WIDE.iter().any(|w| path.starts_with(w)) {
         return false;
     }
     names || !path.ends_with(".names") || path.starts_with("bin/test/")
