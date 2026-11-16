@@ -9,6 +9,7 @@
 //! installed later in `root/wrap/name` covers are left out, unless `-p`,
 //! which compares with this package alone. Directories are skipped.
 
+use purgatorio::{eprintln, println};
 use std::collections::HashMap;
 use std::io::{BufReader, Write};
 
@@ -102,7 +103,7 @@ fn fatal(msg: &str) -> ! {
 /// The wrap header and files of a package file, or `None` if it is not
 /// one.
 fn read_package(path: &str) -> Option<Package> {
-    let f = std::fs::File::open(path).ok()?;
+    let f = purgatorio::fs::File::open(path).ok()?;
     let mut r = Reader::new(BufReader::new(f));
     let mut name = None;
     let mut unit = Unit::default();
@@ -156,7 +157,7 @@ fn diff(name: &str, data: &[u8], local: &str, bflag: bool) {
         purgatorio::pid(),
         name.replace('/', "_")
     );
-    let made = std::fs::File::create(&tmp).and_then(|mut f| f.write_all(data));
+    let made = purgatorio::fs::File::create(&tmp).and_then(|mut f| f.write_all(data));
     if made.is_err() {
         println!("cannot stat {tmp}");
         return;
@@ -167,9 +168,9 @@ fn diff(name: &str, data: &[u8], local: &str, bflag: bool) {
     }
     argv.push(tmp.clone());
     argv.push(String::from(local));
-    let _ = std::io::stdout().flush();
+    let _ = purgatorio::io::stdout().flush();
     if purgatorio::spawn(DIFF, &argv, pctl::NEWFD, &[(0, 0), (1, 1), (2, 2)]).is_ok() {
         let _ = purgatorio::wait();
     }
-    let _ = std::fs::remove_file(&tmp);
+    let _ = purgatorio::fs::remove_file(&tmp);
 }

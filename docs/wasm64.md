@@ -5,9 +5,9 @@ can also be a wasm64 module: Memory64, with 64-bit pointers. The two
 widths coexist. A prog is one or the other, and progs of both widths
 share a name space, pipes and files.
 
-This is the first cut (issue #50). It runs wasm64 guests on both engines,
-on the emu and on the kernel, and ports the SDK. It does not port every command. What is left is at the
-end.
+Both engines run wasm64 guests, on the emu and on the kernel. The SDK and
+nearly every command build for both widths (issue #50). What is not done
+is at the end.
 
 ## Why a second ABI
 
@@ -58,7 +58,10 @@ ops are `i32`s in both widths. An `alt` arm holds pointers, so it is 40
 bytes in a wasm64 guest (`handle[4] kind[4] buf[8] len[8] caps[8]
 ncaps[8]`) and 24 in a wasm32 one.
 
-Not in `purgatorio64` yet: `load` and `call` (reactors).
+`load` and `call` are there too. A reactor is a wasm32 module with a
+memory of its own, whatever the width of the prog that loads it: the
+host copies the arguments and the result between the two memories, so
+only the caller's pointers differ. There are no wasm64 reactors.
 
 There is no environment call. The environment is `/env`, as in Inferno,
 and `purgatorio::env` reads it in both widths. Relative names go to the
@@ -79,9 +82,12 @@ instances as `purgatorio64`, in wasmtime and in wasmi. Nothing else in
 the host knows the width: devices, Styx, the name space and the
 scheduler are unchanged.
 
-A wasm64 module is not traced (`stack`, `prof`, `cprof`, `mprof`): the
-rewrite that keeps a call stack assumes `i32` memory operands. It runs,
-untraced.
+A wasm64 module is traced as a wasm32 one is (`stack`, `prof`, `cprof`,
+`mprof`, `mdb`): the stack memory the rewrite adds is a 32-bit memory in
+either width, and the page counts wrap `memory.size` to an `i32`.
+
+The kernel's AOT engine runs wasm64 modules from images as it does
+wasm32 ones: `cargo xtask aot` compiles those in the boot image.
 
 Memory limits (`memlimit`) apply as they do to wasm32. A wasm64 guest may
 declare more than 4 GiB; this has not been exercised yet.
@@ -97,8 +103,12 @@ I/O through the SDK instead of `std`:
 | `std::os::fd::{OwnedFd, AsRawFd, FromRawFd, IntoRawFd}` | `purgatorio::fd::...` |
 | `std::io::{stdin, stdout, stderr}` | `purgatorio::io::...` |
 | `println!`, `print!`, `eprintln!`, `eprint!` | `use purgatorio::{println, ...}` |
-| `std::time::SystemTime`, `Instant`, `std::thread::sleep` | `purgatorio::time::{nsec, now, mono, sleep}` |
-| `std::env::args` | the `args` of `#[purgatorio::main]` |
+| `std::time::{SystemTime, Instant, UNIX_EPOCH, Duration}` | `purgatorio::time::...` |
+| `std::thread::sleep` | `purgatorio::thread::sleep` |
+| `std::env::args` | the `args` of `#[purgatorio::main]`, or `purgatorio::rt::args()` |
+| `std::env::vars`, `var` | `purgatorio::env::{vars, var}` |
+| `std::env::set_current_dir`, `current_dir` | `purgatorio::chdir`, `purgatorio::dot` |
+| WASI `random_get` | `purgatorio::auth::Rng::fill` |
 
 In a wasm32 build each of these is the `std` item itself, re-exported,
 so a wasm32 module does not change. In a wasm64 build they are the SDK's
@@ -110,7 +120,16 @@ A wasm64 guest's `std` still has `std::fs`, `println!` and `std::time`:
 `wasm64-unknown-unknown` compiles them as stubs. `std::fs` calls fail,
 `println!` prints nothing, and `SystemTime::now` panics. Code that was
 not switched builds and then misbehaves, so switch all of a command at
-once and run its tests.
+once and run its tests. A failed allocation is the exception: the SDK
+reports it on fd 2 as `std` does in a wasm32 guest.
+
+`std::fs` under the SDK's name is not all of `std::fs`. A wasm64 `File`
+has `open`, `create`, `options`, `metadata`, `set_len`, `sync_all`,
+`try_clone`, `read_at` and `write_at`; `Metadata` answers `len`,
+`is_dir`, `is_file` and `modified`; `rename` works within a directory,
+as Inferno's `wstat` does. `io::Error`s carry Inferno's error string and
+the `ErrorKind`s programs test (`NotFound`, `PermissionDenied`,
+`AlreadyExists`, `Interrupted`).
 
 ## Building
 
@@ -125,11 +144,21 @@ wasm64 = true
 `wasm64-unknown-unknown` and installs it under `/bin/64`:
 `appl/cmd/cat` is `/bin/cat.wasm` and `/bin/64/cat.wasm`, and
 `appl/test/wide` is `/bin/test/wide.wasm` and `/bin/64/test/wide.wasm`.
+A module installed there must import `purgatorio64` alone; the build
+refuses one that names WASI.
+
+Every command says so except these, which stay wasm32:
+
+- `disk/mkdisk` and `disk/chkdisk`: `purg-fs` copies a host tree and
+  opens a disk image with `std::fs`, for `xtask` as well as for them.
+- `test/abi`, `test/wasi` and `test/net`: they test WASI itself.
+- The reactors in `/bin/lib`, which are wasm32 for every caller.
 
 Rust ships no `std` for this target (it is tier 3), so the build
 compiles `std` from the toolchain's `rust-src` component with
 `-Zbuild-std`, let through on the pinned stable compiler with
-`RUSTC_BOOTSTRAP=1`. The compiler and the `std` source are the pinned
+`RUSTC_BOOTSTRAP=1`. (The SDK also uses one unstable `std` call there,
+the allocation error hook.) The compiler and the `std` source are the pinned
 release's own, so the build is as reproducible as the wasm32 one, and
 CI compares the hashes of `/bin/64` across hosts with the rest.
 `rust-toolchain.toml` lists `rust-src`.
@@ -143,9 +172,21 @@ the wasm64 target.
 files, seeks, stat, directories, errors, pipes, `ready`, the
 environment, a child of the other width, the clocks and bad pointers,
 and must print the same lines in both widths but the first
-(`pointer 64 bits`). The acceptance tests run it and the wasm64 `echo`
-and `cat` on wasmtime and wasmi; the probe and the kernel run the wasm64
-build from their boot image.
+(`pointer 64 bits`).
+
+The acceptance tests run it on wasmtime and wasmi, and run the whole sh
+corpus a second time on the wasm64 `sh` with the wasm64 commands first
+in `/bin` (`sh_script_corpus_wide`). A script's output is the same in
+both widths, with four exceptions that have a `.out64` file beside
+their `.out`: a debugger's stack (`mdb`), a module's imports
+(`wasmtools`), an allocator's page counts (`cprof`) and a Styx tag
+(`styxtools`: a wasm64 `cat` sends fewer requests, having no WASI
+`fstat` to answer).
+
+The probe and the kernel run the wasm64 conformance guest and a short
+session on the wasm64 `sh` from their boot image. The image carries only
+those wasm64 builds (`sh`, `echo`, `cat`, `sed`, `tr`, `test/wide`): all
+of `/bin/64` would double it.
 
 ## Choosing a width
 
@@ -163,19 +204,51 @@ a wasm32 one and the other way round. A path names a width directly:
 `/bin/64/cat.wasm`.
 
 A union does not merge subdirectories: with the bind above, `/bin/test`
-is `/bin/64/test`. Bind those the same way where both are wanted.
+is `/bin/64/test`, and a command that exists only as `/bin/test/abi.wasm`
+is not found. `/lib/sh/wide` does the bind, after putting the wasm32
+directory behind each wasm64 directory that lacks commands:
+
+```
+run /lib/sh/wide
+```
+
+To start a session in wasm64 from the outside, name the shell:
+`emu /bin/64/sh.wasm -c 'run /lib/sh/wide; ...'`.
 
 (An earlier version of this note put the widths in `/bin/32` and
 `/bin/64` and taught the shell and `spawn_prog` to pick. The bind does
 the same with no new code, and leaves every existing path as it is.)
 
+## Cost
+
+Measured on the emu (release build, an 8-core arm64 Linux host, medians
+of five runs) with the 218 commands that exist in both widths.
+
+Size: the wasm64 modules are 19.7 MB against 25.3 MB, 22% smaller in
+all and 27% at the median. They carry no wasi-libc. `sh` is 334 KB
+against 353 KB, `ls` 67 KB against 101 KB, `echo` 38 KB against 62 KB.
+
+Time, in seconds, wasm32 then wasm64. The wasmtime columns are less the
+0.36 s and 0.45 s it takes to compile and start the shell in each width:
+
+| case | wasmtime | wasmi |
+|---|---|---|
+| `grep -c` over 27 MB | 2.38, 2.91 | 18.9, 21.3 |
+| a 50,000-turn `sh` loop | 0.35, 0.41 | 4.85, 5.12 |
+| 1,000 `echo`s spawned | 0.39, 0.30 | 0.31, 0.27 |
+
+Work in the guest is about 20% slower as wasm64 on wasmtime and 5 to
+13% on wasmi. The likely cause on wasmtime is that a 64-bit memory
+cannot use guard pages in place of bounds checks, so every access is
+checked. Work in the host (spawning, I/O) costs the same.
+
+So wasm64 is for a program that needs the address space. wasm32 stays
+the default.
+
 ## What is left
 
-- Port the commands. `echo` and `cat` are done; `sh` is the large one.
-  Each is the mechanical swap in the table above.
-- Reactors (`load`, `call`) for wasm64 guests.
-- Tracing and profiling of wasm64 modules.
-- AOT images for wasm64 modules. On the kernel a wasm64 module runs on
-  wasmi, with or without the AOT engine: `cargo xtask aot` leaves
-  `/bin/64` out.
-- A measurement: what 64-bit pointers cost in module size and time.
+- `disk/mkdisk` and `disk/chkdisk` as wasm64: `purg-fs` would take its
+  files through a trait instead of `std::fs`.
+- wasm64 reactors, if a reactor ever needs more than 4 GiB.
+- A guest with more than 4 GiB of memory has not been tried.
+- The kernel's image carries a few wasm64 builds, not all of them.

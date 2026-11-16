@@ -1,10 +1,10 @@
 //! A byte reader with one byte of push-back, over an fd or a string, for
 //! `getcsv` and the S-expression parser.
 
-use std::fs::File;
+use purgatorio::fd::FromRawFd;
+use purgatorio::fs::File;
 use std::io::Read;
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
 
 pub struct Input {
     fd: Option<i32>,

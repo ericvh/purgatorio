@@ -99,7 +99,8 @@ struct Dbfs {
 
 impl Dbfs {
     fn load(file: &str, rdonly: bool) -> Result<Dbfs, Error> {
-        let text = std::fs::read(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
+        let text =
+            purgatorio::fs::read(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
         Ok(Dbfs {
             file: String::from(file),
             rdonly,
@@ -115,7 +116,7 @@ impl Dbfs {
 
     fn save(&self) -> Result<(), String> {
         let text = unparse(self.records.iter().flatten().map(|r| r.data.as_slice()));
-        std::fs::write(&self.file, text).map_err(|e| Error::from(e).0)
+        purgatorio::fs::write(&self.file, text).map_err(|e| Error::from(e).0)
     }
 
     fn fid(&self, fid: u32) -> Result<&Fid, String> {

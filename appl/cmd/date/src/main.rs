@@ -3,6 +3,7 @@
 //! GMT, and `-n` prints seconds since the epoch instead.
 
 use purgatorio::arg::Arg;
+use purgatorio::println;
 use purgatorio::{Context, Error, daytime};
 
 #[purgatorio::main]

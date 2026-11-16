@@ -10,6 +10,7 @@
 //! `end of archive`. `-n name` sends kfscmd(8) commands to
 //! `/chan/kfs.name.cmd`; `-z` is accepted, and blocks of zeros are copied.
 
+use purgatorio::eprintln;
 use std::io::{Read, Write};
 
 use proto::{File, Level, Namespace, quote};
@@ -43,7 +44,7 @@ impl Mkfs {
     }
 
     fn flush(&mut self) -> Result<(), Error> {
-        let mut o = std::io::stdout().lock();
+        let mut o = purgatorio::io::stdout().lock();
         o.write_all(&self.out)?;
         o.flush()?;
         self.out.clear();
@@ -95,7 +96,7 @@ impl Mkfs {
             );
             self.out.extend_from_slice(hdr.as_bytes());
             if !isdir {
-                match std::fs::read(&f.old) {
+                match purgatorio::fs::read(&f.old) {
                     Ok(mut data) => {
                         // The header promised `length` bytes.
                         data.resize(len as usize, 0);
@@ -155,12 +156,12 @@ impl Mkfs {
 
     fn copy(&self, old: &str, new: &str, d: &Dir) {
         let mut data = Vec::new();
-        if let Err(e) = std::fs::File::open(old).and_then(|mut f| f.read_to_end(&mut data)) {
+        if let Err(e) = purgatorio::fs::File::open(old).and_then(|mut f| f.read_to_end(&mut data)) {
             self.warn(&format!("can't open {}: {}", quote(old), Error::from(e)));
             return;
         }
         let res = purgatorio::create(new, mode::OWRITE, d.mode & !DMDIR).and_then(|fd| {
-            std::fs::File::from(fd)
+            purgatorio::fs::File::from(fd)
                 .write_all(&data)
                 .map_err(Error::from)
         });
@@ -175,7 +176,7 @@ impl Mkfs {
         let Some(name) = &self.kfs else { return };
         let path = format!("/chan/kfs.{name}.cmd");
         let res = purgatorio::open(&path, mode::ORDWR).and_then(|fd| {
-            std::fs::File::from(fd)
+            purgatorio::fs::File::from(fd)
                 .write_all(cmd.as_bytes())
                 .map_err(Error::from)
         });
@@ -238,7 +239,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut errs = 0;
     for p in &protos {
         eprintln!("processing {p}");
-        let text = match std::fs::read_to_string(p) {
+        let text = match purgatorio::fs::read_to_string(p) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!(

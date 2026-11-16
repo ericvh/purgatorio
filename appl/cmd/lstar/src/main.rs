@@ -11,8 +11,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() > 1 {
         return Err(Error::from("usage: lstar"));
     }
-    let mut r = Reader::new(io::BufReader::new(io::stdin().lock()));
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut r = Reader::new(io::BufReader::new(purgatorio::io::stdin().lock()));
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     while let Some(h) = r.next_entry()? {
         writeln!(out, "{} {} {} 0", h.name, h.mtime, h.size)?;
     }

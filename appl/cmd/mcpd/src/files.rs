@@ -3,9 +3,9 @@
 //! read. A file that blocks when read blocks the session; the front end
 //! gives up on it after a minute.
 
-use std::fs::File;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::mode::{OREAD, OWRITE};
 use purgatorio::{DMAPPEND, DMDIR, Dir, Error};

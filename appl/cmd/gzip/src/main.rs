@@ -5,7 +5,7 @@
 //! The gzip header carries no name and a zero time, so output depends only
 //! on the input and the level.
 
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 
 use archive::fs::warn;
 use archive::gz;
@@ -22,12 +22,12 @@ fn gzip_file(path: &str, level: u8, verbose: bool) -> Result<(), String> {
     if d.qid.is_dir() {
         return Err(err(&"is a directory"));
     }
-    let data = std::fs::read(path).map_err(|_| err(&purgatorio::errstr()))?;
+    let data = purgatorio::fs::read(path).map_err(|_| err(&purgatorio::errstr()))?;
     let z = gz::compress(&data, level);
     let out = format!("{path}.gz");
     let fd = purgatorio::create(&out, mode::OWRITE, d.mode & 0o777)
         .map_err(|e| format!("{out}: {e}"))?;
-    std::fs::File::from(fd)
+    purgatorio::fs::File::from(fd)
         .write_all(&z)
         .map_err(|_| format!("{out}: {}", purgatorio::errstr()))?;
     let mut nd = Dir::null();
@@ -60,8 +60,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let files = arg.argv();
     if files.is_empty() {
         let mut data = Vec::new();
-        io::stdin().lock().read_to_end(&mut data)?;
-        let mut out = io::stdout().lock();
+        purgatorio::io::stdin().lock().read_to_end(&mut data)?;
+        let mut out = purgatorio::io::stdout().lock();
         out.write_all(&gz::compress(&data, level))?;
         out.flush()?;
         return Ok(());

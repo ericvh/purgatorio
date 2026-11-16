@@ -13,6 +13,7 @@
 use proto::{Level, Namespace};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, DMDIR, Error};
+use purgatorio::{eprintln, println};
 use wrap::Entry;
 
 const USAGE: &str =
@@ -56,8 +57,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let log = rest.remove(0);
     let paths = rest;
     let now = now.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        purgatorio::time::SystemTime::now()
+            .duration_since(purgatorio::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as u32)
     });
     let in_scope = |name: &str| {
@@ -69,7 +70,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         .into_iter()
         .map(|e| (e.path.clone(), e))
         .collect();
-    let text = std::fs::read_to_string(&proto_file)
+    let text = purgatorio::fs::read_to_string(&proto_file)
         .map_err(|e| Error(format!("{proto_file}: {}", Error::from(e))))?;
     let mut files = Vec::new();
     let mut failed = false;

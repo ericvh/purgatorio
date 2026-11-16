@@ -11,7 +11,8 @@
 //! where `time` is seconds or a list such as `1d12h` of `y M d h m s`
 //! units; and a lone string, which is true when it is not empty.
 
-use std::os::fd::AsRawFd;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::mode;
 use purgatorio::{Context, DMAPPEND, DMDIR, DMEXCL, Dir, Error};

@@ -5,9 +5,9 @@
 //! while sweeping, keeping the views of a shared text in step, and the
 //! snarf buffer on `/dev/snarf`.
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::pctl;
 use purgatorio::draw::{Point, Pointer};
@@ -34,9 +34,9 @@ const SNARF: &str = "/dev/snarf";
 /// The body of `acme --feed`.
 pub fn feed() -> Result<(), Error> {
     let mut data = Vec::new();
-    std::io::stdin().read_to_end(&mut data)?;
+    purgatorio::io::stdin().read_to_end(&mut data)?;
     // The command may stop reading; that is not an error here.
-    let _ = std::io::stdout().write_all(&data);
+    let _ = purgatorio::io::stdout().write_all(&data);
     Ok(())
 }
 
@@ -283,7 +283,7 @@ impl Acme {
     /// The snarf buffer: `/dev/snarf` when it can be read, else acme's
     /// own.
     pub(crate) fn get_snarf(&self) -> String {
-        match std::fs::read(SNARF) {
+        match purgatorio::fs::read(SNARF) {
             Ok(b) => String::from_utf8_lossy(&b).into_owned(),
             Err(_) => self.snarf.clone(),
         }
@@ -776,7 +776,8 @@ impl edit::Host for EditHost<'_> {
         if crate::own(path) {
             return Err(format!("{path}: {}", crate::EOWN));
         }
-        std::fs::write(path, s.as_bytes()).map_err(|_| format!("{path}: {}", purgatorio::errstr()))
+        purgatorio::fs::write(path, s.as_bytes())
+            .map_err(|_| format!("{path}: {}", purgatorio::errstr()))
     }
 
     fn run(&mut self, dir: &str, cmd: &str, input: Option<&str>, busy: &[u64]) -> String {

@@ -12,9 +12,9 @@
 //! the host dialled: then the export asks no proof and runs in the clear
 //! inside the encrypted connection (`docs/rcmd.md`, "Encryption").
 
-use std::fs::File;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::io::Write;
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::auth::{FAILED, NO_PQ, NO_SESSION, SERVER_NONE};
 use purgatorio::abi::pctl::NEWFD;
@@ -300,8 +300,8 @@ pub fn run(o: &Opts, host: &str, cmd: &str) -> Result<String, Error> {
 fn mux(
     net: &mut Fd,
     link: &mut Link,
-    net_r: std::os::fd::OwnedFd,
-    in_r: std::os::fd::OwnedFd,
+    net_r: purgatorio::fd::OwnedFd,
+    in_r: purgatorio::fd::OwnedFd,
     exp: File,
 ) -> Result<String, Error> {
     let mut exp = Some(exp);

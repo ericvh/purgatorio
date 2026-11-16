@@ -2,7 +2,7 @@
 //! it (`file.tgz` becomes `file.tar`), or standard input to standard
 //! output.
 
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 
 use archive::fs::warn;
 use archive::gz;
@@ -23,11 +23,11 @@ fn gunzip_file(path: &str) -> Result<(), String> {
         return Err(err(&"no .gz suffix"));
     }
     let d = purgatorio::stat(path).map_err(|e| err(&e))?;
-    let z = std::fs::read(path).map_err(|_| err(&purgatorio::errstr()))?;
+    let z = purgatorio::fs::read(path).map_err(|_| err(&purgatorio::errstr()))?;
     let data = gz::decompress(&z).map_err(|e| err(&e))?;
     let fd = purgatorio::create(&out, mode::OWRITE, d.mode & 0o777)
         .map_err(|e| format!("{out}: {e}"))?;
-    std::fs::File::from(fd)
+    purgatorio::fs::File::from(fd)
         .write_all(&data)
         .map_err(|_| format!("{out}: {}", purgatorio::errstr()))?;
     let mut nd = Dir::null();
@@ -45,9 +45,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let files = arg.argv();
     if files.is_empty() {
         let mut z = Vec::new();
-        io::stdin().lock().read_to_end(&mut z)?;
+        purgatorio::io::stdin().lock().read_to_end(&mut z)?;
         let data = gz::decompress(&z).map_err(Error::from)?;
-        let mut out = io::stdout().lock();
+        let mut out = purgatorio::io::stdout().lock();
         out.write_all(&data)?;
         out.flush()?;
         return Ok(());

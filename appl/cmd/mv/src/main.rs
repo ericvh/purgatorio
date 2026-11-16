@@ -2,7 +2,8 @@
 //! with a wstat of the name; across directories the file is copied and the
 //! original removed. With several files, `target` must be a directory.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fs::File;
 use std::io::{Read, Write};
 
 use purgatorio::{Context, Dir, Error, abi::mode};

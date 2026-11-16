@@ -7,6 +7,7 @@
 //! Input that is not valid in `ics` becomes U+FFFD; a character that
 //! `ocs` cannot represent becomes `?`.
 
+use purgatorio::eprintln;
 use std::io::{self, Read, Write};
 
 use purgatorio::arg::Arg;
@@ -21,7 +22,7 @@ struct Charset {
 }
 
 fn load() -> Result<Vec<Charset>, Error> {
-    let text = std::fs::read_to_string(CHARSETS)
+    let text = purgatorio::fs::read_to_string(CHARSETS)
         .map_err(|_| Error(format!("cannot open {CHARSETS}: {}", purgatorio::errstr())))?;
     let mut out = Vec::new();
     for line in text.lines() {
@@ -140,7 +141,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let usage = arg.usage();
     let files = arg.argv();
     let sets = load()?;
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     if list {
         match files.as_slice() {
             [] if verbose => {
@@ -174,10 +175,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let to = &charset(&ocs).conv;
     let mut data = Vec::new();
     if files.is_empty() {
-        io::stdin().lock().read_to_end(&mut data)?;
+        purgatorio::io::stdin().lock().read_to_end(&mut data)?;
     }
     for f in &files {
-        let Ok(mut file) = std::fs::File::open(f) else {
+        let Ok(mut file) = purgatorio::fs::File::open(f) else {
             eprintln!("tcs: cannot open {f}: {}", purgatorio::errstr());
             purgatorio::exits("fail:open");
         };

@@ -4,6 +4,7 @@
 //! folds long lines. Empty lines and leading white space are kept, and an
 //! empty line separates the input files.
 
+use purgatorio::eprintln;
 use std::io::{self, BufRead, BufReader, Write};
 
 use purgatorio::arg::Arg;
@@ -108,7 +109,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let files = arg.argv();
     let mut f = Fmt {
-        out: io::BufWriter::new(io::stdout().lock()),
+        out: io::BufWriter::new(purgatorio::io::stdout().lock()),
         length,
         indent: " ".repeat(indent),
         join,
@@ -117,13 +118,13 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     };
     let mut failed = false;
     if files.is_empty() {
-        f.file(&mut io::stdin().lock())?;
+        f.file(&mut purgatorio::io::stdin().lock())?;
     }
     for (i, name) in files.iter().enumerate() {
         if i > 0 {
             writeln!(f.out)?;
         }
-        match std::fs::File::open(name) {
+        match purgatorio::fs::File::open(name) {
             Ok(file) => f.file(&mut BufReader::new(file))?,
             Err(_) => {
                 f.out.flush()?;

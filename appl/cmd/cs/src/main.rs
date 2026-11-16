@@ -1,6 +1,7 @@
 //! cs addr: print the `/net/cs` translation of `addr`.
 
-use std::fs::OpenOptions;
+use purgatorio::fs::OpenOptions;
+use purgatorio::{print, println};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use purgatorio::dial::netmkaddr;

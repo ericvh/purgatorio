@@ -17,6 +17,7 @@
 //! included, give an error status. With paths, only entries below them
 //! are applied.
 
+use purgatorio::{eprintln, println};
 use std::io::{BufRead, Write};
 
 use purgatorio::abi::mode;
@@ -66,14 +67,14 @@ impl Apply {
             }
             'a' | 'c' => {
                 let src = e.server(&self.server);
-                let data = std::fs::read(&src)
+                let data = purgatorio::fs::read(&src)
                     .map_err(|err| format!("{}: {}", quote(&src), Error::from(err)))?;
                 if purgatorio::stat(&path).is_ok() {
                     let _ = purgatorio::remove(&path);
                 }
                 let fd = purgatorio::create(&path, mode::OWRITE, (e.mode & 0o777) | 0o200)
                     .map_err(|err| format!("can't create {}: {err}", quote(&path)))?;
-                std::fs::File::from(fd)
+                purgatorio::fs::File::from(fd)
                     .write_all(&data)
                     .map_err(|err| format!("{}: write: {}", quote(&path), Error::from(err)))?;
                 // The replica's time is the server's, so the next check
@@ -115,7 +116,7 @@ impl Apply {
 }
 
 fn read_stamp(path: &str) -> Result<(u32, u32), String> {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let text = purgatorio::fs::read_to_string(path).unwrap_or_default();
     let f: Vec<&str> = text.split_whitespace().collect();
     match f.as_slice() {
         [] => Ok((0, 0)),
@@ -169,7 +170,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         None
     } else {
         Some(
-            std::fs::OpenOptions::new()
+            purgatorio::fs::OpenOptions::new()
                 .append(true)
                 .create(true)
                 .open(clientlog)
@@ -178,7 +179,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     };
     let mut errors = 0;
     let mut stamp = None;
-    for line in std::io::stdin().lock().lines() {
+    for line in purgatorio::io::stdin().lock().lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
@@ -247,7 +248,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         stamp = Some((e.time, e.seq));
     }
     if let (Some(t), Some((time, seq)), false) = (&timefile, stamp, dry) {
-        std::fs::write(t, format!("{time} {seq}\n"))
+        purgatorio::fs::write(t, format!("{time} {seq}\n"))
             .map_err(|e| Error(format!("{t}: {}", Error::from(e))))?;
     }
     if strict && errors > 0 {

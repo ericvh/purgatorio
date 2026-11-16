@@ -1,7 +1,7 @@
 //! Code shared by the authentication tools (`docs/auth.md`): keyfs
 //! accounts, the server side of `pglogin1`, and option values.
 
-use std::os::fd::FromRawFd;
+use purgatorio::fd::FromRawFd;
 
 pub mod synth;
 
@@ -101,7 +101,7 @@ pub fn account(mnt: &str, name: &str) -> Option<Account> {
         return None;
     }
     let dir = format!("{mnt}/{name}");
-    let read = |f: &str| std::fs::read_to_string(format!("{dir}/{f}"));
+    let read = |f: &str| purgatorio::fs::read_to_string(format!("{dir}/{f}"));
     let status = read("status").ok()?;
     let verifier = read("secret")
         .ok()
@@ -119,7 +119,7 @@ pub fn account(mnt: &str, name: &str) -> Option<Account> {
 
 /// A secret for [`Verifier::fake`]: the signer's key when it can be read.
 pub fn fake_secret(keyfile: &str) -> Vec<u8> {
-    std::fs::read(keyfile).unwrap_or_else(|_| b"pglogin1".to_vec())
+    purgatorio::fs::read(keyfile).unwrap_or_else(|_| b"pglogin1".to_vec())
 }
 
 /// Serves one `pglogin1` conversation on fd 0 for the operations in `ops`.
@@ -133,7 +133,7 @@ pub fn serve_login(
     handler: impl FnOnce(&Hello, &Account, &[u8]) -> Result<Vec<u8>, String>,
 ) -> Result<(), Error> {
     // SAFETY: fd 0 is the connection, owned by this prog from here on.
-    let mut f = unsafe { std::fs::File::from_raw_fd(0) };
+    let mut f = unsafe { purgatorio::fs::File::from_raw_fd(0) };
     let mut s = FileStream(&mut f);
     let hello = login::server_hello(&mut s).map_err(Error)?;
     if !ops.contains(&hello.op.as_str()) {
@@ -178,7 +178,7 @@ pub fn login(
     let data = conn
         .data
         .ok_or_else(|| Error(format!("{addr}: no connection")))?;
-    let mut f = std::fs::File::from(data);
+    let mut f = purgatorio::fs::File::from(data);
     let mut s = FileStream(&mut f);
     let (_, reply) =
         login::client(&mut s, op, name, password.as_bytes(), &mut Rng, request).map_err(Error)?;

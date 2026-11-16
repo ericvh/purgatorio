@@ -1,10 +1,10 @@
 //! File descriptor helpers for the two ends of the protocol.
 
-use std::fs::File;
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
+use purgatorio::time::{Duration, Instant};
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::time::{Duration, Instant};
 
 use purgatorio::Error;
 use purgatorio::abi::mode::OREAD;
@@ -87,7 +87,7 @@ pub fn wait_readable(fds: &[i32], timeout_ms: i32) -> Result<Option<usize>, Erro
 
 /// Asks the kernel to kill prog `pid`.
 pub fn kill(pid: u32) {
-    let _ = std::fs::write(format!("/prog/{pid}/ctl"), "kill");
+    let _ = purgatorio::fs::write(format!("/prog/{pid}/ctl"), "kill");
 }
 
 /// This prog's children, as they exit.

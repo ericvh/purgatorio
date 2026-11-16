@@ -12,7 +12,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     // A read on a pipe nobody writes blocks in the kernel, where a kill
     // can still reach it.
     let [r, _w] = purgatorio::pipe()?;
-    let mut r = std::fs::File::from(r);
+    let mut r = purgatorio::fs::File::from(r);
     let mut b = [0u8; 1];
     loop {
         // A kill ends the read; leave quietly.

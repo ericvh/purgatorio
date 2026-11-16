@@ -40,7 +40,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     if words.is_empty() {
         return Err(Error::from(USAGE));
     }
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     if !numout && words[0].contains('-') {
         for q in words {
             let range = q

@@ -5,7 +5,8 @@
 //! standard input, one per line. A query that fails prints `dnsquery:
 //! query: error` and the exit status says so.
 
-use std::fs::OpenOptions;
+use purgatorio::fs::OpenOptions;
+use purgatorio::{eprintln, print, println};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 use purgatorio::arg::Arg;
@@ -27,10 +28,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let names = arg.argv();
     let mut ok = true;
     if names.is_empty() {
-        let stdin = std::io::stdin();
+        let stdin = purgatorio::io::stdin();
         loop {
             print!("> ");
-            std::io::stdout().flush()?;
+            purgatorio::io::stdout().flush()?;
             let mut line = String::new();
             if stdin.lock().read_line(&mut line)? == 0 {
                 println!();

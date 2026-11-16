@@ -1740,6 +1740,9 @@ version = "1.0.0"
 [[package]]
 name = "appl-lib-dbm"
 version = "1.0.0"
+dependencies = [
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-lib-disk"
@@ -1770,6 +1773,9 @@ version = "1.0.0"
 [[package]]
 name = "appl-lib-kfs"
 version = "1.0.0"
+dependencies = [
+ "purgatorio",
+]
 
 [[package]]
 name = "appl-lib-mashcase"

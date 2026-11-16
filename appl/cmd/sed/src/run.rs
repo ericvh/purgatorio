@@ -385,7 +385,7 @@ impl Engine<'_> {
                 Queued::Text(t) => self.out.line(&t, true)?,
                 // A file that cannot be read adds nothing.
                 Queued::File(f) => {
-                    if let Ok(data) = std::fs::read(&f) {
+                    if let Ok(data) = purgatorio::fs::read(&f) {
                         self.out.write(&String::from_utf8_lossy(&data))?;
                     }
                 }

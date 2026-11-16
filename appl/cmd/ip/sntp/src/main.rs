@@ -7,10 +7,11 @@
 //! The clock is set by writing `#r/rtc` (seconds) and `/dev/time`
 //! (microseconds); if neither can be written, sntp says so.
 
-use std::fs::File;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
+use purgatorio::time::{SystemTime, UNIX_EPOCH};
+use purgatorio::{eprintln, println};
 use std::io::Write;
-use std::os::fd::AsRawFd;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, daytime, dial};
@@ -85,8 +86,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         return Ok(());
     }
     // The real-time clock, where there is one, and the system's time.
-    let rtc = std::fs::write("#r/rtc", format!("{secs}")).is_ok();
-    let time = std::fs::write("/dev/time", format!("{}", secs * 1_000_000)).is_ok();
+    let rtc = purgatorio::fs::write("#r/rtc", format!("{secs}")).is_ok();
+    let time = purgatorio::fs::write("/dev/time", format!("{}", secs * 1_000_000)).is_ok();
     if !rtc && !time {
         return Err(fail(format!(
             "can't set the time: {}",

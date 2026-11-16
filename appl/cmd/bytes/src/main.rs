@@ -89,10 +89,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let new = args.get(3).map(|s| parse_bytes(s)).transpose()?;
     let mut data = Vec::new();
-    io::stdin().lock().read_to_end(&mut data)?;
+    purgatorio::io::stdin().lock().read_to_end(&mut data)?;
     let lo = start.min(data.len());
     let hi = end.min(data.len());
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     match new {
         None => show(&data[lo..hi], &mut out)?,
         Some(b) => {

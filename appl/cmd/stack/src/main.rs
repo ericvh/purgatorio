@@ -14,6 +14,7 @@
 //! them), or from the module's own `name` section, or from its exports.
 //! A function with no name prints as `func <index>`.
 
+use purgatorio::{eprintln, println};
 use std::collections::BTreeMap;
 
 use purgatorio::arg::Arg;
@@ -52,10 +53,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 
 /// The function names of the module at `path`.
 fn module_names(path: &str) -> Names {
-    if let Ok(text) = std::fs::read_to_string(wasmobj::names_path(path)) {
+    if let Ok(text) = purgatorio::fs::read_to_string(wasmobj::names_path(path)) {
         return Names::from_text(&text);
     }
-    let Ok(wasm) = std::fs::read(path) else {
+    let Ok(wasm) = purgatorio::fs::read(path) else {
         return Names::default();
     };
     let Ok(m) = wasmobj::parse(&wasm) else {
@@ -72,7 +73,7 @@ fn module_names(path: &str) -> Names {
 
 fn stack(pid: &str, verbose: bool, names: &mut BTreeMap<String, Names>) -> Result<(), Error> {
     let read = |file: &str| {
-        std::fs::read_to_string(format!("/prog/{pid}/{file}")).map_err(|_| Error::last())
+        purgatorio::fs::read_to_string(format!("/prog/{pid}/{file}")).map_err(|_| Error::last())
     };
     let frames = read("stack")?;
     let exception = read("exception").unwrap_or_default();

@@ -7,6 +7,7 @@
 
 use authlib::fmt::keys;
 use purgatorio::arg::Arg;
+use purgatorio::print;
 use purgatorio::{Context, Error};
 
 const USAGE: &str = "auth/countersigner [-f key] file";
@@ -26,8 +27,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         return Err(Error(format!("usage: {USAGE}")));
     };
     let key = purgatorio::auth::read_secret(&keyfile)?;
-    let text =
-        std::fs::read_to_string(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
+    let text = purgatorio::fs::read_to_string(file)
+        .map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
     let mut cert = keys::find_any_cert(text.as_bytes())
         .ok_or_else(|| Error(format!("{file}: bad certificate")))?;
     let old = cert.encode();

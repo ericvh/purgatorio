@@ -22,7 +22,8 @@
 //! the message (a server takes it as the end of the header), and it looks
 //! for the header lines in the header only.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fs::File;
 use std::io::{Read, Write};
 
 use purgatorio::{Context, Error, dial};
@@ -41,14 +42,14 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         args.remove(0);
     }
     let mut msg = Vec::new();
-    std::io::stdin().read_to_end(&mut msg)?;
+    purgatorio::io::stdin().read_to_end(&mut msg)?;
     let msg = String::from_utf8_lossy(&msg).into_owned();
     let h = Header::scan(&msg);
     if !h.to.is_empty() && !args.is_empty() {
         fail("recipients specified on To: line and as args - aborted");
     }
     let from = h.from.clone().unwrap_or_else(|| {
-        std::fs::read_to_string("/dev/user")
+        purgatorio::fs::read_to_string("/dev/user")
             .map(|s| s.trim().to_string())
             .unwrap_or_default()
     });
@@ -152,7 +153,7 @@ fn adddom(s: &str) -> String {
     }
     let dom = purgatorio::env::get("DOMAIN")
         .filter(|d| !d.trim_end().is_empty())
-        .or_else(|| std::fs::read_to_string(format!("/usr/{s}/mail/domain")).ok())
+        .or_else(|| purgatorio::fs::read_to_string(format!("/usr/{s}/mail/domain")).ok())
         .map(|d| d.trim_end_matches('\n').to_string())
         .filter(|d| !d.is_empty());
     match dom {

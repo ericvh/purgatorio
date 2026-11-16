@@ -260,7 +260,7 @@ impl Acme {
     pub(crate) fn dump(&mut self, arg: &str) {
         let path = self.dump_file(arg);
         let s = format(&self.state());
-        if std::fs::write(&path, s.as_bytes()).is_err() {
+        if purgatorio::fs::write(&path, s.as_bytes()).is_err() {
             let e = purgatorio::errstr();
             self.error("", &format!("Dump: {path}: {e}"));
         }
@@ -271,7 +271,7 @@ impl Acme {
     /// `Load` goes ahead.
     pub(crate) fn load(&mut self, arg: &str) {
         let path = self.dump_file(arg);
-        let st = match std::fs::read_to_string(&path) {
+        let st = match purgatorio::fs::read_to_string(&path) {
             Ok(s) => match parse(&s) {
                 Ok(st) => st,
                 Err(e) => {
@@ -304,7 +304,7 @@ impl Acme {
     }
 
     fn restore(&mut self, st: State) {
-        if std::env::set_current_dir(&st.dir).is_ok() {
+        if purgatorio::chdir(&st.dir).is_ok() {
             self.cwd = st.dir.clone();
         }
         if !st.fixed.is_empty() {

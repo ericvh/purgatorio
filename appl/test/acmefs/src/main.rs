@@ -29,7 +29,7 @@
 //!   window. `layout` adds what `Dump` writes of the columns and
 //!   windows, run in the first window.
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use purgatorio::{Context, Error};
@@ -46,7 +46,7 @@ fn open(path: &str) -> Result<File, String> {
 }
 
 fn read(path: &str) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| format!("{path}: {}", Error::from(e)))
+    purgatorio::fs::read_to_string(path).map_err(|e| format!("{path}: {}", Error::from(e)))
 }
 
 fn readf(f: &mut File) -> String {
@@ -190,7 +190,7 @@ fn fs(out: &mut Vec<String>) -> Result<(), String> {
     at(",", &mut addr);
     writef(&mut data, "New\nend\n");
     let mut ev = open(&format!("{w}/event"))?;
-    std::fs::write(format!("{DIR}/ready"), &id).map_err(|e| Error::from(e).0)?;
+    purgatorio::fs::write(format!("{DIR}/ready"), &id).map_err(|e| Error::from(e).0)?;
     let es = events(&mut ev, 2);
     for e in &es {
         // Where the click fell depends on the pixels; the flag does not.
@@ -224,7 +224,7 @@ fn fs(out: &mut Vec<String>) -> Result<(), String> {
         &[],
     )
     .map_err(|e| e.0)?;
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(500));
     put(&format!("/prog/{reader}/ctl"), "kill")?;
     let _ = purgatorio::wait();
     let mut ev2 = open(&format!("{ACME}/{id2}/event"))?;
@@ -266,7 +266,7 @@ fn body(out: &mut Vec<String>) -> Result<(), String> {
 
 fn ps(out: &mut Vec<String>) -> Result<(), String> {
     let mut mods = Vec::new();
-    for e in std::fs::read_dir("/prog").map_err(|_| purgatorio::errstr())? {
+    for e in purgatorio::fs::read_dir("/prog").map_err(|_| purgatorio::errstr())? {
         let Ok(e) = e else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
         if let Ok(s) = read(&format!("/prog/{name}/status")) {
@@ -306,7 +306,7 @@ fn plumb(out: &mut Vec<String>) -> Result<(), String> {
                 return Ok(());
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(100));
     }
     Err(String::from("acme opened no window"))
 }
@@ -379,7 +379,7 @@ fn until(what: &str, f: impl Fn() -> bool) -> Result<(), String> {
         if f() {
             return Ok(());
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(100));
     }
     Err(format!("{what}: timed out"))
 }
@@ -613,7 +613,7 @@ fn pipe(out: &mut Vec<String>) -> Result<(), String> {
     // The test clicks New in the right column's tag.
     let windows = || read(&format!("{ACME}/index")).map_or(0, |s| s.lines().count());
     let n = windows();
-    std::fs::write(format!("{DIR}/ready"), &a).map_err(|e| Error::from(e).0)?;
+    purgatorio::fs::write(format!("{DIR}/ready"), &a).map_err(|e| Error::from(e).0)?;
     until("New while it runs", || windows() > n)?;
     out.push(String::from("New while it runs: made"));
     exec(&a, "Kill")?;
@@ -672,7 +672,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let cmd = args.get(3).cloned().unwrap_or_default();
         return exec(&id, &cmd).map_err(Error);
     }
-    let mode = std::fs::read_to_string(format!("{DIR}/mode")).unwrap_or_default();
+    let mode = purgatorio::fs::read_to_string(format!("{DIR}/mode")).unwrap_or_default();
     let mut out = Vec::new();
     let r = match mode.trim() {
         "fs" => fs(&mut out),
@@ -690,6 +690,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     out.push(String::from("end\n"));
     // One write, which the test waits to see end with `end`.
-    std::fs::write(format!("{DIR}/out"), out.join("\n"))?;
+    purgatorio::fs::write(format!("{DIR}/out"), out.join("\n"))?;
     Ok(())
 }

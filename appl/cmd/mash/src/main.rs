@@ -20,6 +20,7 @@
 //! With no arguments, mash runs `/lib/mashinit` first, then reads the
 //! console with a `mash% ` prompt, or standard input as a file.
 
+use purgatorio::eprintln;
 mod ast;
 mod exec;
 mod history;
@@ -55,7 +56,7 @@ fn usage() -> ! {
 /// a backslash continues on the next.
 fn interactive(sh: &mut Shell) -> Option<Stop> {
     let io = Io::std();
-    let mut stdin = std::io::stdin();
+    let mut stdin = purgatorio::io::stdin();
     let mut buf: Vec<u8> = Vec::new();
     loop {
         io.out.print(&sh.prompt);
@@ -86,7 +87,7 @@ fn interactive(sh: &mut Shell) -> Option<Stop> {
 /// The next line of fd 0 with its newline, or what is left at the end of
 /// the input. It reads no further than the line, so commands that read
 /// standard input see the rest.
-fn read_line(stdin: &mut std::io::Stdin, buf: &mut Vec<u8>) -> Option<String> {
+fn read_line(stdin: &mut purgatorio::io::Stdin, buf: &mut Vec<u8>) -> Option<String> {
     loop {
         if let Some(nl) = buf.iter().position(|&b| b == b'\n') {
             let l: Vec<u8> = buf.drain(..=nl).collect();
@@ -165,7 +166,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if command.is_none() && rest.is_empty() && purgatorio::stat(PROFILE).is_ok() {
         sh.globals
             .insert(String::from("mashinit"), vec![String::from("true")]);
-        if let Ok(src) = std::fs::read_to_string(PROFILE)
+        if let Ok(src) = purgatorio::fs::read_to_string(PROFILE)
             && let Err(stop @ (Stop::Exit | Stop::Fail(_))) =
                 sh.run_source(&src, Some(PROFILE), &io)
         {
@@ -177,7 +178,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         sh.run_source(&src, Some("<string>"), &io).err()
     } else if !rest.is_empty() {
         let file = rest.remove(0);
-        let src = match std::fs::read_to_string(&file) {
+        let src = match purgatorio::fs::read_to_string(&file) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("could not open {file}: {}", Error::from(e));
@@ -190,7 +191,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         interactive(&mut sh)
     } else {
         let mut src = String::new();
-        if let Err(e) = std::io::stdin().read_to_string(&mut src) {
+        if let Err(e) = purgatorio::io::stdin().read_to_string(&mut src) {
             eprintln!("error reading <stdin>: {}", Error::from(e));
         }
         sh.run_source(&src, Some("<stdin>"), &io).err()

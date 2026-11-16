@@ -16,6 +16,7 @@
 //! key in `keyfile`; `crypt -d` with no key decrypts such a file with the
 //! key loaded into the guest factotum, which never hands out the secret.
 
+use purgatorio::println;
 use std::io::{Read, Write};
 
 use authlib::Rng;
@@ -47,8 +48,8 @@ fn fill(r: &mut impl Read, buf: &mut [u8]) -> Result<usize, Error> {
 
 /// Seals standard input to standard output in chunks, after `header`.
 fn seal_all(mut c: stream::Cipher, header: &[u8]) -> Result<(), Error> {
-    let mut out = std::io::stdout().lock();
-    let mut input = std::io::stdin().lock();
+    let mut out = purgatorio::io::stdout().lock();
+    let mut input = purgatorio::io::stdin().lock();
     out.write_all(header)?;
     let mut cur = vec![0u8; stream::CHUNK];
     let mut n = fill(&mut input, &mut cur)?;
@@ -84,7 +85,7 @@ fn encrypt_to(recipient: &[u8; hybrid::PUBLIC]) -> Result<(), Error> {
 /// Opens the chunks on standard input, after the header, to standard
 /// output. A wrong key fails on the first chunk.
 fn open_all(mut c: stream::Cipher, input: &mut impl Read) -> Result<(), Error> {
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     let read_chunk = |input: &mut dyn Read| -> Result<Option<Vec<u8>>, Error> {
         let mut len = [0u8; 4];
         let mut r = input;
@@ -126,7 +127,7 @@ enum Key {
 }
 
 fn decrypt(key: Option<Key>, max: (u32, u32)) -> Result<(), Error> {
-    let mut input = std::io::stdin().lock();
+    let mut input = purgatorio::io::stdin().lock();
     let mut magic = [0u8; 8];
     if fill(&mut input, &mut magic)? != magic.len() {
         return Err(Error::from(stream::EBAD));
@@ -179,7 +180,7 @@ const ENEEDSECRET: &str = "file is encrypted with a secret";
 /// Asks the guest factotum for the key of the file whose header is
 /// `header` (`auth/factotum`'s `mlkem768x25519` keys).
 fn factotum_key(header: &[u8]) -> Result<[u8; 32], Error> {
-    let mut f = std::fs::OpenOptions::new()
+    let mut f = purgatorio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(format!("{}/rpc", purgatorio::auth::FACTOTUM))
@@ -211,7 +212,7 @@ fn factotum_key(header: &[u8]) -> Result<[u8; 32], Error> {
 
 /// Reads a key file.
 fn read_key(path: &str) -> Result<Vec<u8>, Error> {
-    std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))
+    purgatorio::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))
 }
 
 /// A recipient's public key: its public key line, or its secret key file.

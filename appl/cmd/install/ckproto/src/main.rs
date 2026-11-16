@@ -5,6 +5,7 @@
 //! files that are not 664 at least, and `-v` lists what the prototypes
 //! select and the resulting tree.
 
+use purgatorio::{eprintln, println};
 use std::collections::BTreeMap;
 
 use proto::{Fs, Level, Namespace, mkpath};
@@ -124,7 +125,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     }
     let mut tree = Node::default();
     for p in &protos {
-        let text = std::fs::read_to_string(p)
+        let text = purgatorio::fs::read_to_string(p)
             .map_err(|e| Error(format!("can't open {p}: {}", Error::from(e))))?;
         let mut failed = false;
         let mut selected = Vec::new();

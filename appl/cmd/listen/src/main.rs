@@ -1,6 +1,7 @@
 //! listen [-A] addr cmd [args...]: like styxlisten, and print each remote.
 
-use std::os::fd::AsRawFd;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::pctl::NEWFD;
 use purgatorio::arg::Arg;
@@ -24,7 +25,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let argv = rest[1..].to_vec();
     loop {
         let conn = dial::listen(&ann.dir)?;
-        let remote = std::fs::read_to_string(format!("{}/remote", conn.dir)).unwrap_or_default();
+        let remote =
+            purgatorio::fs::read_to_string(format!("{}/remote", conn.dir)).unwrap_or_default();
         eprintln!("{}", remote.trim());
         let Some(data) = conn.data.as_ref() else {
             continue;

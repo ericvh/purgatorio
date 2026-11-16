@@ -7,11 +7,12 @@
 //! turns off permission checking; `-D` traces the Styx messages and `-d`
 //! prints debugging messages, on standard error.
 
+use purgatorio::eprintln;
+use purgatorio::fd::FromRawFd;
+use purgatorio::fs::File;
+use purgatorio::time::{SystemTime, UNIX_EPOCH};
 use std::collections::{BTreeMap, HashMap};
-use std::fs::File;
 use std::io::Write;
-use std::os::fd::FromRawFd;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use purg_styx::{IOHDRSZ, MAX_MSIZE, Msg, Qid, StyxFs};
 use purgatorio::abi::{error, mode};

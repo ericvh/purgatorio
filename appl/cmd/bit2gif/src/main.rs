@@ -6,6 +6,7 @@
 //! passed over; messages go to standard output, as Inferno's do.
 
 use purgatorio::draw::memdraw::{self, CMAP8, GREY1, GREY2, GREY4, GREY8, Point};
+use purgatorio::println;
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]
@@ -20,7 +21,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             Some(i) => format!("{}.gif", &name[..i]),
             None => format!("{name}.gif"),
         };
-        let Some((img, chan)) = std::fs::read(name).ok().and_then(|b| read(&b)) else {
+        let Some((img, chan)) = purgatorio::fs::read(name).ok().and_then(|b| read(&b)) else {
             println!("bit2gif: unable to read <{name}>");
             continue;
         };
@@ -90,5 +91,7 @@ fn write(path: &str, data: &[u8]) -> Result<(), Error> {
         purgatorio::abi::mode::OWRITE | purgatorio::abi::mode::OTRUNC,
         0o644,
     )?;
-    std::fs::File::from(fd).write_all(data).map_err(Error::from)
+    purgatorio::fs::File::from(fd)
+        .write_all(data)
+        .map_err(Error::from)
 }

@@ -5,6 +5,7 @@
 //! instead, `-T` restores modification times, `-u` also restores owners,
 //! `-f` replaces files that cannot be created, and `-v` names each file.
 
+use purgatorio::{eprintln, println};
 use std::io::{BufRead, BufReader, Read, Write};
 
 use purgatorio::abi::mode;
@@ -31,7 +32,7 @@ fn parent(name: &str) -> &str {
 }
 
 /// Creates `name`, making its parent writable for the moment if need be.
-fn create(name: &str, m: u8, perm: u32) -> Result<std::os::fd::OwnedFd, Error> {
+fn create(name: &str, m: u8, perm: u32) -> Result<purgatorio::fd::OwnedFd, Error> {
     match purgatorio::create(name, m, perm) {
         Ok(fd) => Ok(fd),
         Err(e) => {
@@ -128,7 +129,7 @@ impl Mkext {
                 }
             }
         };
-        if let Err(e) = std::fs::File::from(fd).write_all(data) {
+        if let Err(e) = purgatorio::fs::File::from(fd).write_all(data) {
             warn(&format!("error writing {name}: {}", Error::from(e)));
         }
         self.setmodes(name, perm, mtime, uid, gid);
@@ -164,8 +165,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let files = arg.argv();
-    let mut input = BufReader::new(std::io::stdin().lock());
-    let mut out = std::io::stdout().lock();
+    let mut input = BufReader::new(purgatorio::io::stdin().lock());
+    let mut out = purgatorio::io::stdout().lock();
     let mut line = String::new();
     loop {
         line.clear();

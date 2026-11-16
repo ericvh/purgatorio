@@ -2,13 +2,14 @@
 //! directories with their contents; `-f` suppresses errors.
 
 use purgatorio::arg::Arg;
+use purgatorio::eprintln;
 use purgatorio::{Context, Error};
 
 fn remove_all(path: &str) -> Result<(), Error> {
     let at = |e: Error| Error(format!("{path}: {e}"));
     let d = purgatorio::stat(path).map_err(at)?;
     if d.qid.is_dir() {
-        let entries: Vec<String> = std::fs::read_dir(path)
+        let entries: Vec<String> = purgatorio::fs::read_dir(path)
             .map_err(|e| at(e.into()))?
             .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
             .collect::<Result<_, _>>()

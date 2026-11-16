@@ -12,6 +12,7 @@
 //! next slot). The attrdb readers here search the text and do not use
 //! the table: it is for other systems that share the database.
 
+use purgatorio::eprintln;
 use std::io::Write;
 
 use purgatorio::{Context, Error};
@@ -26,7 +27,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let [_, dbname, attr] = args.as_slice() else {
         fail("usage: mkhash file attr");
     };
-    let text = match std::fs::read(dbname) {
+    let text = match purgatorio::fs::read(dbname) {
         Ok(t) => t,
         Err(e) => fail(&format!("can't open {dbname}: {}", Error::from(e))),
     };
@@ -34,7 +35,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let file = build(&text, attr, mtime);
     let hashfile = format!("{dbname}.{attr}");
     let mut f = match purgatorio::create(&hashfile, purgatorio::abi::mode::OWRITE, 0o666) {
-        Ok(fd) => std::fs::File::from(fd),
+        Ok(fd) => purgatorio::fs::File::from(fd),
         Err(e) => fail(&format!("can't create {hashfile}: {e}")),
     };
     if let Err(e) = f.write_all(&file) {

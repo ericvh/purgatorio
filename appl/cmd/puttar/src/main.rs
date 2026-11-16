@@ -11,7 +11,7 @@ use purgatorio::{Context, Error};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     let mut w = Writer::new(&mut out);
     let mut put = Put {
         prog: "puttar",
@@ -24,7 +24,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             put.add(&mut w, f)?;
         }
     } else {
-        for line in io::stdin().lock().lines() {
+        for line in purgatorio::io::stdin().lock().lines() {
             let line = line?;
             if !line.is_empty() {
                 put.add(&mut w, &line)?;

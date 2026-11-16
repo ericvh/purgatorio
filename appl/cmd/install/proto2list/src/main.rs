@@ -3,6 +3,7 @@
 //! the same), length, mode, modification time and CRC-32, separated by
 //! tabs, and a final 0.
 
+use purgatorio::{eprintln, println};
 use std::io::Read;
 
 use proto::{Level, Namespace};
@@ -15,7 +16,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let mut files: Vec<(String, String)> = Vec::new();
     for p in &args[1..] {
-        let text = match std::fs::read_to_string(p) {
+        let text = match purgatorio::fs::read_to_string(p) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("fatal: can't open {p}: {}: skipping", Error::from(e));
@@ -81,7 +82,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 
 fn crc(f: &str) -> u32 {
     let mut data = Vec::new();
-    match std::fs::File::open(f).and_then(|mut h| h.read_to_end(&mut data)) {
+    match purgatorio::fs::File::open(f).and_then(|mut h| h.read_to_end(&mut data)) {
         Ok(_) => proto::crc32(&data),
         Err(e) => {
             eprintln!("bad read on {f} : {}", Error::from(e));

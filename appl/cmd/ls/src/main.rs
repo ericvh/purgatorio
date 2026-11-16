@@ -4,6 +4,7 @@
 //! prints only the last element of each name. Names in a union directory
 //! that appear more than once are listed once, as a walk would find them.
 
+use purgatorio::eprintln;
 use std::io::Write;
 
 use purgatorio::arg::Arg;
@@ -40,7 +41,7 @@ fn mode_string(m: u32) -> String {
 
 fn read_dir(path: &str) -> Result<Vec<Dir>, Error> {
     let fd = purgatorio::open(path, mode::OREAD)?;
-    let fd = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    let fd = purgatorio::fd::AsRawFd::as_raw_fd(&fd);
     let mut all: Vec<Dir> = Vec::new();
     loop {
         let batch = purgatorio::dirread(fd)?;
@@ -140,7 +141,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let text = print(&mut rows, &o);
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = purgatorio::io::stdout().lock();
     stdout.write_all(text.as_bytes())?;
     stdout.flush()?;
     if failed {

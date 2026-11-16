@@ -18,10 +18,12 @@ use authlib::fmt::keys::AuthInfo;
 use authlib::fmt::sig::{Public, Secret};
 use authlib::fmt::{self};
 use purgatorio::{Context, Error};
+use purgatorio::{eprintln, println};
 
 /// The public key in `path`, as printed.
 fn public(path: &str, whole: bool) -> Result<String, Error> {
-    let bytes = std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    let bytes =
+        purgatorio::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
     if bytes.starts_with(fmt::hybrid::SECRET_WORD.as_bytes()) {
         let k = fmt::hybrid::Secret::parse(&bytes).map_err(|e| Error(format!("{path}: {e}")))?;
         return Ok(fmt::hybrid::encode_public(&k.public()));
@@ -53,7 +55,8 @@ fn key(path: &str, bytes: &[u8]) -> Result<Public, Error> {
 
 /// The certificate in an authinfo or a certificate file, as a line.
 fn cert(path: &str) -> Result<String, Error> {
-    let bytes = std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    let bytes =
+        purgatorio::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
     if let Ok(info) = AuthInfo::parse(&bytes) {
         return Ok(info.cert.encode());
     }

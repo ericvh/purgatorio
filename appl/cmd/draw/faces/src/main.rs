@@ -13,8 +13,8 @@
 //! It follows a resize by checking the screen's size on each pointer
 //! event and each scan.
 
+use purgatorio::time::{Duration, Instant};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use purgatorio::arg::Arg;
 use purgatorio::draw::{Display, ENDDISC, Font, Image, Keyboard, Mouse, Point, Pointer, Rect};
@@ -52,14 +52,14 @@ fn parse_status(s: &str) -> Option<Prog> {
 }
 
 fn scan() -> Vec<Prog> {
-    let Ok(dir) = std::fs::read_dir("/prog") else {
+    let Ok(dir) = purgatorio::fs::read_dir("/prog") else {
         return Vec::new();
     };
     let mut out: Vec<Prog> = dir
         .filter_map(|e| e.ok()?.file_name().into_string().ok()?.parse::<u32>().ok())
         .filter_map(|pid| {
             // A prog may exit between the listing and the read.
-            let s = std::fs::read_to_string(format!("/prog/{pid}/status")).ok()?;
+            let s = purgatorio::fs::read_to_string(format!("/prog/{pid}/status")).ok()?;
             parse_status(&s)
         })
         .collect();

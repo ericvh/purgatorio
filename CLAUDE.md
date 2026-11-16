@@ -79,7 +79,10 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 - `wasm32-wasip1` is the default guest target. wasm64 is a separate ABI,
   `purgatorio64`, with no WASI (`docs/wasm64.md`): a crate opts in with
   `wasm64 = true` under `[package.metadata.purgatorio]` and must then use
-  `purgatorio::{fs, fd, io, time}` instead of `std`'s. Host functions that
+  `purgatorio::{fs, fd, io, time, thread}` and the SDK's print macros
+  instead of `std`'s; `clippy-guests` checks the sources. Nearly every
+  command is built in both widths, and the sh corpus runs in both
+  (`.out64` where the output depends on the width). Host functions that
   take guest pointers are generic over `purg_vm::Ptr`.
 
 ## Layout

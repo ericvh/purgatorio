@@ -4,7 +4,8 @@
 //! first. As in Inferno's time, nothing sets a status: not a usage
 //! error, a command that cannot be loaded, nor the command's own failure.
 
-use std::time::Instant;
+use purgatorio::eprintln;
+use purgatorio::time::Instant;
 
 use purgatorio::{Context, Error};
 

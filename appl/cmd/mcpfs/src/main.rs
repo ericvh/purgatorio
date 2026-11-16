@@ -48,10 +48,10 @@
 mod json;
 mod serve;
 
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
 
 use json::Value;
 use purgatorio::abi::mount::MREPL;
@@ -989,7 +989,7 @@ fn connect(argv: &[String]) -> Result<McpFs, String> {
     }
     let mut server = init.encode().into_bytes();
     server.push(b'\n');
-    let user = std::fs::read_to_string("/dev/user").unwrap_or_else(|_| String::from("none"));
+    let user = purgatorio::fs::read_to_string("/dev/user").unwrap_or_else(|_| String::from("none"));
     let mut fs = McpFs {
         client,
         user: String::from(user.trim()),

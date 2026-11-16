@@ -37,7 +37,8 @@
 //! standard output first. The ARP entry Inferno's bootpd adds for the
 //! client is not added: `#I` has no `arp` file.
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fs::{File, OpenOptions};
+use purgatorio::{eprintln, println};
 use std::io::{Read, Write};
 
 use ndb::Entry;
@@ -245,7 +246,7 @@ fn fatal(msg: &str) -> ! {
 
 /// The system's name, from `/dev/sysname`.
 fn sysname() -> String {
-    std::fs::read_to_string("/dev/sysname")
+    purgatorio::fs::read_to_string("/dev/sysname")
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
 }
@@ -289,7 +290,7 @@ fn announce(net: &str, addr: &str) -> Result<(File, File, String), Error> {
         .map_err(|e| Error(format!("can't set headers mode: {}", Error::from(e).0)))?;
     let dir = format!("{net}/{proto}/{id}");
     let data = rw(&format!("{dir}/data"))?;
-    let local = std::fs::read_to_string(format!("{dir}/local"))
+    let local = purgatorio::fs::read_to_string(format!("{dir}/local"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     Ok((ctl, data, local))
@@ -569,7 +570,7 @@ impl Db {
             return Ok(());
         }
         let read = |f: &str| {
-            std::fs::read_to_string(f)
+            purgatorio::fs::read_to_string(f)
                 .map_err(|_| format!("cannot open {f}: {}", purgatorio::errstr()))
         };
         self.entries = Some(ndb::open(&self.file, &read)?);

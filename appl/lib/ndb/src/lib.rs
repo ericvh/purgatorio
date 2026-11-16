@@ -133,7 +133,7 @@ pub fn files(db: &[Entry]) -> Vec<String> {
 /// Reads a file with std, reporting a failure the way Inferno's attrdb
 /// does (`can't open file: err`); `err` is the system's error string.
 pub fn read_std(file: &str, errstr: &dyn Fn() -> String) -> Result<String, String> {
-    std::fs::read_to_string(file).map_err(|_| format!("can't open {file}: {}", errstr()))
+    purgatorio::fs::read_to_string(file).map_err(|_| format!("can't open {file}: {}", errstr()))
 }
 
 /// Parses attrdb text. `name` names the file in errors (`file:line: err`).

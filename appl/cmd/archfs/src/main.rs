@@ -6,7 +6,7 @@
 //! start with one of them, as whole path elements, are served; `-s` stops
 //! reading at the first member after a match that matches none.
 
-use std::fs::File;
+use purgatorio::fs::File;
 use std::io::{BufRead, BufReader, Read};
 
 use purgatorio::abi::mount::MREPL;

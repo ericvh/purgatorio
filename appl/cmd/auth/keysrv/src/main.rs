@@ -32,7 +32,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let v = Verifier::parse(req).map_err(String::from)?;
         let path = format!("{mtpt}/{}/secret", hello.name);
         let mut f = purgatorio::open(&path, mode::OWRITE)
-            .map(std::fs::File::from)
+            .map(purgatorio::fs::File::from)
             .map_err(|e| e.0)?;
         f.write_all(v.encode().as_bytes())
             .map_err(|e| Error::from(e).0)?;

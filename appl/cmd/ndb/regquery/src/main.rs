@@ -4,7 +4,8 @@
 //! only their names. With no pairs it prompts with `> ` and reads one
 //! query per line from standard input.
 
-use std::fs::OpenOptions;
+use purgatorio::fs::OpenOptions;
+use purgatorio::{eprintln, print, println};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 use ndb::quote;
@@ -30,10 +31,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let q: Vec<String> = q.iter().map(|w| quote(w)).collect();
         return query(&mnt, &q.join(" "), names);
     }
-    let stdin = std::io::stdin();
+    let stdin = purgatorio::io::stdin();
     loop {
         print!("> ");
-        std::io::stdout().flush()?;
+        purgatorio::io::stdout().flush()?;
         let mut line = String::new();
         if stdin.lock().read_line(&mut line)? == 0 {
             println!();

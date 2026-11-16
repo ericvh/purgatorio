@@ -25,6 +25,7 @@
 
 use authlib::fmt::{attr::quote, hex};
 use purgatorio::arg::Arg;
+use purgatorio::print;
 use purgatorio::{Context, Error};
 
 const USAGE: &str = "auth/ai2key [-t tag] keyfile ...";

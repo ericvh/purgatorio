@@ -2,6 +2,7 @@
 //! in file1, lines only in file2, and lines in both. Each digit suppresses
 //! its column; `-` names the standard input.
 
+use purgatorio::eprintln;
 use std::io::{self, BufRead, BufReader, Write};
 
 use purgatorio::arg::Arg;
@@ -9,9 +10,9 @@ use purgatorio::{Context, Error};
 
 fn open(name: &str) -> Result<Box<dyn BufRead>, Error> {
     if name == "-" {
-        return Ok(Box::new(BufReader::new(io::stdin())));
+        return Ok(Box::new(BufReader::new(purgatorio::io::stdin())));
     }
-    match std::fs::File::open(name) {
+    match purgatorio::fs::File::open(name) {
         Ok(f) => Ok(Box::new(BufReader::new(f))),
         Err(_) => {
             // As Inferno's comm: `fail:open`.
@@ -55,7 +56,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let prefix: Vec<String> = (0..3)
         .map(|c| "\t".repeat(show[..c].iter().filter(|s| **s).count()))
         .collect();
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     let put = |col: usize, line: &str, out: &mut dyn Write| -> io::Result<()> {
         if show[col] {
             writeln!(out, "{}{line}", prefix[col])?;

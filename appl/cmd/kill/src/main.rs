@@ -7,6 +7,7 @@
 //! rest of the list. The status is `fail:nothing killed` only when nothing
 //! was, and `fail: usage` for a bad command line.
 
+use purgatorio::{eprintln, println};
 use std::io::Write;
 
 use purgatorio::{Context, Error};
@@ -22,7 +23,7 @@ fn usage() -> ! {
 /// `what` being the message prefix kill reports them with.
 fn kill(pid: &str, msg: &str) -> Result<(), (String, String)> {
     let path = format!("/prog/{pid}/ctl");
-    let mut f = std::fs::OpenOptions::new()
+    let mut f = purgatorio::fs::OpenOptions::new()
         .write(true)
         .open(&path)
         .map_err(|e| (format!("cannot open {path}"), Error::from(e).0))?;
@@ -33,7 +34,7 @@ fn kill(pid: &str, msg: &str) -> Result<(), (String, String)> {
 /// Kills every prog whose module is `name`, printing their pids. Returns
 /// how many were killed.
 fn kill_module(name: &str, msg: &str) -> usize {
-    let entries = match std::fs::read_dir("/prog") {
+    let entries = match purgatorio::fs::read_dir("/prog") {
         Ok(e) => e,
         Err(e) => {
             eprintln!("kill: open /prog: {}", Error::from(e));
@@ -52,7 +53,7 @@ fn kill_module(name: &str, msg: &str) -> usize {
             continue;
         }
         let path = format!("/prog/{pid}/status");
-        let text = match std::fs::read_to_string(&path) {
+        let text = match purgatorio::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) => {
                 // A prog that exits after the directory is read is gone.

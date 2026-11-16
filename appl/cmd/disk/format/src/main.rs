@@ -22,7 +22,8 @@
 //! table), unless `-x` is given. There are no floppy drives to format
 //! physically, so `-f` changes nothing. `-v` prints the layout.
 
-use std::fs::OpenOptions;
+use purgatorio::eprintln;
+use purgatorio::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 
 use fat::format::{Params, head};
@@ -176,7 +177,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     let size = f.seek(SeekFrom::End(0))?;
     let bootcode = match &boot {
         Some(b) => {
-            let code = std::fs::read(b)
+            let code = purgatorio::fs::read(b)
                 .map_err(|e| Error(format!("can't open {b}: {}", Error::from(e))))?;
             if code.len() > 512 {
                 return Err(Error(format!("{b}: boot block larger than a sector")));
@@ -249,7 +250,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     let mut v = Vol::open(Image(f), 0).map_err(|e| Error(format!("{disk}: {e}")))?;
     let root = v.root();
     for path in files {
-        let data = std::fs::read(path)
+        let data = purgatorio::fs::read(path)
             .map_err(|e| Error(format!("can't open {path}: {}", Error::from(e))))?;
         let name = base(path);
         let attr = if name == "9load" { ATTR_SYSTEM } else { 0 };

@@ -17,6 +17,7 @@
 
 use purgatorio::arg::Arg;
 use purgatorio::daytime::{self, Tm};
+use purgatorio::eprintln;
 use purgatorio::{Context, Error};
 
 const USAGE: &str = "cron [-f crontab] [-t time]";
@@ -42,7 +43,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let file = match file {
         Some(f) => f,
         None => {
-            let user = std::fs::read_to_string("/dev/user").unwrap_or_default();
+            let user = purgatorio::fs::read_to_string("/dev/user").unwrap_or_default();
             format!("/cron/{}/cron", user.trim())
         }
     };
@@ -53,7 +54,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         // Sleep to the start of the next minute.
         let now = daytime::now();
         let next = (now.div_euclid(60) + 1) * 60;
-        std::thread::sleep(std::time::Duration::from_secs((next - now) as u64));
+        purgatorio::thread::sleep(purgatorio::time::Duration::from_secs((next - now) as u64));
         if let Err(e) = pass(&file, &daytime::gmt(next), false) {
             eprintln!("cron: {e}");
         }
@@ -63,7 +64,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 /// Starts every entry of `file` due at `tm`, waiting for each in turn when
 /// `wait` is set.
 fn pass(file: &str, tm: &Tm, wait: bool) -> Result<(), Error> {
-    let text = std::fs::read_to_string(file)
+    let text = purgatorio::fs::read_to_string(file)
         .map_err(|_| Error(format!("can't open {file}: {}", purgatorio::errstr())))?;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();

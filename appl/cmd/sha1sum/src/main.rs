@@ -1,6 +1,7 @@
 //! sha1sum [file ...]: print the SHA1 hash of each file and its name,
 //! separated by a tab, or just the hash of standard input.
 
+use purgatorio::{eprintln, println};
 use std::io::{self, Read};
 
 use purgatorio::{Context, Error};
@@ -109,12 +110,12 @@ fn hash(r: &mut dyn Read) -> io::Result<String> {
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() < 2 {
-        println!("{}", hash(&mut io::stdin().lock())?);
+        println!("{}", hash(&mut purgatorio::io::stdin().lock())?);
         return Ok(());
     }
     let mut failed = false;
     for f in &args[1..] {
-        let mut file = match std::fs::File::open(f) {
+        let mut file = match purgatorio::fs::File::open(f) {
             Ok(file) => file,
             Err(_) => {
                 eprintln!("sha1sum: cannot open {f}: {}", purgatorio::errstr());

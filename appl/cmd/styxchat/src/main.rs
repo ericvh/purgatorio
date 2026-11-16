@@ -51,11 +51,12 @@
 //! for the replies still due. A message that gets no reply in that time,
 //! such as a read that blocks, can then be flushed by the next line.
 
+use purgatorio::eprintln;
+use purgatorio::fd::{AsRawFd, FromRawFd, OwnedFd};
+use purgatorio::fs::File;
+use purgatorio::time::{Duration, Instant};
 use std::collections::BTreeSet;
-use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::time::{Duration, Instant};
 
 use purg_styx::{Dir, Fcall, MAXWELEM, Msg, NOFID, NOTAG, Qid};
 use purgatorio::abi::{mode, pctl};
@@ -467,7 +468,7 @@ fn rmsg(w: &[&'static str]) -> Result<Line, String> {
 }
 
 fn show(dir: &str, m: &Msg<'_>, verbose: bool) {
-    let mut out = io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     let _ = writeln!(out, "{dir} {}", text::msg(m));
     if verbose && let Some(d) = text::payload(m) {
         let _ = writeln!(out, "\t{}", text::data(d));
@@ -511,7 +512,7 @@ fn ticker() -> Result<(), Error> {
     // SAFETY: fd [`EVFD`] is the parent's event pipe.
     let mut ev = unsafe { File::from_raw_fd(EVFD) };
     loop {
-        std::thread::sleep(Duration::from_millis(100));
+        purgatorio::thread::sleep(Duration::from_millis(100));
         ev.write_all(&[EV_TICK])?;
     }
 }
@@ -566,7 +567,7 @@ impl Events {
 }
 
 fn kill(pid: u32) {
-    if let Ok(mut ctl) = std::fs::OpenOptions::new()
+    if let Ok(mut ctl) = purgatorio::fs::OpenOptions::new()
         .write(true)
         .open(format!("/prog/{pid}/ctl"))
     {
@@ -662,7 +663,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
                 .map_err(|e| Error(format!("can't open /dev/cons: {}", Error::from(e))))?,
         )
     } else {
-        Box::new(io::stdin())
+        Box::new(purgatorio::io::stdin())
     };
     let (conn, _keep, _netconn, command) = connect(dest, net, server)?;
     let [evr, evw] = purgatorio::pipe()?;
@@ -697,7 +698,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     // arrived and have not been answered.
     let mut due: BTreeSet<u16> = BTreeSet::new();
     let mut nexttag: u16 = 1;
-    let mut stdout = io::stdout();
+    let mut stdout = purgatorio::io::stdout();
     for line in BufReader::new(input).lines() {
         let line = line?;
         let words = purgatorio::unquote_fields(&line);
@@ -790,10 +791,10 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     // before the script goes on, for at most the usual ten seconds.
     if server && let Some(pid) = command {
         let start = Instant::now();
-        while std::fs::metadata(format!("/prog/{pid}/status")).is_ok()
+        while purgatorio::fs::metadata(format!("/prog/{pid}/status")).is_ok()
             && start.elapsed() < Duration::from_secs(10)
         {
-            std::thread::sleep(Duration::from_millis(20));
+            purgatorio::thread::sleep(Duration::from_millis(20));
         }
     }
     Ok(())

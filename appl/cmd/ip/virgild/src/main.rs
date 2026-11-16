@@ -10,7 +10,8 @@
 //! which address was announced and traces each query; both are
 //! Purgatorio's additions, for tests on loopback.
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fs::{File, OpenOptions};
+use purgatorio::{eprintln, println};
 use std::io::{Read, Write};
 
 use purgatorio::arg::Arg;

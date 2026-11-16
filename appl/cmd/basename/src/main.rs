@@ -3,6 +3,7 @@
 //! everything before the last `/`, or `.` when there is none.
 
 use purgatorio::arg::Arg;
+use purgatorio::println;
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]

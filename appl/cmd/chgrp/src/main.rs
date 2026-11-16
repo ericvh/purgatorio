@@ -2,6 +2,7 @@
 //! `-u` or `-o` its owner, if the file server allows it.
 
 use purgatorio::arg::Arg;
+use purgatorio::eprintln;
 use purgatorio::{Context, Dir, Error};
 
 #[purgatorio::main]

@@ -3,7 +3,8 @@
 //! blanks and tabs). Empty lines are skipped. The commands run one after
 //! another; if any fails, xargs exits with the last failure.
 
-use std::io::{self, BufRead};
+use purgatorio::eprintln;
+use std::io::BufRead;
 
 use purgatorio::{Context, Error};
 
@@ -24,7 +25,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         return Ok(());
     };
     let mut status = String::new();
-    let mut input = io::stdin().lock();
+    let mut input = purgatorio::io::stdin().lock();
     let mut line = Vec::new();
     loop {
         line.clear();

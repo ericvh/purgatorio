@@ -4,6 +4,7 @@
 //! remove, set), and which bits (read, write, execute, append only,
 //! exclusive, temporary).
 
+use purgatorio::eprintln;
 use purgatorio::{Context, DMAPPEND, DMDIR, DMEXCL, Dir, Error};
 
 const DMTMP: u32 = 0x0400_0000;

@@ -360,7 +360,7 @@ impl Ed {
     }
 
     fn read_file(&mut self, name: &str) -> R<Vec<String>> {
-        let data = std::fs::read(name).map_err(|_| Fail(String::from(name)))?;
+        let data = purgatorio::fs::read(name).map_err(|_| Fail(String::from(name)))?;
         self.count(data.len());
         let text = String::from_utf8_lossy(&data);
         Ok(text
@@ -379,13 +379,13 @@ impl Ed {
         }
         match name {
             None => {
-                let mut so = io::stdout().lock();
+                let mut so = purgatorio::io::stdout().lock();
                 so.write_all(data.as_bytes())
                     .map_err(|_| Fail(String::new()))?;
                 let _ = so.flush();
             }
             Some(name) => {
-                let mut f = std::fs::OpenOptions::new()
+                let mut f = purgatorio::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
                     .append(append)
@@ -884,9 +884,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let out: Box<dyn Write> = if ostdout {
-        Box::new(io::stderr())
+        Box::new(purgatorio::io::stderr())
     } else {
-        Box::new(io::stdout())
+        Box::new(purgatorio::io::stdout())
     };
     let mut ed = Ed {
         buf: Vec::new(),
@@ -901,7 +901,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         quiet,
         out,
         stdout_w: ostdout,
-        input: Box::new(io::BufReader::new(io::stdin())),
+        input: Box::new(io::BufReader::new(purgatorio::io::stdin())),
         queue: Vec::new(),
         in_global: false,
         done: false,

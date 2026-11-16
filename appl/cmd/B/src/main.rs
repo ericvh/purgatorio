@@ -11,6 +11,7 @@
 
 #![allow(non_snake_case)]
 
+use purgatorio::eprintln;
 use std::io::Write;
 
 use plumbmsg::Msg;
@@ -54,7 +55,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let fd = purgatorio::open(plumbmsg::INPUT, mode::OWRITE)
         .map_err(|e| Error(format!("can't open {}: {e}", plumbmsg::INPUT)))?;
-    let mut f = std::fs::File::from(fd);
+    let mut f = purgatorio::fs::File::from(fd);
     for m in msgs {
         if f.write_all(&m.pack()).is_err() {
             return Err(Error(format!(

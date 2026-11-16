@@ -33,7 +33,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     } else {
         format!("modules {level}")
     };
-    std::fs::write(&ctl, policy).map_err(|e| Error(format!("{ctl}: {}", Error::from(e))))?;
+    purgatorio::fs::write(&ctl, policy).map_err(|e| Error(format!("{ctl}: {}", Error::from(e))))?;
     let path =
         purgatorio::find_command(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
     // spawn's error already names the module.

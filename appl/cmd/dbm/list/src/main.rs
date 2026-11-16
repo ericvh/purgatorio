@@ -1,6 +1,7 @@
 //! dbm/list dbfile: write each key of the dbm database `dbfile`, a tab and
 //! its value on a line, in the database's own order.
 
+use purgatorio::eprintln;
 use std::io::Write;
 
 use dbm::Db;
@@ -25,5 +26,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         out.extend_from_slice(&v);
         out.push(b'\n');
     }
-    std::io::stdout().write_all(&out).map_err(Error::from)
+    purgatorio::io::stdout()
+        .write_all(&out)
+        .map_err(Error::from)
 }

@@ -3,21 +3,22 @@
 //! line from the console. That line may be `q` to quit or `!command` to
 //! run a shell command first.
 
-use std::io::{self, BufRead, BufReader, Write};
+use purgatorio::{eprintln, println};
+use std::io::{BufRead, BufReader, Write};
 
 use purgatorio::{Context, Error};
 
 struct Pager {
     page: usize,
     count: usize,
-    cons: Option<BufReader<std::fs::File>>,
+    cons: Option<BufReader<purgatorio::fs::File>>,
 }
 
 impl Pager {
     /// Waits for the user; returns false to quit.
     fn pause(&mut self) -> Result<bool, Error> {
         if self.cons.is_none() {
-            let f = std::fs::File::open("/dev/cons").map_err(|_| Error::last())?;
+            let f = purgatorio::fs::File::open("/dev/cons").map_err(|_| Error::last())?;
             self.cons = Some(BufReader::new(f));
         }
         let cons = self.cons.as_mut().unwrap();
@@ -41,7 +42,7 @@ impl Pager {
     }
 
     fn copy(&mut self, r: &mut dyn BufRead) -> Result<bool, Error> {
-        let mut out = io::stdout().lock();
+        let mut out = purgatorio::io::stdout().lock();
         let mut buf = Vec::new();
         loop {
             buf.clear();
@@ -79,10 +80,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         cons: None,
     };
     if files.is_empty() {
-        p.copy(&mut io::stdin().lock())?;
+        p.copy(&mut purgatorio::io::stdin().lock())?;
     }
     for f in files {
-        let Ok(file) = std::fs::File::open(f) else {
+        let Ok(file) = purgatorio::fs::File::open(f) else {
             // As Inferno's p: reported, skipped, no status.
             eprintln!("p: can't open {f}: {}", purgatorio::errstr());
             continue;
@@ -91,6 +92,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             break;
         }
     }
-    io::stdout().flush()?;
+    purgatorio::io::stdout().flush()?;
     Ok(())
 }

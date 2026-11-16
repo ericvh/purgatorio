@@ -25,9 +25,9 @@
 //! file at offset 0, `reps` times) and `restart` (one slow read of
 //! `big100m` while the harness restarts the server; see the doc).
 
-use std::fs::File;
+use purgatorio::fs::File;
+use purgatorio::time::{Duration, Instant};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::time::{Duration, Instant};
 
 use purgatorio::abi::mode;
 use purgatorio::arg::Arg;
@@ -120,7 +120,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 }
 
 fn say(line: &str) {
-    let mut out = std::io::stdout();
+    let mut out = purgatorio::io::stdout();
     let _ = writeln!(out, "{line}");
     let _ = out.flush();
 }
@@ -143,7 +143,7 @@ fn list(path: &str) -> Result<Vec<purgatorio::Dir>, Error> {
     let fd = purgatorio::open(path, mode::OREAD)?;
     let mut all = Vec::new();
     loop {
-        let d = purgatorio::dirread(std::os::fd::AsRawFd::as_raw_fd(&fd))?;
+        let d = purgatorio::dirread(purgatorio::fd::AsRawFd::as_raw_fd(&fd))?;
         if d.is_empty() {
             return Ok(all);
         }

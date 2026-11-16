@@ -47,7 +47,7 @@ impl Fs for Namespace {
 
     fn list(&self, path: &str) -> Result<Vec<Dir>, String> {
         let fd = purgatorio::open(path, purgatorio::abi::mode::OREAD).map_err(|e| e.0)?;
-        let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+        let raw = purgatorio::fd::AsRawFd::as_raw_fd(&fd);
         let mut out = Vec::new();
         loop {
             let batch = purgatorio::dirread(raw).map_err(|e| e.0)?;
@@ -61,7 +61,7 @@ impl Fs for Namespace {
     }
 
     fn user(&self) -> String {
-        std::fs::read_to_string("/dev/user").unwrap_or_default()
+        purgatorio::fs::read_to_string("/dev/user").unwrap_or_default()
     }
 }
 

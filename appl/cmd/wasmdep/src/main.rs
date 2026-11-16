@@ -17,6 +17,7 @@
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
+use purgatorio::{eprintln, println};
 use wasmobj::Kind;
 
 const USAGE: &str = "wasmdep file ...";
@@ -50,7 +51,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 
 /// Prints one module's needs.
 fn deps(file: &str) -> Result<(), Error> {
-    let wasm = std::fs::read(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
+    let wasm =
+        purgatorio::fs::read(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
     let m = wasmobj::parse(&wasm).map_err(|e| Error(format!("{file}: {e}")))?;
     match m.custom(purgatorio::abi::ABI_SECTION) {
         Some(v) => println!("abi {}", String::from_utf8_lossy(v)),

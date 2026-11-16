@@ -37,7 +37,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let [user, keyfile] = rest.as_slice() else {
         return Err(Error(format!("usage: {USAGE}")));
     };
-    let signer = match std::fs::read(&signerkey)
+    let signer = match purgatorio::fs::read(&signerkey)
         .ok()
         .and_then(|b| authlib::fmt::keys::AuthInfo::parse(&b).ok())
     {

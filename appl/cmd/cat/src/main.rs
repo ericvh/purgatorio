@@ -1,11 +1,11 @@
 //! cat [file ...]: copy each file, or standard input if none, to standard
 //! output.
 //!
-//! Files are opened with `purgatorio::fs::File`, which is `std::fs::File`
+//! Files are opened with `purgatorio::fs::File`, which is `purgatorio::fs::File`
 //! through WASI in a wasm32 build and the SDK's own in a wasm64 one;
 //! failures are reported with the exact Inferno error string from
 //! `purgatorio::errstr`. Each read is written to fd 1 as it is, as
-//! Inferno's cat does: not through `std::io::stdout`, whose line
+//! Inferno's cat does: not through `purgatorio::io::stdout`, whose line
 //! buffering searches every buffer for a newline and copies small writes.
 
 use purgatorio::io::stdin;

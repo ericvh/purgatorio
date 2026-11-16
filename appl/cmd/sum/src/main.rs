@@ -3,6 +3,7 @@
 //! covers the data and then four bytes encoding its length, so that empty
 //! files do not sum to zero.
 
+use purgatorio::{eprintln, println};
 use std::io::{self, Read};
 
 use purgatorio::{Context, DMDIR, Error};
@@ -60,7 +61,7 @@ fn sum(crc: &Crc, r: &mut dyn Read) -> io::Result<(u32, u64)> {
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let crc = Crc::new();
     if args.len() < 2 {
-        let (c, n) = sum(&crc, &mut io::stdin().lock())?;
+        let (c, n) = sum(&crc, &mut purgatorio::io::stdin().lock())?;
         println!("{c:08x} {n:6}");
         return Ok(());
     }
@@ -75,7 +76,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                 continue;
             }
         }
-        let mut file = match std::fs::File::open(f) {
+        let mut file = match purgatorio::fs::File::open(f) {
             Ok(file) => file,
             Err(_) => {
                 eprintln!("sum: cannot open {f}: {}", purgatorio::errstr());

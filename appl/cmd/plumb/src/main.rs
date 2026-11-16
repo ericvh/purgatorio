@@ -50,7 +50,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         if !rest.is_empty() {
             return Err(Error::from(USAGE));
         }
-        std::io::stdin().read_to_end(&mut m.data)?;
+        purgatorio::io::stdin().read_to_end(&mut m.data)?;
         if plumbmsg::lookup(&attrs, "action").is_none() {
             attrs.push((String::from("action"), String::from("showdata")));
         }
@@ -63,6 +63,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     m.attr = plumbmsg::attrs2string(&attrs);
     let fd = purgatorio::open(plumbmsg::INPUT, mode::OWRITE)
         .map_err(|e| Error(format!("can't open {}: {e}", plumbmsg::INPUT)))?;
-    std::fs::File::from(fd).write_all(&m.pack())?;
+    purgatorio::fs::File::from(fd).write_all(&m.pack())?;
     Ok(())
 }

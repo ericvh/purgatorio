@@ -15,9 +15,9 @@
 pub mod sha1;
 pub mod vac;
 
+use purgatorio::fs::File;
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::File;
 use std::io::{Read, Write};
 
 pub const SCORESIZE: usize = 20;

@@ -11,11 +11,11 @@
 //! answered in time fails with `timed out` and is cancelled the same way.
 //! When the mount goes, the loop ends at once, answered calls or not.
 
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
+use purgatorio::time::Instant;
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{self, BufRead, Read};
-use std::os::fd::AsRawFd;
-use std::time::Instant;
 
 use purg_styx::server::{MAX_MSIZE, dispatch};
 use purg_styx::{Fcall, Msg};

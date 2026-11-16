@@ -12,6 +12,7 @@
 //! looks in `/install` and `/wrap` only, and in `/wrap` only for the
 //! packages that also have a directory in `/install`.
 
+use purgatorio::{eprintln, println};
 use std::collections::BTreeMap;
 use std::io::BufReader;
 
@@ -78,7 +79,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut found: BTreeMap<String, Vec<Occ>> = BTreeMap::new();
     for pkg in &pkgs {
         let dir = format!("{install}/{pkg}");
-        let mut names: Vec<String> = std::fs::read_dir(&dir)
+        let mut names: Vec<String> = purgatorio::fs::read_dir(&dir)
             .map(|rd| {
                 rd.flatten()
                     .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -121,7 +122,7 @@ fn fatal(msg: &str) -> ! {
 }
 
 fn subdirs(dir: &str) -> Vec<String> {
-    std::fs::read_dir(dir)
+    purgatorio::fs::read_dir(dir)
         .map(|rd| {
             rd.flatten()
                 .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
@@ -164,7 +165,7 @@ fn scan(
 
 /// The wrap header of a package file.
 fn package_file(path: &str) -> Option<(String, Unit)> {
-    let f = std::fs::File::open(path).ok()?;
+    let f = purgatorio::fs::File::open(path).ok()?;
     let mut r = Reader::new(BufReader::new(f));
     let mut name = None;
     let mut unit = Unit::default();

@@ -8,9 +8,10 @@
 //! `target`. Errors with one file are reported and the rest are copied;
 //! the exit status says whether any failed.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::mode;
 use purgatorio::arg::Arg;
@@ -118,7 +119,7 @@ impl Fcp {
                 }
             }
         }
-        let ents = match std::fs::read_dir(src) {
+        let ents = match purgatorio::fs::read_dir(src) {
             Ok(r) => r,
             Err(e) => return self.warn(format!("cannot open {src}: {}", Error::from(e))),
         };

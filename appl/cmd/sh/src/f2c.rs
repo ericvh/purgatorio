@@ -9,10 +9,10 @@
 //! variables from then on. When a client closes the file, the close
 //! command runs with a `$tag` that only `${rget fid}` accepts.
 
+use purgatorio::fd::{AsRawFd, FromRawFd, OwnedFd};
+use purgatorio::fs::File;
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::Read;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 use purgatorio::Error;
 use purgatorio::abi::pctl;

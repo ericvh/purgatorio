@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[package.metadata.purgatorio]
+wasm64 = true
+
 [[bin]]
 name = "ls"
 path = "src/main.rs"

@@ -5,6 +5,7 @@
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, pid};
+use purgatorio::{eprintln, print};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -23,7 +24,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         _ => return Err(usage),
     };
     let path = format!("/prog/{id}/ns");
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Ok(text) = purgatorio::fs::read_to_string(&path) else {
         // As Inferno's ns: `fail:open`.
         eprintln!("ns: can't open {path}: {}", Error::last());
         purgatorio::exits("fail:open");

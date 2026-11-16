@@ -225,7 +225,7 @@ pub fn parse_md5(text: &str) -> Vec<(String, String)> {
 /// after it, oldest first. A directory without `md5sum` is ignored.
 pub fn units(dir: &str) -> Vec<Unit> {
     let mut all = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let Ok(rd) = purgatorio::fs::read_dir(dir) else {
         return all;
     };
     for e in rd.flatten() {
@@ -234,7 +234,7 @@ pub fn units(dir: &str) -> Vec<Unit> {
             continue;
         };
         let d = format!("{dir}/{name}");
-        let read = |f: &str| std::fs::read_to_string(format!("{d}/{f}")).ok();
+        let read = |f: &str| purgatorio::fs::read_to_string(format!("{d}/{f}")).ok();
         let Some(md5) = read("md5sum") else {
             continue;
         };
@@ -365,7 +365,7 @@ pub fn state(entries: &[Entry]) -> Vec<Entry> {
 
 /// Reads a log file; a missing file is an empty log.
 pub fn read_log(path: &str) -> Result<Vec<Entry>, String> {
-    let text = match std::fs::read_to_string(path) {
+    let text = match purgatorio::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("{path}: {}", purgatorio::Error::from(e))),
@@ -382,8 +382,8 @@ pub fn hex(d: &[u8]) -> String {
 
 /// The MD5 digest of a file, in hex.
 pub fn md5_file(path: &str) -> Result<String, String> {
-    let data =
-        std::fs::read(path).map_err(|e| format!("{path}: {}", purgatorio::Error::from(e)))?;
+    let data = purgatorio::fs::read(path)
+        .map_err(|e| format!("{path}: {}", purgatorio::Error::from(e)))?;
     Ok(hex(&md5(&data)))
 }
 

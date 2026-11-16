@@ -3,6 +3,7 @@
 //! dropped.
 
 use purgatorio::{Context, Error};
+use purgatorio::{eprintln, println};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {

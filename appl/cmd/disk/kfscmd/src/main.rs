@@ -29,12 +29,12 @@ fn run(args: Vec<String>) -> Result<(), Error> {
         }
     }
     let path = format!("/chan/kfs.{fs}.cmd");
-    let mut ctl = std::fs::OpenOptions::new()
+    let mut ctl = purgatorio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(&path)
         .map_err(|e| Error(format!("can't open {path}: {}", Error::from(e))))?;
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     for cmd in arg.argv() {
         if let Err(e) = ctl.write(cmd.as_bytes()) {
             return Err(Error(format!("{}: {}", quoted(&cmd), Error::from(e))));

@@ -1,5 +1,6 @@
 //! netstat: list conversations under `/net/tcp` and `/net/udp`.
 
+use purgatorio::println;
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]
@@ -9,7 +10,7 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
         "proto", "conv", "local", "remote"
     );
     for proto in ["tcp", "udp"] {
-        let Ok(dir) = std::fs::read_dir(format!("/net/{proto}")) else {
+        let Ok(dir) = purgatorio::fs::read_dir(format!("/net/{proto}")) else {
             continue;
         };
         let mut names: Vec<String> = dir
@@ -29,7 +30,7 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
 }
 
 fn read_trim(path: &str) -> String {
-    std::fs::read_to_string(path)
+    purgatorio::fs::read_to_string(path)
         .unwrap_or_default()
         .trim()
         .to_string()

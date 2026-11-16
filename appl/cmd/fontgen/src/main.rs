@@ -25,8 +25,8 @@
 //! The output depends only on the inputs: fontgen is run as a wasm guest
 //! so that floating-point rasterizing gives the same bytes on every host.
 
+use purgatorio::fs;
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use purgatorio::arg::Arg;

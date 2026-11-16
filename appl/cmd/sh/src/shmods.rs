@@ -458,8 +458,8 @@ impl Shell {
         let fd = io.get(fd).unwrap_or(fd);
         self.test = Some(TestConf { mfd: Some(fd) });
         if !self.quiet {
-            let ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let ms = purgatorio::time::SystemTime::now()
+                .duration_since(purgatorio::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis() % (1 << 31));
             self.its_report(S_STIME, 0, &ms.to_string());
         }

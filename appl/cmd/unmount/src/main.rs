@@ -2,6 +2,7 @@
 //! removed from the union at `target`; otherwise everything bound there is.
 //! As in Inferno, neither a bad command line nor a failure sets a status.
 
+use purgatorio::eprintln;
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]

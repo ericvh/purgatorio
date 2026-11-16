@@ -4,6 +4,7 @@
 
 use purgatorio::abi::mode;
 use purgatorio::arg::Arg;
+use purgatorio::eprintln;
 use purgatorio::{Context, Dir, Error};
 
 #[purgatorio::main]

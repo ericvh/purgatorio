@@ -16,10 +16,11 @@
 //! `read: ...` or `write: ...`, the counts are printed, and dd exits with
 //! no status.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fd::FromRawFd;
+use purgatorio::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
 
 use purgatorio::{Context, Error};
 
@@ -195,7 +196,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let w: Box<dyn Write> = match &ofile {
         Some(f) => {
             let mut file = if oseek > 0 {
-                std::fs::OpenOptions::new()
+                purgatorio::fs::OpenOptions::new()
                     .write(true)
                     .create(true)
                     .truncate(false)
@@ -209,7 +210,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             }
             Box::new(file)
         }
-        None => Box::new(io::stdout().lock()),
+        None => Box::new(purgatorio::io::stdout().lock()),
     };
     let mut out = Out {
         w,

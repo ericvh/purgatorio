@@ -6,6 +6,7 @@
 //! cannot be read is reported and passed over; messages go to standard
 //! output, as Inferno's do.
 
+use purgatorio::println;
 use std::collections::HashMap;
 
 use purgatorio::draw::memdraw::{self, GREY8, Image, Point, Rect};
@@ -26,7 +27,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             Some(i) => format!("{}.bit", &name[..i]),
             None => format!("{name}.bit"),
         };
-        let Ok(bytes) = std::fs::read(name) else {
+        let Ok(bytes) = purgatorio::fs::read(name) else {
             println!("{me}: unable to open <{name}>");
             continue;
         };
@@ -78,5 +79,7 @@ fn write(path: &str, data: &[u8]) -> Result<(), Error> {
         purgatorio::abi::mode::OWRITE | purgatorio::abi::mode::OTRUNC,
         0o644,
     )?;
-    std::fs::File::from(fd).write_all(data).map_err(Error::from)
+    purgatorio::fs::File::from(fd)
+        .write_all(data)
+        .map_err(Error::from)
 }

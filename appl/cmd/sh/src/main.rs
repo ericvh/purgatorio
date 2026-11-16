@@ -34,6 +34,7 @@
 //! prelude` runs `prelude` (the parent's `load`s and `fn`s) quietly first,
 //! and `-F file readcmd writecmd [closecmd]` serves a `file2chan` file.
 
+use purgatorio::print;
 mod csv;
 mod exec;
 mod f2c;
@@ -73,7 +74,7 @@ fn finish(sh: &Shell, stop: Option<Stop>) -> ! {
 /// Reads commands from fd 0, a line at a time so that commands that read
 /// standard input themselves see the rest of it.
 fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
-    let mut stdin = std::io::stdin();
+    let mut stdin = purgatorio::io::stdin();
     let mut pending = String::new();
     let mut buf = Vec::new();
     loop {
@@ -81,7 +82,7 @@ fn interactive(sh: &mut Shell, prompt: bool) -> Option<Stop> {
             if prompt {
                 let p = if pending.is_empty() { "; " } else { "\t" };
                 print!("{p}");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
+                let _ = std::io::Write::flush(&mut purgatorio::io::stdout());
             }
             let mut chunk = [0u8; 4096];
             match stdin.read(&mut chunk) {
@@ -172,7 +173,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     if login && purgatorio::stat(PROFILE).is_ok() {
-        let src = std::fs::read_to_string(PROFILE)?;
+        let src = purgatorio::fs::read_to_string(PROFILE)?;
         if let Err(stop) = sh.run_src(&src) {
             finish(&sh, Some(stop));
         }
@@ -180,7 +181,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let stop = if let Some(src) = command {
         sh.run_src(&src).err()
     } else if let Some(file) = file {
-        let src = std::fs::read_to_string(&file)
+        let src = purgatorio::fs::read_to_string(&file)
             .map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
         sh.run_src(&src).err()
     } else {

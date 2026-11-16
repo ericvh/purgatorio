@@ -3,6 +3,7 @@
 //! not start with `/` or `#` is taken relative to `dir`.
 
 use purgatorio::arg::Arg;
+use purgatorio::println;
 use purgatorio::{Context, Error};
 
 /// Lexically cleans a path name, after Plan 9's cleanname(2). A `#x`

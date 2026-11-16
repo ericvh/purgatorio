@@ -2,7 +2,8 @@
 //! standard input, with a total for several files. Options choose which
 //! counts to print; the default is all three.
 
-use std::fs::File;
+use purgatorio::fs::File;
+use purgatorio::{eprintln, println};
 use std::io::{self, Read};
 
 use purgatorio::arg::Arg;
@@ -66,7 +67,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let files = arg.argv();
     if files.is_empty() {
-        println!("{}", line(count(&mut io::stdin().lock())?, which, ""));
+        println!(
+            "{}",
+            line(count(&mut purgatorio::io::stdin().lock())?, which, "")
+        );
         return Ok(());
     }
     let mut total = Counts::default();

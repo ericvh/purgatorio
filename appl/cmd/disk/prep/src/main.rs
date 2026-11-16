@@ -15,6 +15,7 @@
 
 use disk::{Disk, Edit, Part, Scheme};
 use purgatorio::arg::Arg;
+use purgatorio::print;
 use purgatorio::{Context, Error};
 
 const USAGE: &str = "disk/prep [-bcfnprw] [-a partname]... [-s sectorsize] /dev/sdC0/plan9";

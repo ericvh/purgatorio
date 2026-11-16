@@ -83,12 +83,13 @@
 //! `mergewrite` takes its selector as `-c`. The bundle format is this
 //! command's own (`tree::bundle`).
 
+use purgatorio::eprintln;
 mod expr;
 mod gate;
 mod tree;
 
+use purgatorio::fd::AsRawFd;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 use std::rc::Rc;
 
 use expr::Expr;
@@ -200,7 +201,7 @@ fn stat_vars(d: &Dir, all: bool) -> String {
 
 /// Runs `sh -c line` with a pipe as its standard input, gives `feed` the
 /// other end to write, and waits for it.
-fn sh_feed(line: &str, feed: &mut dyn FnMut(&mut std::fs::File)) -> Res<String> {
+fn sh_feed(line: &str, feed: &mut dyn FnMut(&mut purgatorio::fs::File)) -> Res<String> {
     let [r, w] = purgatorio::pipe().map_err(|e| sys("pipe", e))?;
     let argv = [String::from("sh"), String::from("-c"), String::from(line)];
     let pid = purgatorio::spawn(
@@ -211,7 +212,7 @@ fn sh_feed(line: &str, feed: &mut dyn FnMut(&mut std::fs::File)) -> Res<String> 
     )
     .map_err(|e| sys("sh", e))?;
     drop(r);
-    feed(&mut std::fs::File::from(w));
+    feed(&mut purgatorio::fs::File::from(w));
     wait_for(pid)
 }
 
@@ -229,7 +230,7 @@ fn run(cmd: &str) -> Res<String> {
     .map_err(|e| sys("sh", e))?;
     drop(w);
     let mut out = String::new();
-    let got = std::fs::File::from(r).read_to_string(&mut out);
+    let got = purgatorio::fs::File::from(r).read_to_string(&mut out);
     wait_for(pid)?;
     got.map_err(|e| sys("run", Error::from(e)))?;
     let out = out.strip_suffix('\n').unwrap_or(&out);
@@ -381,7 +382,7 @@ impl Fs {
         // server lets a file be created read-only and then written.
         let done = item.read().and_then(|data| {
             let fd = purgatorio::create(target, OWRITE, perm | 0o200).map_err(|e| e.0)?;
-            std::fs::File::from(fd)
+            purgatorio::fs::File::from(fd)
                 .write_all(&data)
                 .map_err(|e| Error::from(e).0)
         });
@@ -699,7 +700,7 @@ impl Fs {
                 let t = self.tree(verb, t)?;
                 let files: Vec<&Item> = t.items.iter().filter(|i| !i.is_dir()).collect();
                 let mut warned = Vec::new();
-                let mut send = |f: &mut std::fs::File, item: &Item| match item.read() {
+                let mut send = |f: &mut purgatorio::fs::File, item: &Item| match item.read() {
                     // A command that stops reading loses the rest.
                     Ok(data) => {
                         let _ = f.write_all(&data);
@@ -742,11 +743,11 @@ impl Fs {
                 [Value::Str(file)] => {
                     let mut all = Vec::new();
                     if file == "-" {
-                        std::io::stdin()
+                        purgatorio::io::stdin()
                             .read_to_end(&mut all)
                             .map_err(|e| sys("standard input", Error::from(e)))?;
                     } else {
-                        all = std::fs::read(file).map_err(|e| sys(file, Error::from(e)))?;
+                        all = purgatorio::fs::read(file).map_err(|e| sys(file, Error::from(e)))?;
                     }
                     let t = tree::unbundle(Rc::new(all)).map_err(|e| sys(file, e))?;
                     Ok(Value::Tree(t))
@@ -1126,7 +1127,7 @@ impl Change {
 impl Fs {
     /// The tree the proto(6) file `file` selects from `root`.
     fn proto(&mut self, file: &str, root: &str) -> Res<Tree> {
-        let text = std::fs::read_to_string(file).map_err(|e| sys(file, Error::from(e)))?;
+        let text = purgatorio::fs::read_to_string(file).map_err(|e| sys(file, Error::from(e)))?;
         let mut top = purgatorio::stat(root).map_err(|e| sys(root, e))?;
         top.name = String::from(root);
         let mut items = vec![Item {
@@ -1186,7 +1187,7 @@ fn gate_of(verb: &str, v: Value) -> Res<Gate> {
 }
 
 fn put(bytes: &[u8]) -> Res<()> {
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     out.write_all(bytes)
         .and_then(|()| out.flush())
         .map_err(|e| sys("write", Error::from(e)))

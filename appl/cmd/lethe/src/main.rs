@@ -137,7 +137,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         settings.push_str(&format!("kx {kx}\n"));
     }
     let mut clone = purgatorio::open("#λ/clone", mode::ORDWR)
-        .map(std::fs::File::from)
+        .map(purgatorio::fs::File::from)
         .map_err(|e| Error(format!("#λ/clone: {e}")))?;
     clone.write_all(settings.as_bytes()).map_err(Error::from)?;
     let mut id = String::new();

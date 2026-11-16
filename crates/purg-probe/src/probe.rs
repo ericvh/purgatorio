@@ -63,6 +63,16 @@ const SCRIPT: &[(&[&str], bool)] = &[
     (&["/bin/test/wasi.wasm"], true),
     // A wasm64 guest (`docs/wasm64.md`).
     (&["/bin/64/test/wide.wasm", "/tmp"], true),
+    // A session on wasm64 commands; `wc` has no wasm64 build in the image
+    // and runs as wasm32 in the same pipeline.
+    (
+        &[
+            "/bin/64/sh.wasm",
+            "-c",
+            "run /lib/sh/wide; echo hello wide world | tr a-z A-Z | sed 's/WIDE/64-BIT/'; echo a b c | wc -w",
+        ],
+        true,
+    ),
 ];
 
 /// The sh scripts run with their output captured and compared with the

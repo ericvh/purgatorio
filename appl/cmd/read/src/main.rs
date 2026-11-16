@@ -3,10 +3,11 @@
 //! `-r` first seek `offset` bytes from the start, the end or the current
 //! offset. At end of file the exit status is `fail:eof`.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fd::FromRawFd;
+use purgatorio::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
 
 use purgatorio::{Context, Error};
 
@@ -47,7 +48,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     match stdin.read(&mut buf) {
         Ok(0) => purgatorio::exits("fail:eof"),
         Ok(n) => {
-            let mut out = std::io::stdout().lock();
+            let mut out = purgatorio::io::stdout().lock();
             out.write_all(&buf[..n])?;
             out.flush()?;
             Ok(())

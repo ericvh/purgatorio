@@ -6,8 +6,8 @@
 //! fid on each. A name no fid refers to is forgotten, and a later walk to it
 //! gets a new qid.
 
+use purgatorio::fd::FromRawFd;
 use std::collections::BTreeMap;
-use std::os::fd::FromRawFd;
 
 use purgatorio::abi::{error, mode};
 use purgatorio::styx::{self, IOHDRSZ, StyxFs};
@@ -258,6 +258,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() > 1 {
         return Err(Error::from("usage: mntgen"));
     }
-    let io = unsafe { std::fs::File::from_raw_fd(0) };
+    let io = unsafe { purgatorio::fs::File::from_raw_fd(0) };
     styx::serve(io, &mut Mntgen::new())
 }

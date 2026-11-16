@@ -5,12 +5,12 @@
 //! variables, functions and loaded modules, where Inferno's mash would
 //! spawn a thread sharing them.
 
+use purgatorio::fd::{AsRawFd, FromRawFd, OwnedFd};
+use purgatorio::fs::File;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::rc::Rc;
 
 use purgatorio::abi::{error, mode, pctl};
@@ -1107,7 +1107,7 @@ impl Shell {
                 if args.is_empty() {
                     return Err(self.usage(io, "time cmd [arg ...]"));
                 }
-                let t = std::time::Instant::now();
+                let t = purgatorio::time::Instant::now();
                 let r = self.runit(args, io);
                 io.err
                     .print(&format!("{}\n", fmt_g4(t.elapsed().as_secs_f64())));
@@ -1173,10 +1173,10 @@ impl Shell {
             return Err(self.usage(io, usage));
         };
         let mut path = file.clone();
-        let mut src = std::fs::read_to_string(&path);
+        let mut src = purgatorio::fs::read_to_string(&path);
         if src.is_err() && !path.starts_with('/') && !path.starts_with("./") {
             let lib = format!("/lib/mash/{path}");
-            if let Ok(s) = std::fs::read_to_string(&lib) {
+            if let Ok(s) = purgatorio::fs::read_to_string(&lib) {
                 src = Ok(s);
                 path = lib;
             }

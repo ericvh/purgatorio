@@ -3,6 +3,7 @@
 //! longer than 70 characters is broken with ` ...` and continues on a new
 //! line at its own offset. With several files, each is headed by its name.
 
+use purgatorio::eprintln;
 use std::io::{self, Read, Write};
 
 use purgatorio::{Context, Error};
@@ -61,10 +62,10 @@ fn strings(data: &[u8], out: &mut dyn Write) -> io::Result<()> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     if args.len() < 2 {
         let mut data = Vec::new();
-        io::stdin().lock().read_to_end(&mut data)?;
+        purgatorio::io::stdin().lock().read_to_end(&mut data)?;
         strings(&data, &mut out)?;
         out.flush()?;
         return Ok(());
@@ -73,7 +74,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         if args.len() > 2 {
             writeln!(out, "{f}:")?;
         }
-        match std::fs::read(f) {
+        match purgatorio::fs::read(f) {
             Ok(data) => strings(&data, &mut out)?,
             Err(_) => {
                 out.flush()?;

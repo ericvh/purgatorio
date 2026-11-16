@@ -2,6 +2,7 @@
 //! `dbfile`; `not found` on standard error when it is not there.
 
 use dbm::Db;
+use purgatorio::eprintln;
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]

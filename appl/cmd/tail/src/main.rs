@@ -1,5 +1,6 @@
 //! tail [-n N] [file]: print the last N lines, 10 by default.
 
+use purgatorio::eprintln;
 use std::io::{BufRead, Write};
 
 use purgatorio::{Context, Error};
@@ -18,7 +19,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut lines = Vec::new();
     let mut line = String::new();
     if let Some(path) = args.get(i) {
-        let Ok(f) = std::fs::File::open(path) else {
+        let Ok(f) = purgatorio::fs::File::open(path) else {
             // As Inferno's tail: the error is printed, the status is empty.
             eprintln!("tail: {path}: {}", purgatorio::errstr());
             return Ok(());
@@ -32,7 +33,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             lines.push(line.clone());
         }
     } else {
-        let mut input = std::io::stdin().lock();
+        let mut input = purgatorio::io::stdin().lock();
         loop {
             line.clear();
             if input.read_line(&mut line)? == 0 {
@@ -42,7 +43,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let start = lines.len().saturating_sub(n);
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     for line in &lines[start..] {
         out.write_all(line.as_bytes())?;
     }

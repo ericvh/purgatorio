@@ -3,7 +3,8 @@
 //! partitions, or an image file) and the partition table editor of
 //! prep(8) and fdisk(8) ([`Edit`]).
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fs::{File, OpenOptions};
+use purgatorio::{eprintln, print, println};
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
 
 /// A disk, a partition of one, or an image file, read and written a
@@ -44,7 +45,7 @@ impl Disk {
             None => (".", path),
         };
         let ctl = format!("{}/ctl", dir.trim_end_matches('/'));
-        let text = std::fs::read_to_string(&ctl).ok();
+        let text = purgatorio::fs::read_to_string(&ctl).ok();
         let mut geometry = None;
         let mut offset = 0;
         let mut ctl_parts = Vec::new();
@@ -370,7 +371,7 @@ impl Edit {
     pub fn run(&mut self, scheme: &mut dyn Scheme, disk: &mut Disk, input: &mut dyn BufRead) {
         loop {
             print!(">>> ");
-            let _ = std::io::stdout().flush();
+            let _ = purgatorio::io::stdout().flush();
             let mut line = String::new();
             if input.read_line(&mut line).unwrap_or(0) == 0 {
                 println!();
@@ -410,7 +411,7 @@ impl Edit {
                         return Ok(String::from(*g));
                     }
                     print!("{what}: ");
-                    let _ = std::io::stdout().flush();
+                    let _ = purgatorio::io::stdout().flush();
                     let mut s = String::new();
                     input.read_line(&mut s).map_err(|e| e.to_string())?;
                     Ok(String::from(s.trim()))
@@ -497,8 +498,8 @@ fn size(b: u64) -> String {
 }
 
 /// Reads all of standard input's lines for the editor.
-pub fn stdin() -> std::io::BufReader<std::io::Stdin> {
-    std::io::BufReader::new(std::io::stdin())
+pub fn stdin() -> std::io::BufReader<purgatorio::io::Stdin> {
+    std::io::BufReader::new(purgatorio::io::stdin())
 }
 
 #[cfg(test)]

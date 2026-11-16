@@ -9,6 +9,7 @@
 //! `-` is standard input (an addition: Inferno's cmp opens a file named
 //! `-`).
 
+use purgatorio::{eprintln, println};
 use std::io::{Read, Seek, SeekFrom};
 
 use purgatorio::arg::Arg;
@@ -93,14 +94,14 @@ fn offset(s: &str) -> u64 {
 fn read(path: &str, off: Option<&String>, which: u8) -> Vec<u8> {
     let mut data = Vec::new();
     if path == "-" {
-        if std::io::stdin().read_to_end(&mut data).is_err() {
+        if purgatorio::io::stdin().read_to_end(&mut data).is_err() {
             eprintln!("cmp: can't open {path}: {}", Error::last());
             purgatorio::exits("open");
         }
         let skip = off.map_or(0, |o| offset(o)) as usize;
         return data.split_off(skip.min(data.len()));
     }
-    let mut f = std::fs::File::open(path).unwrap_or_else(|e| {
+    let mut f = purgatorio::fs::File::open(path).unwrap_or_else(|e| {
         eprintln!("cmp: can't open {path}: {}", Error::from(e));
         purgatorio::exits("open");
     });

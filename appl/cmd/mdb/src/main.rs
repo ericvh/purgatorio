@@ -29,9 +29,10 @@
 //! traced (`trace`) can be debugged: the others are `prog is not
 //! traced`. Values of locals need DWARF, which the guests do not carry.
 
+use purgatorio::time::Duration;
+use purgatorio::{eprintln, println};
 use std::collections::BTreeSet;
 use std::io::{BufRead, Read, Seek, SeekFrom, Write};
-use std::time::Duration;
 
 use progdebug::{ctl, func_name, module_names, prog_file};
 use purgatorio::{Context, Error};
@@ -71,7 +72,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if !m.report(m.wait()?) {
         return Ok(());
     }
-    for line in std::io::stdin().lock().lines() {
+    for line in purgatorio::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         let words: Vec<&str> = line.split_ascii_whitespace().collect();
         let Some((&cmd, rest)) = words.split_first() else {
@@ -82,7 +83,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             Ok(false) => return Ok(()),
             Err(e) => eprintln!("mdb: {e}"),
         }
-        let _ = std::io::stdout().flush();
+        let _ = purgatorio::io::stdout().flush();
     }
     m.detach()
 }
@@ -176,7 +177,7 @@ impl Mdb {
                     let e = prog_file(self.pid, "exception").unwrap_or_default();
                     return Ok(State::Broken(String::from(e.trim_end())));
                 }
-                _ => std::thread::sleep(POLL),
+                _ => purgatorio::thread::sleep(POLL),
             }
         }
     }
@@ -235,8 +236,8 @@ impl Mdb {
             .ok_or_else(|| Error(format!("no function {s}")))
     }
 
-    fn heap(&self, write: bool) -> Result<std::fs::File, Error> {
-        std::fs::File::options()
+    fn heap(&self, write: bool) -> Result<purgatorio::fs::File, Error> {
+        purgatorio::fs::File::options()
             .read(!write)
             .write(write)
             .open(format!("/prog/{}/heap", self.pid))

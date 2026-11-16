@@ -18,7 +18,7 @@ const USAGE: &str = "getauthinfo [-a ed25519|hybrid] [-s signer] [-u user] keyna
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
-    let mut signer = std::fs::read_to_string("/env/signer").ok();
+    let mut signer = purgatorio::fs::read_to_string("/env/signer").ok();
     let mut user = authlib::user();
     let mut hybrid = false;
     while let Some(c) = arg.opt() {

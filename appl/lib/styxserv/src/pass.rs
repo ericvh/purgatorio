@@ -2,10 +2,10 @@
 //! each request with ordinary file calls. A [`Policy`] sits in between:
 //! `trfs` renames, `lockfs` refuses some opens.
 
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
 
 use purg_styx::{Dir, IOHDRSZ, Qid, StyxFs};
 use purgatorio::abi::error;

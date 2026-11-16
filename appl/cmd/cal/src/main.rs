@@ -142,7 +142,7 @@ fn long(y: i64, out: &mut dyn Write) -> Result<(), Error> {
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let tm = purgatorio::daytime::gmt(purgatorio::daytime::now());
     let (curmon, curyr) = (i64::from(tm.mon) + 1, tm.year);
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     match &args[1.min(args.len())..] {
         [] => short(curmon, curyr, &mut out)?,
         [a] => {

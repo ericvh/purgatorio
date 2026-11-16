@@ -2,6 +2,7 @@
 //! made too and existing directories are not an error.
 
 use purgatorio::arg::Arg;
+use purgatorio::eprintln;
 use purgatorio::{Context, DMDIR, Error, abi::mode};
 
 fn make(path: &str) -> Result<(), Error> {

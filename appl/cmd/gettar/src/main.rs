@@ -23,7 +23,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     let names = arg.argv();
-    let mut r = Reader::new(io::BufReader::new(io::stdin().lock()));
+    let mut r = Reader::new(io::BufReader::new(purgatorio::io::stdin().lock()));
     let res = (|| {
         while let Some(h) = r.next_entry()? {
             if selected(&h.name, &names) {

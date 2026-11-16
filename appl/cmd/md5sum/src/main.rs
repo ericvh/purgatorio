@@ -1,12 +1,13 @@
 //! md5sum [file...]: print the MD5 of each file, or of stdin.
 
 use purgatorio::{Context, Error};
+use purgatorio::{eprintln, println};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.len() == 1 {
         let mut data = Vec::new();
-        std::io::Read::read_to_end(&mut std::io::stdin(), &mut data)?;
+        std::io::Read::read_to_end(&mut purgatorio::io::stdin(), &mut data)?;
         println!("{}  -", hex(&md5(&data)));
         return Ok(());
     }
@@ -14,7 +15,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     // and fail with `fail:error` at the end.
     let mut failed = false;
     for path in &args[1..] {
-        let mut f = match std::fs::File::open(path) {
+        let mut f = match purgatorio::fs::File::open(path) {
             Ok(f) => f,
             Err(_) => {
                 eprintln!("md5sum: cannot open {path}: {}", purgatorio::errstr());

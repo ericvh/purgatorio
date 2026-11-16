@@ -23,6 +23,7 @@
 //! expr)`, `differential(x = a, expr)` and `solve(equation[, var])`.
 //! With `-s`, variables must be declared with `:=` before use.
 
+use purgatorio::eprintln;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead, Read, Write};
 use std::rc::Rc;
@@ -629,7 +630,7 @@ struct Calc {
     fns: HashMap<String, Rc<(Vec<String>, Stmt)>>,
     strict: bool,
     seed: u64,
-    out: io::BufWriter<io::Stdout>,
+    out: io::BufWriter<purgatorio::io::Stdout>,
 }
 
 fn int(v: f64) -> i64 {
@@ -1187,7 +1188,7 @@ impl Calc {
                 let _ = self.out.flush();
                 for v in vars {
                     let mut l = String::new();
-                    io::stdin()
+                    purgatorio::io::stdin()
                         .lock()
                         .read_line(&mut l)
                         .map_err(|e| e.to_string())?;
@@ -1196,7 +1197,7 @@ impl Calc {
                 }
             }
             Stmt::Include(f) => {
-                let src = std::fs::read_to_string(f)
+                let src = purgatorio::fs::read_to_string(f)
                     .map_err(|_| format!("cannot open {f}: {}", purgatorio::errstr()))?;
                 if let Flow::Exit = self.run(&src) {
                     return Ok(Flow::Exit);
@@ -1295,10 +1296,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let src = match rest {
         [] => {
             let mut s = String::new();
-            io::stdin().lock().read_to_string(&mut s)?;
+            purgatorio::io::stdin().lock().read_to_string(&mut s)?;
             s
         }
-        [f] if purgatorio::stat(f).is_ok() => std::fs::read_to_string(f)
+        [f] if purgatorio::stat(f).is_ok() => purgatorio::fs::read_to_string(f)
             .map_err(|_| Error(format!("cannot open {f}: {}", purgatorio::errstr())))?,
         words => words.join(" "),
     };
@@ -1321,8 +1322,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     ] {
         globals.insert(String::from(k), v);
     }
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let seed = purgatorio::time::SystemTime::now()
+        .duration_since(purgatorio::time::UNIX_EPOCH)
         .map_or(1, |d| d.as_nanos() as u64)
         | 1;
     let mut c = Calc {
@@ -1331,7 +1332,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         fns: HashMap::new(),
         strict,
         seed,
-        out: io::BufWriter::new(io::stdout()),
+        out: io::BufWriter::new(purgatorio::io::stdout()),
     };
     c.run(&src);
     c.out.flush()?;
@@ -1352,7 +1353,7 @@ mod tests {
             fns: HashMap::new(),
             strict: false,
             seed: 1,
-            out: io::BufWriter::new(io::stdout()),
+            out: io::BufWriter::new(purgatorio::io::stdout()),
         };
         let mut p = Parser {
             toks: lex(src).unwrap(),

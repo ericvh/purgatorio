@@ -41,9 +41,9 @@
 
 mod session;
 
-use std::fs::File;
+use purgatorio::fd::{AsRawFd, OwnedFd};
+use purgatorio::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
 
 use purgatorio::abi::auth::{KIND_HYBRID_KEY, NO_SESSION, NO_TRUST, PQ_REQUIRED};
 use purgatorio::abi::mode::OWRITE;
@@ -77,7 +77,7 @@ struct Trust {
 }
 
 fn trust(uname: &str) -> Trust {
-    let users = std::fs::read("/lib/keys/users")
+    let users = purgatorio::fs::read("/lib/keys/users")
         .map(|t| parse_named(&t))
         .unwrap_or_default();
     let mut keys = keys_for(&users, Some(uname));
@@ -85,16 +85,16 @@ fn trust(uname: &str) -> Trust {
         && uname != "."
         && uname != ".."
         && !uname.contains('/')
-        && let Ok(bytes) = std::fs::read(format!("/usr/{uname}/key.pub"))
+        && let Ok(bytes) = purgatorio::fs::read(format!("/usr/{uname}/key.pub"))
         && let Some(key) = Public::from_slice(&bytes)
         && !keys.contains(&key.id())
     {
         keys.push(key.id());
     }
-    let signers = std::fs::read("/lib/keys/signers")
+    let signers = purgatorio::fs::read("/lib/keys/signers")
         .map(|t| parse_list_lenient(&t))
         .unwrap_or_default();
-    let revoked = match std::fs::read("/lib/keys/revoked") {
+    let revoked = match purgatorio::fs::read("/lib/keys/revoked") {
         Ok(t) => parse_list(&t),
         Err(_) if purgatorio::stat("/lib/keys/revoked").is_ok() => None,
         Err(_) => Some(Vec::new()),

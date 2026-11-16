@@ -27,6 +27,7 @@
 //! `/mnt/acme`, see [`fs`]) is served on, by waiting for whichever is
 //! ready ([`purgatorio::ready`]), so one prog does it all.
 
+use purgatorio::eprintln;
 mod addr;
 mod cmds;
 mod dump;
@@ -37,9 +38,9 @@ mod plumb;
 mod text;
 mod ui;
 
-use std::fs::File;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::io::Read;
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::pctl;
 use purgatorio::draw::{Display, Font, Image, Keyboard, Mouse, Point, Pointer};
@@ -224,10 +225,7 @@ impl Acme {
         let mut d = Display::open()?;
         let screen = d.screen();
         let c = Colours::new(&mut d)?;
-        let cwd = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.to_str().map(String::from))
-            .unwrap_or_else(|| String::from("/"));
+        let cwd = purgatorio::dot().unwrap_or_else(|_| String::from("/"));
         let waitfd = File::open(format!("/prog/{}/wait", purgatorio::pid())).ok();
         let mut a = Acme {
             d,
@@ -1429,7 +1427,7 @@ impl Acme {
         }
         let d = purgatorio::stat(name)?;
         if d.qid.is_dir() {
-            let mut names: Vec<String> = std::fs::read_dir(name)
+            let mut names: Vec<String> = purgatorio::fs::read_dir(name)
                 .map_err(|_| Error(purgatorio::errstr()))?
                 .filter_map(|e| e.ok())
                 .map(|e| {
@@ -1447,7 +1445,7 @@ impl Acme {
             }
             return Ok((s, true));
         }
-        let data = std::fs::read(name).map_err(|_| Error(purgatorio::errstr()))?;
+        let data = purgatorio::fs::read(name).map_err(|_| Error(purgatorio::errstr()))?;
         Ok((String::from_utf8_lossy(&data).into_owned(), false))
     }
 
@@ -1565,7 +1563,7 @@ impl Acme {
             return;
         }
         let s = w.body.b.all();
-        match std::fs::write(&name, s.as_bytes()) {
+        match purgatorio::fs::write(&name, s.as_bytes()) {
             Ok(()) => {
                 if let Some(w) = self.win_mut(id) {
                     w.body.b.set_clean();
@@ -1769,7 +1767,7 @@ impl Acme {
             } else {
                 self.resolve(&dir, to)
             };
-            match std::env::set_current_dir(&to) {
+            match purgatorio::chdir(&to) {
                 Ok(()) => self.cwd = to,
                 Err(_) => {
                     let e = purgatorio::errstr();

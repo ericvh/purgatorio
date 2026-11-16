@@ -8,6 +8,7 @@
 //! that character, `\x` and one to six hex digits likewise, and `\` before
 //! anything else quotes it.
 
+use purgatorio::eprintln;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Read, Write};
 
@@ -149,8 +150,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     };
     // `tr -cs x` with no string2: squeeze everything not in string1.
     let squeeze_all_c = squeeze && complement && tr.s2.is_empty() && !delete;
-    let mut out = io::BufWriter::new(io::stdout().lock());
-    let mut input = io::stdin().lock();
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
+    let mut input = purgatorio::io::stdin().lock();
     let mut buf = vec![0u8; 8192];
     let mut pending: Vec<u8> = Vec::new();
     let mut last: Option<char> = None;

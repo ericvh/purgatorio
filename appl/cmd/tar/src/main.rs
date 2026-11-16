@@ -19,7 +19,7 @@
 //! `x` sets modes from the archive. Names given to `t` and `x` select
 //! those entries and anything under them.
 
-use std::fs::File;
+use purgatorio::fs::File;
 use std::io::{self, Read, Write};
 
 use archive::fs::{Extract, Put, selected, warn};
@@ -77,7 +77,7 @@ fn read_archive(o: &Opts) -> Result<Vec<u8>, Error> {
                 .map_err(|_| Error(format!("{f}: {}", purgatorio::errstr())))?;
         }
         _ => {
-            io::stdin().lock().read_to_end(&mut data)?;
+            purgatorio::io::stdin().lock().read_to_end(&mut data)?;
         }
     }
     if gz::is_gzip(&data) {
@@ -96,7 +96,7 @@ fn create(o: &Opts, files: &[String]) -> Result<bool, Error> {
                 .map_err(|e| Error(format!("{f}: {e}")))?;
             Box::new(io::BufWriter::new(File::from(fd)))
         }
-        _ => Box::new(io::BufWriter::new(io::stdout().lock())),
+        _ => Box::new(io::BufWriter::new(purgatorio::io::stdout().lock())),
     };
     let mut put = Put {
         prog: "tar",
@@ -125,7 +125,7 @@ fn create(o: &Opts, files: &[String]) -> Result<bool, Error> {
 fn list(o: &Opts, names: &[String]) -> Result<bool, Error> {
     let data = read_archive(o)?;
     let mut r = Reader::new(&data[..]);
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     let now = daytime::now();
     while let Some(h) = r.next_entry()? {
         if !selected(&h.name, names) {

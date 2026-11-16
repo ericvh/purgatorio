@@ -25,10 +25,11 @@
 //! as Plan 9's acme does, would make two here: an open walks once to
 //! stat the file and again to open it.)
 
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use purg_styx::{DMAPPEND, DMDIR, Dir, Fcall, IOHDRSZ, MAX_MSIZE, Msg, QTDIR, QTFILE, Qid};
 use purgatorio::Error;
@@ -172,7 +173,7 @@ fn try_start(a: &mut Acme) -> Result<Option<Fs>, Error> {
     purgatorio::pctl(pctl::FORKNS, &[])?;
     if purgatorio::stat(MTPT).is_err() {
         // Two acmes may race to make it, so only the stat decides.
-        let _ = std::fs::create_dir_all(MTPT);
+        let _ = purgatorio::fs::create_dir_all(MTPT);
         purgatorio::stat(MTPT)?;
     }
     let [ours, theirs] = purgatorio::pipe()?;
@@ -183,7 +184,7 @@ fn try_start(a: &mut Acme) -> Result<Option<Fs>, Error> {
         &[(theirs.as_raw_fd(), 0), (2, 2)],
     )?;
     drop(theirs);
-    let user = std::fs::read_to_string("/dev/user").unwrap_or_else(|_| String::from("acme"));
+    let user = purgatorio::fs::read_to_string("/dev/user").unwrap_or_else(|_| String::from("acme"));
     let mut fs = Fs {
         io: File::from(ours),
         buf: Vec::new(),

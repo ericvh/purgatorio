@@ -4,6 +4,7 @@
 //! cycle is reported on standard error, and its members are printed after
 //! their predecessors outside the cycle.
 
+use purgatorio::eprintln;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, BufRead, Write};
 
@@ -23,7 +24,7 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
         index.insert(String::from(s), names.len() - 1);
         names.len() - 1
     };
-    for line in io::stdin().lock().lines() {
+    for line in purgatorio::io::stdin().lock().lines() {
         let line = line?;
         let mut words = line.split([' ', '\t']).filter(|w| !w.is_empty());
         let Some(first) = words.next() else {
@@ -45,7 +46,7 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
         }
     }
     let mut done = vec![false; n];
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     let mut emitted = 0;
     while emitted < n {
         // The first unprinted label with no unprinted predecessor.
