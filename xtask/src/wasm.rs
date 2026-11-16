@@ -11,6 +11,7 @@ fn host_imports() -> BTreeSet<(&'static str, &'static str)> {
         };
     }
     purg_vm::for_each_import!(collect);
+    purg_vm::for_each_import64!(collect);
     // `load` and `call` are registered by each engine directly: they need
     // that engine's store, which the shared host functions do not have.
     set.insert((purg_abi::MODULE, purg_abi::sys::LOAD));
