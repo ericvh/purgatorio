@@ -80,7 +80,7 @@ pub struct Font {
 impl Font {
     /// Opens font file `name`. Subfonts are read when needed.
     pub fn open(name: &str) -> Result<Font, Error> {
-        let text = std::fs::read_to_string(name)
+        let text = crate::fs::read_to_string(name)
             .map_err(|_| Error(format!("{name}: {}", crate::errstr())))?;
         let file = FontFile::parse(&text).map_err(|e| Error(format!("{name}: {e}")))?;
         let dir = match name.rfind('/') {
@@ -119,7 +119,7 @@ impl Font {
         } else {
             format!("{}{name}", self.dir)
         };
-        let s = std::fs::read(&path)
+        let s = crate::fs::read(&path)
             .ok()
             .and_then(|data| Subfont::read(&data).ok())
             .map(|font| {

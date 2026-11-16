@@ -42,6 +42,24 @@ pub fn unset(name: &str) -> Result<(), Error> {
     }
 }
 
+/// The environment the prog started with, as `std::env::vars` gives it:
+/// in a wasm32 guest the host's snapshot of `/env` at the start, and in a
+/// wasm64 guest, which has no WASI, `/env` as it is now.
+pub fn vars() -> Vec<(String, String)> {
+    #[cfg(not(target_arch = "wasm64"))]
+    return std::env::vars().collect();
+    #[cfg(target_arch = "wasm64")]
+    return list().unwrap_or_default();
+}
+
+/// One variable of [`vars`], as `std::env::var` gives it.
+pub fn var(name: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm64"))]
+    return std::env::var(name).ok();
+    #[cfg(target_arch = "wasm64")]
+    return get(name);
+}
+
 /// Every variable, sorted by name.
 pub fn list() -> Result<Vec<(String, String)>, Error> {
     let mut out = Vec::new();
