@@ -7,9 +7,9 @@
 //! `/net/tcp/clone 10.0.0.2!80` line per address, and [`dial`] tries each
 //! in turn.
 
-use std::fs::{File, OpenOptions};
+use crate::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use crate::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 
 use crate::Error;
 
@@ -106,7 +106,7 @@ pub fn listen(dir: &str) -> Result<Connection, Error> {
 
 /// The `local` file of a conversation, such as `127.0.0.1!1234` or `*!1234`.
 pub fn local(dir: &str) -> Result<String, Error> {
-    let text = std::fs::read_to_string(format!("{dir}/local")).map_err(io)?;
+    let text = crate::fs::read_to_string(format!("{dir}/local")).map_err(io)?;
     Ok(text.trim().to_string())
 }
 
@@ -155,7 +155,7 @@ pub fn read_timeout(fd: i32, max: usize, ms: u64) -> Result<Option<Vec<u8>>, Err
         "/bin/read.wasm",
         &[String::from("read"), max.to_string()],
         crate::abi::pctl::NEWFD,
-        &[(fd, 0), (std::os::fd::AsRawFd::as_raw_fd(&w), 1)],
+        &[(fd, 0), (crate::fd::AsRawFd::as_raw_fd(&w), 1)],
     )?;
     drop(w);
     let alarm = alarm(reader, ms)?;
@@ -182,7 +182,7 @@ pub fn alarm(pid: u32, ms: u64) -> Result<Alarm, Error> {
         .write(true)
         .open("/dev/null")
         .map_err(io)?;
-    let n = std::os::fd::AsRawFd::as_raw_fd(&null);
+    let n = crate::fd::AsRawFd::as_raw_fd(&null);
     let id = crate::spawn(
         "/bin/sh.wasm",
         &[String::from("sh"), String::from("-c"), script],
@@ -195,7 +195,7 @@ pub fn alarm(pid: u32, ms: u64) -> Result<Alarm, Error> {
 impl Drop for Alarm {
     fn drop(&mut self) {
         // The alarm may have gone off and exited already.
-        let _ = std::fs::write(format!("/prog/{}/ctl", self.0), "kill");
+        let _ = crate::fs::write(format!("/prog/{}/ctl", self.0), "kill");
     }
 }
 

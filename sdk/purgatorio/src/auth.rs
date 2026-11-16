@@ -25,9 +25,9 @@
 //! The formats and protocols themselves are in [`fmt`] (the `purg-auth`
 //! crate); this module adds files, the namespace and randomness.
 
+use crate::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::io::{Read, Seek, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 pub use purg_auth as fmt;
 use purg_auth::cert::Cert;
@@ -58,7 +58,14 @@ impl Rng {
     }
 }
 
-#[cfg(target_family = "wasm")]
+#[cfg(target_arch = "wasm64")]
+fn random(buf: &mut [u8]) {
+    // SAFETY: the host writes at most `buf.len()` bytes into `buf`.
+    let r = unsafe { crate::sys::random(buf.as_mut_ptr(), buf.len()) };
+    assert_eq!(r, 0, "random failed");
+}
+
+#[cfg(target_arch = "wasm32")]
 fn random(buf: &mut [u8]) {
     #[link(wasm_import_module = "wasi_snapshot_preview1")]
     unsafe extern "C" {
@@ -72,7 +79,7 @@ fn random(buf: &mut [u8]) {
 /// Host builds (clippy, unit tests) read the host's random device.
 #[cfg(not(target_family = "wasm"))]
 fn random(buf: &mut [u8]) {
-    let mut f = std::fs::File::open("/dev/urandom").expect("/dev/urandom");
+    let mut f = crate::fs::File::open("/dev/urandom").expect("/dev/urandom");
     f.read_exact(buf).expect("/dev/urandom");
 }
 
@@ -99,7 +106,7 @@ impl rand_core::RngCore for Rng {
 impl rand_core::CryptoRng for Rng {}
 
 /// A [`fmt::login::Stream`] over a file: a connection or a pipe.
-pub struct FileStream<'a>(pub &'a mut std::fs::File);
+pub struct FileStream<'a>(pub &'a mut crate::fs::File);
 
 impl fmt::login::Stream for FileStream<'_> {
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), String> {
@@ -118,15 +125,12 @@ impl fmt::login::Stream for FileStream<'_> {
 
 /// This prog's user name, from `/dev/user`.
 pub fn user() -> String {
-    std::fs::read_to_string("/dev/user").unwrap_or_default()
+    crate::fs::read_to_string("/dev/user").unwrap_or_default()
 }
 
 /// The seconds since 1970 UTC.
 pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crate::time::now()
 }
 
 fn safe_user(user: &str) -> bool {
@@ -207,27 +211,27 @@ pub fn keyfile_path(name: &str, user: &str) -> String {
 
 /// Reads an authinfo file.
 pub fn read_authinfo(path: &str) -> Result<AuthInfo, Error> {
-    let text = std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    let text = crate::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
     AuthInfo::parse(&text).map_err(|e| Error(format!("{path}: {}", Error::from(e))))
 }
 
 /// Reads a 32-byte seed file.
 pub fn read_seed(path: &str) -> Result<[u8; SEED], Error> {
-    let bytes = std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    let bytes = crate::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
     <[u8; SEED]>::try_from(bytes.as_slice()).map_err(|_| Error(format!("{path}: not a key")))
 }
 
 /// Reads a seed file of either kind: 32 bytes for Ed25519, 64 for a
 /// hybrid Ed25519 + ML-DSA-65 key.
 pub fn read_secret(path: &str) -> Result<Secret, Error> {
-    let bytes = std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    let bytes = crate::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
     Secret::from_seed_file(&bytes).ok_or_else(|| Error(format!("{path}: not a key")))
 }
 
 /// Writes `data` to a new file only its owner can read.
 pub fn write_secret(path: &str, data: &[u8]) -> Result<(), Error> {
     let mut f = crate::create(path, abi::mode::OWRITE | abi::mode::OTRUNC, 0o600)
-        .map(std::fs::File::from)
+        .map(crate::fs::File::from)
         .map_err(|e| Error(format!("{path}: {}", e)))?;
     f.write_all(data)
         .map_err(|e| Error(format!("{path}: {}", Error::from(e))))
@@ -238,7 +242,7 @@ pub fn write_secret(path: &str, data: &[u8]) -> Result<(), Error> {
 pub fn read_line() -> Option<String> {
     let mut line = Vec::new();
     let mut b = [0u8; 1];
-    let mut stdin = std::io::stdin();
+    let mut stdin = crate::io::stdin();
     loop {
         match stdin.read(&mut b) {
             Ok(1) if b[0] == b'\n' => break,
@@ -279,7 +283,7 @@ fn factotum(challenge: &[u8], user: &str, aname: &str, hybrid: bool) -> Option<V
 
 fn factotum_proto(challenge: &[u8], user: &str, aname: &str, proto: &str) -> Option<Vec<u8>> {
     use purg_auth::attr::quote;
-    let mut f = std::fs::OpenOptions::new()
+    let mut f = crate::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(format!("{FACTOTUM}/rpc"))
@@ -309,7 +313,7 @@ fn factotum_proto(challenge: &[u8], user: &str, aname: &str, proto: &str) -> Opt
 
 /// Asks `#¤/rpc` to sign. `None` when the agent has no key.
 fn agent_sign(msg: &[u8]) -> Option<[u8; SIGNATURE]> {
-    let mut f = std::fs::File::from(crate::open("#¤/rpc", abi::mode::ORDWR).ok()?);
+    let mut f = crate::fs::File::from(crate::open("#¤/rpc", abi::mode::ORDWR).ok()?);
     f.write_all(msg).ok()?;
     // The write moved the offset, and the reply is read from its start.
     f.seek(std::io::SeekFrom::Start(0)).ok()?;
@@ -321,7 +325,7 @@ fn agent_sign(msg: &[u8]) -> Option<[u8; SIGNATURE]> {
 fn agent_key() -> Option<([u8; PUBLIC], Option<Cert>)> {
     // A device name is not a path wasi-libc can resolve: open it directly.
     let mut ctl = Vec::new();
-    std::fs::File::from(crate::open("#¤/ctl", abi::mode::OREAD).ok()?)
+    crate::fs::File::from(crate::open("#¤/ctl", abi::mode::OREAD).ok()?)
         .read_to_end(&mut ctl)
         .ok()?;
     let hex = ctl.strip_prefix(b"key ")?.get(..PUBLIC * 2)?;
@@ -337,7 +341,7 @@ fn factotum_module(
     digest: &[u8; modsig::DIGEST],
     abi: &[u8],
 ) -> Option<modsig::Entry> {
-    let mut f = std::fs::OpenOptions::new()
+    let mut f = crate::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(format!("{FACTOTUM}/rpc"))
@@ -464,7 +468,7 @@ fn factotum_server(keys: &purg_auth::session::Keys, hybrid: bool) -> Option<Vec<
 }
 
 fn factotum_server_proto(keys: &purg_auth::session::Keys, proto: &str) -> Option<Vec<u8>> {
-    let mut f = std::fs::OpenOptions::new()
+    let mut f = crate::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(format!("{FACTOTUM}/rpc"))
@@ -553,18 +557,18 @@ pub struct ServerTrust {
 impl ServerTrust {
     pub fn read() -> ServerTrust {
         use purg_auth::keys::{parse_list, parse_list_lenient, parse_named};
-        let servers = std::fs::read("/lib/keys/servers")
+        let servers = crate::fs::read("/lib/keys/servers")
             .map(|t| parse_named(&t))
             .unwrap_or_default();
         // Signers for servers only replace the shared list when there.
-        let signers = match std::fs::read("/lib/keys/serversigners") {
+        let signers = match crate::fs::read("/lib/keys/serversigners") {
             Ok(t) => parse_list_lenient(&t),
             Err(_) if crate::stat("/lib/keys/serversigners").is_ok() => Vec::new(),
-            Err(_) => std::fs::read("/lib/keys/signers")
+            Err(_) => crate::fs::read("/lib/keys/signers")
                 .map(|t| parse_list_lenient(&t))
                 .unwrap_or_default(),
         };
-        let revoked = match std::fs::read("/lib/keys/revoked") {
+        let revoked = match crate::fs::read("/lib/keys/revoked") {
             Ok(t) => parse_list(&t),
             Err(_) if crate::stat("/lib/keys/revoked").is_ok() => None,
             Err(_) => Some(Vec::new()),
@@ -647,7 +651,7 @@ pub fn check_server_fd_with(
 ) -> Result<(), Error> {
     // SAFETY: `afd` stays open for this call, and ManuallyDrop keeps the
     // File from closing it.
-    let mut f = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(afd.as_raw_fd()) });
+    let mut f = ManuallyDrop::new(unsafe { crate::fs::File::from_raw_fd(afd.as_raw_fd()) });
     f.seek(std::io::SeekFrom::Start(abi::auth::SERVER_PROOF_OFFSET))?;
     let mut proof = vec![0u8; purg_auth::proof::MAX_LEN];
     let n = f.read(&mut proof)?;
@@ -672,7 +676,7 @@ fn seed(user: &str) -> Result<Secret, Error> {
     }
     paths.push(String::from("/lib/test/auth.key"));
     for path in paths {
-        if let Ok(bytes) = std::fs::read(&path)
+        if let Ok(bytes) = crate::fs::read(&path)
             && let Some(seed) = Secret::from_seed_file(&bytes)
         {
             return Ok(seed);
@@ -736,7 +740,7 @@ pub fn authenticate_kx(
 ) -> Result<(), Error> {
     // SAFETY: `afd` stays open for this call, and ManuallyDrop keeps the
     // File from closing it.
-    let mut f = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(afd.as_raw_fd()) });
+    let mut f = ManuallyDrop::new(unsafe { crate::fs::File::from_raw_fd(afd.as_raw_fd()) });
     // One read: the kernel answers a read of SIGNED bytes with the offer
     // and its own ephemeral key. Anything shorter is a server that offers
     // no session key, and is refused rather than spoken to in the clear.

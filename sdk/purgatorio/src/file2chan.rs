@@ -1,7 +1,7 @@
 //! `file2chan`: a file whose reads and writes are delivered to this prog.
 
+use crate::fd::FromRawFd;
 use std::io::{Read, Write};
-use std::os::fd::FromRawFd;
 
 use purg_abi::fio;
 
@@ -266,7 +266,7 @@ fn decode(buf: &[u8]) -> Result<Request, Error> {
 /// Copies `src` to `dst` without closing `dst`. Used to signal a parent
 /// without dropping its pipe end.
 pub fn write_fd(fd: i32, bytes: &[u8]) -> std::io::Result<()> {
-    let mut f = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
+    let mut f = std::mem::ManuallyDrop::new(unsafe { crate::fs::File::from_raw_fd(fd) });
     f.write_all(bytes)?;
     f.flush()
 }

@@ -76,7 +76,7 @@ fn netaddr(f: String) -> String {
         return f;
     }
     let remote = format!("/{}/{}/{}/remote", flds[0], flds[1], flds[2]);
-    let addr = match std::fs::read(&remote) {
+    let addr = match crate::fs::read(&remote) {
         Ok(b) if !b.is_empty() => b,
         _ => return f,
     };

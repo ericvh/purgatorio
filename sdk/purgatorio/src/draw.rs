@@ -27,9 +27,9 @@
 //! the window again on the new image and returns true, so a program that
 //! redraws on a resize redraws in its window.
 
-use std::fs::{File, OpenOptions};
+use crate::fd::AsRawFd;
+use crate::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 pub use purg_memdraw::{
     ARGB32, Chan, ENDARROW, ENDDISC, ENDSQUARE, GREY1, GREY8, Op, Point, RGB24, RGBA32, Rect,

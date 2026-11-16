@@ -5,7 +5,6 @@
 //! (see [`Timezone`]) or the name of a file that does.
 
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS: [&str; 12] = [
@@ -96,7 +95,7 @@ impl Timezone {
     /// When the text read is itself a path (starts with `/` or `#`), the
     /// zone is read from that file. Anything missing gives GMT.
     pub fn read(name: Option<&str>) -> Timezone {
-        let file = |p: &str| std::fs::read_to_string(p).ok().filter(|s| !s.is_empty());
+        let file = |p: &str| crate::fs::read_to_string(p).ok().filter(|s| !s.is_empty());
         let s = match name {
             None => crate::env::get("timezone")
                 .filter(|s| !s.is_empty())
@@ -151,9 +150,7 @@ pub fn local(t: i64) -> Tm {
 
 /// Seconds since the epoch, now.
 pub fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+    crate::time::now() as i64
 }
 
 /// Splits `t` (seconds since 1970-01-01 00:00 GMT) into calendar fields.
