@@ -119,6 +119,15 @@ use std::time::{Duration, Instant};
 const GUEST_TARGET: &str = "wasm32-wasip1";
 const GUEST_PROFILE: &str = "wasm";
 
+/// The target of wasm64 guests (`docs/wasm64.md`). Rust has no prebuilt
+/// `std` for it, so `build-root` builds `std` from the toolchain's
+/// `rust-src` component with the pinned compiler.
+const GUEST64_TARGET: &str = "wasm64-unknown-unknown";
+
+/// Where wasm64 guests are installed under `root/bin`: `bin/test` is
+/// `bin/64/test` there.
+const GUEST64_DIR: &str = "64";
+
 /// The guests' shadow stack, in bytes: the part of a module's linear
 /// memory its compiled code uses as a stack. The linker's default is
 /// 1 MiB, which every running prog then pays for. The sh corpus passes
@@ -146,6 +155,9 @@ struct Guest {
     bin: String,
     /// Install directory under `root/`.
     dir: String,
+    /// Whether the crate is also built as a wasm64 guest: its manifest
+    /// says `wasm64 = true` under `[package.metadata.purgatorio]`.
+    wide: bool,
 }
 
 impl Guest {
@@ -237,7 +249,13 @@ fn guest(path: &Path, dir: String) -> Result<Guest> {
     let bin = manifest_name(&manifest, "[[bin]]")
         .or_else(|| manifest_name(&manifest, "[lib]"))
         .unwrap_or_else(|| package.clone());
-    Ok(Guest { package, bin, dir })
+    let wide = manifest_flag(&manifest, "[package.metadata.purgatorio]", "wasm64");
+    Ok(Guest {
+        package,
+        bin,
+        dir,
+        wide,
+    })
 }
 
 fn cargo() -> Command {
@@ -251,6 +269,23 @@ fn run(cmd: &mut Command) -> Result<()> {
     } else {
         Err(format!("{cmd:?} failed: {status}"))
     }
+}
+
+/// Whether `key = true` follows the `[section]` header in a manifest.
+fn manifest_flag(manifest: &str, section: &str, key: &str) -> bool {
+    let mut in_section = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_section = line == section;
+        } else if in_section
+            && let Some(v) = line.strip_prefix(key)
+            && let Some(v) = v.trim_start().strip_prefix('=')
+        {
+            return v.trim() == "true";
+        }
+    }
+    false
 }
 
 /// Rustflags that make guest modules byte-identical across build hosts by
@@ -285,19 +320,37 @@ fn guest_rustflags(ws: &Path) -> Result<String> {
     ))
 }
 
-fn build_root() -> Result<()> {
-    let ws = workspace();
-    let guests = guests(&ws)?;
+/// A cargo command that builds guests for `target`, with the flags that
+/// make the result the same on every build host.
+fn guest_cargo(ws: &Path, verb: &str, target: &str) -> Result<Command> {
     let mut cmd = cargo();
-    cmd.current_dir(&ws)
-        .args([
-            "build",
-            "--target",
-            GUEST_TARGET,
-            "--profile",
-            GUEST_PROFILE,
-        ])
-        .env("CARGO_ENCODED_RUSTFLAGS", guest_rustflags(&ws)?)
+    cmd.current_dir(ws).args([verb, "--target", target]);
+    let mut flags = guest_rustflags(ws)?;
+    if target == GUEST64_TARGET {
+        // `std` is built from source: the nightly-only `-Zbuild-std` is
+        // let through on the pinned stable compiler, which is the one
+        // `std`'s source belongs to. Its paths go the way of the others.
+        cmd.args(["-Zbuild-std=std,panic_abort"])
+            .env("RUSTC_BOOTSTRAP", "1");
+        let sysroot = Command::new(env::var("RUSTC").unwrap_or_else(|_| String::from("rustc")))
+            .current_dir(ws)
+            .args(["--print", "sysroot"])
+            .output()
+            .map_err(|e| format!("rustc --print sysroot: {e}"))?;
+        let sysroot = String::from_utf8_lossy(&sysroot.stdout).trim().to_string();
+        if !Path::new(&sysroot)
+            .join("lib/rustlib/src/rust/library/std")
+            .is_dir()
+        {
+            return Err(format!(
+                "wasm64 guests need the rust-src component: rustup component add rust-src (looked in {sysroot})"
+            ));
+        }
+        // Last, so that it wins over the remap of rustup's home, which
+        // would leave the toolchain's host triple in the path.
+        flags = format!("{flags}\x1f--remap-path-prefix={sysroot}=/rustc");
+    }
+    cmd.env("CARGO_ENCODED_RUSTFLAGS", flags)
         .env(WRAPPER_ENV, "1")
         // `RUSTC_WRAPPER`, not `RUSTC_WORKSPACE_WRAPPER`: the crates from
         // the registry need the same treatment as the workspace's.
@@ -305,34 +358,65 @@ fn build_root() -> Result<()> {
             "RUSTC_WRAPPER",
             env::current_exe().map_err(|e| format!("xtask path: {e}"))?,
         );
-    for g in &guests {
+    Ok(cmd)
+}
+
+fn build_root() -> Result<()> {
+    let ws = workspace();
+    let guests = guests(&ws)?;
+    let tmp = ws.join("root/tmp");
+    fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    build_guests(&ws, &guests.iter().collect::<Vec<_>>(), GUEST_TARGET)?;
+    let wide: Vec<&Guest> = guests.iter().filter(|g| g.wide).collect();
+    if !wide.is_empty() {
+        build_guests(&ws, &wide, GUEST64_TARGET)?;
+    }
+    Ok(())
+}
+
+/// Builds `guests` for `target` and installs them under `root/`.
+fn build_guests(ws: &Path, guests: &[&Guest], target: &str) -> Result<()> {
+    let mut cmd = guest_cargo(ws, "build", target)?;
+    cmd.args(["--profile", GUEST_PROFILE]);
+    for g in guests {
         cmd.args(["-p", &g.package]);
     }
     run(&mut cmd)?;
-    let tmp = ws.join("root/tmp");
-    fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    let out_dir = ws.join("target").join(GUEST_TARGET).join(GUEST_PROFILE);
-    for g in &guests {
+    let out_dir = ws.join("target").join(target).join(GUEST_PROFILE);
+    for g in guests {
         let src = out_dir.join(format!("{}.wasm", g.bin));
         let linked = fs::read(&src).map_err(|e| format!("{}: {e}", src.display()))?;
         // The linker keeps the function names (`strip = "debuginfo"`);
         // they are installed beside the module, which is stripped here.
         let (bytes, names) = wasm::split(&linked).map_err(|e| format!("{}: {e}", src.display()))?;
         wasm::check(&bytes, true).map_err(|e| format!("{}: {e}", src.display()))?;
-        let dest_dir = ws.join("root").join(&g.dir);
+        let dir = if target == GUEST64_TARGET {
+            wide_dir(&g.dir)
+        } else {
+            g.dir.clone()
+        };
+        let dest_dir = ws.join("root").join(&dir);
         fs::create_dir_all(&dest_dir).map_err(|e| format!("{}: {e}", dest_dir.display()))?;
         let dest = dest_dir.join(format!("{}.wasm", g.installed()));
         fs::write(&dest, &bytes).map_err(|e| format!("{}: {e}", dest.display()))?;
         let dest = dest.with_extension("names");
         fs::write(&dest, &names).map_err(|e| format!("{}: {e}", dest.display()))?;
         eprintln!(
-            "installed /{}/{}.wasm ({} bytes)",
-            g.dir,
+            "installed /{dir}/{}.wasm ({} bytes)",
             g.installed(),
             bytes.len()
         );
     }
     Ok(())
+}
+
+/// Where the wasm64 build of a guest that installs in `dir` goes:
+/// `bin` is `bin/64`, and `bin/test` is `bin/64/test`.
+fn wide_dir(dir: &str) -> String {
+    match dir.split_once('/') {
+        Some((bin, rest)) => format!("{bin}/{GUEST64_DIR}/{rest}"),
+        None => format!("{dir}/{GUEST64_DIR}"),
+    }
 }
 
 fn clippy_guests() -> Result<()> {
@@ -341,6 +425,16 @@ fn clippy_guests() -> Result<()> {
     cmd.current_dir(&ws)
         .args(["clippy", "--target", GUEST_TARGET, "-p", "purgatorio"]);
     for g in guests(&ws)? {
+        cmd.args(["-p", &g.package]);
+    }
+    run(cmd.args(["--", "-D", "warnings"]))?;
+    // The SDK and the guests that are also built as wasm64.
+    let mut cmd = cargo();
+    cmd.current_dir(&ws)
+        .args(["clippy", "--target", GUEST64_TARGET, "-p", "purgatorio"])
+        .args(["-Zbuild-std=std,panic_abort"])
+        .env("RUSTC_BOOTSTRAP", "1");
+    for g in guests(&ws)?.iter().filter(|g| g.wide) {
         cmd.args(["-p", &g.package]);
     }
     run(cmd.args(["--", "-D", "warnings"]))?;
@@ -1072,7 +1166,10 @@ fn aot_images(ws: &Path, kind: &str) -> Result<PathBuf> {
             .to_str()
             .ok_or("a module path is not UTF-8")?
             .replace(std::path::MAIN_SEPARATOR, "/");
-        if rel.ends_with(".wasm") && tar::in_image(&rel, true) {
+        // wasm64 modules have no images yet: they run on the fallback
+        // engine (`docs/wasm64.md`).
+        let wide = rel.starts_with(&format!("bin/{GUEST64_DIR}/"));
+        if rel.ends_with(".wasm") && !wide && tar::in_image(&rel, true) {
             modules.push(rel);
         }
     }
@@ -2790,12 +2887,10 @@ fn rustc_wrapper(args: &[String]) -> ExitCode {
         eprintln!("xtask: rustc wrapper called without rustc");
         return ExitCode::FAILURE;
     };
-    let guest = rest
-        .windows(2)
-        .any(|w| w[0] == "--target" && w[1] == GUEST_TARGET)
-        || rest
-            .iter()
-            .any(|a| *a == format!("--target={GUEST_TARGET}"));
+    let guest = [GUEST_TARGET, GUEST64_TARGET].iter().any(|t| {
+        rest.windows(2).any(|w| w[0] == "--target" && w[1] == *t)
+            || rest.iter().any(|a| *a == format!("--target={t}"))
+    });
     let crate_name = rest
         .iter()
         .position(|a| a == "--crate-name")
