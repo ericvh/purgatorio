@@ -388,6 +388,7 @@ fn link(linker: &mut Linker<Ctx>) -> Result<(), wasmi::Error> {
         };
     }
     purg_vm::for_each_import!(register);
+    purg_vm::for_each_import64!(register);
     Ok(())
 }
 

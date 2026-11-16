@@ -465,7 +465,9 @@ pub fn rewrite(wasm: &[u8], opts: Options) -> Option<(Vec<u8>, Layout)> {
 /// was started under tracing, `wasm` rewritten to keep a call stack, and
 /// to count what the prog's profiles ask for.
 pub fn prepare(proc: &Proc, wasm: Vec<u8>) -> Vec<u8> {
-    if !proc.debug.trace() {
+    // A wasm64 module runs untraced for now: the rewrite's thunks and
+    // its page counts assume `i32` memory operands (`docs/wasm64.md`).
+    if !proc.debug.trace() || crate::memory64(&wasm) {
         return wasm;
     }
     let opts = Options {

@@ -20,6 +20,10 @@ pub const ABI_SECTION: &str = "purgatorio.abi";
 
 /// The Purgatorio extension import module.
 pub const MODULE: &str = "purgatorio";
+/// Import module of the same calls for a wasm64 guest: every pointer and
+/// size is an `i64`, and it holds the calls that stand in for WASI, which
+/// such a guest does not have (`docs/wasm64.md`).
+pub const MODULE64: &str = "purgatorio64";
 /// Guest export called to start a command (WASI command entry point).
 pub const ENTRY: &str = "_start";
 /// Guest export holding linear memory.

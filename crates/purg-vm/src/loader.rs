@@ -82,6 +82,63 @@ pub fn abi_version(wasm: &[u8]) -> Result<Option<&[u8]>, Malformed> {
     Ok(None)
 }
 
+/// Whether `wasm` is a wasm64 module: one whose memory, defined or
+/// imported, is indexed by `i64` (`docs/wasm64.md`). A module that is not
+/// well formed is not.
+pub fn memory64(wasm: &[u8]) -> bool {
+    // The limits of a memory start with a flags byte; bit 2 is `i64`.
+    const MEMORY64: u8 = 0x04;
+    let scan = || -> Result<bool, Malformed> {
+        if wasm.get(..8) != Some(b"\0asm\x01\0\0\0") {
+            return Err(Malformed);
+        }
+        let mut pos = 8;
+        while pos < wasm.len() {
+            let id = wasm[pos];
+            pos += 1;
+            let size = leb_u32(wasm, &mut pos)? as usize;
+            let end = pos
+                .checked_add(size)
+                .filter(|&e| e <= wasm.len())
+                .ok_or(Malformed)?;
+            let body = &wasm[pos..end];
+            let mut p = 0;
+            match id {
+                // The memory section: a count, then each memory's limits.
+                5 => {
+                    if leb_u32(body, &mut p)? > 0 {
+                        return Ok(body.get(p).ok_or(Malformed)? & MEMORY64 != 0);
+                    }
+                }
+                // The import section: an imported memory comes first.
+                2 => {
+                    for _ in 0..leb_u32(body, &mut p)? {
+                        for _ in 0..2 {
+                            let n = leb_u32(body, &mut p)? as usize;
+                            p = p.checked_add(n).ok_or(Malformed)?;
+                        }
+                        let kind = *body.get(p).ok_or(Malformed)?;
+                        p += 1;
+                        match kind {
+                            // A function: its type index.
+                            0 => drop(leb_u32(body, &mut p)?),
+                            // A memory.
+                            2 => return Ok(body.get(p).ok_or(Malformed)? & MEMORY64 != 0),
+                            // A table, global or tag: none in a guest
+                            // this host runs, and nothing after it is read.
+                            _ => return Ok(false),
+                        }
+                    }
+                }
+                _ => {}
+            }
+            pos = end;
+        }
+        Ok(false)
+    };
+    scan().unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +160,30 @@ mod tests {
         let m = module_with_section("name", b"x");
         assert_eq!(abi_version(&m), Ok(None));
         assert_eq!(abi_version(b"\0asm\x01\0\0\0"), Ok(None));
+    }
+
+    fn module(sections: &[(u8, &[u8])]) -> Vec<u8> {
+        let mut m = b"\0asm\x01\0\0\0".to_vec();
+        for (id, body) in sections {
+            m.push(*id);
+            m.push(body.len() as u8);
+            m.extend_from_slice(body);
+        }
+        m
+    }
+
+    #[test]
+    fn tells_the_widths_apart() {
+        // One memory: flags, minimum.
+        assert!(!memory64(&module(&[(5, &[1, 0x00, 1])])));
+        assert!(memory64(&module(&[(5, &[1, 0x04, 1])])));
+        assert!(memory64(&module(&[(5, &[1, 0x05, 1, 2])])));
+        // An imported function `a.b` of type 0, then memory `a.m`.
+        let import = [2, 1, b'a', 1, b'b', 0, 0, 1, b'a', 1, b'm', 2, 0x04, 1];
+        assert!(memory64(&module(&[(2, &import)])));
+        assert!(!memory64(&module(&[])));
+        assert!(!memory64(b"#!/bin/sh"));
+        assert!(!memory64(&module(&[(5, &[1])])));
     }
 
     #[test]
