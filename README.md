@@ -292,7 +292,8 @@ alignment throughout.
 ## Building and running
 
 Use Rust 1.99.1. The file `rust-toolchain.toml` pins it: channel `1.99.1`,
-profile `minimal`, components `rustfmt` and `clippy`, and targets
+profile `minimal`, components `rustfmt`, `clippy` and `rust-src` (wasm64
+guests build `std` from source, `docs/wasm64.md`), and targets
 `wasm32-wasip1`, `wasm32-unknown-unknown`, and `aarch64-unknown-none`. The
 host target comes with the toolchain. This covers Linux and macOS, including
 aarch64. Do not use a distro `rustc` package.

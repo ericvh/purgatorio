@@ -61,6 +61,8 @@ const SCRIPT: &[(&[&str], bool)] = &[
     (&["/bin/test/m3.wasm"], true),
     (&["/bin/test/net.wasm"], true),
     (&["/bin/test/wasi.wasm"], true),
+    // A wasm64 guest (`docs/wasm64.md`).
+    (&["/bin/64/test/wide.wasm", "/tmp"], true),
 ];
 
 /// The sh scripts run with their output captured and compared with the

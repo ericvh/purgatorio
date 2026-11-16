@@ -85,6 +85,35 @@ ok sock
 ok sleep
 ok args
 probe: ok
+probe: run /bin/64/test/wide.wasm /tmp
+pointer 64 bits
+ok argv0
+args ["/tmp"]
+ok read_to_string
+ok seek end
+ok seek start
+ok read at offset
+ok lines
+ok stat length
+ok fstat
+ok read_dir
+ok fd2path
+ok errstr
+ok werrstr
+ok not ready
+ok ready
+ok pipe
+ok env
+ok spawn
+ok wait
+ok sleep
+ok clock
+ok random
+ok bad pointer
+ok bad length
+ok open mode
+ok open missing
+probe: ok
 @sh-corpus
 probe: net ready
 probe: net served

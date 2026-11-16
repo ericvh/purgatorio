@@ -110,6 +110,8 @@ const SCRIPT: &[(&[&str], bool)] = &[
     (&["/bin/test/m3.wasm"], true),
     (&["/bin/test/net.wasm"], true),
     (&["/bin/test/wasi.wasm"], true),
+    // A wasm64 guest (`docs/wasm64.md`).
+    (&["/bin/64/test/wide.wasm", "/tmp"], true),
 ];
 
 /// Heap the conformance guests and the sh corpus (about 2000 progs) may

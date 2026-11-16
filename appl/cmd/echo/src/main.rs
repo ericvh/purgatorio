@@ -7,12 +7,12 @@
 //! or short write is reported as `echo: write error: ...` with the status
 //! `fail:write error`, and is not retried.
 
-use std::fs::File;
 use std::io::Write;
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
 
-use purgatorio::{Context, Error};
+use purgatorio::fd::FromRawFd;
+use purgatorio::fs::File;
+use purgatorio::{Context, Error, eprintln};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {

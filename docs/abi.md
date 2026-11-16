@@ -580,6 +580,16 @@ bytes written to `dst`. This follows Inferno's `stream`:
 - `bufsiz = 0` copies nothing and returns 0. A negative `bufsiz` or a bad
   fd returns -1.
 
+## wasm64 guests: the `purgatorio64` module
+
+A wasm64 guest (`wasm64-unknown-unknown`, Memory64) uses no WASI. It
+imports `purgatorio64`: the `purgatorio` calls above with every pointer
+and `usize` an `i64`, without `load` and `call`, and with `read`,
+`write`, `pread`, `pwrite`, `seek`, `close`, `args`, `sleep`, `nsec`,
+`mono` and `random` in place of WASI. `docs/wasm64.md` has the table, the
+layout rules and how such guests are built and found. Adding the module
+did not change what a wasm32 guest sees, so the version stayed 0.13.
+
 ## `/prog/<pid>/status` and `ppid`
 
 `status` is prog(3)'s line, with no newline: pid and process group
