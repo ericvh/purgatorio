@@ -7,8 +7,9 @@
 //! `local` shows (`ok icmp_skip` where the host refuses ICMP sockets). With no arguments the checks run.
 //! A platform with no network prints `ok net_skip` and still succeeds.
 
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::println;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
 
 use purgatorio::abi::mount::MREPL;
 use purgatorio::abi::pctl::NEWFD;
@@ -49,13 +50,13 @@ fn wasi_dial(addr: &str) -> Result<(), Error> {
 fn wasi_accept(ann: &dial::Connection) -> Result<(), Error> {
     let here = local(&ann.dir)?;
     purgatorio::spawn(SELF, &[SELF.into(), "--wasi-dial".into(), here], 0, &[])?;
-    let listen = std::fs::File::open(format!("{}/listen", ann.dir))?;
+    let listen = purgatorio::fs::File::open(format!("{}/listen", ann.dir))?;
     let mut got = -1i32;
     let rc = unsafe { sock_accept(listen.as_raw_fd(), 0, &mut got) };
     if rc != 0 {
         return Err(Error(format!("sock_accept errno {rc}")));
     }
-    let mut data = unsafe { std::fs::File::from_raw_fd(got) };
+    let mut data = unsafe { purgatorio::fs::File::from_raw_fd(got) };
     let mut buf = [0u8; 4];
     data.read_exact(&mut buf)?;
     if &buf != b"ping" {
@@ -177,9 +178,9 @@ fn udp_headers() -> Result<(), Error> {
     )
     .map_err(|e| Error(format!("spawn: {e}")))?;
     // Give it time to block in listen.
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(200));
     let dir = ann.dir.clone();
-    let mut ctl = std::fs::File::from(ann.ctl);
+    let mut ctl = purgatorio::fs::File::from(ann.ctl);
     ctl.write_all(b"headers")
         .map_err(|e| Error(format!("headers: {}", Error::from(e))))?;
     let mut data = open_data(&dir)?;
@@ -245,7 +246,7 @@ fn udp_echo(addr: &str) -> Result<(), Error> {
 }
 
 fn remote(dir: &str) -> Result<String, Error> {
-    Ok(std::fs::read_to_string(format!("{dir}/remote"))?
+    Ok(purgatorio::fs::read_to_string(format!("{dir}/remote"))?
         .trim()
         .to_string())
 }
@@ -254,7 +255,7 @@ fn export_mount() -> Result<(), Error> {
     let ann = dial::announce("tcp!127.0.0.1!0")?;
     let here = local(&ann.dir)?;
     let port = here.rsplit('!').next().unwrap_or("0");
-    std::fs::create_dir_all("/tmp/netmnt")?;
+    purgatorio::fs::create_dir_all("/tmp/netmnt")?;
     purgatorio::spawn(
         SELF,
         &[SELF.into(), "--accept".into(), ann.dir.clone()],
@@ -271,7 +272,7 @@ fn export_mount() -> Result<(), Error> {
         .as_raw_fd();
     purgatorio::mount(fd, -1, "/tmp/netmnt", MREPL, "")
         .map_err(|e| Error(format!("mount: {e}")))?;
-    let text = std::fs::read_to_string("/tmp/netmnt/lib/probe/hello.txt")
+    let text = purgatorio::fs::read_to_string("/tmp/netmnt/lib/probe/hello.txt")
         .map_err(|e| Error(format!("read: {e}")))?;
     if !text.contains("hello") {
         return Err(Error(format!("unexpected export: {text:?}")));
@@ -280,7 +281,7 @@ fn export_mount() -> Result<(), Error> {
 }
 
 fn cs() -> Result<(), Error> {
-    let mut file = std::fs::OpenOptions::new()
+    let mut file = purgatorio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/net/cs")?;
@@ -295,7 +296,7 @@ fn cs() -> Result<(), Error> {
 }
 
 fn os_echo() -> Result<(), Error> {
-    let mut clone = std::fs::OpenOptions::new()
+    let mut clone = purgatorio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/cmd/clone")?;
@@ -303,7 +304,7 @@ fn os_echo() -> Result<(), Error> {
     let n = clone.read(&mut idbuf)?;
     let id = std::str::from_utf8(&idbuf[..n]).unwrap_or("").trim();
     clone.write_all(b"exec echo hello-os")?;
-    let mut data = std::fs::File::open(format!("/cmd/{id}/data"))?;
+    let mut data = purgatorio::fs::File::open(format!("/cmd/{id}/data"))?;
     let mut out = String::new();
     data.read_to_string(&mut out)?;
     if out.trim() != "hello-os" {
@@ -312,8 +313,8 @@ fn os_echo() -> Result<(), Error> {
     Ok(())
 }
 
-fn open_data(dir: &str) -> Result<std::fs::File, Error> {
-    Ok(std::fs::OpenOptions::new()
+fn open_data(dir: &str) -> Result<purgatorio::fs::File, Error> {
+    Ok(purgatorio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(format!("{dir}/data"))?)

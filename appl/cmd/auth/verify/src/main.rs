@@ -20,6 +20,7 @@
 
 use authlib::fmt::{hex, keys, modsig, proof};
 use purgatorio::arg::Arg;
+use purgatorio::println;
 use purgatorio::{Context, Error};
 
 const USAGE: &str =
@@ -49,7 +50,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let [file] = rest.as_slice() else {
         return Err(Error(format!("usage: {USAGE}")));
     };
-    let text = std::fs::read(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
+    let text =
+        purgatorio::fs::read(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
     let signers = signers.unwrap_or_else(|| {
         String::from(if module {
             authlib::MODULES
@@ -57,10 +59,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             authlib::SIGNERS
         })
     });
-    let signers = std::fs::read(&signers)
+    let signers = purgatorio::fs::read(&signers)
         .map(|t| keys::parse_list_lenient(&t))
         .unwrap_or_default();
-    let revoked = match std::fs::read(&revoked) {
+    let revoked = match purgatorio::fs::read(&revoked) {
         Ok(t) => keys::parse_list(&t),
         Err(_) => Some(Vec::new()),
     };

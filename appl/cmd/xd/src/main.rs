@@ -1,5 +1,6 @@
 //! xd [file]: hex dump, 16 bytes per line.
 
+use purgatorio::eprintln;
 use std::io::{Read, Write};
 
 use purgatorio::{Context, Error};
@@ -8,14 +9,14 @@ use purgatorio::{Context, Error};
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut data = Vec::new();
     if let Some(path) = args.get(1) {
-        if std::fs::read(path).map(|d| data = d).is_err() {
+        if purgatorio::fs::read(path).map(|d| data = d).is_err() {
             eprintln!("xd: cannot open {path}: {}", purgatorio::errstr());
             purgatorio::exits("fail:cannot open");
         }
     } else {
-        std::io::stdin().read_to_end(&mut data)?;
+        purgatorio::io::stdin().read_to_end(&mut data)?;
     }
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     for (i, chunk) in data.chunks(16).enumerate() {
         write!(out, "{:08x}  ", i * 16)?;
         for b in chunk {

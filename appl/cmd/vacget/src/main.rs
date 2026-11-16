@@ -6,9 +6,10 @@
 //! files their archived owner, group, mode and modification time. `-d`
 //! prints debugging messages.
 
-use std::fs::File;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
+use purgatorio::{eprintln, println};
 use std::io::Write;
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::mode;
 use purgatorio::arg::Arg;

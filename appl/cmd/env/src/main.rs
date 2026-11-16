@@ -11,7 +11,7 @@ fn main(_ctx: Context, _args: Vec<String>) -> Result<(), Error> {
     for (k, v) in purgatorio::env::list()? {
         out.push_str(&format!("{k}={v}\n"));
     }
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = purgatorio::io::stdout().lock();
     stdout.write_all(out.as_bytes())?;
     stdout.flush()?;
     Ok(())

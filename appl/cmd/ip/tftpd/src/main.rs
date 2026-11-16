@@ -16,10 +16,11 @@
 //! the announced port rather than a fresh one per transfer; clients take
 //! their transfer port from the first reply, so this works with them.
 
-use std::fs::File;
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
+use purgatorio::{eprintln, println};
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd};
 
 use purgatorio::abi::pctl;
 use purgatorio::arg::Arg;
@@ -120,7 +121,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 
 /// `dial::announce` for a network mounted elsewhere than `/net`.
 fn announce_on(net: &str, port: &str) -> Result<dial::Connection, Error> {
-    use std::fs::OpenOptions;
+    use purgatorio::fs::OpenOptions;
     let mut ctl = OpenOptions::new()
         .read(true)
         .write(true)
@@ -152,7 +153,7 @@ fn transfer(conf: &Conf, dir: &str) -> Result<(), Error> {
     let n = net.read(&mut req)?;
     req.truncate(n);
     let r = serve(conf, &mut net, &req);
-    let _ = std::fs::write(format!("{dir}/ctl"), "hangup");
+    let _ = purgatorio::fs::write(format!("{dir}/ctl"), "hangup");
     r
 }
 
@@ -205,7 +206,7 @@ fn send(conf: &Conf, net: &mut File, path: &str) -> Result<(), Error> {
     if d.mode & 0o004 == 0 || d.mode & purgatorio::DMDIR != 0 {
         return nak(net, EACCESS, "access violation");
     }
-    let Ok(data) = std::fs::read(path) else {
+    let Ok(data) = purgatorio::fs::read(path) else {
         return nak(net, EACCESS, "access violation");
     };
     let mut block: u16 = 1;
@@ -259,7 +260,7 @@ fn receive(conf: &Conf, net: &mut File, path: &str) -> Result<(), Error> {
             break;
         }
     }
-    if std::fs::write(path, &out).is_err() {
+    if purgatorio::fs::write(path, &out).is_err() {
         return nak(net, EACCESS, "access violation");
     }
     if conf.debug {

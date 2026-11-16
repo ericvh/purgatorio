@@ -9,15 +9,10 @@ use purgatorio::{Context, Error};
 
 const USAGE: &str = "zeros [-r] [-v value] blocksize [number]";
 
-/// Fills `buf` from WASI `random_get`, which reads the kernel's entropy.
+/// Fills `buf` from the kernel's entropy.
 #[cfg(target_family = "wasm")]
 fn random(buf: &mut [u8]) {
-    #[link(wasm_import_module = "wasi_snapshot_preview1")]
-    unsafe extern "C" {
-        fn random_get(buf: *mut u8, len: usize) -> i32;
-    }
-    // SAFETY: the host writes at most `buf.len()` bytes into `buf`.
-    unsafe { random_get(buf.as_mut_ptr(), buf.len()) };
+    purgatorio::auth::Rng::fill(buf);
 }
 
 /// Host builds (clippy, unit tests) have no WASI import.
@@ -56,7 +51,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if rflag {
         random(&mut block);
     }
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     for _ in 0..n {
         out.write_all(&block)?;
     }

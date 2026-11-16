@@ -18,8 +18,9 @@
 //! copies to `log`; when `frame` is a number it flips a bit in the last
 //! byte of that frame (a 9P message or a record) on the way.
 
+use purgatorio::fd::{AsRawFd, OwnedFd};
+use purgatorio::{eprintln, println};
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
 
 use purgatorio::abi::mode;
 use purgatorio::abi::mount::{MCREATE, MNOAUTH, MREPL, MSRVAUTH};
@@ -57,7 +58,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 fn block() -> ! {
     let _ = file2chan::write_fd(1, b"R");
     let mut buf = [0u8; 16];
-    match std::io::stdin().read(&mut buf) {
+    match purgatorio::io::stdin().read(&mut buf) {
         Ok(0) => exits("eof"),
         Ok(n) => exits(&format!("read {n}")),
         Err(_) => exits(&purgatorio::errstr()),
@@ -74,7 +75,7 @@ fn spin() -> ! {
 
 fn nap() -> ! {
     let _ = file2chan::write_fd(1, b"R");
-    std::thread::sleep(std::time::Duration::from_secs(3600));
+    purgatorio::thread::sleep(purgatorio::time::Duration::from_secs(3600));
     exits("woke");
 }
 
@@ -126,7 +127,7 @@ fn checks() -> Result<(), Error> {
 
 fn file2chan() -> Result<(), String> {
     let path = "/tmp/m3-file2chan";
-    let _ = std::fs::remove_file(path);
+    let _ = purgatorio::fs::remove_file(path);
     let [r, w] = purgatorio::pipe().map_err(|e| e.0)?;
     purgatorio::spawn(
         SELF,
@@ -141,11 +142,11 @@ fn file2chan() -> Result<(), String> {
     .map_err(|e| e.0)?;
     drop(w);
     let mut b = [0u8; 1];
-    std::fs::File::from(r)
+    purgatorio::fs::File::from(r)
         .read_exact(&mut b)
         .map_err(|e| e.to_string())?;
-    std::fs::write(path, b"xyz").map_err(|e| e.to_string())?;
-    let got = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    purgatorio::fs::write(path, b"xyz").map_err(|e| e.to_string())?;
+    let got = purgatorio::fs::read_to_string(path).map_err(|e| e.to_string())?;
     if got != "xyz" {
         return Err(format!("got {got:?}"));
     }
@@ -199,7 +200,7 @@ fn answer(_io: &FileIO, req: file2chan::Request) -> Result<(), Error> {
 
 fn export_loop() -> Result<(), String> {
     let dir = "/tmp/m3-mount";
-    let _ = std::fs::create_dir_all(dir);
+    let _ = purgatorio::fs::create_dir_all(dir);
     let [a, b] = purgatorio::pipe().map_err(|e| e.0)?;
     purgatorio::spawn(
         SELF,
@@ -212,8 +213,8 @@ fn export_loop() -> Result<(), String> {
     purgatorio::mount(b.as_raw_fd(), -1, dir, MREPL | MCREATE, "").map_err(|e| e.0)?;
     drop(b);
     let nested = format!("{dir}/tmp/m3-note");
-    std::fs::write(&nested, b"via-mount").map_err(|e| e.to_string())?;
-    let got = std::fs::read_to_string("/tmp/m3-note").map_err(|e| e.to_string())?;
+    purgatorio::fs::write(&nested, b"via-mount").map_err(|e| e.to_string())?;
+    let got = purgatorio::fs::read_to_string("/tmp/m3-note").map_err(|e| e.to_string())?;
     if got != "via-mount" {
         return Err(format!("exported file is {got:?}"));
     }
@@ -234,10 +235,10 @@ fn kill_blocked() -> Result<(), String> {
     drop(r);
     drop(ready_w);
     let mut b = [0u8; 1];
-    std::fs::File::from(ready_r)
+    purgatorio::fs::File::from(ready_r)
         .read_exact(&mut b)
         .map_err(|e| e.to_string())?;
-    std::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())?;
+    purgatorio::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())?;
     let msg = loop {
         let msg = purgatorio::wait().map_err(|e| e.0)?;
         if msg.pid == pid {
@@ -264,17 +265,17 @@ fn wait_for(pid: u32) -> Result<purgatorio::Waitmsg, String> {
 }
 
 fn kill(pid: u32) -> Result<(), String> {
-    std::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())
+    purgatorio::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())
 }
 
 /// The progs whose parent is `ppid`.
 fn children(ppid: u32) -> Vec<u32> {
-    let Ok(dir) = std::fs::read_dir("/prog") else {
+    let Ok(dir) = purgatorio::fs::read_dir("/prog") else {
         return Vec::new();
     };
     dir.filter_map(|e| e.ok()?.file_name().into_string().ok()?.parse::<u32>().ok())
         .filter(|pid| {
-            std::fs::read_to_string(format!("/prog/{pid}/ppid"))
+            purgatorio::fs::read_to_string(format!("/prog/{pid}/ppid"))
                 .is_ok_and(|s| s.trim() == ppid.to_string())
         })
         .collect()
@@ -283,7 +284,7 @@ fn children(ppid: u32) -> Vec<u32> {
 /// Kills `pid` once it has been left `ms` milliseconds to block, and
 /// checks that it ended as killed.
 fn kill_after(pid: u32, ms: u64) -> Result<(), String> {
-    std::thread::sleep(std::time::Duration::from_millis(ms));
+    purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(ms));
     kill(pid)?;
     let msg = wait_for(pid)?;
     if msg.status != "killed" {
@@ -304,7 +305,7 @@ fn kill_nap() -> Result<(), String> {
     .map_err(|e| e.0)?;
     drop(ready_w);
     let mut b = [0u8; 1];
-    std::fs::File::from(ready_r)
+    purgatorio::fs::File::from(ready_r)
         .read_exact(&mut b)
         .map_err(|e| e.to_string())?;
     kill_after(pid, 50)
@@ -314,7 +315,7 @@ fn kill_nap() -> Result<(), String> {
 /// `/dev/null` and fd 2 this prog's.
 fn sh(argv: &[&str], stdin: Option<&OwnedFd>) -> Result<u32, String> {
     let argv: Vec<String> = argv.iter().map(|a| String::from(*a)).collect();
-    let null = std::fs::OpenOptions::new()
+    let null = purgatorio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/null")
@@ -334,7 +335,7 @@ fn kill_sh_wait() -> Result<(), String> {
         if !job.is_empty() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(10));
     }
     let res = kill_after(pid, 100);
     for p in job {
@@ -386,10 +387,10 @@ fn kill_spin() -> Result<(), String> {
     .map_err(|e| e.0)?;
     drop(ready_w);
     let mut b = [0u8; 1];
-    std::fs::File::from(ready_r)
+    purgatorio::fs::File::from(ready_r)
         .read_exact(&mut b)
         .map_err(|e| e.to_string())?;
-    std::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())?;
+    purgatorio::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())?;
     let msg = loop {
         let msg = purgatorio::wait().map_err(|e| e.0)?;
         if msg.pid == pid {
@@ -419,10 +420,11 @@ fn exporter(flag: &str) -> Result<OwnedFd, String> {
 
 /// Reads the fixture public key through the mount at `dir`, then unmounts.
 fn read_through(dir: &str) -> Result<(), String> {
-    let via = std::fs::read(format!("{dir}/lib/test/auth.key.pub")).map_err(|e| e.to_string());
+    let via =
+        purgatorio::fs::read(format!("{dir}/lib/test/auth.key.pub")).map_err(|e| e.to_string());
     purgatorio::unmount(None, dir).ok();
     let via = via?;
-    let direct = std::fs::read("/lib/test/auth.key.pub").map_err(|e| e.to_string())?;
+    let direct = purgatorio::fs::read("/lib/test/auth.key.pub").map_err(|e| e.to_string())?;
     if via != direct {
         return Err(format!("read {} bytes through the mount", via.len()));
     }
@@ -431,7 +433,7 @@ fn read_through(dir: &str) -> Result<(), String> {
 
 fn mtpt(name: &str) -> Result<String, String> {
     let dir = format!("/tmp/m3-{name}");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    purgatorio::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }
 
@@ -448,7 +450,7 @@ fn fauth_mount() -> Result<(), String> {
     let dir = mtpt("fauth")?;
     let conn = exporter("--export")?;
     let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
-    let mut f = std::fs::File::from(afd);
+    let mut f = purgatorio::fs::File::from(afd);
     // The offer and the kernel's ephemeral key: a version 3 proof.
     let mut signed = [0u8; purgatorio::abi::auth::SIGNED];
     f.read_exact(&mut signed).map_err(|e| e.to_string())?;
@@ -468,7 +470,7 @@ fn fauth_bad_proof() -> Result<(), String> {
     let dir = mtpt("fauth-bad")?;
     let conn = exporter("--export")?;
     let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
-    let mut f = std::fs::File::from(afd);
+    let mut f = purgatorio::fs::File::from(afd);
     let mut challenge = [0u8; purgatorio::abi::auth::CHALLENGE];
     f.read_exact(&mut challenge).map_err(|e| e.to_string())?;
     let r = f.write_all(&[0u8; purgatorio::abi::auth::PROOF]);
@@ -519,15 +521,15 @@ fn amount() -> Result<(), String> {
 /// the hangup while it lives.
 fn pump(flip: Option<usize>, log: &str) -> ! {
     let stop = || -> ! {
-        if let Ok(pid) = std::fs::read_to_string(format!("{log}.peer")) {
-            let _ = std::fs::write(format!("/prog/{}/ctl", pid.trim()), "kill\n");
+        if let Ok(pid) = purgatorio::fs::read_to_string(format!("{log}.peer")) {
+            let _ = purgatorio::fs::write(format!("/prog/{}/ctl", pid.trim()), "kill\n");
         }
         exits("")
     };
     let mut seen = Vec::new();
     let mut buf = vec![0u8; 16 * 1024];
-    let mut input = std::io::stdin();
-    let mut output = std::io::stdout();
+    let mut input = purgatorio::io::stdin();
+    let mut output = purgatorio::io::stdout();
     loop {
         let n = match input.read(&mut buf) {
             Ok(0) | Err(_) => stop(),
@@ -535,7 +537,7 @@ fn pump(flip: Option<usize>, log: &str) -> ! {
         };
         let start = seen.len();
         seen.extend_from_slice(&buf[..n]);
-        if let Ok(mut f) = std::fs::OpenOptions::new()
+        if let Ok(mut f) = purgatorio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(log)
@@ -588,8 +590,8 @@ fn through_relay(flag: &str, flags: u32, flip: Option<(bool, usize)>) -> Result<
     let dir = mtpt("wire")?;
     let logs = ["/tmp/m3-wire-up", "/tmp/m3-wire-down"];
     for l in logs {
-        let _ = std::fs::remove_file(l);
-        let _ = std::fs::remove_file(format!("{l}.peer"));
+        let _ = purgatorio::fs::remove_file(l);
+        let _ = purgatorio::fs::remove_file(format!("{l}.peer"));
     }
     let server = exporter(flag)?;
     let [c, r] = purgatorio::pipe().map_err(|e| e.0)?;
@@ -614,7 +616,8 @@ fn through_relay(flag: &str, flags: u32, flip: Option<(bool, usize)>) -> Result<
         pids.push(pid);
     }
     for (log, peer) in [(logs[0], pids[1]), (logs[1], pids[0])] {
-        std::fs::write(format!("{log}.peer"), peer.to_string()).map_err(|e| e.to_string())?;
+        purgatorio::fs::write(format!("{log}.peer"), peer.to_string())
+            .map_err(|e| e.to_string())?;
     }
     drop(r);
     drop(server);
@@ -624,10 +627,10 @@ fn through_relay(flag: &str, flags: u32, flip: Option<(bool, usize)>) -> Result<
     drop(c);
     let used = mounted.clone().and_then(|_| {
         let path = format!("{dir}/tmp/{WIRE_NAME}");
-        let r = std::fs::write(&path, WIRE_DATA)
-            .and_then(|()| std::fs::read(&path))
+        let r = purgatorio::fs::write(&path, WIRE_DATA)
+            .and_then(|()| purgatorio::fs::read(&path))
             .map_err(|e| e.to_string());
-        let _ = std::fs::remove_file(&path);
+        let _ = purgatorio::fs::remove_file(&path);
         purgatorio::unmount(None, &dir).ok();
         match r? {
             d if d == WIRE_DATA => Ok(()),
@@ -635,15 +638,15 @@ fn through_relay(flag: &str, flags: u32, flip: Option<(bool, usize)>) -> Result<
         }
     });
     for pid in &pids {
-        let _ = std::fs::write(format!("/prog/{pid}/ctl"), "kill\n");
+        let _ = purgatorio::fs::write(format!("/prog/{pid}/ctl"), "kill\n");
     }
     let mut left = pids.clone();
     while !left.is_empty() {
         let msg = purgatorio::wait().map_err(|e| e.0)?;
         left.retain(|p| *p != msg.pid);
     }
-    let up = std::fs::read(logs[0]).unwrap_or_default();
-    let down = std::fs::read(logs[1]).unwrap_or_default();
+    let up = purgatorio::fs::read(logs[0]).unwrap_or_default();
+    let down = purgatorio::fs::read(logs[1]).unwrap_or_default();
     Ok(Wire {
         mounted: mounted.and(used),
         up,
@@ -718,7 +721,7 @@ fn crypt_required() -> Result<(), String> {
     let dir = mtpt("required")?;
     let conn = exporter("--export-crypt")?;
     let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
-    let mut f = std::fs::File::from(afd);
+    let mut f = purgatorio::fs::File::from(afd);
     let mut challenge = [0u8; purgatorio::abi::auth::CHALLENGE];
     f.read_exact(&mut challenge).map_err(|e| e.to_string())?;
     let proof = purgatorio::auth::proof(&challenge, &purgatorio::auth::user()).map_err(|e| e.0)?;
@@ -741,7 +744,7 @@ fn crypt_reuse() -> Result<(), String> {
     let dir = mtpt("reuse")?;
     let conn = exporter("--export")?;
     let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
-    let mut f = std::fs::File::from(afd);
+    let mut f = purgatorio::fs::File::from(afd);
     let mut signed = [0u8; purgatorio::abi::auth::SIGNED];
     f.read_exact(&mut signed).map_err(|e| e.to_string())?;
     let user = purgatorio::auth::user();
@@ -786,7 +789,7 @@ fn server_proof_fd() -> Result<(), String> {
     let conn = exporter("--export")?;
     let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
     purgatorio::auth::authenticate(&afd, &purgatorio::auth::user()).map_err(|e| e.0)?;
-    let mut f = std::fs::File::from(afd);
+    let mut f = purgatorio::fs::File::from(afd);
     let mut read = || -> Result<Vec<u8>, String> {
         f.seek(SeekFrom::Start(purgatorio::abi::auth::SERVER_PROOF_OFFSET))
             .map_err(|e| e.to_string())?;
@@ -797,7 +800,7 @@ fn server_proof_fd() -> Result<(), String> {
     };
     let (a, b) = (read()?, read()?);
     let key = purgatorio::auth::fmt::server::key(&a);
-    let test = std::fs::read("/lib/test/auth.key.pub").map_err(|e| e.to_string())?;
+    let test = purgatorio::fs::read("/lib/test/auth.key.pub").map_err(|e| e.to_string())?;
     if a != b || key.map(|k| k.to_vec()) != Some(test) {
         return Err(format!("proofs of {} and {} bytes", a.len(), b.len()));
     }
@@ -817,7 +820,7 @@ fn in_use() -> Result<(), String> {
     let dir = mtpt("inuse")?;
     let conn = exporter("--export")?;
     let afd = purgatorio::fauth(conn.as_raw_fd(), "").map_err(|e| e.0)?;
-    let mut f = std::fs::File::from(afd);
+    let mut f = purgatorio::fs::File::from(afd);
     let mut challenge = [0u8; purgatorio::abi::auth::CHALLENGE];
     f.read_exact(&mut challenge).map_err(|e| e.to_string())?;
     let r = f.write_all(&[0u8; purgatorio::abi::auth::PROOF]);
@@ -839,13 +842,13 @@ const STREAM_DATA: &[u8] = b"the quick brown fox jumps over the lazy dog";
 fn stream_pipe_file() -> Result<(), String> {
     let path = "/tmp/m3-stream-file";
     let [r, w] = purgatorio::pipe().map_err(|e| e.0)?;
-    std::fs::File::from(w)
+    purgatorio::fs::File::from(w)
         .write_all(STREAM_DATA)
         .map_err(|e| e.to_string())?;
-    let out = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let out = purgatorio::fs::File::create(path).map_err(|e| e.to_string())?;
     let n = purgatorio::stream(r.as_raw_fd(), out.as_raw_fd(), 4).map_err(|e| e.0)?;
     drop(out);
-    let got = std::fs::read(path).map_err(|e| e.to_string())?;
+    let got = purgatorio::fs::read(path).map_err(|e| e.to_string())?;
     if n != STREAM_DATA.len() || got != STREAM_DATA {
         return Err(format!("stream returned {n}, file has {got:?}"));
     }
@@ -854,13 +857,13 @@ fn stream_pipe_file() -> Result<(), String> {
 
 fn stream_file_pipe() -> Result<(), String> {
     let path = "/tmp/m3-stream-src";
-    std::fs::write(path, STREAM_DATA).map_err(|e| e.to_string())?;
-    let src = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    purgatorio::fs::write(path, STREAM_DATA).map_err(|e| e.to_string())?;
+    let src = purgatorio::fs::File::open(path).map_err(|e| e.to_string())?;
     let [r, w] = purgatorio::pipe().map_err(|e| e.0)?;
     let n = purgatorio::stream(src.as_raw_fd(), w.as_raw_fd(), 5).map_err(|e| e.0)?;
     drop(w);
     let mut got = Vec::new();
-    std::fs::File::from(r)
+    purgatorio::fs::File::from(r)
         .read_to_end(&mut got)
         .map_err(|e| e.to_string())?;
     if n != STREAM_DATA.len() || got != STREAM_DATA {
@@ -873,9 +876,9 @@ fn stream_file_pipe() -> Result<(), String> {
 /// errstr says why.
 fn stream_short_write() -> Result<(), String> {
     let path = "/tmp/m3-stream-src";
-    std::fs::write(path, STREAM_DATA).map_err(|e| e.to_string())?;
-    let src = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let dst = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    purgatorio::fs::write(path, STREAM_DATA).map_err(|e| e.to_string())?;
+    let src = purgatorio::fs::File::open(path).map_err(|e| e.to_string())?;
+    let dst = purgatorio::fs::File::open(path).map_err(|e| e.to_string())?;
     let n = purgatorio::stream(src.as_raw_fd(), dst.as_raw_fd(), 4).map_err(|e| e.0)?;
     if n != 0 {
         return Err(format!("stream returned {n}"));
@@ -888,7 +891,7 @@ fn stream_short_write() -> Result<(), String> {
 }
 
 fn stream_child(path: &str) -> ! {
-    let out = match std::fs::File::create(path) {
+    let out = match purgatorio::fs::File::create(path) {
         Ok(f) => f,
         Err(e) => exits(&e.to_string()),
     };
@@ -902,7 +905,7 @@ fn stream_child(path: &str) -> ! {
 /// A prog blocked in stream is killed like one blocked in a read.
 fn stream_kill() -> Result<(), String> {
     let path = "/tmp/m3-stream-kill";
-    let _ = std::fs::remove_file(path);
+    let _ = purgatorio::fs::remove_file(path);
     let [r, w] = purgatorio::pipe().map_err(|e| e.0)?;
     let [ready_r, ready_w] = purgatorio::pipe().map_err(|e| e.0)?;
     let pid = purgatorio::spawn(
@@ -919,25 +922,25 @@ fn stream_kill() -> Result<(), String> {
     drop(r);
     drop(ready_w);
     let mut b = [0u8; 1];
-    std::fs::File::from(ready_r)
+    purgatorio::fs::File::from(ready_r)
         .read_exact(&mut b)
         .map_err(|e| e.to_string())?;
-    let mut w = std::fs::File::from(w);
+    let mut w = purgatorio::fs::File::from(w);
     w.write_all(b"abc").map_err(|e| e.to_string())?;
     // A full buffer goes straight to the file. Wait for it, so that the
     // child is blocked in its next read when the kill comes.
     let mut copied = false;
     for _ in 0..500 {
-        if std::fs::read(path).is_ok_and(|d| d == b"abc") {
+        if purgatorio::fs::read(path).is_ok_and(|d| d == b"abc") {
             copied = true;
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(10));
     }
     if !copied {
         return Err(String::from("the first buffer never reached the file"));
     }
-    std::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())?;
+    purgatorio::fs::write(format!("/prog/{pid}/ctl"), "kill\n").map_err(|e| e.to_string())?;
     let msg = loop {
         let msg = purgatorio::wait().map_err(|e| e.0)?;
         if msg.pid == pid {
@@ -949,7 +952,7 @@ fn stream_kill() -> Result<(), String> {
     if msg.status != "killed" {
         return Err(format!("wait {msg:?}"));
     }
-    if std::fs::read(path).ok().as_deref() != Some(&b"abc"[..]) {
+    if purgatorio::fs::read(path).ok().as_deref() != Some(&b"abc"[..]) {
         return Err(String::from("the copy is lost"));
     }
     Ok(())

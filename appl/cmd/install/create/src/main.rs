@@ -18,6 +18,7 @@
 //! the base package. The prototype defaults to the installed one. `-U`
 //! (the hybrid package) is not provided.
 
+use purgatorio::{eprintln, println};
 use std::io::Write;
 
 use proto::{Level, Namespace};
@@ -65,8 +66,8 @@ fn run(args: Vec<String>) -> Result<(), Error> {
         return Err(Error::from(format!("bad package name {}", quote(&name))));
     }
     let now = time.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        purgatorio::time::SystemTime::now()
+            .duration_since(purgatorio::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as u32)
     });
     let installed = if update {
@@ -83,7 +84,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
         (None, Some(u)) => proto::mkpath(&root, &format!("wrap/{name}/{}/proto", u.stamp)),
         (None, None) => return Err(Error::from("proto file missing")),
     };
-    let text = std::fs::read_to_string(&proto_path)
+    let text = purgatorio::fs::read_to_string(&proto_path)
         .map_err(|e| Error(format!("{proto_path}: {}", Error::from(e))))?;
     let mut files = Vec::new();
     let mut failed = false;
@@ -114,7 +115,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
         let data = if isdir {
             Vec::new()
         } else {
-            match std::fs::read(&f.old) {
+            match purgatorio::fs::read(&f.old) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!(
@@ -205,12 +206,12 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     }
     put_end(&mut out)?;
     if stdout {
-        std::io::stdout().write_all(&out)?;
+        purgatorio::io::stdout().write_all(&out)?;
         return Ok(());
     }
     let file = wrap::stamp(now);
     println!("archiving package {name} to {file}");
     let fd = purgatorio::create(&file, purgatorio::abi::mode::OWRITE, 0o664)?;
-    std::fs::File::from(fd).write_all(&out)?;
+    purgatorio::fs::File::from(fd).write_all(&out)?;
     Ok(())
 }

@@ -6,6 +6,7 @@
 
 use proto::{Fs, Namespace};
 use purgatorio::{Context, DMDIR, Error};
+use purgatorio::{eprintln, print};
 
 struct Mkproto {
     not: Vec<String>,

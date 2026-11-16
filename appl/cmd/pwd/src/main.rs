@@ -1,5 +1,6 @@
 //! pwd: print the current directory.
 
+use purgatorio::println;
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]

@@ -3,6 +3,7 @@
 //! `-d` one copy of each repeated line, and `-c` prefixes each output line
 //! with its count and a tab.
 
+use purgatorio::eprintln;
 use std::io::{self, BufRead, BufReader, Write};
 
 use purgatorio::arg::Arg;
@@ -26,8 +27,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let files = arg.argv();
     let mut input: Box<dyn BufRead> = match files.as_slice() {
-        [] => Box::new(io::stdin().lock()),
-        [f] => match std::fs::File::open(f) {
+        [] => Box::new(purgatorio::io::stdin().lock()),
+        [f] => match purgatorio::fs::File::open(f) {
             Ok(file) => Box::new(BufReader::new(file)),
             Err(_) => {
                 // As Inferno's uniq: `fail:open file`.
@@ -37,7 +38,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         },
         _ => return Err(arg_usage()),
     };
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     let put = |line: &[u8], n: usize, out: &mut dyn Write| -> io::Result<()> {
         if (u && n == 1) || (d && n > 1) {
             if c {

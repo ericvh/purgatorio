@@ -31,7 +31,8 @@
 //! `clear` change only nsbuild's own and have no lasting effect.
 //! Building stops at the first command that fails.
 
-use std::os::fd::AsRawFd;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::{mount, pctl};
 use purgatorio::{Context, Error};
@@ -142,7 +143,7 @@ struct Builder {
 
 impl Builder {
     fn file(&mut self, path: &str) -> Result<(), String> {
-        let text = std::fs::read_to_string(path).map_err(|e| {
+        let text = purgatorio::fs::read_to_string(path).map_err(|e| {
             format!(
                 "can't open {} for read {}",
                 q(path),

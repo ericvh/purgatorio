@@ -30,6 +30,7 @@
 //! namespace before devices are locked out; it is how a policy grants a
 //! workspace or the network.
 
+use purgatorio::eprintln;
 mod files;
 mod json;
 mod primer;
@@ -38,11 +39,11 @@ mod rpc;
 mod session;
 mod tooldefs;
 
+use purgatorio::fd::{AsRawFd, OwnedFd};
+use purgatorio::fs::File;
+use purgatorio::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use purgatorio::abi::mode::{OREAD, OWRITE};
 use purgatorio::abi::pctl;
@@ -135,7 +136,7 @@ struct Front {
     /// place here.
     order: VecDeque<(u64, Option<String>)>,
     next_seq: u64,
-    stdout: std::io::Stdout,
+    stdout: purgatorio::io::Stdout,
 }
 
 fn now_secs() -> u64 {
@@ -494,7 +495,7 @@ impl Front {
             if let Some(tag) = v.get("start").and_then(Value::as_i64) {
                 if let Some(p) = self.pending.get_mut(&(tag as u64)) {
                     let ms = limit(&p.call, self.config.file_ms).max(0) as u64;
-                    p.deadline = Some(Instant::now() + std::time::Duration::from_millis(ms));
+                    p.deadline = Some(Instant::now() + purgatorio::time::Duration::from_millis(ms));
                 }
                 continue;
             }
@@ -548,9 +549,9 @@ fn kill_domain(pid: u32) {
             return;
         }
         for p in members {
-            let _ = std::fs::write(format!("{view}/{}/ctl", p.pid), "kill");
+            let _ = purgatorio::fs::write(format!("{view}/{}/ctl", p.pid), "kill");
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(10));
     }
 }
 
@@ -570,7 +571,7 @@ fn kill_descendants(pid: u32) {
         }
     }
     for p in &doomed {
-        let _ = std::fs::write(format!("/prog/{p}/ctl"), "kill");
+        let _ = purgatorio::fs::write(format!("/prog/{p}/ctl"), "kill");
     }
 }
 
@@ -620,7 +621,7 @@ fn serve(config: Config) -> Result<(), Error> {
         held: VecDeque::new(),
         order: VecDeque::new(),
         next_seq: 0,
-        stdout: std::io::stdout(),
+        stdout: purgatorio::io::stdout(),
     };
     match &front.worker {
         Ok(w) => log(&format!("session start {}", w.pid)),
@@ -720,7 +721,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                 cpu_secs: Some(num(5, 0)).filter(|&s| s > 0),
             };
             let policy = args.get(6).map(|path| {
-                std::fs::read_to_string(path).map_err(|e| format!("{path}: {}", Error::from(e)))
+                purgatorio::fs::read_to_string(path)
+                    .map_err(|e| format!("{path}: {}", Error::from(e)))
             });
             let built = policy
                 .transpose()
@@ -731,7 +733,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                     let mut line = json::obj([("fatal", e.as_str().into())]).encode();
                     line.push('\n');
                     // SAFETY: fd 1 is the pipe to the front end.
-                    let mut out = unsafe { <File as std::os::fd::FromRawFd>::from_raw_fd(1) };
+                    let mut out = unsafe { <File as purgatorio::fd::FromRawFd>::from_raw_fd(1) };
                     let _ = out.write_all(line.as_bytes());
                     purgatorio::exits(&format!("fail:{e}"))
                 }

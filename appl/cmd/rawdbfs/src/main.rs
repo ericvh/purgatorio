@@ -169,7 +169,7 @@ struct Raw {
 
 impl Raw {
     fn load(file: &str) -> Result<Raw, String> {
-        let log = std::fs::read(file).map_err(|e| format!("{file}: {}", Error::from(e)))?;
+        let log = purgatorio::fs::read(file).map_err(|e| format!("{file}: {}", Error::from(e)))?;
         let log = if log.is_empty() { MAGIC.to_vec() } else { log };
         let (recs, used) = replay(&log).map_err(|e| format!("{file}: {e}"))?;
         let next_id = recs.iter().map(|r| r.0 + 1).max().unwrap_or(0);
@@ -204,7 +204,7 @@ impl Raw {
         for rec in self.records.iter().flatten() {
             out.extend(Op::Whole(rec.id, rec.data.clone()).encode());
         }
-        std::fs::write(&self.file, &out).map_err(|e| Error::from(e).0)?;
+        purgatorio::fs::write(&self.file, &out).map_err(|e| Error::from(e).0)?;
         self.log_len = out.len();
         Ok(())
     }
@@ -212,7 +212,7 @@ impl Raw {
     /// Appends `op` to the file and runs the `-u` command.
     fn log(&mut self, op: Op) -> Result<(), String> {
         let bytes = op.encode();
-        let mut f = std::fs::OpenOptions::new()
+        let mut f = purgatorio::fs::OpenOptions::new()
             .append(true)
             .open(&self.file)
             .map_err(|e| Error::from(e).0)?;
@@ -221,7 +221,11 @@ impl Raw {
         if let Some(cmd) = &self.update {
             // Not fd 0, which is this server's conversation.
             let null = purgatorio::open("/dev/null", mode::OREAD).map_err(|e| e.0)?;
-            let fds = [(std::os::fd::AsRawFd::as_raw_fd(&null), 0), (2, 1), (2, 2)];
+            let fds = [
+                (purgatorio::fd::AsRawFd::as_raw_fd(&null), 0),
+                (2, 1),
+                (2, 2),
+            ];
             let argv = [String::from("sh"), String::from("-c"), cmd.clone()];
             if let Ok(pid) = purgatorio::spawn("/bin/sh.wasm", &argv, NEWFD, &fds) {
                 while let Ok(w) = purgatorio::wait() {

@@ -9,9 +9,9 @@
 //! The helpers are this command started as `mash --history` and
 //! `mash --serve`; each writes one byte to fd 1 once its file exists.
 
-use std::fs::File;
+use purgatorio::fd::{AsRawFd, OwnedFd};
+use purgatorio::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
 
 use purgatorio::abi::{mode, pctl};
 use purgatorio::file2chan::{self, Request};
@@ -68,7 +68,7 @@ impl History {
     /// Stops the helpers.
     pub fn stop(&self) {
         for pid in &self.pids {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
+            if let Ok(mut f) = purgatorio::fs::OpenOptions::new()
                 .write(true)
                 .open(format!("/prog/{pid}/ctl"))
             {

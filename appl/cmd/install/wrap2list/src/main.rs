@@ -7,6 +7,7 @@
 //! reads `/wrap` only.
 
 use purgatorio::arg::Arg;
+use purgatorio::println;
 use purgatorio::{Context, DMDIR, Error};
 
 const USAGE: &str = "install/wrap2list [-i] [-r root] [file ...]";
@@ -29,7 +30,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     }
     let mut names: Vec<String> = arg.argv();
     let wraps = proto::mkpath(&root, "wrap");
-    if let Ok(rd) = std::fs::read_dir(&wraps) {
+    if let Ok(rd) = purgatorio::fs::read_dir(&wraps) {
         let mut pkgs: Vec<String> = rd
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -59,7 +60,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
         let crc = if isdir {
             0
         } else {
-            std::fs::read(&path).map_or(0, |b| proto::crc32(&b))
+            purgatorio::fs::read(&path).map_or(0, |b| proto::crc32(&b))
         };
         let mtime = if init { 0 } else { d.mtime };
         println!(

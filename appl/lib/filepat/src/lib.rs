@@ -8,7 +8,7 @@
 //! which characters are metacharacters; in that form a class that starts
 //! with `^` matches the characters not in it, as sh(1) has it.
 
-use std::os::fd::AsRawFd;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::mode;
 

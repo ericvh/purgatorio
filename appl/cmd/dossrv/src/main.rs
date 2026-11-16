@@ -18,8 +18,8 @@
 //! mode need not have the same bits for owner, group and others; `-v`,
 //! `-F`, `-c` and `-S` are accepted and do nothing. Times are UTC.
 
+use purgatorio::fs::{File, OpenOptions};
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
 
 use fat::{ATTR_DIR, ATTR_RO, ATTR_SYSTEM, DirRef, Ent, Image, Loc, Vol};
 use purg_styx::{IOHDRSZ, QTDIR, QTEXCL, QTFILE, Qid};
@@ -519,7 +519,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     open_vol(&device)?;
     if stdout {
         // SAFETY: fd 1 is the conversation, and nothing else uses it.
-        let io = unsafe { <File as std::os::fd::FromRawFd>::from_raw_fd(1) };
+        let io = unsafe { <File as purgatorio::fd::FromRawFd>::from_raw_fd(1) };
         return purgatorio::styx::serve(io, &mut server(&device));
     }
     let argv = [String::from("dossrv"), String::from("--serve"), device];

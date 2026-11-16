@@ -16,8 +16,8 @@
 //! ticket requests are served; Plan 9's password changes and challenge
 //! boxes are not.
 
+use purgatorio::fd::FromRawFd;
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
@@ -40,6 +40,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let keys = purgatorio::p9any::keys(&keyfile)?;
     // SAFETY: fd 0 is the connection, open for this prog's whole life;
     // ManuallyDrop leaves it to the prog's exit.
-    let mut conn = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut conn = ManuallyDrop::new(unsafe { purgatorio::fs::File::from_raw_fd(0) });
     purgatorio::p9any::ticket_service(&mut *conn, &keys)
 }

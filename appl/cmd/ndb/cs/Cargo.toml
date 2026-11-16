@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 
 # `ndb-cs` installs as /bin/ndb/cs.wasm; plain `cs` is /bin/cs.wasm.
+[package.metadata.purgatorio]
+wasm64 = true
+
 [[bin]]
 name = "ndb-cs"
 path = "src/main.rs"

@@ -3,6 +3,7 @@
 //! SHA-256 of the password. It takes the place of Inferno's SecureNet
 //! calculator, which used DES.
 
+use purgatorio::println;
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]

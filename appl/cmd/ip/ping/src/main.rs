@@ -18,10 +18,11 @@
 //! request (type, code, checksum, identifier, sequence) and data whose
 //! byte `i` is `i mod 256`. A reply comes back with its IPv4 header.
 
-use std::fs::File;
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
+use purgatorio::time::{Duration, Instant};
+use purgatorio::{eprintln, println};
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::time::{Duration, Instant};
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, dial};
@@ -185,7 +186,7 @@ fn ping(o: &Opts, mut out: File, replies: &mut Replies) -> Result<u32, Error> {
         if i + 1 < o.count {
             let due = Duration::from_millis(o.interval);
             if let Some(rest) = due.checked_sub(sent.elapsed()) {
-                std::thread::sleep(rest);
+                purgatorio::thread::sleep(rest);
             }
         }
     }
@@ -244,7 +245,7 @@ impl Replies {
 /// The reader is killed and waited for, so it does not outlive ping.
 impl Drop for Replies {
     fn drop(&mut self) {
-        let _ = std::fs::write(format!("/prog/{}/ctl", self.pid), "kill");
+        let _ = purgatorio::fs::write(format!("/prog/{}/ctl", self.pid), "kill");
         let _ = purgatorio::wait();
     }
 }

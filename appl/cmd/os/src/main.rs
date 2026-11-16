@@ -10,9 +10,10 @@
 //! ends when the command does, with its exit status. If `os` is killed or
 //! exits first, the command is killed, unless `-b` was given.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::mode::{ORDWR, OREAD, OWRITE};
 use purgatorio::abi::mount::MREPL;
@@ -140,7 +141,7 @@ fn run(
         _ => String::new(),
     };
     // The feeder may be waiting for input that never comes.
-    let _ = std::fs::write(format!("/prog/{feeder}/ctl"), "kill");
+    let _ = purgatorio::fs::write(format!("/prog/{feeder}/ctl"), "kill");
     let mut left = 2;
     while left > 0 {
         match purgatorio::wait() {

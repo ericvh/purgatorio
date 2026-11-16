@@ -7,10 +7,10 @@
 //! without authentication. `-a` names an algorithm for the connection; the
 //! only one here is `none`.
 
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::File;
 use std::io::Write;
-use std::os::fd::{AsRawFd, FromRawFd};
 
 use purg_styx::server::dispatch;
 use purg_styx::{Fcall, MAX_MSIZE, Msg};

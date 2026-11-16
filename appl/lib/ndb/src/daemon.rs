@@ -2,9 +2,9 @@
 //! as Inferno's `ndb/cs` and `ndb/dns` do: the command starts a copy of
 //! itself with `--serve` and returns once the copy says it is ready.
 
-use std::fs::File;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::io::Read;
-use std::os::fd::AsRawFd;
 
 use purgatorio::Error;
 use purgatorio::abi::pctl;

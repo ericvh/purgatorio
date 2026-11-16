@@ -5,9 +5,9 @@
 //! attribute gives. Without a plumber the helper ends at once and acme
 //! works on without it.
 
-use std::fs::File;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use plumbmsg::Msg;
 use purgatorio::abi::{mode, pctl};
@@ -65,7 +65,7 @@ impl Port {
 
     /// Kills the helper.
     pub fn stop(self) {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
+        if let Ok(mut f) = purgatorio::fs::OpenOptions::new()
             .write(true)
             .open(format!("/prog/{}/ctl", self.pid))
         {
@@ -122,7 +122,7 @@ pub fn helper() -> Result<(), purgatorio::Error> {
         return Ok(());
     };
     let mut port = File::from(fd);
-    let mut out = std::io::stdout();
+    let mut out = purgatorio::io::stdout();
     let mut b = vec![0u8; 64 * 1024];
     loop {
         let n = match port.read(&mut b) {

@@ -12,8 +12,8 @@
 //! or a key. It follows a resize by checking the screen's size on each
 //! pointer event and a few times a second. `q` or Delete ends it.
 
+use purgatorio::time::{Duration, Instant};
 use std::f64::consts::TAU;
-use std::time::{Duration, Instant};
 
 use purgatorio::draw::{Display, ENDSQUARE, Image, Keyboard, Mouse, Op, Point, Rect, WHITE};
 use purgatorio::{Context, Error, Ready};

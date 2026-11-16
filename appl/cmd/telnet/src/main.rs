@@ -10,10 +10,10 @@
 //! program (`telnet --send`) carries standard input, so a prog can block
 //! on each side; the session ends when the remote hangs up.
 
-use std::fs::File;
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd};
 
 use purgatorio::abi::pctl;
 use purgatorio::{Context, Error, dial};
@@ -53,7 +53,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     )?;
     let got = receive(fd);
     // The remote is gone; so is the reason to read standard input.
-    let _ = std::fs::write(format!("/prog/{sender}/ctl"), "kill");
+    let _ = purgatorio::fs::write(format!("/prog/{sender}/ctl"), "kill");
     got
 }
 
@@ -61,7 +61,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 fn receive(fd: i32) -> Result<(), Error> {
     // SAFETY: `fd` stays open in `main` while this runs.
     let mut net = ManuallyDrop::new(unsafe { File::from_raw_fd(fd) });
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     let mut buf = [0u8; 4096];
     let mut st = State::Data;
     let mut cr = false;
@@ -131,7 +131,7 @@ enum State {
 
 /// `telnet --send`: standard input to fd 1, the connection.
 fn send() -> Result<(), Error> {
-    let mut stdin = std::io::stdin().lock();
+    let mut stdin = purgatorio::io::stdin().lock();
     // SAFETY: fd 1 is the connection for the life of the prog.
     let mut net = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
     let mut buf = [0u8; 4096];

@@ -6,6 +6,7 @@
 
 use purgatorio::abi::mount;
 use purgatorio::arg::Arg;
+use purgatorio::eprintln;
 use purgatorio::{Context, Error};
 
 #[purgatorio::main]

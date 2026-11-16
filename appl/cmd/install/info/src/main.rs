@@ -5,6 +5,7 @@
 //! first, with its stamp, the number of files it records and its
 //! description.
 
+use purgatorio::println;
 use std::io::BufReader;
 
 use purgatorio::arg::Arg;
@@ -15,7 +16,7 @@ const USAGE: &str = "install/info [-r root] package";
 
 /// The wrap header at the start of a package file.
 fn from_archive(path: &str) -> Result<(String, Vec<Unit>), String> {
-    let f = std::fs::File::open(path).map_err(|e| format!("{path}: {}", Error::from(e)))?;
+    let f = purgatorio::fs::File::open(path).map_err(|e| format!("{path}: {}", Error::from(e)))?;
     let mut r = Reader::new(BufReader::new(f));
     let mut name = None;
     let mut unit = Unit::default();

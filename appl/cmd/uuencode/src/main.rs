@@ -50,14 +50,14 @@ fn encode(r: &mut dyn Read, out: &mut dyn Write) -> io::Result<()> {
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     match &args[1.min(args.len())..] {
         [remote] => {
             writeln!(out, "begin 666 {remote}")?;
-            encode(&mut io::stdin().lock(), &mut out)?;
+            encode(&mut purgatorio::io::stdin().lock(), &mut out)?;
         }
         [src, remote] => {
-            let Ok(mut f) = std::fs::File::open(src) else {
+            let Ok(mut f) = purgatorio::fs::File::open(src) else {
                 return Err(Error(format!("cannot open {src}")));
             };
             let d = purgatorio::stat(src).map_err(|e| Error(format!("cannot stat {src}: {e}")))?;

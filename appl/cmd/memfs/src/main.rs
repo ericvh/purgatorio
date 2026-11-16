@@ -1,7 +1,7 @@
 //! memfs mtpt: mount a fresh in-memory tree at `mtpt` and serve it in the
 //! background. `memfs --serve` is the server half, speaking 9P on fd 0.
 
-use std::os::fd::{AsRawFd, FromRawFd};
+use purgatorio::fd::{AsRawFd, FromRawFd};
 
 use purgatorio::abi::mount::{MCREATE, MREPL};
 use purgatorio::abi::pctl;
@@ -11,7 +11,7 @@ use purgatorio::{Context, Error};
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.get(1).map(String::as_str) == Some("--serve") {
-        let io = unsafe { std::fs::File::from_raw_fd(0) };
+        let io = unsafe { purgatorio::fs::File::from_raw_fd(0) };
         return styx::serve(io, &mut Tree::new());
     }
     let mtpt = args

@@ -14,7 +14,7 @@ const USAGE: &str = "auth/passwd [-s server] [-u user]";
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut arg = Arg::new(args, USAGE);
-    let mut server = std::fs::read_to_string("/env/signer").ok();
+    let mut server = purgatorio::fs::read_to_string("/env/signer").ok();
     let mut user = authlib::user();
     while let Some(c) = arg.opt() {
         match c {

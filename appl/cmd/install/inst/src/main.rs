@@ -13,6 +13,7 @@
 //! where the files are as installed (or with `-F`). An error stops inst
 //! unless `-c`.
 
+use purgatorio::{eprintln, println};
 use std::io::{BufReader, Write};
 
 use purgatorio::abi::mode;
@@ -158,7 +159,7 @@ impl Inst {
             Ok(fd) => fd,
             Err(e) => return self.fail(format!("can't create {}: {e}", quote(&path))),
         };
-        if let Err(e) = std::fs::File::from(fd).write_all(data) {
+        if let Err(e) = purgatorio::fs::File::from(fd).write_all(data) {
             return self.fail(format!("{}: write: {}", quote(&path), Error::from(e)));
         }
         self.set_attrs(&path, h)
@@ -198,7 +199,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let package = rest.remove(0);
     let prefixes = rest;
-    let f = std::fs::File::open(&package)
+    let f = purgatorio::fs::File::open(&package)
         .map_err(|e| Error(format!("{package}: {}", Error::from(e))))?;
     let mut r = Reader::new(BufReader::new(f));
     while let Some(h) = r.next_hdr().map_err(|e| Error(format!("{package}: {e}")))? {

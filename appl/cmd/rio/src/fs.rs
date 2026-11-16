@@ -98,7 +98,7 @@ pub struct Pending {
 
 /// One window's conversation.
 pub struct Session {
-    pub io: std::fs::File,
+    pub io: purgatorio::fs::File,
     buf: Vec<u8>,
     msize: u32,
     fids: HashMap<u32, Fid>,
@@ -106,7 +106,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(io: std::fs::File) -> Session {
+    pub fn new(io: purgatorio::fs::File) -> Session {
         Session {
             io,
             buf: Vec::new(),

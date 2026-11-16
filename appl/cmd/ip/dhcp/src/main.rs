@@ -18,10 +18,11 @@
 //! Not done: renewing the lease (dhcp exits once configured), `-m`, and
 //! writing `net/ndb`, which `#I` does not have.
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::{File, OpenOptions};
+use purgatorio::time::{Duration, SystemTime, UNIX_EPOCH};
+use purgatorio::{eprintln, print, println};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, dial};
@@ -114,7 +115,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let lease = loop {
         match exchange(&o, &mac, &mut data)? {
             Some(l) => break l,
-            None if o.retry => std::thread::sleep(Duration::from_secs(5)),
+            None if o.retry => purgatorio::thread::sleep(Duration::from_secs(5)),
             None => {
                 eprintln!("ip/dhcp: no reply from a server");
                 purgatorio::exits("fail:no reply");
@@ -136,7 +137,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 /// of `ifcdir/status`, after the device and the MTU.
 fn hardware_address(ifcdir: &str) -> Result<[u8; 6], Error> {
     let path = format!("{ifcdir}/status");
-    let text = std::fs::read_to_string(&path)
+    let text = purgatorio::fs::read_to_string(&path)
         .map_err(|e| Error(format!("can't read {path}: {}", Error::from(e).0)))?;
     let field = text
         .lines()
@@ -227,9 +228,9 @@ fn ask(
             println!("dhcp: send {}", kind_name(m));
         }
         data.write_all(&packet)?;
-        let deadline = std::time::Instant::now() + Duration::from_millis(WAIT_MS);
+        let deadline = purgatorio::time::Instant::now() + Duration::from_millis(WAIT_MS);
         loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = deadline.saturating_duration_since(purgatorio::time::Instant::now());
             if left.is_zero() {
                 break;
             }

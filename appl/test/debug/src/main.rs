@@ -22,9 +22,10 @@
 //!   traced prog takes two frames a call, so this checks that tracing
 //!   leaves room for a deep recursion (issue #112).
 
+use purgatorio::eprintln;
+use purgatorio::time::{Duration, Instant};
 use std::hint::black_box;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
 
 use purgatorio::{Context, Error};
 
@@ -128,11 +129,11 @@ fn inner(mode: Mode) -> u64 {
         Mode::Deep(n) => down(black_box(n)),
         Mode::Tick => loop {
             tick();
-            std::thread::sleep(Duration::from_millis(10));
+            purgatorio::thread::sleep(Duration::from_millis(10));
         },
         Mode::Grow => heap(),
         Mode::Nap => loop {
-            std::thread::sleep(Duration::from_secs(3600));
+            purgatorio::thread::sleep(Duration::from_secs(3600));
         },
     }
 }
@@ -140,7 +141,7 @@ fn inner(mode: Mode) -> u64 {
 /// The samples in this prog's own profile so far.
 fn samples() -> u64 {
     let path = format!("/prog/{}/prof", purgatorio::pid());
-    std::fs::read_to_string(path)
+    purgatorio::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
         .filter_map(|l| l.split(' ').next()?.parse::<u64>().ok())

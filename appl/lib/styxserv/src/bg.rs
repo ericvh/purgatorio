@@ -1,8 +1,8 @@
 //! Running a file server in the background, as `memfs` does: the command
 //! starts itself again with a pipe as fd 0 and mounts the other end.
 
-use std::fs::File;
-use std::os::fd::{AsRawFd, FromRawFd};
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
 
 use purgatorio::Error;
 use purgatorio::abi::{mount, pctl};

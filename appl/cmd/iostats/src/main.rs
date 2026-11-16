@@ -11,11 +11,11 @@
 //! that opens them (`/fd`, `/prog`, the console) are bound again directly,
 //! so their traffic is not counted.
 
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
+use purgatorio::time::Duration;
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::time::Duration;
 
 use purg_styx::{Fcall, Msg};
 use purgatorio::abi::{mode, mount, pctl};
@@ -257,8 +257,8 @@ const SIDEFD: i32 = 5;
 
 /// Nanoseconds since the epoch: a clock every prog shares.
 fn nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    purgatorio::time::SystemTime::now()
+        .duration_since(purgatorio::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos())
 }
 
@@ -282,7 +282,7 @@ fn trelay(exporter: u32) -> Result<(), Error> {
             break;
         }
     }
-    if let Ok(mut ctl) = std::fs::OpenOptions::new()
+    if let Ok(mut ctl) = purgatorio::fs::OpenOptions::new()
         .write(true)
         .open(format!("/prog/{exporter}/ctl"))
     {
@@ -454,7 +454,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     drop(client);
     drop(server);
     drop(side);
-    stats.report(&mut io::stderr().lock())?;
+    stats.report(&mut purgatorio::io::stderr().lock())?;
     // The command's exit status is the helper's.
     loop {
         match purgatorio::wait() {

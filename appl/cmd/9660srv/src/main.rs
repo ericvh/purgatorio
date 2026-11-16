@@ -12,7 +12,7 @@
 //! own extensions to the records (`-9`), files of several extents, and
 //! taking the image from the attach name.
 
-use std::fs::File;
+use purgatorio::fs::File;
 
 use iso9660::{Disk, Image, Options, Volume};
 use purgatorio::abi::mount::MREPL;

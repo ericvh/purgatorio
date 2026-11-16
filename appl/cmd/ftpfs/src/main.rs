@@ -18,12 +18,13 @@
 //! files are kept in memory, not in /tmp. Not here: symbolic links
 //! (they show as files), and resuming a broken connection.
 
+use purgatorio::{print, println};
 mod ftp;
 
+use purgatorio::fd::{AsRawFd, FromRawFd, IntoRawFd};
+use purgatorio::fs::File;
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{BufRead, Write};
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
 
 use ftp::{Entry, Ftp};
 use purg_styx::{IOHDRSZ, QTDIR, QTFILE, Qid};
@@ -505,9 +506,9 @@ fn login(ftp: &mut Ftp, user: &str, pass: &str, quiet: bool) -> Result<String, S
 
 fn prompt(what: &str) -> Result<String, Error> {
     print!("{what}: ");
-    std::io::stdout().flush().map_err(Error::from)?;
+    purgatorio::io::stdout().flush().map_err(Error::from)?;
     let mut line = String::new();
-    std::io::stdin()
+    purgatorio::io::stdin()
         .lock()
         .read_line(&mut line)
         .map_err(Error::from)?;

@@ -11,11 +11,12 @@
 //!
 //! `plumber --serve ...` is the server; it writes one ready byte to fd 5.
 
+use purgatorio::eprintln;
 mod rules;
 
+use purgatorio::fd::AsRawFd;
 use std::collections::VecDeque;
 use std::io::Write;
-use std::os::fd::AsRawFd;
 
 use plumbmsg::Msg;
 use purgatorio::abi::{mode, pctl};
@@ -57,7 +58,7 @@ fn options(args: &[String]) -> Result<Opts, Error> {
 fn read_rules(files: &[String]) -> Result<Vec<Rule>, Error> {
     let mut files = files.to_vec();
     if files.is_empty() {
-        let user = std::fs::read_to_string("/dev/user")
+        let user = purgatorio::fs::read_to_string("/dev/user")
             .map_err(|e| Error(format!("can't read /dev/user: {}", Error::from(e))))?;
         let first = format!("/usr/{user}/plumbing");
         files.push(if purgatorio::stat(&first).is_ok() {
@@ -68,7 +69,7 @@ fn read_rules(files: &[String]) -> Result<Vec<Rule>, Error> {
     }
     let mut out = Vec::new();
     for f in &files {
-        let text = std::fs::read_to_string(f)
+        let text = purgatorio::fs::read_to_string(f)
             .map_err(|e| Error(format!("can't read {f}: {}", Error::from(e))))?;
         out.extend(rules::parse(f, &text).map_err(Error)?);
     }
@@ -98,7 +99,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         &[(0, 0), (1, 1), (2, 2), (w.as_raw_fd(), READY_FD)],
     )?;
     drop(w);
-    match file2chan::read_byte(std::fs::File::from(r)) {
+    match file2chan::read_byte(purgatorio::fs::File::from(r)) {
         Ok(_) => Ok(()),
         Err(_) => purgatorio::exits("fail:init"),
     }
@@ -170,9 +171,7 @@ fn serve(o: &Opts, rules: &[Rule]) -> Result<(), Error> {
     file2chan::write_fd(READY_FD, b"R")?;
     // SAFETY: fd 5 was given to this prog for the ready byte alone.
     unsafe {
-        drop(<std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(
-            READY_FD,
-        ));
+        drop(<purgatorio::fs::File as purgatorio::fd::FromRawFd>::from_raw_fd(READY_FD));
     }
     loop {
         let mut files: Vec<&FileIO> = vec![&input];
@@ -324,7 +323,7 @@ fn start(o: &Opts, dir: &str, prog: &str, args: &[String]) {
         let mut all = vec![quote(dir)];
         all.extend(words);
         let res = purgatorio::open(&o.wmchan, mode::OWRITE).and_then(|fd| {
-            std::fs::File::from(fd)
+            purgatorio::fs::File::from(fd)
                 .write_all(format!("s {}", all.join(" ")).as_bytes())
                 .map_err(Error::from)
         });

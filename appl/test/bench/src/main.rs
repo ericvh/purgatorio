@@ -8,8 +8,9 @@
 //! - `spawn NAME N`: spawns `/bin/echo.wasm -n` N times, waiting for each.
 //!   The line gives the total.
 
+use purgatorio::println;
+use purgatorio::time::Instant;
 use std::io::{Read, Write};
-use std::time::Instant;
 
 use purgatorio::abi::mode;
 use purgatorio::{Context, Error};
@@ -31,14 +32,14 @@ fn fs(name: &str, dir: &str, n: usize) -> Result<(), Error> {
     let t = Instant::now();
     for i in 0..n {
         let fd = purgatorio::create(&path(i), mode::OWRITE, 0o644)?;
-        std::fs::File::from(fd).write_all(&data)?;
+        purgatorio::fs::File::from(fd).write_all(&data)?;
     }
     report(name, "create", t);
     let t = Instant::now();
     let mut buf = [0u8; 128];
     for i in 0..n {
         let fd = purgatorio::open(&path(i), mode::OREAD)?;
-        let got = std::fs::File::from(fd).read(&mut buf)?;
+        let got = purgatorio::fs::File::from(fd).read(&mut buf)?;
         if got != data.len() {
             return Err(Error::from(format!("{}: read {got} bytes", path(i))));
         }

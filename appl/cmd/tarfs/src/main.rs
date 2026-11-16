@@ -4,7 +4,7 @@
 //! giving every file mode 0444 and every directory 0555. Owners are the
 //! archive's user and group names, or `0` when it has none.
 
-use std::fs::File;
+use purgatorio::fs::File;
 use std::io::BufReader;
 
 use archive::ustar::{Kind, Reader};

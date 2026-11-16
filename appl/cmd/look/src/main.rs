@@ -9,6 +9,7 @@
 //! leading numbers). With no file, `/lib/words` is searched with `-df`.
 //! The exit status is `not found` or `no dictionary` on failure.
 
+use purgatorio::eprintln;
 use std::cmp::Ordering;
 use std::io::{self, BufRead, Write};
 
@@ -131,17 +132,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         [f] => f.clone(),
         _ => return Err(usage()),
     };
-    let Ok(data) = std::fs::read(&file) else {
+    let Ok(data) = purgatorio::fs::read(&file) else {
         eprintln!("look: can't open {file}");
         purgatorio::exits("fail:no dictionary");
     };
     let text = String::from_utf8_lossy(&data);
     if interactive {
-        for line in io::stdin().lock().lines() {
+        for line in purgatorio::io::stdin().lock().lines() {
             strings.push(line?);
         }
     }
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     let mut found = false;
     for want in &strings {
         for line in text.lines() {

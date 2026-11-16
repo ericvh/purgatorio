@@ -12,5 +12,9 @@ license.workspace = true
 name = "dbm"
 path = "src/lib.rs"
 
+[dependencies]
+# Files through the SDK, so that the library builds for both guest widths.
+purgatorio.workspace = true
+
 [lints]
 workspace = true

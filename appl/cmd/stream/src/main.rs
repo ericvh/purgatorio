@@ -5,7 +5,8 @@
 //!
 //! `stream --copy bufsize` is one copier: it streams fd 0 to fd 1.
 
-use std::os::fd::AsRawFd;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::{mode, pctl};
 use purgatorio::arg::Arg;

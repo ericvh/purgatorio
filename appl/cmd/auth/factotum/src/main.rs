@@ -491,7 +491,7 @@ impl Files for Factotum {
 /// given. A `crypt -g` key file loads as an `mlkem768x25519` key.
 fn authinfo_line(path: &str, role: Option<&str>) -> Result<String, Error> {
     if role.is_none()
-        && let Ok(text) = std::fs::read(path)
+        && let Ok(text) = purgatorio::fs::read(path)
         && text.starts_with(fmt::hybrid::SECRET_WORD.as_bytes())
     {
         let k = fmt::hybrid::Secret::parse(&text).map_err(|e| Error(format!("{path}: {e}")))?;

@@ -5,8 +5,9 @@
 //! `logfile --serve size file` is the server; it writes one ready byte to
 //! fd 1 before accepting I/O.
 
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
 use std::collections::{BTreeMap, VecDeque};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::pctl;
 use purgatorio::file2chan::{self, Request};
@@ -62,7 +63,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         &[(w.as_raw_fd(), 1), (2, 2)],
     )?;
     drop(w);
-    let mut f = std::fs::File::from(r);
+    let mut f = purgatorio::fs::File::from(r);
     // The server exits without a ready byte if file2chan failed; it has
     // already said why.
     match file2chan::read_byte(&mut f) {

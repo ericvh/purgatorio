@@ -3,6 +3,7 @@
 //! one of the three profiles, `prof` (samples), `cprof` (calls) and
 //! `mprof` (memory grown), and printing it.
 
+use purgatorio::eprintln;
 use std::collections::BTreeMap;
 
 use purgatorio::arg::Arg;
@@ -12,10 +13,10 @@ use wasmobj::{Kind, Names};
 /// The function names of the module at `path`: its `.names` file, else
 /// its own `name` section, else the names of its exported functions.
 pub fn module_names(path: &str) -> Names {
-    if let Ok(text) = std::fs::read_to_string(wasmobj::names_path(path)) {
+    if let Ok(text) = purgatorio::fs::read_to_string(wasmobj::names_path(path)) {
         return Names::from_text(&text);
     }
-    let Ok(wasm) = std::fs::read(path) else {
+    let Ok(wasm) = purgatorio::fs::read(path) else {
         return Names::default();
     };
     let Ok(m) = wasmobj::parse(&wasm) else {
@@ -40,12 +41,12 @@ pub fn func_name(names: &Names, func: u32) -> String {
 
 /// Writes `msg` to `/prog/<pid>/ctl`.
 pub fn ctl(pid: u32, msg: &str) -> Result<(), Error> {
-    std::fs::write(format!("/prog/{pid}/ctl"), msg).map_err(|_| Error::last())
+    purgatorio::fs::write(format!("/prog/{pid}/ctl"), msg).map_err(|_| Error::last())
 }
 
 /// Reads `/prog/<pid>/<file>`.
 pub fn prog_file(pid: u32, file: &str) -> Result<String, Error> {
-    std::fs::read_to_string(format!("/prog/{pid}/{file}")).map_err(|_| Error::last())
+    purgatorio::fs::read_to_string(format!("/prog/{pid}/{file}")).map_err(|_| Error::last())
 }
 
 /// What a profile counts.
@@ -145,7 +146,7 @@ pub fn wait_for(pid: u32) -> Result<Waitmsg, Error> {
 
 /// The functions a module defines, as `(first index, count)`.
 fn defined(path: &str) -> Option<(u32, u32)> {
-    let wasm = std::fs::read(path).ok()?;
+    let wasm = purgatorio::fs::read(path).ok()?;
     let m = wasmobj::parse(&wasm).ok()?;
     Some((m.imported(Kind::Func), m.funcs.len() as u32))
 }

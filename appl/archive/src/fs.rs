@@ -1,7 +1,8 @@
 //! The namespace side of archiving: adding files and trees to an archive,
 //! and unpacking entries into the current directory.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fs::File;
 use std::io::{Read, Write};
 
 use purgatorio::abi::mode;
@@ -11,7 +12,7 @@ use crate::ustar::{Header, Kind, Reader, Writer};
 
 /// Reports `prog: msg` on standard error.
 pub fn warn(prog: &str, msg: &str) {
-    let _ = std::io::stdout().flush();
+    let _ = purgatorio::io::stdout().flush();
     eprintln!("{prog}: {msg}");
 }
 
@@ -109,7 +110,7 @@ impl Put<'_> {
 
     fn add_dir<W: Write>(&mut self, w: &mut Writer<W>, name: &str, d: &Dir) -> Result<(), String> {
         let entries = if self.recurse {
-            match std::fs::read_dir(name) {
+            match purgatorio::fs::read_dir(name) {
                 Ok(rd) => {
                     let mut v: Vec<String> = rd
                         .filter_map(|e| e.ok())

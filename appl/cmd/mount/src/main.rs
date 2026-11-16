@@ -22,7 +22,7 @@
 //! "Post-quantum signatures"). Several names are joined with `/`:
 //! `-C x25519mlkem768/mldsa65`.
 
-use std::os::fd::AsRawFd;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::{mount, pctl};
 use purgatorio::arg::Arg;

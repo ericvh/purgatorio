@@ -26,6 +26,7 @@
 use disk::{Disk, Edit, Part, Scheme};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
+use purgatorio::{print, println};
 
 const USAGE: &str = "disk/fdisk [-abfprw] [-s sectorsize] /dev/sdC0/data";
 

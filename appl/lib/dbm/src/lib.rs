@@ -11,7 +11,7 @@
 //! pairs, key then value. Integers are little-endian. A key and its
 //! value must fit in one block.
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 pub const PBLKSIZ: usize = 512;

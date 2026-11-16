@@ -2,7 +2,7 @@
 //! by a newline unless -n is given, in a single write.
 //!
 //! As in Inferno, the line goes to fd 1 in one write, not through
-//! `std::io::stdout`: its buffer keeps what a failed write did not take and
+//! `purgatorio::io::stdout`: its buffer keeps what a failed write did not take and
 //! writes it again at exit, so the file would see the data twice. A failed
 //! or short write is reported as `echo: write error: ...` with the status
 //! `fail:write error`, and is not retried.

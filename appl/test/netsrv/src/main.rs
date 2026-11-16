@@ -37,9 +37,10 @@
 //! that keeps its blocks in memory for as long as it runs, one connection
 //! at a time.
 
-use std::fs::File;
+use purgatorio::fd::{AsRawFd, OwnedFd};
+use purgatorio::fs::File;
+use purgatorio::{print, println};
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
 
 use ndb::daemon;
 use ndb::dns::{self, put_name};
@@ -340,7 +341,7 @@ fn telnet(f: &mut File) -> std::io::Result<()> {
 fn echo(f: &mut File, dir: &str) -> std::io::Result<()> {
     let mut buf = [0u8; 512];
     let n = f.read(&mut buf)?;
-    let remote = std::fs::read_to_string(format!("{dir}/remote")).unwrap_or_default();
+    let remote = purgatorio::fs::read_to_string(format!("{dir}/remote")).unwrap_or_default();
     let host = remote.trim().rsplit_once('!').map_or("", |(h, _)| h);
     let text = String::from_utf8_lossy(&buf[..n]);
     f.write_all(format!("{} from {host}\n", text.trim_end()).as_bytes())
@@ -410,7 +411,7 @@ fn tftp(args: &[String]) -> Result<(), Error> {
             first = Some(p);
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        purgatorio::thread::sleep(purgatorio::time::Duration::from_millis(500));
     }
     let mut first = Some(first.ok_or_else(|| Error::from("tftp: no answer"))?);
     if op == "get" {
@@ -438,7 +439,7 @@ fn tftp(args: &[String]) -> Result<(), Error> {
                 }
             }
         }
-        std::io::stdout().write_all(&out)?;
+        purgatorio::io::stdout().write_all(&out)?;
         return Ok(());
     }
     let text = args[3..].join(" ") + "\n";
@@ -461,7 +462,7 @@ fn tftp(args: &[String]) -> Result<(), Error> {
 /// The SMTP server: every command but `QUIT`, and every data line, is
 /// appended to `log` before the reply is sent.
 fn smtp(f: &mut File, log: &str) -> std::io::Result<()> {
-    let mut out = std::fs::OpenOptions::new()
+    let mut out = purgatorio::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open(log)?;

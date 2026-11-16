@@ -295,8 +295,8 @@ pub fn start(
     mtpt: &str,
     secret: &[u8],
 ) -> Result<(), purgatorio::Error> {
+    use purgatorio::fd::AsRawFd;
     use std::io::Write;
-    use std::os::fd::AsRawFd;
     let [a, b] = purgatorio::pipe()?;
     let [kr, kw] = purgatorio::pipe()?;
     let mut argv = vec![String::from(cmd), String::from(serve_flag)];
@@ -309,7 +309,7 @@ pub fn start(
     )?;
     drop(a);
     drop(kr);
-    let mut kw = std::fs::File::from(kw);
+    let mut kw = purgatorio::fs::File::from(kw);
     kw.write_all(secret)?;
     drop(kw);
     purgatorio::mount(
@@ -327,15 +327,15 @@ pub fn start(
 pub fn run<F: Files>(
     make: impl FnOnce(Vec<u8>) -> Result<F, purgatorio::Error>,
 ) -> Result<(), purgatorio::Error> {
+    use purgatorio::fd::FromRawFd;
     use std::io::Read;
-    use std::os::fd::FromRawFd;
     let mut secret = Vec::new();
     // SAFETY: fds 0 and 1 were given to this prog by `start`.
-    let mut k = unsafe { std::fs::File::from_raw_fd(1) };
+    let mut k = unsafe { purgatorio::fs::File::from_raw_fd(1) };
     k.read_to_end(&mut secret)?;
     drop(k);
     let files = make(secret)?;
-    let io = unsafe { std::fs::File::from_raw_fd(0) };
+    let io = unsafe { purgatorio::fs::File::from_raw_fd(0) };
     let mut srv = Server::new(files, &crate::user());
     purgatorio::styx::serve(io, &mut srv)
 }

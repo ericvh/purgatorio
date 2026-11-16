@@ -17,8 +17,8 @@
 //! that always exists. The `event` file is not served yet: a server here
 //! answers each request before the next, so it cannot hold a read open.
 
+use purgatorio::fd::FromRawFd;
 use std::collections::BTreeMap;
-use std::os::fd::FromRawFd;
 
 use ndb::quote;
 use purgatorio::abi::{error, mode};
@@ -489,6 +489,6 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     // SAFETY: fd 0 is the Styx connection for the life of the prog.
-    let io = unsafe { std::fs::File::from_raw_fd(0) };
+    let io = unsafe { purgatorio::fs::File::from_raw_fd(0) };
     styx::serve(io, &mut reg)
 }

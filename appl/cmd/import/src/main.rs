@@ -19,8 +19,8 @@
 //! the server's own. `-A` with `-9` skips `p9any`, for a server that does
 //! not authenticate (`9export -A`).
 
+use purgatorio::fd::AsRawFd;
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::mount::{MNOAUTH, MPQ, MPQSIG, MREPL, MSRVAUTH};
 use purgatorio::arg::Arg;
@@ -34,7 +34,7 @@ fn plan9(fd: i32, tree: &str) -> Result<(), Error> {
     // SAFETY: the connection stays open in the caller; ManuallyDrop keeps
     // this File from closing it.
     let mut conn = std::mem::ManuallyDrop::new(unsafe {
-        <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd)
+        <purgatorio::fs::File as purgatorio::fd::FromRawFd>::from_raw_fd(fd)
     });
     conn.write_all(tree.as_bytes())?;
     let mut buf = [0u8; 128];
@@ -96,7 +96,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             // SAFETY: the connection stays open; ManuallyDrop keeps this
             // File from closing it.
             let mut conn = std::mem::ManuallyDrop::new(unsafe {
-                <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd)
+                <purgatorio::fs::File as purgatorio::fd::FromRawFd>::from_raw_fd(fd)
             });
             purgatorio::p9any::client(&mut *conn, &keys, authsrv.as_deref())?;
         }

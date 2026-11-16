@@ -27,7 +27,7 @@ use purgatorio::{Context, Error};
 const USAGE: &str = "auth/sign [-a ed25519|hybrid] [-k keyfile] [-c certfile] ... [-o out] module";
 
 fn read(path: &str) -> Result<Vec<u8>, Error> {
-    std::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))
+    purgatorio::fs::read(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))
 }
 
 #[purgatorio::main]
@@ -91,5 +91,5 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     .map_err(bad)?;
     let signed = modsig::attach(&wasm, entry).map_err(bad)?;
     let out = out.as_deref().unwrap_or(module);
-    std::fs::write(out, signed).map_err(|e| Error(format!("{out}: {}", Error::from(e))))
+    purgatorio::fs::write(out, signed).map_err(|e| Error(format!("{out}: {}", Error::from(e))))
 }

@@ -18,8 +18,9 @@
 //! of `refresh` rereads the database. `-v` reports each translation on
 //! standard error.
 
+use purgatorio::eprintln;
+use purgatorio::fs::{File, OpenOptions};
 use std::collections::{HashMap, VecDeque};
-use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use ndb::{Entry, daemon};
@@ -287,7 +288,7 @@ impl Cs {
     /// `$attr`: from this host's entry, then an `ipnet` entry, then the
     /// `infernosite` entry.
     fn server(&self, attr: &str) -> Option<String> {
-        let me = std::fs::read_to_string("/dev/sysname").unwrap_or_default();
+        let me = purgatorio::fs::read_to_string("/dev/sysname").unwrap_or_default();
         let me = me.trim();
         let mine = self.db.iter().filter(|e| e.has("sys", Some(me)));
         let nets = self.db.iter().filter(|e| e.has("ipnet", None));

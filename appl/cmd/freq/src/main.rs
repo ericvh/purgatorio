@@ -3,6 +3,7 @@
 //! octal, hex and as a character (`-` when unprintable), then the count;
 //! `-d`, `-o`, `-x` and `-c` choose a subset of the formats.
 
+use purgatorio::eprintln;
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 
@@ -45,11 +46,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     };
     if i >= args.len() {
         let mut data = Vec::new();
-        io::stdin().lock().read_to_end(&mut data)?;
+        purgatorio::io::stdin().lock().read_to_end(&mut data)?;
         add(&data);
     }
     for f in &args[i..] {
-        match std::fs::read(f) {
+        match purgatorio::fs::read(f) {
             Ok(data) => add(&data),
             Err(_) => {
                 // As Inferno's freq: no prefix, no error, no status.
@@ -57,7 +58,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             }
         }
     }
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     for (&v, &n) in &counts {
         if dec {
             write!(out, "{v:3} ")?;

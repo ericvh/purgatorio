@@ -7,7 +7,7 @@
 //! system of `sectors` 512-byte sectors, then, with `dir`, copies the
 //! tree at `dir` into it.
 
-use std::os::fd::AsRawFd;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::mode::OREAD;
 use purgatorio::{Context, DMDIR, Error};
@@ -51,7 +51,7 @@ fn walk(top: &str, rel: &str, out: &mut Vec<Found>) -> Result<(), Error> {
             });
             walk(top, &path, out)?;
         } else {
-            let data = std::fs::read(format!("{top}/{path}")).map_err(Error::from)?;
+            let data = purgatorio::fs::read(format!("{top}/{path}")).map_err(Error::from)?;
             out.push(Found {
                 path,
                 perm: d.mode & 0o777,
@@ -81,7 +81,7 @@ fn iso(args: &[String]) -> Result<(), Error> {
         })
         .collect();
     let img = iso9660::build::build(&files, flags.contains('r'), flags.contains('j'));
-    std::fs::write(image, img).map_err(Error::from)
+    purgatorio::fs::write(image, img).map_err(Error::from)
 }
 
 fn fat_image(args: &[String]) -> Result<(), Error> {
@@ -132,7 +132,7 @@ fn fat_image(args: &[String]) -> Result<(), Error> {
         }
     }
     v.flush().map_err(Error)?;
-    std::fs::write(image, &v.disk).map_err(Error::from)
+    purgatorio::fs::write(image, &v.disk).map_err(Error::from)
 }
 
 #[purgatorio::main]

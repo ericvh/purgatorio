@@ -2,7 +2,8 @@
 //! the new file or an existing directory; with several it must be a
 //! directory. `-r` copies directories and their contents.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fs::File;
 use std::io::{self, Read, Write};
 
 use purgatorio::arg::Arg;
@@ -43,7 +44,7 @@ fn copy(from: &str, to: &str, recursive: bool) -> Result<(), Error> {
         purgatorio::create(to, mode::OREAD, DMDIR | (d.mode & 0o777))
             .map_err(|e| Error(format!("{to}: {e}")))?;
     }
-    for e in std::fs::read_dir(from)? {
+    for e in purgatorio::fs::read_dir(from)? {
         let name = e?.file_name().to_string_lossy().into_owned();
         copy(&format!("{from}/{name}"), &format!("{to}/{name}"), true)?;
     }

@@ -1,0 +1,7 @@
+# /lib/sh/wide: puts the wasm64 builds of commands before the wasm32
+# ones (docs/wasm64.md). Use it with `run /lib/sh/wide`. A command with
+# no wasm64 build still runs, as wasm32. The directories below hold
+# commands that exist in one width only; a boot image may lack them.
+bind -a /bin/disk /bin/64/disk >[2] /dev/null
+bind -a /bin/test /bin/64/test >[2] /dev/null
+bind -b /bin/64 /bin

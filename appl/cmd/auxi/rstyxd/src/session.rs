@@ -1,5 +1,6 @@
 //! The helpers `auxi/rstyxd` starts as itself.
 
+use purgatorio::eprintln;
 use std::io::{Read, Write};
 
 use purgatorio::abi::mode::OREAD;
@@ -60,7 +61,7 @@ fn command(flags: u8, keyfile: &str, user: &str, cmd: &str) -> Result<String, Er
     // As rstyxd(8): the command runs as the user the client proved. The
     // mount above was this side's, made as rstyxd's own user.
     if !user.is_empty() && user != auth::user() {
-        std::fs::write("/dev/user", user)
+        purgatorio::fs::write("/dev/user", user)
             .map_err(|e| Error(format!("can't set user name: {}", Error::from(e))))?;
     }
     let argv = ["sh", "-c", cmd].map(String::from);
@@ -92,7 +93,7 @@ pub fn run(args: &[String]) -> Result<(), Error> {
     // The command's descriptors are not held past its exit.
     for fd in [0, 1, 2, STYX] {
         // SAFETY: nothing in this prog uses these descriptors again.
-        drop(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(fd) });
+        drop(unsafe { <purgatorio::fs::File as purgatorio::fd::FromRawFd>::from_raw_fd(fd) });
     }
     Fd(STATUS).write_all(format!("s{status}").as_bytes())?;
     let mut b = [0u8; 1];

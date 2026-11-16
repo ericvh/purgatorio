@@ -26,10 +26,11 @@
 //! read, write and wstat, not by walks; `check`'s `w` flag does nothing,
 //! since every change is written at once.
 
+use purgatorio::eprintln;
+use purgatorio::fd::FromRawFd;
+use purgatorio::fs::{File, OpenOptions};
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::fd::FromRawFd;
 
 use kfs::*;
 use purg_styx::{

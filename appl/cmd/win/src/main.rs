@@ -18,9 +18,9 @@
 //! of win (`win -E`) copies it into a pipe; win waits on that pipe and
 //! the shell's output with [`purgatorio::ready`].
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::pctl;
 use purgatorio::{Context, Error, Ready};
@@ -159,7 +159,7 @@ impl Win {
         let data = rw(&format!("{dir}/data"))?;
         let xdata = rw(&format!("{dir}/xdata"))?;
         let cwd = purgatorio::dot().unwrap_or_else(|_| String::from("/"));
-        let sys = std::fs::read_to_string("/dev/sysname")
+        let sys = purgatorio::fs::read_to_string("/dev/sysname")
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty() && !s.contains(char::is_whitespace))
@@ -393,7 +393,7 @@ impl Win {
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if args.get(1).map(String::as_str) == Some("-E") {
         // The copier: the event file on fd 0 into the pipe on fd 1.
-        let (mut ev, mut out) = (std::io::stdin(), std::io::stdout());
+        let (mut ev, mut out) = (purgatorio::io::stdin(), purgatorio::io::stdout());
         let mut buf = [0u8; 8192];
         while let Ok(n) = ev.read(&mut buf) {
             if n == 0 || out.write_all(&buf[..n]).and_then(|()| out.flush()).is_err() {

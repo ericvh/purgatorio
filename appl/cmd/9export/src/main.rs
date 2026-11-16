@@ -20,9 +20,9 @@
 //! too. Plan 9's encryption after authentication (`import -e`) is not
 //! done. `-r` serves the tree read-only (an addition).
 
+use purgatorio::fd::FromRawFd;
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::FromRawFd;
 
 use purgatorio::abi::{export, mount};
 use purgatorio::arg::Arg;
@@ -49,14 +49,14 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     // SAFETY: fd 0 is the connection, open for this prog's whole life;
     // ManuallyDrop keeps the File from closing it before the export.
-    let mut conn = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut conn = ManuallyDrop::new(unsafe { purgatorio::fs::File::from_raw_fd(0) });
     if let Some(keyfile) = keyfile {
         let keys = purgatorio::p9any::keys(&keyfile)?;
         let user = purgatorio::p9any::server(&mut *conn, &keys[0])?;
         // Serve as the user the client proved, as Plan 9's exportfs does.
-        let me = std::fs::read_to_string("/dev/user").unwrap_or_default();
+        let me = purgatorio::fs::read_to_string("/dev/user").unwrap_or_default();
         if me.trim() != user {
-            std::fs::write("/dev/user", &user)
+            purgatorio::fs::write("/dev/user", &user)
                 .map_err(|e| Error(format!("cannot become {user}: {}", Error::from(e))))?;
         }
     }
@@ -65,7 +65,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     // The name may come with its terminating NUL.
     let name = buf[..n].split(|&b| b == 0).next().unwrap_or(&[]);
     let tree = String::from_utf8_lossy(name).into_owned();
-    let refuse = |conn: &mut std::fs::File, why: String| {
+    let refuse = |conn: &mut purgatorio::fs::File, why: String| {
         let _ = conn.write_all(why.as_bytes());
         Error(format!("{tree}: {why}"))
     };

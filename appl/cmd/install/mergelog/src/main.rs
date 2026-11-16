@@ -16,6 +16,7 @@
 //! so it never ran; this one takes the old log alone. It prints entries
 //! in the log's own format rather than Inferno's debugging one.
 
+use purgatorio::{eprintln, println};
 use std::collections::HashMap;
 use std::io::Read;
 
@@ -43,12 +44,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if rest.len() > 1 {
         fail("restriction by path not yet done");
     }
-    let old = match std::fs::read_to_string(&rest[0]) {
+    let old = match purgatorio::fs::read_to_string(&rest[0]) {
         Ok(t) => t,
         Err(e) => fail(&format!("can't open {}: {}", rest[0], Error::from(e))),
     };
     let mut new = String::new();
-    std::io::stdin().read_to_string(&mut new)?;
+    purgatorio::io::stdin().read_to_string(&mut new)?;
     let mut entries = Vec::new();
     for line in old.lines().chain(new.lines()) {
         if line.trim().is_empty() {

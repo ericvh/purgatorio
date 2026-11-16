@@ -8,6 +8,7 @@
 //! standard output, `-p` encrypts a local file into the store under its
 //! base name, and `-r` removes one. With no option it lists the store.
 
+use purgatorio::println;
 use std::io::Write;
 
 use authlib::Rng;
@@ -55,7 +56,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     match op {
         Op::List => {
-            let mut names: Vec<String> = std::fs::read_dir(&dir)
+            let mut names: Vec<String> = purgatorio::fs::read_dir(&dir)
                 .map_err(|e| Error(format!("{dir}: {}", Error::from(e))))?
                 .filter_map(|e| e.ok()?.file_name().into_string().ok())
                 .collect();
@@ -68,16 +69,16 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Op::Get(name) => {
             let data = open(&dir, &name)?;
             let b = base(&name)?;
-            std::fs::write(b, data).map_err(|e| Error(format!("{b}: {}", Error::from(e))))
+            purgatorio::fs::write(b, data).map_err(|e| Error(format!("{b}: {}", Error::from(e))))
         }
         Op::Print(name) => {
             let data = open(&dir, &name)?;
-            std::io::stdout().write_all(&data)?;
+            purgatorio::io::stdout().write_all(&data)?;
             Ok(())
         }
         Op::Put(file) => {
-            let data =
-                std::fs::read(&file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
+            let data = purgatorio::fs::read(&file)
+                .map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
             let password = authlib::password("password")?;
             let blob =
                 seal::seal(password.as_bytes(), m, t, &data, &mut Rng).map_err(Error::from)?;
@@ -96,7 +97,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 
 fn open(dir: &str, name: &str) -> Result<Vec<u8>, Error> {
     let path = format!("{dir}/{}", base(name)?);
-    let blob = std::fs::read(&path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    let blob =
+        purgatorio::fs::read(&path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
     let password = authlib::password("password")?;
     let (data, _, _) = seal::open(password.as_bytes(), &blob)
         .map_err(|e| Error(format!("{name}: {}", Error::from(e))))?;

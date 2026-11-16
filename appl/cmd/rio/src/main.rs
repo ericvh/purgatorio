@@ -39,13 +39,14 @@
 //! mounts the window's files (fd 0) before `/dev` in a namespace of its
 //! own and runs `cmd` with `sh -c`, or `sh -i`, on `/dev/cons`.
 
+use purgatorio::eprintln;
 mod fs;
 mod text;
 
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::{File, OpenOptions};
 use std::collections::VecDeque;
-use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::{mount, pctl};
 use purgatorio::draw::{
@@ -192,7 +193,7 @@ fn canon(a: Point, b: Point) -> Rect {
 
 /// The snarf buffer's text.
 fn snarf_get() -> String {
-    std::fs::read(SNARF)
+    purgatorio::fs::read(SNARF)
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default()
 }
@@ -255,7 +256,8 @@ impl Rio {
             menuhi: d.color(MENUHI)?,
         };
         d.flush()?;
-        let user = std::fs::read_to_string("/dev/user").unwrap_or_else(|_| String::from("rio"));
+        let user =
+            purgatorio::fs::read_to_string("/dev/user").unwrap_or_else(|_| String::from("rio"));
         Ok(Rio {
             d,
             screen,
@@ -999,7 +1001,7 @@ impl Rio {
 
     /// Button 2's menu in text window `id`, from a press.
     fn menu2(&mut self, id: u32) -> Result<(), Error> {
-        let plumber = std::fs::metadata(plumbmsg::INPUT).is_ok();
+        let plumber = purgatorio::fs::metadata(plumbmsg::INPUT).is_ok();
         let scroll = self.win(id).is_some_and(|w| w.scroll);
         let mut items: Vec<String> = MENU2
             .iter()

@@ -6,9 +6,10 @@
 //!
 //! `procs -child <what>` is the helper the checks spawn.
 
+use purgatorio::fd::{AsRawFd, OwnedFd};
+use purgatorio::println;
+use purgatorio::time::{Duration, Instant};
 use std::io::Read;
-use std::os::fd::{AsRawFd, OwnedFd};
-use std::time::{Duration, Instant};
 
 use purgatorio::abi::{mode, mount, pctl};
 use purgatorio::{Context, Dir, Error};
@@ -28,7 +29,7 @@ fn args(v: &[&str]) -> Vec<String> {
 /// Reads `fd` to end of file.
 fn drain(fd: OwnedFd) -> Result<String, String> {
     let mut s = String::new();
-    std::fs::File::from(fd)
+    purgatorio::fs::File::from(fd)
         .read_to_string(&mut s)
         .map_err(|e| e.to_string())?;
     Ok(s)
@@ -74,7 +75,7 @@ fn spawn_missing() -> Result<(), String> {
 
 fn env_inherited() -> Result<(), String> {
     let f = purgatorio::create("/env/PROCSVAR", mode::OWRITE, 0o666).map_err(e)?;
-    std::io::Write::write_all(&mut std::fs::File::from(f), b"shared value")
+    std::io::Write::write_all(&mut purgatorio::fs::File::from(f), b"shared value")
         .map_err(|e| e.to_string())?;
     let (out, _) = capture(SELF, &["procs", "-child", "env"], 0)?;
     if out != "shared value\n" {
@@ -97,7 +98,7 @@ fn newfd_child() -> Result<(), String> {
 
 fn std_sleep() -> Result<(), String> {
     let t = Instant::now();
-    std::thread::sleep(Duration::from_millis(20));
+    purgatorio::thread::sleep(Duration::from_millis(20));
     if t.elapsed() < Duration::from_millis(20) {
         return Err(format!("slept {:?}", t.elapsed()));
     }
@@ -111,37 +112,38 @@ fn scratch(base: &str) -> String {
 fn files(base: &str) -> Result<(), String> {
     let dir = scratch(base);
     let io = |e: std::io::Error| e.to_string();
-    std::fs::create_dir(&dir).map_err(io)?;
+    purgatorio::fs::create_dir(&dir).map_err(io)?;
     let a = format!("{dir}/a");
-    std::fs::write(&a, "first").map_err(io)?;
-    std::fs::write(&a, "second").map_err(io)?;
+    purgatorio::fs::write(&a, "first").map_err(io)?;
+    purgatorio::fs::write(&a, "second").map_err(io)?;
     {
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
+        let mut f = purgatorio::fs::OpenOptions::new()
             .append(true)
             .open(&a)
             .map_err(io)?;
         f.write_all(b"+more").map_err(io)?;
     }
-    if std::fs::read_to_string(&a).map_err(io)? != "second+more" {
+    if purgatorio::fs::read_to_string(&a).map_err(io)? != "second+more" {
         return Err("bad contents after append".into());
     }
     let b = format!("{dir}/b");
-    std::fs::rename(&a, &b).map_err(io)?;
-    if std::fs::metadata(&a).is_ok() || std::fs::metadata(&b).map_err(io)?.len() != 11 {
+    purgatorio::fs::rename(&a, &b).map_err(io)?;
+    if purgatorio::fs::metadata(&a).is_ok() || purgatorio::fs::metadata(&b).map_err(io)?.len() != 11
+    {
         return Err("rename did not move the file".into());
     }
     let mut d = Dir::null();
     d.length = 3;
     purgatorio::wstat(&b, &d).map_err(e)?;
-    if std::fs::read_to_string(&b).map_err(io)? != "sec" {
+    if purgatorio::fs::read_to_string(&b).map_err(io)? != "sec" {
         return Err("wstat did not truncate".into());
     }
-    if std::fs::remove_dir(&dir).is_ok() {
+    if purgatorio::fs::remove_dir(&dir).is_ok() {
         return Err("removed a non-empty directory".into());
     }
-    std::fs::remove_file(&b).map_err(io)?;
-    std::fs::remove_dir(&dir).map_err(io)?;
+    purgatorio::fs::remove_file(&b).map_err(io)?;
+    purgatorio::fs::remove_dir(&dir).map_err(io)?;
     match purgatorio::stat(&dir) {
         Ok(_) => Err("directory still exists".into()),
         Err(_) => Ok(()),
@@ -151,18 +153,18 @@ fn files(base: &str) -> Result<(), String> {
 fn chdir_relative(base: &str) -> Result<(), String> {
     let dir = scratch(base);
     let io = |e: std::io::Error| e.to_string();
-    std::fs::create_dir(&dir).map_err(io)?;
+    purgatorio::fs::create_dir(&dir).map_err(io)?;
     let back = purgatorio::dot().map_err(e)?;
     purgatorio::chdir(&dir).map_err(e)?;
-    std::fs::write("rel", "relative").map_err(io)?;
+    purgatorio::fs::write("rel", "relative").map_err(io)?;
     let dot = purgatorio::dot().map_err(e)?;
     let via_sdk = purgatorio::open("rel", mode::OREAD).map_err(e)?;
     let named = purgatorio::fd2path(via_sdk.as_raw_fd()).map_err(e)?;
-    let absolute = std::fs::read_to_string(format!("{dir}/rel")).map_err(io)?;
+    let absolute = purgatorio::fs::read_to_string(format!("{dir}/rel")).map_err(io)?;
     purgatorio::chdir(&back).map_err(e)?;
-    let content = std::fs::read_to_string(format!("{dir}/rel")).map_err(io)?;
-    std::fs::remove_file(format!("{dir}/rel")).map_err(io)?;
-    std::fs::remove_dir(&dir).map_err(io)?;
+    let content = purgatorio::fs::read_to_string(format!("{dir}/rel")).map_err(io)?;
+    purgatorio::fs::remove_file(format!("{dir}/rel")).map_err(io)?;
+    purgatorio::fs::remove_dir(&dir).map_err(io)?;
     if dot != dir || named != format!("{dir}/rel") || content != "relative" || absolute != content {
         return Err(format!(
             "dot {dot:?} fd2path {named:?} content {content:?} absolute {absolute:?}"
@@ -173,7 +175,7 @@ fn chdir_relative(base: &str) -> Result<(), String> {
 
 fn bind_and_unmount(base: &str) -> Result<(), String> {
     let dir = scratch(base);
-    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    purgatorio::fs::create_dir(&dir).map_err(|e| e.to_string())?;
     let res = (|| {
         purgatorio::bind("#c", &dir, mount::MREPL).map_err(e)?;
         purgatorio::stat(&format!("{dir}/cons")).map_err(e)?;
@@ -183,7 +185,7 @@ fn bind_and_unmount(base: &str) -> Result<(), String> {
             Err(_) => Ok(()),
         }
     })();
-    std::fs::remove_dir(&dir).map_err(|e| e.to_string())?;
+    purgatorio::fs::remove_dir(&dir).map_err(|e| e.to_string())?;
     res
 }
 
@@ -195,12 +197,13 @@ const MEMLIMIT: usize = 4 << 20;
 /// fails, and Rust's allocator aborts the prog.
 fn memhog() -> Result<(), Error> {
     let ctl = format!("/prog/{}/ctl", purgatorio::pid());
-    std::fs::write(&ctl, format!("memlimit {MEMLIMIT}")).map_err(|e| Error::from(e.to_string()))?;
-    match std::fs::write(&ctl, "memlimit 1g") {
+    purgatorio::fs::write(&ctl, format!("memlimit {MEMLIMIT}"))
+        .map_err(|e| Error::from(e.to_string()))?;
+    match purgatorio::fs::write(&ctl, "memlimit 1g") {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
         r => return Err(Error::from(format!("raising the limit: {r:?}"))),
     }
-    let mem = std::fs::read_to_string(format!("/prog/{}/mem", purgatorio::pid()))
+    let mem = purgatorio::fs::read_to_string(format!("/prog/{}/mem", purgatorio::pid()))
         .map_err(|e| Error::from(e.to_string()))?;
     if !mem.ends_with(&format!(" {MEMLIMIT}\n")) {
         return Err(Error::from(format!("mem reads {mem:?}")));
@@ -240,7 +243,7 @@ fn child(what: &str) -> Result<(), Error> {
         "memhog" => memhog()?,
         "env" => println!(
             "{}",
-            std::env::var("PROCSVAR").unwrap_or_else(|_| "unset".into())
+            purgatorio::env::var("PROCSVAR").unwrap_or_else(|| "unset".into())
         ),
         "fds" => {
             let state = |fd| match purgatorio::fstat(fd) {

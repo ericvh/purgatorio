@@ -1,6 +1,7 @@
 //! m4: the macro processor of Inferno's m4(1), close to Seventh Edition
 //! m4.
 
+use purgatorio::eprintln;
 mod eval;
 mod m4;
 
@@ -17,7 +18,7 @@ const SH: &str = "/bin/sh.wasm";
 
 /// The system behind the processor: buffered standard output, files, sh.
 struct Sys {
-    out: std::io::BufWriter<std::io::Stdout>,
+    out: std::io::BufWriter<purgatorio::io::Stdout>,
 }
 
 impl Host for Sys {
@@ -30,11 +31,11 @@ impl Host for Sys {
     }
 
     fn err(&mut self, s: &str) {
-        let _ = std::io::stderr().write_all(s.as_bytes());
+        let _ = purgatorio::io::stderr().write_all(s.as_bytes());
     }
 
     fn open(&mut self, path: &str) -> Result<Box<dyn Read>, String> {
-        match std::fs::File::open(path) {
+        match purgatorio::fs::File::open(path) {
             Ok(f) => Ok(Box::new(f)),
             Err(e) => Err(Error::from(e).0),
         }
@@ -57,7 +58,7 @@ impl Host for Sys {
     }
 
     fn sysname(&mut self) -> Option<String> {
-        std::fs::read("/dev/sysname")
+        purgatorio::fs::read("/dev/sysname")
             .ok()
             .map(|b| String::from_utf8_lossy(&b).into_owned())
     }
@@ -89,7 +90,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let files = arg.argv();
     let sys = Sys {
-        out: std::io::BufWriter::new(std::io::stdout()),
+        out: std::io::BufWriter::new(purgatorio::io::stdout()),
     };
     let mut m = M4::new(sys, &prefix, tracing);
     for (c, v) in defs {
@@ -99,7 +100,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     }
     if files.is_empty() {
-        m.pushfile("standard input", Box::new(std::io::stdin()));
+        m.pushfile("standard input", Box::new(purgatorio::io::stdin()));
         m.scan().unwrap_or_else(|f| die(f));
     }
     for f in &files {

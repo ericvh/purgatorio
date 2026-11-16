@@ -3,8 +3,8 @@
 //! and by `tag` if given. The first line gives the start time in
 //! milliseconds since the epoch.
 
+use purgatorio::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::io::{BufRead, Write};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use purgatorio::{Context, Error};
 
@@ -19,10 +19,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     writeln!(out, "{:010} {tag}start {epoch}", 0)?;
     out.flush()?;
-    let mut input = std::io::stdin().lock();
+    let mut input = purgatorio::io::stdin().lock();
     let mut line = Vec::new();
     loop {
         line.clear();

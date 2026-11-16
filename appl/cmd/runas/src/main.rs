@@ -21,7 +21,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     };
     use abi::pctl::{FORKENV, FORKNS, NEWPGRP};
     purgatorio::pctl(FORKNS | FORKENV | NEWPGRP, &[])?;
-    std::fs::write("/dev/user", user)
+    purgatorio::fs::write("/dev/user", user)
         .map_err(|e| Error(format!("can't set user name: {}", Error::from(e))))?;
     let path =
         purgatorio::find_command(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;

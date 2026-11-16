@@ -17,7 +17,8 @@
 //! The archive is rewritten from memory rather than through temporary
 //! files.
 
-use std::fs::File;
+use purgatorio::fs::File;
+use purgatorio::{eprint, eprintln};
 use std::io::{Read, Write};
 
 use purgatorio::{Context, Dir, Error, daytime};
@@ -194,7 +195,7 @@ fn errstr(e: std::io::Error) -> String {
 /// The members of an archive file, or `None` if it cannot be opened and
 /// `errok` says that is fine.
 fn read_archive(arname: &str, errok: bool) -> Option<Vec<Member>> {
-    let data = match std::fs::read(arname) {
+    let data = match purgatorio::fs::read(arname) {
         Ok(d) => d,
         Err(e) => {
             if errok {
@@ -294,7 +295,7 @@ fn pack(m: &Member, out: &mut Vec<u8>) {
 
 /// A new member from the file `name`.
 fn member(name: &str, f: &mut File) -> Member {
-    let d = match purgatorio::fstat(std::os::fd::AsRawFd::as_raw_fd(f)) {
+    let d = match purgatorio::fstat(purgatorio::fd::AsRawFd::as_raw_fd(f)) {
         Ok(d) => d,
         Err(e) => fail(&format!("cannot stat {name}: {e}"), "fail:no stat"),
     };
@@ -364,7 +365,7 @@ impl Ar {
     }
 
     fn flush(&mut self) {
-        let _ = std::io::stdout().write_all(&self.out);
+        let _ = purgatorio::io::stdout().write_all(&self.out);
         self.out.clear();
     }
 
@@ -430,7 +431,7 @@ impl Ar {
                 }
             };
             if self.uflag {
-                match purgatorio::fstat(std::os::fd::AsRawFd::as_raw_fd(&f)) {
+                match purgatorio::fstat(purgatorio::fd::AsRawFd::as_raw_fd(&f)) {
                     Ok(d) if d.mtime > mem.date => {}
                     r => {
                         if let Err(e) = r {
@@ -504,7 +505,8 @@ impl Ar {
                         let mut d = Dir::null();
                         d.atime = mem.date;
                         d.mtime = mem.date;
-                        if let Err(e) = purgatorio::fwstat(std::os::fd::AsRawFd::as_raw_fd(&f), &d)
+                        if let Err(e) =
+                            purgatorio::fwstat(purgatorio::fd::AsRawFd::as_raw_fd(&f), &d)
                         {
                             eprint!("ar: can't set times on {fname}: {e}");
                         }
@@ -588,7 +590,7 @@ impl Ar {
             eprintln!("ar: abi not allowed with q");
             purgatorio::exits("fail:usage");
         }
-        let exists = match std::fs::read(arname) {
+        let exists = match purgatorio::fs::read(arname) {
             Ok(d) => {
                 if !d.starts_with(ARMAG) {
                     fail(&format!("{arname} not in archive format"), "fail:error");
@@ -617,7 +619,7 @@ impl Ar {
             }
         }
         let f = if exists {
-            std::fs::OpenOptions::new().append(true).open(arname)
+            purgatorio::fs::OpenOptions::new().append(true).open(arname)
         } else {
             File::create(arname)
         };

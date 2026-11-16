@@ -3,11 +3,12 @@
 //! of a pipeline or a background job that is not a plain command runs in a
 //! sub-shell (`sh -c` with its source), as Inferno's sh forks for one.
 
+use purgatorio::eprintln;
+use purgatorio::fd::{AsRawFd, FromRawFd, OwnedFd};
+use purgatorio::fs::File;
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::mem::ManuallyDrop;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 use purgatorio::abi::{mode, pctl};
 use purgatorio::{Error, Waitmsg};
@@ -21,7 +22,7 @@ pub const SH: &str = "/bin/sh.wasm";
 
 /// Writes `msg` to the `ctl` file of prog `pid`.
 fn ctl(pid: u32, msg: &str) -> std::io::Result<()> {
-    std::fs::OpenOptions::new()
+    purgatorio::fs::OpenOptions::new()
         .write(true)
         .open(format!("/prog/{pid}/ctl"))?
         .write_all(msg.as_bytes())
@@ -172,7 +173,7 @@ impl Shell {
         // A variable's `/env` file holds its words as `quote` writes
         // them, as Inferno's sh keeps lists there, so a list comes back
         // as a list in every sub-shell.
-        for (k, v) in std::env::vars() {
+        for (k, v) in purgatorio::env::vars() {
             vars.insert(k, purgatorio::env::unquote_list(&v));
         }
         vars.insert(String::from("0"), vec![String::from(argv0)]);
@@ -644,7 +645,7 @@ impl Shell {
             }
             "exit" => return Err(Stop::Exit(argv[1..].join(" "))),
             "run" => match argv.get(1) {
-                Some(file) => match std::fs::read_to_string(file) {
+                Some(file) => match purgatorio::fs::read_to_string(file) {
                     Ok(src) => {
                         let saved = self.vars.insert(String::from("*"), argv[2..].to_vec());
                         let r = self.run_src(&src);

@@ -7,9 +7,10 @@
 //! `ls -l` does, every file owned by `bob`, group `staff`. Commands: USER PASS SYST PWD CWD CDUP TYPE PASV PORT
 //! LIST NLST RETR STOR DELE MKD RMD RNFR RNTO SIZE NOOP QUIT.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::mode::OREAD;
 use purgatorio::dial::{self, Connection, local};
@@ -224,7 +225,7 @@ impl Session {
                 drop(data);
                 r(out, "226 Done.")?;
             }
-            "RETR" => match std::fs::read(self.local(arg)) {
+            "RETR" => match purgatorio::fs::read(self.local(arg)) {
                 Ok(bytes) => {
                     r(out, "150 Opening data connection.")?;
                     let mut data = self.data()?;

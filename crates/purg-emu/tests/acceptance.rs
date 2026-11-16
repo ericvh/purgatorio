@@ -191,16 +191,42 @@ on_each_vm! {
         assert_eq!(stdout(&o), "cat: /no/such: file does not exist\n", "{vm}");
     }
 
-    /// A name space chooses the width: with `/bin/64` bound before `/bin`,
-    /// a command that has a wasm64 build runs it and one that has none
-    /// runs its wasm32 build, in the same pipeline.
+    /// The conformance guests that are built in both widths print the
+    /// same as wasm64 guests as they do as wasm32 ones.
+    fn wide_guests(vm) {
+        for guest in ["procs", "m3", "draw"] {
+            let run = |path: String| {
+                let o = emu(vm, &[&path], b"");
+                let out = stdout(&o);
+                assert!(o.status.success(), "{vm} {path}:\n{out}");
+                assert!(!out.contains("FAIL"), "{vm} {path}:\n{out}");
+                // The lines that say what passed; the others hold pids.
+                out.lines()
+                    .filter(|l| l.starts_with("ok "))
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            };
+            let narrow = run(format!("/bin/test/{guest}.wasm"));
+            assert!(narrow.len() > 5, "{vm} {guest}: {narrow:?}");
+            assert_eq!(narrow, run(format!("/bin/64/test/{guest}.wasm")), "{vm} {guest}");
+        }
+    }
+
+    /// A name space chooses the width: with `/bin/64` bound before `/bin`
+    /// (`/lib/sh/wide`), a command that has a wasm64 build runs it and one
+    /// that has none (`test/abi`) runs its wasm32 build, in the same
+    /// pipeline.
     fn wide_union_bin(vm) {
         let o = emu(
             vm,
-            &["sh", "-c", "bind -b /bin/64 /bin; test/wide /tmp | sed 1q; echo and | cat | tr a-z A-Z"],
+            &["sh", "-c", "run /lib/sh/wide; test/wide /tmp | sed 1q; test/abi | sed 1q; echo and | cat | tr a-z A-Z"],
             b"",
         );
-        assert_eq!(stdout(&o), "pointer 64 bits\nAND\n", "{vm}");
+        assert_eq!(
+            stdout(&o),
+            "pointer 64 bits\nok bad_pointer_read\nAND\n",
+            "{vm}"
+        );
         assert!(o.status.success(), "{vm}");
     }
 
@@ -672,6 +698,15 @@ fn difference(want: &str, got: &str) -> String {
 /// per CPU; every run happens, and the failures are reported together,
 /// each with the script, the VM and the difference.
 fn run_corpus(jobs: &[(&str, String)], dir: &str) {
+    run_corpus_as(jobs, dir, false);
+}
+
+/// [`run_corpus`], or with `wide` the same scripts run by the wasm64 `sh`
+/// with the wasm64 commands first in `/bin` (`/lib/sh/wide`,
+/// `docs/wasm64.md`). A script whose output depends on the width (a
+/// stack, a module's imports, an allocator's pages) has a `.out64` file
+/// for that run.
+fn run_corpus_as(jobs: &[(&str, String)], dir: &str, wide: bool) {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let next = AtomicUsize::new(0);
     let failures = Mutex::new(Vec::new());
@@ -679,10 +714,21 @@ fn run_corpus(jobs: &[(&str, String)], dir: &str) {
         for _ in 0..threads.min(jobs.len()) {
             s.spawn(|| {
                 while let Some((vm, name)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let want =
-                        std::fs::read_to_string(root().join(format!("{dir}/{name}.out"))).unwrap();
+                    let golden = |ext: &str| {
+                        std::fs::read_to_string(root().join(format!("{dir}/{name}.{ext}")))
+                    };
+                    let want = match golden("out64") {
+                        Ok(want) if wide => want,
+                        _ => golden("out").unwrap(),
+                    };
                     let start = Instant::now();
-                    let o = emu(vm, &["sh", &format!("/{dir}/{name}.sh")], b"");
+                    let script = format!("/{dir}/{name}.sh");
+                    let o = if wide {
+                        let run = format!("run /lib/sh/wide; sh {script}");
+                        emu(vm, &["/bin/64/sh.wasm", "-c", &run], b"")
+                    } else {
+                        emu(vm, &["sh", &script], b"")
+                    };
                     let got = stdout(&o);
                     // How the emu ended goes with either problem: wrong
                     // output is often an emu that died half way.
@@ -734,6 +780,13 @@ fn sh_script_corpus() {
     let scripts = scripts("lib/test/sh");
     assert!(scripts.len() >= 8, "{scripts:?}");
     run_corpus(&corpus_jobs(&scripts), "lib/test/sh");
+}
+
+/// The same corpus on the wasm64 builds of `sh` and the commands.
+#[test]
+fn sh_script_corpus_wide() {
+    let scripts = scripts("lib/test/sh");
+    run_corpus_as(&corpus_jobs(&scripts), "lib/test/sh", true);
 }
 
 /// The authentication tools beyond the corpus's `auth.sh` flow

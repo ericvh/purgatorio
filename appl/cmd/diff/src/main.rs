@@ -4,6 +4,7 @@
 //! a bad command line fails with `fail:error`.
 
 use purgatorio::{Context, Error};
+use purgatorio::{eprintln, println};
 
 #[purgatorio::main]
 fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
@@ -62,7 +63,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 
 /// The lines of `path`, or `None` once a failure to read it is reported.
 fn lines(path: &str) -> Option<Vec<String>> {
-    match std::fs::read_to_string(path) {
+    match purgatorio::fs::read_to_string(path) {
         Ok(text) => Some(text.lines().map(String::from).collect()),
         Err(e) => {
             eprintln!("diff: cannot open {path}: {}", Error::from(e));

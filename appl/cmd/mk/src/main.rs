@@ -21,12 +21,13 @@
 //! Inferno's sh does not write; reading sh's own form keeps a list that sh
 //! exports a list in mk.
 
+use purgatorio::{eprintln, print, println};
 mod parse;
 
+use purgatorio::fd::AsRawFd;
+use purgatorio::time::{SystemTime, UNIX_EPOCH};
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::os::fd::AsRawFd;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use purgatorio::abi::{mode, pctl};
 use purgatorio::{Context, Dir, Error};
@@ -161,7 +162,7 @@ fn run(args: Vec<String>) -> Result<(), Error> {
         }
     }
     let mut file = Mkfile::default();
-    for (k, v) in std::env::vars() {
+    for (k, v) in purgatorio::env::vars() {
         if parse::is_name(&k) {
             let words = purgatorio::env::unquote_list(&v);
             file.vars.insert(
@@ -195,10 +196,10 @@ fn run(args: Vec<String>) -> Result<(), Error> {
         files.push(String::from("mkfile"));
     }
     for f in &files {
-        let text =
-            std::fs::read_to_string(f).map_err(|e| Error(format!("{f}: {}", Error::from(e))))?;
+        let text = purgatorio::fs::read_to_string(f)
+            .map_err(|e| Error(format!("{f}: {}", Error::from(e))))?;
         file.read(&text, f, &mut backquote, &mut |name: &str| {
-            std::fs::read_to_string(name).map_err(|e| format!("{name}: {}", Error::from(e)))
+            purgatorio::fs::read_to_string(name).map_err(|e| format!("{name}: {}", Error::from(e)))
         })
         .map_err(Error)?;
     }
@@ -288,7 +289,7 @@ fn backquote(cmd: &str) -> Result<String, String> {
     purgatorio::spawn(SH, &argv, pctl::FORKENV, &[(w.as_raw_fd(), 1)]).map_err(|e| e.0)?;
     drop(w);
     let mut out = String::new();
-    let _ = std::fs::File::from(r).read_to_string(&mut out);
+    let _ = purgatorio::fs::File::from(r).read_to_string(&mut out);
     purgatorio::wait().map_err(|e| e.0)?;
     Ok(out)
 }
@@ -833,7 +834,7 @@ impl Mk {
         }
         script.push_str(&recipe);
         use std::io::Write;
-        let _ = std::io::stdout().flush();
+        let _ = purgatorio::io::stdout().flush();
         let first = String::from(shown.lines().next().unwrap_or("").trim());
         let pid = match spawn_shell(&script, true) {
             Ok(pid) => pid,

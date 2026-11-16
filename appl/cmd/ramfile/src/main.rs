@@ -3,7 +3,8 @@
 //! before accepting I/O. As in Inferno's ramfile, a bad command line or a
 //! failure is reported with no status.
 
-use std::os::fd::AsRawFd;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::pctl;
 use purgatorio::file2chan::{self, FileIO};
@@ -33,7 +34,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         &[(w.as_raw_fd(), 1), (2, 2)],
     )?;
     drop(w);
-    let mut f = std::fs::File::from(r);
+    let mut f = purgatorio::fs::File::from(r);
     let mut b = [0u8; 1];
     // A server that fails has printed why on fd 2 before the pipe closes.
     let _ = std::io::Read::read_exact(&mut f, &mut b);

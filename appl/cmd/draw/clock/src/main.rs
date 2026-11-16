@@ -14,7 +14,7 @@
 //! emu's window, or a window manager's) by checking the screen's size on
 //! every pointer event and every tick. `q` or Delete ends it.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use purgatorio::time::{SystemTime, UNIX_EPOCH};
 
 use purgatorio::arg::Arg;
 use purgatorio::daytime::{self, Tm};

@@ -1,6 +1,7 @@
 //! The FTP client side: replies, data connections and `LIST` lines.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 
 use purgatorio::dial;

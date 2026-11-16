@@ -14,9 +14,10 @@
 //! proxy settings in `/services/webget/config` are not read, and there is
 //! no https.
 
-use std::fs::File;
+use purgatorio::eprintln;
+use purgatorio::fd::OwnedFd;
+use purgatorio::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, daytime, dial};
@@ -89,7 +90,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             .as_bytes(),
         );
     }
-    std::fs::write(&file, &data)
+    purgatorio::fs::write(&file, &data)
         .map_err(|_| fail(format!("can't create {file}: {}", purgatorio::errstr())))?;
     if verbose > 0 {
         eprintln!("webgrab: wrote {} bytes to {file}", data.len());

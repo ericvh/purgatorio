@@ -19,8 +19,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         } else {
             return Err(Error::from("dest is not a directory"));
         };
-        let data = std::fs::read(src).map_err(|_| Error::last())?;
-        std::fs::write(&to, data).map_err(|_| Error::last())?;
+        let data = purgatorio::fs::read(src).map_err(|_| Error::last())?;
+        purgatorio::fs::write(&to, data).map_err(|_| Error::last())?;
     }
     Ok(())
 }

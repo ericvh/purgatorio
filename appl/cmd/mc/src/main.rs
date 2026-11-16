@@ -2,6 +2,7 @@
 //! fit across `columns` characters (default 65), filling each column top
 //! to bottom.
 
+use purgatorio::eprintln;
 use std::io::{self, BufRead, BufReader, Write};
 
 use purgatorio::arg::Arg;
@@ -36,10 +37,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     };
     if files.is_empty() {
-        read(&mut io::stdin().lock())?;
+        read(&mut purgatorio::io::stdin().lock())?;
     }
     for f in &files {
-        match std::fs::File::open(f) {
+        match purgatorio::fs::File::open(f) {
             Ok(file) => read(&mut BufReader::new(file))?,
             Err(_) => {
                 // As Inferno's mc: reported, skipped, no status.
@@ -51,7 +52,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let maxwidth = words.iter().map(|w| width(w)).max().unwrap_or(0) + 1;
     let ncols = (columns / maxwidth).max(1);
     let nlines = words.len().div_ceil(ncols);
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     for i in 0..nlines {
         let mut line = String::new();
         let mut j = i;

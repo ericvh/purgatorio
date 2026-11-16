@@ -10,6 +10,7 @@
 //! is looked up as written, then as a prefix and a unit, then without a
 //! plural `s` or `es`. Only multiplicative conversions are done.
 
+use purgatorio::eprintln;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
@@ -398,12 +399,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         [f] => f.as_str(),
         _ => return Err(usage),
     };
-    let Ok(text) = std::fs::read_to_string(file) else {
+    let Ok(text) = purgatorio::fs::read_to_string(file) else {
         eprintln!("units: cannot open {file}: {}", purgatorio::errstr());
         purgatorio::exits("fail:open");
     };
     let mut db = Db::load(&text);
-    let mut out = io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     if verbose {
         for name in db.order.clone() {
             let def = db.defs[&name].clone();
@@ -414,7 +415,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
         return Ok(());
     }
-    let mut input = io::stdin().lock();
+    let mut input = purgatorio::io::stdin().lock();
     let mut read = |prompt: &str, out: &mut dyn Write| -> io::Result<Option<String>> {
         write!(out, "{prompt}")?;
         out.flush()?;
@@ -472,7 +473,7 @@ mod tests {
 
     #[test]
     fn conversions() {
-        let mut db = Db::load(&std::fs::read_to_string("../../../root/lib/units").unwrap());
+        let mut db = Db::load(&purgatorio::fs::read_to_string("../../../root/lib/units").unwrap());
         let mut f = |a: &str, b: &str| {
             let (x, y) = (db.parse(a).unwrap(), db.parse(b).unwrap());
             assert_eq!(x.dims, y.dims, "{a} {b}");

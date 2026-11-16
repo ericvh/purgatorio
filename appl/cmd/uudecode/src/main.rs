@@ -2,6 +2,7 @@
 //! lines before `begin mode name`, and write it to `name` with that mode,
 //! or to standard output with `-p`.
 
+use purgatorio::eprintln;
 use std::io::{self, BufRead, BufReader, Write};
 
 use purgatorio::arg::Arg;
@@ -39,11 +40,11 @@ fn decode(r: &mut dyn BufRead, to_stdout: bool) -> Result<(), Error> {
         }
     };
     let mut out: Box<dyn Write> = if to_stdout {
-        Box::new(io::stdout().lock())
+        Box::new(purgatorio::io::stdout().lock())
     } else {
         let fd = purgatorio::create(&name, purgatorio::abi::mode::OWRITE, 0o666)
             .map_err(|e| Error(format!("cannot create {name}: {e}")))?;
-        Box::new(std::fs::File::from(fd))
+        Box::new(purgatorio::fs::File::from(fd))
     };
     loop {
         let Some(b) = line(r)? else {
@@ -107,10 +108,10 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     }
     let files = arg.argv();
     if files.is_empty() {
-        return decode(&mut io::stdin().lock(), to_stdout);
+        return decode(&mut purgatorio::io::stdin().lock(), to_stdout);
     }
     for f in &files {
-        let Ok(file) = std::fs::File::open(f) else {
+        let Ok(file) = purgatorio::fs::File::open(f) else {
             return Err(Error(format!("cannot open {f}")));
         };
         decode(&mut BufReader::new(file), to_stdout)?;

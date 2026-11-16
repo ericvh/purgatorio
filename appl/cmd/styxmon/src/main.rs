@@ -5,9 +5,9 @@
 //! prints the data of reads and writes. For example
 //! `mount {styxmon export /} /n/remote`.
 
-use std::fs::File;
-use std::io::{self, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use purgatorio::fd::{AsRawFd, FromRawFd};
+use purgatorio::fs::File;
+use std::io::Write;
 
 use purgatorio::abi::pctl;
 use purgatorio::arg::Arg;
@@ -24,7 +24,7 @@ fn relay(from: &mut File, to: &mut File, data: bool, who: &str) -> Result<(), St
             Err(e) => return Err(format!("error from {who}: {}", styxserv::ioerr(e))),
         };
         {
-            let mut err = io::stderr().lock();
+            let mut err = purgatorio::io::stderr().lock();
             match styxserv::decode(&m) {
                 Ok(msg) => {
                     let _ = writeln!(err, "{}", text::msg(&msg));
@@ -90,7 +90,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let r = relay(&mut client, &mut server, data, "client");
     // The relay child holds the server's pipe open; stop it so the
     // server sees the end of the conversation.
-    if let Ok(mut ctl) = std::fs::OpenOptions::new()
+    if let Ok(mut ctl) = purgatorio::fs::OpenOptions::new()
         .write(true)
         .open(format!("/prog/{child}/ctl"))
     {

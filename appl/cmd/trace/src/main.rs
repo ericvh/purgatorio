@@ -11,6 +11,7 @@
 //! Tracing is a debugging mode: a traced prog runs somewhat slower and
 //! can nest calls half as deep.
 
+use purgatorio::eprintln;
 use purgatorio::{Context, Error};
 
 const USAGE: &str = "usage: trace command [arg ...]";
@@ -22,7 +23,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         return Err(Error::from(USAGE));
     }
     let ctl = format!("/prog/{}/ctl", purgatorio::pid());
-    std::fs::write(&ctl, "trace on").map_err(|e| Error(format!("{ctl}: {}", Error::from(e))))?;
+    purgatorio::fs::write(&ctl, "trace on")
+        .map_err(|e| Error(format!("{ctl}: {}", Error::from(e))))?;
     let path =
         purgatorio::find_command(&argv[0]).map_err(|e| Error(format!("{}: {e}", argv[0])))?;
     // spawn's error already names the module.
@@ -32,8 +34,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         if w.pid != pid {
             continue;
         }
-        let broken =
-            std::fs::read_to_string(format!("/prog/{pid}/exception")).is_ok_and(|e| !e.is_empty());
+        let broken = purgatorio::fs::read_to_string(format!("/prog/{pid}/exception"))
+            .is_ok_and(|e| !e.is_empty());
         if broken {
             eprintln!("trace: {pid} \"{}\": broken: {}", w.name, w.status);
         }

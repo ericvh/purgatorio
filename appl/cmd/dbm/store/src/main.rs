@@ -5,6 +5,7 @@
 //! is there already is reported and left alone, and the status is then
 //! `fail:store`. A line with no space or tab ends the input as an error.
 
+use purgatorio::eprintln;
 use std::io::BufRead;
 
 use dbm::{Db, Stored};
@@ -39,7 +40,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if let Some((k, v)) = pair {
         put(k.as_bytes(), v.as_bytes());
     } else {
-        for line in std::io::stdin().lock().split(b'\n') {
+        for line in purgatorio::io::stdin().lock().split(b'\n') {
             let line = line.map_err(Error::from)?;
             let Some(at) = line.iter().position(|&b| b == b' ' || b == b'\t') else {
                 eprintln!("dbm/store: bad input");

@@ -15,11 +15,12 @@
 //! query on standard error. There is no recursion of its own: the name
 //! servers must be recursive resolvers.
 
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::{File, OpenOptions};
+use purgatorio::time::{Duration, Instant};
 use std::collections::{HashMap, VecDeque};
-use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
-use std::time::{Duration, Instant};
 
 use ndb::dns::{self, Rr};
 use ndb::{Entry, daemon};
@@ -377,7 +378,7 @@ fn ask(
 }
 
 fn file_of(fd: i32) -> File {
-    use std::os::fd::FromRawFd;
+    use purgatorio::fd::FromRawFd;
     // SAFETY: the caller keeps the descriptor open and does not drop this.
     unsafe { File::from_raw_fd(fd) }
 }

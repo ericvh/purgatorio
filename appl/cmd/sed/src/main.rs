@@ -9,6 +9,7 @@
 //! Errors print `sed: msg` and exit with `fail:error`; a bad command line
 //! exits with `fail:usage`.
 
+use purgatorio::eprintln;
 mod parse;
 mod run;
 
@@ -50,7 +51,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                     if c == 'e' {
                         pieces.push(val);
                     } else {
-                        match std::fs::read_to_string(&val) {
+                        match purgatorio::fs::read_to_string(&val) {
                             Ok(t) => pieces.push(t.strip_suffix('\n').unwrap_or(&t).to_string()),
                             Err(e) => fatal(&format!("couldn't open '{val}': {}", Error::from(e))),
                         }
@@ -73,7 +74,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let script = parse::compile(&pieces.join("\n"), global).unwrap_or_else(|e| fatal(&e));
     let mut wfiles: Vec<Box<dyn Write>> = Vec::new();
     for name in &script.wfiles {
-        match std::fs::File::create(name) {
+        match purgatorio::fs::File::create(name) {
             Ok(f) => wfiles.push(Box::new(std::io::BufWriter::new(f))),
             Err(_) => fatal(&format!("can't create output file: '{name}'")),
         }
@@ -87,18 +88,18 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
                 return Ok(None);
             }
             stdin_done = true;
-            return Ok(Some(Box::new(std::io::stdin().lock())));
+            return Ok(Some(Box::new(purgatorio::io::stdin().lock())));
         }
         let Some(f) = files.get(next) else {
             return Ok(None);
         };
         next += 1;
-        match std::fs::File::open(f) {
+        match purgatorio::fs::File::open(f) {
             Ok(file) => Ok(Some(Box::new(std::io::BufReader::new(file)))),
             Err(_) => Err(format!("can't open '{f}'")),
         }
     });
-    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    let mut out = std::io::BufWriter::new(purgatorio::io::stdout().lock());
     let opts = run::Options { quiet };
     if let Err(e) = run::run(&script, &opts, &mut input, &mut out, &mut wfiles) {
         drop(out);

@@ -34,7 +34,9 @@ impl Item {
     pub fn read(&self) -> Result<Vec<u8>, String> {
         match &self.data {
             Data::None => Ok(Vec::new()),
-            Data::File(path) => std::fs::read(path).map_err(|e| purgatorio::Error::from(e).0),
+            Data::File(path) => {
+                purgatorio::fs::read(path).map_err(|e| purgatorio::Error::from(e).0)
+            }
             Data::Mem(all, start, end) => Ok(all[*start..*end].to_vec()),
         }
     }

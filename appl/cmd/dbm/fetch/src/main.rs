@@ -2,6 +2,7 @@
 //! database `dbfile`, as it is, with nothing after it; `not found` on
 //! standard error when there is none.
 
+use purgatorio::eprintln;
 use std::io::Write;
 
 use dbm::Db;
@@ -20,7 +21,9 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         }
     };
     match db.fetch(key.as_bytes()).map_err(Error)? {
-        Some(v) => std::io::stdout().write_all(&v).map_err(Error::from)?,
+        Some(v) => purgatorio::io::stdout()
+            .write_all(&v)
+            .map_err(Error::from)?,
         None => eprintln!("not found"),
     }
     Ok(())

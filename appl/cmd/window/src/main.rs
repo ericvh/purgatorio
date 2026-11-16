@@ -6,6 +6,7 @@
 //! its error is window's. Plan 9's `-m` (a window in another rio, through
 //! `/srv/rio`) is not taken.
 
+use purgatorio::eprintln;
 use std::io::Write;
 
 use purgatorio::{Context, Error};
@@ -59,7 +60,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         req.push(' ');
         req.push_str(&cmd.join(" "));
     }
-    let mut wctl = std::fs::OpenOptions::new()
+    let mut wctl = purgatorio::fs::OpenOptions::new()
         .write(true)
         .open("/dev/wctl")
         .unwrap_or_else(|e| {

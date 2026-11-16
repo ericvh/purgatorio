@@ -114,6 +114,10 @@ ok bad length
 ok open mode
 ok open missing
 probe: ok
+probe: run /bin/64/sh.wasm -c run /lib/sh/wide; echo hello wide world | tr a-z A-Z | sed 's/WIDE/64-BIT/'; echo a b c | wc -w
+HELLO 64-BIT WORLD
+      3
+probe: ok
 @sh-corpus
 probe: net ready
 probe: net served

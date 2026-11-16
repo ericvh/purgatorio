@@ -4,11 +4,11 @@
 //! session prog's wait file. Also the small helper progs mcpd starts from
 //! its own binary: the launcher, the stdin feeder and the input relay.
 
+use purgatorio::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use purgatorio::fs::File;
+use purgatorio::time::{Duration, Instant};
 use std::collections::VecDeque;
-use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::time::{Duration, Instant};
 
 use purgatorio::Error;
 use purgatorio::abi::mode::{OREAD, OWRITE};
@@ -274,7 +274,7 @@ impl Proc {
     pub fn wait_gone(&self) {
         if let Some(at) = self.killed_at {
             while at.elapsed() < KILL_GRACE && progs("/prog").iter().any(|p| p.group == self.pid) {
-                std::thread::sleep(Duration::from_millis(20));
+                purgatorio::thread::sleep(Duration::from_millis(20));
             }
         }
     }
@@ -294,7 +294,7 @@ pub fn kill_group(pid: u32, ctl: Option<&OwnedFd>) {
     // The leader has gone; find the members that are left.
     for p in progs("/prog") {
         if p.group == pid {
-            let _ = std::fs::write(format!("/prog/{}/ctl", p.pid), "kill");
+            let _ = purgatorio::fs::write(format!("/prog/{}/ctl", p.pid), "kill");
         }
     }
 }
@@ -317,10 +317,11 @@ pub fn progs(dir: &str) -> Vec<ProgInfo> {
             break;
         }
         for d in batch {
-            let Ok(text) = std::fs::read_to_string(format!("{dir}/{}/status", d.name)) else {
+            let Ok(text) = purgatorio::fs::read_to_string(format!("{dir}/{}/status", d.name))
+            else {
                 continue;
             };
-            let Ok(ppid) = std::fs::read_to_string(format!("{dir}/{}/ppid", d.name)) else {
+            let Ok(ppid) = purgatorio::fs::read_to_string(format!("{dir}/{}/ppid", d.name)) else {
                 continue;
             };
             let f: Vec<&str> = text.split_whitespace().collect();
@@ -382,7 +383,7 @@ pub fn feed(text: &str) -> Result<OwnedFd, String> {
 /// group, namespace and environment.
 pub fn exec(args: &[String]) -> ! {
     let fail = |msg: String| -> ! {
-        let _ = writeln!(std::io::stderr(), "{msg}");
+        let _ = writeln!(purgatorio::io::stderr(), "{msg}");
         purgatorio::exits(&format!("{EXEC_FAILED}{msg}"))
     };
     let [cwd, cmd, argv @ ..] = args else {

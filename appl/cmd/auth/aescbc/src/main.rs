@@ -25,6 +25,7 @@
 //! Unlike Inferno's, a damaged or wrongly keyed file writes nothing: the
 //! whole input is checked before any of it is written.
 
+use purgatorio::eprintln;
 use std::io::{Read, Write};
 
 use aes::Aes128;
@@ -173,12 +174,12 @@ fn decrypt(pass: &[u8], file: &[u8]) -> Result<Vec<u8>, &'static str> {
 
 /// Reads a password from `/dev/cons`, with echo off if the console allows.
 fn read_password() -> Result<Vec<u8>, Error> {
-    let mut cons = std::fs::OpenOptions::new()
+    let mut cons = purgatorio::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/cons")
         .map_err(|_| Error::from("no key"))?;
-    let ctl = std::fs::OpenOptions::new()
+    let ctl = purgatorio::fs::OpenOptions::new()
         .write(true)
         .open("/dev/consctl")
         .and_then(|mut f| f.write_all(b"rawon").map(|_| f));
@@ -226,7 +227,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let pass = match (keyfile, pass) {
         (Some(f), _) => {
-            let mut k = std::fs::read(&f)
+            let mut k = purgatorio::fs::read(&f)
                 .map_err(|e| Error(format!("can't open {f}: {}", Error::from(e))))?;
             while k.last() == Some(&b'\n') {
                 k.pop();
@@ -240,7 +241,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         return Err(Error::from("no key"));
     }
     let mut input = Vec::new();
-    std::io::stdin().lock().read_to_end(&mut input)?;
+    purgatorio::io::stdin().lock().read_to_end(&mut input)?;
     let out = if enc {
         let mut rand = [0u8; 2 * BS];
         purgatorio::auth::Rng::fill(&mut rand);
@@ -248,7 +249,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     } else {
         decrypt(&pass, &input).map_err(Error::from)?
     };
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = purgatorio::io::stdout().lock();
     stdout.write_all(&out)?;
     stdout.flush()?;
     Ok(())

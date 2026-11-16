@@ -15,11 +15,12 @@
 //! by name, so the same tree with the same times gives the same archive
 //! whatever order the directory lists them in.
 
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::File;
+use purgatorio::time::{SystemTime, UNIX_EPOCH};
+use purgatorio::{eprintln, println};
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::{self, BufRead, Read};
-use std::os::fd::AsRawFd;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{BufRead, Read};
 
 use purgatorio::abi::mode;
 use purgatorio::arg::Arg;
@@ -165,7 +166,7 @@ impl Put {
 
 fn readpaths() -> HashSet<String> {
     let mut t = HashSet::new();
-    for l in io::stdin().lock().lines() {
+    for l in purgatorio::io::stdin().lock().lines() {
         match l {
             Ok(l) => {
                 t.insert(l);

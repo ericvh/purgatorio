@@ -12,6 +12,7 @@
 use ndb::{Entry, quote};
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
+use purgatorio::{eprintln, print};
 
 const USAGE: &str = "ndb/query [-a] [-f dbfile] attr [value [rattr]]";
 

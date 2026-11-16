@@ -24,6 +24,7 @@
 use purgatorio::arg::Arg;
 use purgatorio::auth::fmt::{hex, modsig};
 use purgatorio::{Context, Error};
+use purgatorio::{eprintln, println};
 use wasmobj::{ImportType, Kind, Module, Names};
 
 const USAGE: &str = "wasmdump [-hsiemcf] file ...";
@@ -87,7 +88,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
 }
 
 fn dump(file: &str, parts: Parts) -> Result<(), Error> {
-    let wasm = std::fs::read(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
+    let wasm =
+        purgatorio::fs::read(file).map_err(|e| Error(format!("{file}: {}", Error::from(e))))?;
     let m = wasmobj::parse(&wasm).map_err(|e| Error(format!("{file}: {e}")))?;
     println!("module {file}");
     if parts.header {
@@ -246,7 +248,7 @@ fn funcs(file: &str, m: &Module<'_>) {
     // The module's own names, then the .names file beside it (which the
     // kernel's and the probe's images leave out), then its exports.
     let names = m.names().unwrap_or_else(|| {
-        std::fs::read_to_string(wasmobj::names_path(file))
+        purgatorio::fs::read_to_string(wasmobj::names_path(file))
             .map(|t| Names::from_text(&t))
             .unwrap_or_else(|_| {
                 let mut text = String::new();

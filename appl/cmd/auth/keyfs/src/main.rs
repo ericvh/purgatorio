@@ -79,7 +79,7 @@ impl Db {
         let blob = seal::seal_with(&self.kdf, &self.key, self.text().as_bytes(), &mut Rng)
             .map_err(String::from)?;
         let mut f = purgatorio::create(&self.path, mode::OWRITE | mode::OTRUNC, 0o600)
-            .map(std::fs::File::from)
+            .map(purgatorio::fs::File::from)
             .map_err(|e| e.0)?;
         f.write_all(&blob).map_err(|e| Error::from(e).0)
     }
@@ -222,8 +222,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             let key = hex::array::<32>(lines.next().unwrap_or("").as_bytes())
                 .ok_or_else(|| Error::from(EFORMAT))?;
             let path = String::from(lines.next().unwrap_or(""));
-            let blob =
-                std::fs::read(&path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+            let blob = purgatorio::fs::read(&path)
+                .map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
             let data = seal::open_with(&key, &blob).map_err(Error::from)?;
             let users = Db::parse(&String::from_utf8_lossy(&data))?;
             Ok(Db {
@@ -253,7 +253,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
     let path = absolute(rest.first().map(String::as_str).unwrap_or(authlib::KEYDB))?;
     let password = authlib::password("master password")?;
-    let (kdf, key) = match std::fs::read(&path) {
+    let (kdf, key) = match purgatorio::fs::read(&path) {
         Ok(blob) => {
             let (_, kdf, key) = seal::open(password.as_bytes(), &blob)
                 .map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;

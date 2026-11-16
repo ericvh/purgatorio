@@ -27,10 +27,11 @@
 //! address itself are ignored as its own, and with `-d` the announced
 //! address is printed first.
 
-use std::fs::{File, OpenOptions};
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::{File, OpenOptions};
+use purgatorio::time::{SystemTime, UNIX_EPOCH};
+use purgatorio::{eprintln, println};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error, Ready, dial};
@@ -127,7 +128,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         Ok(f) => r.route = Some(f),
         Err(e) => fatal(&format!("can't open {path}: {}", Error::from(e))),
     }
-    r.readroutes(&std::fs::read_to_string(&path).unwrap_or_default());
+    r.readroutes(&purgatorio::fs::read_to_string(&path).unwrap_or_default());
     syslog("started");
     let testing = addr.is_some();
     let want = addr.unwrap_or_else(|| format!("{netdir}/udp!*!rip"));
@@ -255,7 +256,7 @@ fn class_mask(a: u32) -> u32 {
 /// line is `addr mask net ...`.
 fn interfaces(netdir: &str) -> Vec<Ifc> {
     let mut out = Vec::new();
-    let Ok(dirs) = std::fs::read_dir(format!("{netdir}/ipifc")) else {
+    let Ok(dirs) = purgatorio::fs::read_dir(format!("{netdir}/ipifc")) else {
         return out;
     };
     let mut names: Vec<String> = dirs
@@ -265,7 +266,7 @@ fn interfaces(netdir: &str) -> Vec<Ifc> {
         .collect();
     names.sort_by_key(|n| n.parse::<u32>().unwrap_or(0));
     for n in names {
-        let Ok(s) = std::fs::read_to_string(format!("{netdir}/ipifc/{n}/status")) else {
+        let Ok(s) = purgatorio::fs::read_to_string(format!("{netdir}/ipifc/{n}/status")) else {
             continue;
         };
         for line in s.lines().skip(1) {
@@ -319,7 +320,7 @@ fn announce(netdir: &str, addr: &str) -> Result<(File, File, String), Error> {
         .map_err(|e| Error(format!("can't set udp headers: {}", Error::from(e).0)))?;
     let dir = format!("{netdir}/{proto}/{id}");
     let data = rw(&format!("{dir}/data"))?;
-    let local = std::fs::read_to_string(format!("{dir}/local"))
+    let local = purgatorio::fs::read_to_string(format!("{dir}/local"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     Ok((ctl, data, local))

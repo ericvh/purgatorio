@@ -2,6 +2,7 @@
 //! compares an initial signed integer on each line; `-r` reverses the
 //! order.
 
+use purgatorio::eprintln;
 use std::cmp::Ordering;
 use std::io::{self, Read, Write};
 
@@ -50,11 +51,11 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     let mut data = Vec::new();
     match files.as_slice() {
         [] => {
-            io::stdin().lock().read_to_end(&mut data)?;
+            purgatorio::io::stdin().lock().read_to_end(&mut data)?;
         }
         [f] => {
             // As Inferno's sort: `cannot open`, and `fail:open file`.
-            let Ok(d) = std::fs::read(f) else {
+            let Ok(d) = purgatorio::fs::read(f) else {
                 eprintln!("sort: cannot open {f}: {}", purgatorio::errstr());
                 purgatorio::exits("fail:open file");
             };
@@ -71,7 +72,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let o = if numeric { numcmp(a, b) } else { a.cmp(b) };
         if reverse { o.reverse() } else { o }
     });
-    let mut out = io::BufWriter::new(io::stdout().lock());
+    let mut out = io::BufWriter::new(purgatorio::io::stdout().lock());
     for l in lines {
         out.write_all(l.as_bytes())?;
         out.write_all(b"\n")?;

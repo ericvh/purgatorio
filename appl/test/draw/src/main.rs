@@ -16,7 +16,8 @@
 //! window) with the colour and exits, for the tests of what a window
 //! shows after its program has gone.
 
-use std::fs::OpenOptions;
+use purgatorio::fs::OpenOptions;
+use purgatorio::println;
 use std::io::Write;
 
 use purgatorio::draw::memdraw::{self, FontFile, Image as MemImage, Subfont};
@@ -53,7 +54,7 @@ fn screen_info() -> Result<(), String> {
     if s.id != 0 || s.chan != XRGB32 || s.r != Rect::new(0, 0, 640, 480) || s.clipr != s.r {
         return Err(format!("screen is {s:?}"));
     }
-    let dir: Vec<String> = std::fs::read_dir("/dev/draw")
+    let dir: Vec<String> = purgatorio::fs::read_dir("/dev/draw")
         .map_err(|x| x.to_string())?
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
@@ -76,7 +77,7 @@ fn ctl_info() -> Result<(), String> {
     // As devdraw, a read answers one request: read again without asking
     // and there is no image to describe.
     let mut ctl =
-        std::fs::File::open(format!("/dev/draw/{}/ctl", d.conn)).map_err(|x| e(x.into()))?;
+        purgatorio::fs::File::open(format!("/dev/draw/{}/ctl", d.conn)).map_err(|x| e(x.into()))?;
     match std::io::Read::read(&mut ctl, &mut [0u8; 144]).map_err(|x| e(x.into())) {
         Err(x) if x == "unknown id for draw image" => {}
         other => return Err(format!("a second read of ctl: {other:?}")),
@@ -295,9 +296,9 @@ fn errors() -> Result<(), String> {
 /// lookup is the SDK's (a range lacking the glyph passes it on, then
 /// rune 0). Returns the x after the last glyph.
 fn local_string(dst: &mut MemImage, p: Point, src: &MemImage, path: &str, s: &str) -> i32 {
-    let font = FontFile::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let font = FontFile::parse(&purgatorio::fs::read_to_string(path).unwrap()).unwrap();
     let dir = &path[..path.rfind('/').unwrap() + 1];
-    let sub = |f: &str| Subfont::read(&std::fs::read(format!("{dir}{f}")).unwrap()).unwrap();
+    let sub = |f: &str| Subfont::read(&purgatorio::fs::read(format!("{dir}{f}")).unwrap()).unwrap();
     let find = |c: char| {
         let r = u32::from(c);
         font.ranges.iter().find_map(|g| {
@@ -604,7 +605,7 @@ fn dump() -> Result<(), Error> {
     let mut d = Display::open_display()?;
     let screen = d.screen();
     let px = d.unload(&screen, screen.r)?;
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     writeln!(out, "{} {}", screen.r.dx(), screen.r.dy())?;
     out.write_all(&px)?;
     out.flush()?;

@@ -59,7 +59,8 @@ fn run(args: Vec<String>) -> Result<(), Error> {
     }
     let code = match &code_file {
         Some(f) => {
-            let b = std::fs::read(f).map_err(|e| Error(format!("{f}: {}", Error::from(e))))?;
+            let b =
+                purgatorio::fs::read(f).map_err(|e| Error(format!("{f}: {}", Error::from(e))))?;
             if b.len() > 512 || (b.len() > TABLE && b.len() != 512) {
                 return Err(Error::from(format!(
                     "{f}: more than {TABLE} bytes of boot code"

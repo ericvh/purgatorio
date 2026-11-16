@@ -2,7 +2,7 @@
 //! `whois.iana.org`, port 43) about each name and print its answer. `host`
 //! may be any dial address; a bare name uses `tcp` and the `whois` port.
 
-use std::fs::File;
+use purgatorio::fs::File;
 use std::io::{Read, Write};
 
 use purgatorio::arg::Arg;
@@ -28,7 +28,7 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         1 => format!("tcp!{host}!43"),
         _ => host.clone(),
     };
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     for name in &names {
         let conn = dial::dial(&addr).map_err(|e| Error(format!("can't dial {host}: {e}")))?;
         let data = conn.data.ok_or_else(|| Error::from("no connection"))?;

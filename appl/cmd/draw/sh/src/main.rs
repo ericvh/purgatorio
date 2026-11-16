@@ -27,10 +27,10 @@
 //! write) sees the pipe close and kills the shell's group, so nothing is
 //! left behind.
 
+use purgatorio::fd::AsRawFd;
+use purgatorio::fs::{File, OpenOptions};
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::AsRawFd;
 
 use purgatorio::abi::pctl;
 use purgatorio::arg::Arg;
@@ -66,7 +66,7 @@ struct Snarf;
 
 impl Snarf {
     fn get(&self) -> String {
-        std::fs::read("/dev/snarf")
+        purgatorio::fs::read("/dev/snarf")
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .unwrap_or_default()
     }
@@ -620,7 +620,7 @@ impl Term {
 fn watch(pid: &str) -> Result<(), Error> {
     let pid: u32 = pid.parse().map_err(|_| Error::from("bad pid"))?;
     let mut buf = [0u8; 64];
-    let mut stdin = std::io::stdin();
+    let mut stdin = purgatorio::io::stdin();
     while matches!(stdin.read(&mut buf), Ok(n) if n > 0) {}
     progctl(pid, "killgrp");
     Ok(())

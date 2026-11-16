@@ -53,11 +53,11 @@
 //! it is answered when output comes, the job exits or the wait is over.
 //! Meanwhile the session keeps reading every job's output.
 
+use purgatorio::fd::{AsRawFd, FromRawFd, OwnedFd};
+use purgatorio::fs::File;
+use purgatorio::time::{Duration, Instant};
 use std::collections::VecDeque;
-use std::fs::File;
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::time::{Duration, Instant};
 
 use purgatorio::abi::mode::{OREAD, OWRITE};
 use purgatorio::abi::mount::{MAFTER, MBEFORE, MCREATE, MNOAUTH, MREPL};
@@ -363,7 +363,7 @@ impl Session {
         ];
         set.extend(cpu.map(|c| ("cpulimit", c)));
         for (what, n) in set {
-            std::fs::write(&ctl, format!("domain {what} {n}"))
+            purgatorio::fs::write(&ctl, format!("domain {what} {n}"))
                 .map_err(|e| err(&format!("domain {what}"), Error::from(e)))?;
         }
         s.helper("/bin/memfs.wasm", &["memfs", HOME], null(OREAD)?)
@@ -372,7 +372,7 @@ impl Session {
         // What sh's profile would set. The environment is a copy, so the
         // server's own variables are not changed.
         for (name, file) in [("user", "/dev/user"), ("sysname", "/dev/sysname")] {
-            if let Ok(v) = std::fs::read_to_string(file) {
+            if let Ok(v) = purgatorio::fs::read_to_string(file) {
                 let _ = purgatorio::env::set(name, v.trim());
             }
         }
@@ -389,7 +389,7 @@ impl Session {
             .map_err(|e| format!("namespace file: {e}"))?;
         }
         if !policy.is_some_and(grants_factotum) {
-            std::fs::write(&ctl, "nodev ¤").map_err(|e| err("nodev", Error::from(e)))?;
+            purgatorio::fs::write(&ctl, "nodev ¤").map_err(|e| err("nodev", Error::from(e)))?;
         }
         purgatorio::pctl(pctl::NODEVS, &[]).map_err(|e| err("pctl NODEVS", e))?;
         let _ = purgatorio::chdir(HOME);
@@ -1113,7 +1113,7 @@ fn call(name: &str, args: &Value) -> Result<Value, String> {
         }
         "ns" => {
             let me = purgatorio::pid();
-            std::fs::read_to_string(format!("/prog/{me}/ns"))
+            purgatorio::fs::read_to_string(format!("/prog/{me}/ns"))
                 .map(|ns| obj([("ns", purgatorio::ns::tidy(&ns, true).into())]))
                 .map_err(|e| err("ns", Error::from(e)))
         }

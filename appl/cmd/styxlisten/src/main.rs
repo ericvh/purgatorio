@@ -1,7 +1,8 @@
 //! styxlisten [-A] addr cmd [args...]: announce `addr` and, for each
 //! connection, run `cmd` with the connection as its standard input.
 
-use std::os::fd::AsRawFd;
+use purgatorio::eprintln;
+use purgatorio::fd::AsRawFd;
 
 use purgatorio::abi::pctl::NEWFD;
 use purgatorio::arg::Arg;

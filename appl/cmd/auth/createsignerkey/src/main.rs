@@ -7,6 +7,7 @@
 
 use authlib::fmt;
 use purgatorio::arg::Arg;
+use purgatorio::print;
 use purgatorio::{Context, Error};
 
 const USAGE: &str = "auth/createsignerkey [-a ed25519|hybrid] [-f keyfile] [name]";

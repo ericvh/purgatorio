@@ -17,7 +17,7 @@ const YEAR: u64 = 365 * 24 * 60 * 60;
 
 fn put(path: &str, value: &str) -> Result<(), Error> {
     let mut f = purgatorio::open(path, mode::OWRITE)
-        .map(std::fs::File::from)
+        .map(purgatorio::fs::File::from)
         .map_err(|e| Error(format!("{path}: {}", e)))?;
     f.write_all(value.as_bytes())
         .map_err(|e| Error(format!("{path}: {}", Error::from(e))))

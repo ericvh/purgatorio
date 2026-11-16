@@ -159,7 +159,7 @@ impl Dev for Vec<u8> {
 }
 
 /// A file (an image or a disk's `data`), read and written in place.
-pub struct FileDev(pub std::fs::File);
+pub struct FileDev(pub purgatorio::fs::File);
 
 impl Dev for FileDev {
     fn read_at(&mut self, off: u64, buf: &mut [u8]) -> Result<(), String> {

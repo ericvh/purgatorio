@@ -9,6 +9,7 @@
 //! without one; the status still depends on matching lines. `-c`, a count
 //! of the matching lines, is Purgatorio's addition.
 
+use purgatorio::eprintln;
 use std::io::{BufRead, Write};
 
 use purgatorio::{Context, Error};
@@ -68,10 +69,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     opts.multi = files.len() > 1;
     let mut matched = 0u64;
     if files.is_empty() {
-        matched += scan("stdin", &re, &opts, &mut std::io::stdin().lock())?;
+        matched += scan("stdin", &re, &opts, &mut purgatorio::io::stdin().lock())?;
     } else {
         for f in &files {
-            match std::fs::File::open(f) {
+            match purgatorio::fs::File::open(f) {
                 Ok(file) => {
                     matched += scan(f, &re, &opts, &mut std::io::BufReader::new(file))?;
                 }
@@ -95,7 +96,7 @@ fn usage() -> ! {
 /// Scans one file and returns how many lines matched. `-s` and `-l` stop
 /// at the first match.
 fn scan(name: &str, re: &Regex, opts: &Opts, input: &mut impl BufRead) -> Result<u64, Error> {
-    let mut out = std::io::stdout().lock();
+    let mut out = purgatorio::io::stdout().lock();
     let quiet = opts.status_only || opts.list || opts.list_none;
     let mut n = 0u64;
     let mut hits = 0u64;
