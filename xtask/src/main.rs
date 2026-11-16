@@ -302,7 +302,39 @@ fn reproducible_rustflags(ws: &Path) -> String {
     if let Ok(rustup) = env::var("RUSTUP_HOME") {
         flags.push(format!("--remap-path-prefix={rustup}=/rustup"));
     }
+    // With the `rust-src` component installed, rustc names the standard
+    // library's source by where it is on this host, under the toolchain's
+    // directory, which carries the host triple. Without it, it uses
+    // `/rustc/<commit>`. This makes both the second, and comes last so
+    // that it wins over the remap of rustup's home.
+    if let Some((sysroot, commit)) = rustc_sysroot(ws) {
+        flags.push(format!(
+            "--remap-path-prefix={sysroot}/lib/rustlib/src/rust=/rustc/{commit}"
+        ));
+    }
     flags.join("\x1f")
+}
+
+/// The pinned compiler's sysroot and commit hash.
+fn rustc_sysroot(ws: &Path) -> Option<(String, String)> {
+    let rustc = |args: &[&str]| {
+        let out = Command::new(env::var("RUSTC").unwrap_or_else(|_| String::from("rustc")))
+            .current_dir(ws)
+            .args(args)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let sysroot = rustc(&["--print", "sysroot"])?.trim().to_string();
+    let version = rustc(&["-vV"])?;
+    let commit = version
+        .lines()
+        .find_map(|l| l.strip_prefix("commit-hash: "))?
+        .trim()
+        .to_string();
+    Some((sysroot, commit))
 }
 
 /// The rustflags for guest builds: the reproducible ones, and the guests'
@@ -325,19 +357,14 @@ fn guest_rustflags(ws: &Path) -> Result<String> {
 fn guest_cargo(ws: &Path, verb: &str, target: &str) -> Result<Command> {
     let mut cmd = cargo();
     cmd.current_dir(ws).args([verb, "--target", target]);
-    let mut flags = guest_rustflags(ws)?;
+    let flags = guest_rustflags(ws)?;
     if target == GUEST64_TARGET {
         // `std` is built from source: the nightly-only `-Zbuild-std` is
         // let through on the pinned stable compiler, which is the one
-        // `std`'s source belongs to. Its paths go the way of the others.
+        // `std`'s source belongs to.
         cmd.args(["-Zbuild-std=std,panic_abort"])
             .env("RUSTC_BOOTSTRAP", "1");
-        let sysroot = Command::new(env::var("RUSTC").unwrap_or_else(|_| String::from("rustc")))
-            .current_dir(ws)
-            .args(["--print", "sysroot"])
-            .output()
-            .map_err(|e| format!("rustc --print sysroot: {e}"))?;
-        let sysroot = String::from_utf8_lossy(&sysroot.stdout).trim().to_string();
+        let sysroot = rustc_sysroot(ws).map(|(s, _)| s).unwrap_or_default();
         if !Path::new(&sysroot)
             .join("lib/rustlib/src/rust/library/std")
             .is_dir()
@@ -346,9 +373,6 @@ fn guest_cargo(ws: &Path, verb: &str, target: &str) -> Result<Command> {
                 "wasm64 guests need the rust-src component: rustup component add rust-src (looked in {sysroot})"
             ));
         }
-        // Last, so that it wins over the remap of rustup's home, which
-        // would leave the toolchain's host triple in the path.
-        flags = format!("{flags}\x1f--remap-path-prefix={sysroot}=/rustc");
     }
     cmd.env("CARGO_ENCODED_RUSTFLAGS", flags)
         .env(WRAPPER_ENV, "1")
