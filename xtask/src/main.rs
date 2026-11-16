@@ -453,6 +453,7 @@ fn clippy_guests() -> Result<()> {
     }
     run(cmd.args(["--", "-D", "warnings"]))?;
     // The SDK and the guests that are also built as wasm64.
+    check_wide_sources(&ws)?;
     let mut cmd = cargo();
     cmd.current_dir(&ws)
         .args(["clippy", "--target", GUEST64_TARGET, "-p", "purgatorio"])
@@ -474,6 +475,72 @@ fn clippy_guests() -> Result<()> {
         run(cmd.args(["--", "-D", "warnings"]))?;
     }
     Ok(())
+}
+
+/// Checks that no source of a wasm64 guest names what only a wasm32
+/// guest has ([`wasm::narrow_only`]): the commands and tests built in
+/// both widths and the libraries under `appl` they link.
+fn check_wide_sources(ws: &Path) -> Result<()> {
+    // Built as wasm32 only, or for the host.
+    let skip = |p: &Path| {
+        let p = p.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+        [
+            "appl/small/",
+            "appl/test/abi/",
+            "appl/test/wasi/",
+            "appl/test/net/",
+            "appl/cmd/disk/mkdisk/",
+            "appl/cmd/disk/chkdisk/",
+        ]
+        .iter()
+        .any(|s| p.contains(s))
+            || p.ends_with("/tests.rs")
+            || p.ends_with("/build.rs")
+            // The one guest that must trap on purpose.
+            || p.ends_with("appl/test/debug/src/main.rs")
+    };
+    // The SDK's files that give each width its own: they name `std`'s
+    // under `cfg(not(target_arch = "wasm64"))`.
+    let facade = |p: &Path| {
+        p.parent()
+            .is_some_and(|d| d.ends_with("sdk/purgatorio/src"))
+            && [
+                "auth.rs",
+                "env.rs",
+                "fd.rs",
+                "fs.rs",
+                "io.rs",
+                "lib.rs",
+                "sys.rs",
+                "thread.rs",
+                "time.rs",
+            ]
+            .iter()
+            .any(|n| p.file_name().is_some_and(|f| f == *n))
+    };
+    let mut bad = Vec::new();
+    let mut sources = files_under(&ws.join("appl"))?;
+    sources.extend(files_under(&ws.join("sdk/purgatorio/src"))?);
+    for f in sources {
+        if f.extension().is_none_or(|e| e != "rs") || skip(&f) || facade(&f) {
+            continue;
+        }
+        let text = fs::read_to_string(&f).map_err(|e| format!("{}: {e}", f.display()))?;
+        for why in wasm::narrow_only(&text) {
+            bad.push(format!(
+                "{}:{why}",
+                f.strip_prefix(ws).unwrap_or(&f).display()
+            ));
+        }
+    }
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "these would misbehave in a wasm64 guest (docs/wasm64.md):\n{}",
+            bad.join("\n")
+        ))
+    }
 }
 
 /// The packages of `appl/small`, by the target each is built for.
@@ -1190,10 +1257,7 @@ fn aot_images(ws: &Path, kind: &str) -> Result<PathBuf> {
             .to_str()
             .ok_or("a module path is not UTF-8")?
             .replace(std::path::MAIN_SEPARATOR, "/");
-        // wasm64 modules have no images yet: they run on the fallback
-        // engine (`docs/wasm64.md`).
-        let wide = rel.starts_with(&format!("bin/{GUEST64_DIR}/"));
-        if rel.ends_with(".wasm") && !wide && tar::in_image(&rel, true) {
+        if rel.ends_with(".wasm") && tar::in_image(&rel, true) {
             modules.push(rel);
         }
     }
@@ -2923,6 +2987,23 @@ fn rustc_wrapper(args: &[String]) -> ExitCode {
         .map(|name| match env::var("CARGO_PKG_VERSION") {
             Ok(v) if !v.is_empty() => format!("{name}-{v}"),
             _ => name.clone(),
+        })
+        // A wasm64 build compiles `std` and the crates `std` is made of
+        // from the toolchain's source. A guest may depend on the same
+        // crate at the same version (`adler2`, under `miniz_oxide`); the two must not
+        // share a hash, or rustc takes them for one crate.
+        .map(|name| {
+            // `std`'s own crates are in the toolchain's source; the ones
+            // it takes from the registry are built with this feature (every
+            // build of such a crate names it in `--check-cfg`).
+            let from_std = env::var("CARGO_MANIFEST_DIR")
+                .is_ok_and(|d| d.contains("/lib/rustlib/src/rust/"))
+                || rest.iter().any(|a| a == "feature=\"rustc-dep-of-std\"");
+            if from_std {
+                format!("std-{name}")
+            } else {
+                name
+            }
         });
     let mut out = Vec::with_capacity(rest.len());
     let mut it = rest.iter();
