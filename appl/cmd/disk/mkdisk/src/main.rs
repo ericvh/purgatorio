@@ -8,10 +8,10 @@
 //! directory `dir`, recursively, with their permissions and times.
 //! Anything already in `image` is lost.
 
-use std::fs::OpenOptions;
+use purgatorio::fs::OpenOptions;
 use std::path::Path;
 
-use purg_fs::file::{FileDisk, Stamp, add_tree, parse_size};
+use purg_fs::file::{Entry, FileDisk, Kind, Stamp, Tree, add_tree, parse_size};
 use purg_fs::layout::{BSIZE, JBLOCKS};
 use purg_fs::{Format, Fs};
 use purgatorio::arg::Arg;
@@ -22,6 +22,36 @@ const USAGE: &str = "disk/mkdisk [-b blocksize] [-j journal] [-s size] [-u user]
 fn number(arg: &mut Arg, what: &str) -> Result<u64, Error> {
     let s = arg.earg()?;
     parse_size(&s).ok_or_else(|| Error::from(format!("bad {what} {s:?}")))
+}
+
+/// The prog's name space as the source of `-r dir`: each entry's `Dir`
+/// gives its kind, permissions and time, as Inferno has them.
+struct NameSpace;
+
+impl Tree for NameSpace {
+    fn entries(&self, dir: &Path) -> std::io::Result<Vec<Entry>> {
+        let mut out = Vec::new();
+        for e in purgatorio::fs::read_dir(dir)? {
+            let e = e?;
+            let d = purgatorio::stat(&e.path().to_string_lossy())
+                .map_err(|e| std::io::Error::other(e.0))?;
+            out.push(Entry {
+                name: d.name.clone(),
+                kind: if d.qid.is_dir() {
+                    Kind::Dir
+                } else {
+                    Kind::File
+                },
+                perm: d.mode & 0o777,
+                mtime: d.mtime,
+            });
+        }
+        Ok(out)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        purgatorio::fs::read(path)
+    }
 }
 
 #[purgatorio::main]
@@ -66,23 +96,19 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     if size == 0 {
         return Err(Error::from(format!("{image}: no size: use -s")));
     }
-    format.now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    format.now = purgatorio::time::SystemTime::now()
+        .duration_since(purgatorio::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as u32);
     let user = format.user.clone();
     let at = |e: purg_fs::Error| Error::from(format!("{image}: {e}"));
     let mut fs = Fs::format(FileDisk::new(file, size, 512), &format).map_err(at)?;
     if let Some(dir) = src {
-        let perm = |p: &Path, _: &std::fs::Metadata| {
-            purgatorio::stat(&p.to_string_lossy()).map_or(0o644, |d| d.mode & 0o777)
-        };
         let stamp = Stamp {
             user: &user,
-            perm: &perm,
             mtime: None,
         };
         let root = fs.root();
-        add_tree(&mut fs, root, Path::new(&dir), &stamp).map_err(at)?;
+        add_tree(&mut fs, root, &NameSpace, Path::new(&dir), &stamp).map_err(at)?;
     }
     fs.sync().map_err(at)?;
     let _ = fs.into_disk().into_inner().sync_all();

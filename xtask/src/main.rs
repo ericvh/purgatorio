@@ -489,8 +489,6 @@ fn check_wide_sources(ws: &Path) -> Result<()> {
             "appl/test/abi/",
             "appl/test/wasi/",
             "appl/test/net/",
-            "appl/cmd/disk/mkdisk/",
-            "appl/cmd/disk/chkdisk/",
         ]
         .iter()
         .any(|s| p.contains(s))

@@ -147,10 +147,8 @@ wasm64 = true
 A module installed there must import `purgatorio64` alone; the build
 refuses one that names WASI.
 
-Every command says so except these, which stay wasm32:
+Every command says so. These stay wasm32:
 
-- `disk/mkdisk` and `disk/chkdisk`: `purg-fs` copies a host tree and
-  opens a disk image with `std::fs`, for `xtask` as well as for them.
 - `test/abi`, `test/wasi` and `test/net`: they test WASI itself.
 - The reactors in `/bin/lib`, which are wasm32 for every caller.
 
@@ -222,7 +220,7 @@ the same with no new code, and leaves every existing path as it is.)
 ## Cost
 
 Measured on the emu (release build, an 8-core arm64 Linux host, medians
-of five runs) with the 218 commands that exist in both widths.
+of five runs) with the 218 commands that existed in both widths then.
 
 Size: the wasm64 modules are 19.7 MB against 25.3 MB, 22% smaller in
 all and 27% at the median. They carry no wasi-libc. `sh` is 334 KB
@@ -247,8 +245,6 @@ the default.
 
 ## What is left
 
-- `disk/mkdisk` and `disk/chkdisk` as wasm64: `purg-fs` would take its
-  files through a trait instead of `std::fs`.
 - wasm64 reactors, if a reactor ever needs more than 4 GiB.
 - A guest with more than 4 GiB of memory has not been tried.
 - The kernel's image carries a few wasm64 builds, not all of them.
