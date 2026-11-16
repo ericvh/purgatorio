@@ -1,17 +1,22 @@
 //! Raw `purgatorio` imports. Prefer the safe wrappers in the crate root.
 //!
-//! On non-WASI targets (host builds of app crates, used by `cargo check` and
+//! A wasm32 guest imports them from the `purgatorio` module and a wasm64
+//! guest from `purgatorio64`, where every pointer and `usize` is an `i64`
+//! and a few more calls stand in for WASI (`docs/wasm64.md`).
+//!
+//! On other targets (host builds of app crates, used by `cargo check` and
 //! clippy) these are stubs that fail with "not implemented".
 
 macro_rules! imports {
     ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty;)*) => {
-        #[cfg(target_os = "wasi")]
-        #[link(wasm_import_module = "purgatorio")]
+        #[cfg(target_family = "wasm")]
+        #[cfg_attr(target_arch = "wasm32", link(wasm_import_module = "purgatorio"))]
+        #[cfg_attr(target_arch = "wasm64", link(wasm_import_module = "purgatorio64"))]
         unsafe extern "C" {
             $(pub fn $name($($arg: $ty),*) -> $ret;)*
         }
 
-        #[cfg(not(target_os = "wasi"))]
+        #[cfg(not(target_family = "wasm"))]
         mod stubs {
             #![allow(clippy::missing_safety_doc)]
             $(
@@ -21,7 +26,7 @@ macro_rules! imports {
             )*
         }
 
-        #[cfg(not(target_os = "wasi"))]
+        #[cfg(not(target_family = "wasm"))]
         pub use stubs::*;
     };
 }
@@ -87,26 +92,72 @@ imports! {
     fn chan_recv(h: i32, buf: *mut u8, blen: usize, handles: *mut i32, maxh: usize) -> i32;
     fn alt(ops: *mut i32, nops: usize, block: i32) -> i32;
     fn wait(ops: *const i32, nops: usize, timeout_ms: i32) -> i32;
-    fn load(path: *const u8, plen: usize) -> i32;
-    fn call(
+}
+
+// Reactors, which a wasm64 guest cannot load yet.
+#[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "purgatorio")]
+unsafe extern "C" {
+    pub fn load(path: *const u8, plen: usize) -> i32;
+    pub fn call(
         handle: i32,
         name: *const u8,
         nlen: usize,
         args: *const u8,
         alen: usize,
         out: *mut u8,
-        olen: usize
+        olen: usize,
     ) -> i32;
 }
 
-#[cfg(target_os = "wasi")]
-#[link(wasm_import_module = "purgatorio")]
+#[cfg(not(target_arch = "wasm32"))]
+mod reactor_stubs {
+    #![allow(clippy::missing_safety_doc, clippy::too_many_arguments)]
+    pub unsafe fn load(_: *const u8, _: usize) -> i32 {
+        -1
+    }
+    pub unsafe fn call(
+        _: i32,
+        _: *const u8,
+        _: usize,
+        _: *const u8,
+        _: usize,
+        _: *mut u8,
+        _: usize,
+    ) -> i32 {
+        -1
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use reactor_stubs::{call, load};
+
+// What a wasm32 guest gets from WASI.
+#[cfg(target_arch = "wasm64")]
+#[link(wasm_import_module = "purgatorio64")]
+unsafe extern "C" {
+    pub fn read(fd: i32, buf: *mut u8, len: usize) -> i32;
+    pub fn write(fd: i32, buf: *const u8, len: usize) -> i32;
+    pub fn pread(fd: i32, buf: *mut u8, len: usize, off: i64) -> i32;
+    pub fn pwrite(fd: i32, buf: *const u8, len: usize, off: i64) -> i32;
+    pub fn seek(fd: i32, off: i64, whence: i32) -> i64;
+    pub fn close(fd: i32) -> i32;
+    pub fn args(buf: *mut u8, len: usize) -> i32;
+    pub fn sleep(ms: i32) -> i32;
+    pub fn nsec() -> i64;
+    pub fn mono() -> i64;
+    pub fn random(buf: *mut u8, len: usize) -> i32;
+}
+
+#[cfg(target_family = "wasm")]
+#[cfg_attr(target_arch = "wasm32", link(wasm_import_module = "purgatorio"))]
+#[cfg_attr(target_arch = "wasm64", link(wasm_import_module = "purgatorio64"))]
 unsafe extern "C" {
     pub fn errstr(buf: *mut u8, len: usize) -> i32;
     pub fn exits(status: *const u8, len: usize) -> !;
 }
 
-#[cfg(not(target_os = "wasi"))]
+#[cfg(not(target_family = "wasm"))]
 mod host {
     #![allow(clippy::missing_safety_doc)]
     const MSG: &str = purg_abi::error::ENOTIMPL;
@@ -122,5 +173,5 @@ mod host {
     }
 }
 
-#[cfg(not(target_os = "wasi"))]
+#[cfg(not(target_family = "wasm"))]
 pub use host::{errstr, exits};

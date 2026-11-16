@@ -3,7 +3,7 @@
 //! or dropped. Most apps can use `std::io::BufReader` directly; this adds
 //! the Inferno operations `gets` (keep the delimiter) and `getc`.
 
-use std::fs::File;
+use crate::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 
 use crate::Error;
@@ -81,8 +81,8 @@ pub fn open(path: &str) -> Result<Iobuf<File>, Error> {
 }
 
 /// Buffered standard output, flushed when dropped.
-pub fn stdout() -> BufWriter<io::Stdout> {
-    BufWriter::new(io::stdout())
+pub fn stdout() -> BufWriter<crate::io::Stdout> {
+    BufWriter::new(crate::io::stdout())
 }
 
 /// Writes `s` and flushes; the Inferno `puts` plus `flush` pair.

@@ -50,6 +50,13 @@ pub fn main(attr: TokenStream, item: TokenStream) -> TokenStream {
     body.extend(call);
     let mut out: TokenStream = "fn main()".parse().expect("signature tokens");
     out.extend([TokenTree::Group(Group::new(Delimiter::Brace, body))]);
+    // A wasm64 command has no C runtime to call `main`; this adds the
+    // entry point the host calls, and nothing in a wasm32 one.
+    out.extend(
+        "::purgatorio::__entry!();"
+            .parse::<TokenStream>()
+            .expect("entry tokens"),
+    );
     out
 }
 

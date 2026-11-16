@@ -20,8 +20,8 @@ const MAXMSG: usize = 4096;
 
 /// The p9sk1 keys in the key file `path`.
 pub fn keys(path: &str) -> Result<Vec<KeyEntry>, Error> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
+    let text = crate::fs::read_to_string(path)
+        .map_err(|e| Error(format!("{path}: {}", Error::from(e))))?;
     let keys = p9sk1::parse_keys(&text);
     if keys.is_empty() {
         return Err(Error(format!("{path}: no p9sk1 key")));
@@ -157,7 +157,7 @@ fn ask_authsrv(addr: &str, req: &TicketReq) -> Result<[u8; 2 * TICKETLEN], Error
     let mut f = c
         .data
         .ok_or_else(|| Error::from("auth server: no data file"))
-        .map(std::fs::File::from)?;
+        .map(crate::fs::File::from)?;
     f.write_all(&req.encode())?;
     let mut kind = [0u8; 1];
     read_exact(&mut f, &mut kind)?;

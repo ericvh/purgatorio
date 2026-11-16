@@ -22,15 +22,19 @@ pub mod daytime;
 pub mod dial;
 pub mod draw;
 pub mod env;
+pub mod fd;
 pub mod file2chan;
+pub mod fs;
+pub mod io;
 pub mod ns;
 pub mod p9any;
 pub mod styx;
 pub mod sys;
 pub mod task;
+pub mod time;
 
+use crate::fd::{FromRawFd, OwnedFd};
 use std::fmt;
-use std::os::fd::{FromRawFd, OwnedFd};
 
 pub use purg_abi as abi;
 pub use purg_styx::{DMAPPEND, DMAUTH, DMDIR, DMEXCL, Dir, Qid};
@@ -73,7 +77,7 @@ impl Error {
     /// Any other error is returned as it is.
     pub fn usage_exits(self, prefix: &str, status: &str) -> Error {
         if let Some(msg) = self.0.strip_prefix("usage: ") {
-            eprintln!("{prefix}{msg}");
+            crate::eprintln!("{prefix}{msg}");
             exits(status);
         }
         self
@@ -86,8 +90,8 @@ impl Error {
         if self.0.starts_with("usage: ") {
             return self;
         }
-        let argv0 = std::env::args().next().unwrap_or_default();
-        eprintln!("{argv0}: {self}");
+        let argv0 = rt::args().into_iter().next().unwrap_or_default();
+        crate::eprintln!("{argv0}: {self}");
         exits(status);
     }
 }
@@ -150,7 +154,7 @@ pub fn werrstr(msg: &str) {
 /// Exits the prog with an Inferno status string; `""` means success.
 pub fn exits(status: &str) -> ! {
     use std::io::Write;
-    let _ = std::io::stdout().flush();
+    let _ = io::stdout().flush();
     unsafe { sys::exits(status.as_ptr(), status.len()) }
 }
 
@@ -249,6 +253,8 @@ pub fn chdir(path: &str) -> Result<(), Error> {
 /// wasi-libc resolves relative names against its own copy of the current
 /// directory, which starts as `/`; point it at the prog's dot.
 fn sync_cwd() {
+    // A wasm64 guest has no wasi-libc: the host resolves its relative names.
+    #[cfg(not(target_arch = "wasm64"))]
     if let Ok(d) = dot() {
         let _ = std::env::set_current_dir(d);
     }
@@ -447,7 +453,7 @@ pub fn wait() -> Result<Waitmsg, Error> {
     let path = format!("/prog/{}/wait", pid());
     let f = open(&path, abi::mode::OREAD)?;
     let mut buf = vec![0u8; 8192];
-    let n = std::io::Read::read(&mut std::fs::File::from(f), &mut buf)?;
+    let n = std::io::Read::read(&mut fs::File::from(f), &mut buf)?;
     let msg = String::from_utf8_lossy(&buf[..n]);
     let fields = unquote_fields(&msg);
     match fields.as_slice() {
@@ -533,6 +539,49 @@ pub fn unquote_fields(s: &str) -> Vec<String> {
 pub mod rt {
     use super::*;
 
+    /// The prog's arguments, argv\[0\] first.
+    #[cfg(not(target_arch = "wasm64"))]
+    pub fn args() -> Vec<String> {
+        std::env::args().collect()
+    }
+
+    /// The prog's arguments, argv\[0\] first: a wasm64 guest asks the
+    /// host for them, each followed by a NUL.
+    #[cfg(target_arch = "wasm64")]
+    pub fn args() -> Vec<String> {
+        let size = unsafe { sys::args(core::ptr::null_mut(), 0) }.max(0) as usize;
+        let mut buf = vec![0u8; size];
+        let n = unsafe { sys::args(buf.as_mut_ptr(), buf.len()) }.max(0) as usize;
+        buf.truncate(n.min(size));
+        String::from_utf8_lossy(&buf)
+            .split_terminator('\0')
+            .map(String::from)
+            .collect()
+    }
+
+    /// The entry point of a wasm64 command, which has no C runtime to
+    /// call `main`: the host calls this.
+    #[cfg(target_arch = "wasm64")]
+    #[macro_export]
+    #[doc(hidden)]
+    macro_rules! __entry {
+        () => {
+            #[unsafe(no_mangle)]
+            #[allow(clippy::main_recursion)]
+            pub extern "C" fn _start() {
+                main();
+                $crate::exits("");
+            }
+        };
+    }
+
+    #[cfg(not(target_arch = "wasm64"))]
+    #[macro_export]
+    #[doc(hidden)]
+    macro_rules! __entry {
+        () => {};
+    }
+
     /// Runs a `#[purgatorio::main]` function: installs the panic hook, calls
     /// it with argv, and turns an error into `argv0: msg` on fd 2 plus a
     /// `fail:` exit status. A `usage: ...` error is printed alone and
@@ -557,21 +606,21 @@ pub mod rt {
             if msg.starts_with("failed printing to std") {
                 unsafe { sys::exits("".as_ptr(), 0) }
             }
-            eprintln!("panic: {msg}");
+            crate::eprintln!("panic: {msg}");
             werrstr(&msg);
             exits(&format!("panic: {msg}"));
         }));
         sync_cwd();
-        let args: Vec<String> = std::env::args().collect();
+        let args = args();
         let argv0 = args.first().cloned().unwrap_or_default();
         if let Err(e) = main(Context, args) {
             // A usage error is printed and raised as Inferno's arg->usage
             // does: the message alone, and the status `fail:usage`.
             if e.0.starts_with("usage: ") {
-                eprintln!("{e}");
+                crate::eprintln!("{e}");
                 exits("fail:usage");
             }
-            eprintln!("{argv0}: {e}");
+            crate::eprintln!("{argv0}: {e}");
             exits(&format!("fail:{e}"));
         }
     }

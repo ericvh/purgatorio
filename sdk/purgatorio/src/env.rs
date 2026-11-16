@@ -23,14 +23,14 @@ fn path(name: &str) -> Result<String, Error> {
 pub fn get(name: &str) -> Option<String> {
     let fd = open(&path(name).ok()?, mode::OREAD).ok()?;
     let mut s = Vec::new();
-    std::fs::File::from(fd).read_to_end(&mut s).ok()?;
+    crate::fs::File::from(fd).read_to_end(&mut s).ok()?;
     Some(String::from_utf8_lossy(&s).into_owned())
 }
 
 /// Sets `name` to `value`.
 pub fn set(name: &str, value: &str) -> Result<(), Error> {
     let fd = create(&path(name)?, mode::OWRITE, 0o666)?;
-    std::fs::File::from(fd).write_all(value.as_bytes())?;
+    crate::fs::File::from(fd).write_all(value.as_bytes())?;
     Ok(())
 }
 
@@ -45,7 +45,7 @@ pub fn unset(name: &str) -> Result<(), Error> {
 /// Every variable, sorted by name.
 pub fn list() -> Result<Vec<(String, String)>, Error> {
     let mut out = Vec::new();
-    for e in std::fs::read_dir("/env")? {
+    for e in crate::fs::read_dir("/env")? {
         let name = e?.file_name().to_string_lossy().into_owned();
         if let Some(v) = get(&name) {
             out.push((name, v));
