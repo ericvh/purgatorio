@@ -51,6 +51,36 @@ mod wide {
                 .open(path)
         }
 
+        /// `OpenOptions::new()`.
+        pub fn options() -> OpenOptions {
+            OpenOptions::new()
+        }
+
+        /// The file's `Dir`, as `std`'s `Metadata`.
+        pub fn metadata(&self) -> io::Result<Metadata> {
+            crate::fstat(self.as_raw_fd())
+                .map(Metadata)
+                .map_err(|_| last_error())
+        }
+
+        /// Sets the file's length (`wstat`).
+        pub fn set_len(&self, size: u64) -> io::Result<()> {
+            let mut d = crate::Dir::null();
+            d.length = size;
+            crate::fwstat(self.as_raw_fd(), &d).map_err(|_| last_error())
+        }
+
+        /// Asks the server to commit the file: a `wstat` that changes
+        /// nothing, as in Plan 9.
+        pub fn sync_all(&self) -> io::Result<()> {
+            crate::fwstat(self.as_raw_fd(), &crate::Dir::null()).map_err(|_| last_error())
+        }
+
+        /// [`File::sync_all`].
+        pub fn sync_data(&self) -> io::Result<()> {
+            self.sync_all()
+        }
+
         /// A second handle on the same open file: they share an offset.
         pub fn try_clone(&self) -> io::Result<File> {
             self.0.try_clone().map(File)
@@ -227,6 +257,65 @@ mod wide {
         }
     }
 
+    /// A file's `Dir`, with the questions `std::fs::Metadata` answers.
+    #[derive(Debug, Clone)]
+    pub struct Metadata(pub crate::Dir);
+
+    impl Metadata {
+        pub fn len(&self) -> u64 {
+            self.0.length
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.0.length == 0
+        }
+
+        pub fn is_dir(&self) -> bool {
+            self.0.qid.is_dir()
+        }
+
+        pub fn is_file(&self) -> bool {
+            !self.is_dir()
+        }
+
+        pub fn file_type(&self) -> FileType {
+            FileType(self.is_dir())
+        }
+
+        pub fn modified(&self) -> io::Result<crate::time::SystemTime> {
+            Ok(crate::time::UNIX_EPOCH + crate::time::Duration::from_secs(self.0.mtime.into()))
+        }
+
+        pub fn accessed(&self) -> io::Result<crate::time::SystemTime> {
+            Ok(crate::time::UNIX_EPOCH + crate::time::Duration::from_secs(self.0.atime.into()))
+        }
+    }
+
+    /// Whether a file is a directory: Inferno has no other kinds.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct FileType(bool);
+
+    impl FileType {
+        pub fn is_dir(&self) -> bool {
+            self.0
+        }
+
+        pub fn is_file(&self) -> bool {
+            !self.0
+        }
+
+        pub fn is_symlink(&self) -> bool {
+            false
+        }
+    }
+
+    /// `sys->stat`.
+    pub fn metadata(path: impl AsRef<Path>) -> io::Result<Metadata> {
+        crate::stat(name(path.as_ref())?)
+            .map(Metadata)
+            .map_err(|_| last_error())
+    }
+
     /// An entry of a directory, from [`read_dir`].
     #[derive(Debug, Clone)]
     pub struct DirEntry {
@@ -238,6 +327,15 @@ mod wide {
     impl DirEntry {
         pub fn file_name(&self) -> OsString {
             OsString::from(&self.stat.name)
+        }
+
+        /// The entry's `Dir`, which the listing already holds.
+        pub fn metadata(&self) -> io::Result<Metadata> {
+            Ok(Metadata(self.stat.clone()))
+        }
+
+        pub fn file_type(&self) -> io::Result<FileType> {
+            Ok(FileType(self.stat.qid.is_dir()))
         }
 
         pub fn path(&self) -> PathBuf {
@@ -286,9 +384,28 @@ mod wide {
         File::create(path)?.write_all(data.as_ref())
     }
 
-    /// `sys->remove` of a file.
+    fn failed(msg: &str) -> io::Error {
+        crate::werrstr(msg);
+        last_error()
+    }
+
+    /// `sys->remove` of a file; a directory is refused.
     pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
-        crate::remove(name(path.as_ref())?).map_err(|_| last_error())
+        let path = name(path.as_ref())?;
+        if metadata(path)?.is_dir() {
+            return Err(failed(crate::abi::error::EISDIR));
+        }
+        crate::remove(path).map_err(|_| last_error())
+    }
+
+    /// `sys->remove` of a directory, which must be empty; a file is
+    /// refused.
+    pub fn remove_dir(path: impl AsRef<Path>) -> io::Result<()> {
+        let path = name(path.as_ref())?;
+        if !metadata(path)?.is_dir() {
+            return Err(failed(crate::abi::error::ENOTDIR));
+        }
+        crate::remove(path).map_err(|_| last_error())
     }
 
     /// Makes a directory.
@@ -296,5 +413,46 @@ mod wide {
         crate::create(name(path.as_ref())?, mode::OREAD, crate::DMDIR | 0o777)
             .map(drop)
             .map_err(|_| last_error())
+    }
+
+    /// Makes a directory and the directories above it that are missing.
+    pub fn create_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
+        let path = path.as_ref();
+        if metadata(path).is_ok_and(|m| m.is_dir()) {
+            return Ok(());
+        }
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            create_dir_all(parent)?;
+        }
+        match create_dir(path) {
+            // Made meanwhile by someone else.
+            Err(_) if metadata(path).is_ok_and(|m| m.is_dir()) => Ok(()),
+            r => r,
+        }
+    }
+
+    /// Renames a file within its directory (`wstat` of the name), taking
+    /// the place of a file already called `to`. Inferno cannot move a
+    /// file to another directory.
+    pub fn rename(from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
+        let (from, to) = (name(from.as_ref())?, name(to.as_ref())?);
+        let split = |p: &str| match p.rsplit_once('/') {
+            Some((d, n)) => (d.to_string(), n.to_string()),
+            None => (String::new(), p.to_string()),
+        };
+        let ((fdir, fname), (tdir, tname)) = (split(from), split(to));
+        if fdir != tdir {
+            return Err(failed(crate::abi::error::EXDEV));
+        }
+        metadata(from)?;
+        if fname == tname {
+            return Ok(());
+        }
+        if metadata(to).is_ok() {
+            crate::remove(to).map_err(|_| last_error())?;
+        }
+        let mut d = crate::Dir::null();
+        d.name = tname;
+        crate::wstat(from, &d).map_err(|_| last_error())
     }
 }

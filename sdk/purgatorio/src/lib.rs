@@ -15,6 +15,12 @@
 //! }
 //! ```
 
+// A wasm64 guest's `std` reports a failed allocation on a standard error
+// it does not have; `rt` reports it on fd 2 instead, through a hook that
+// is not stable. wasm64 guests are built with `-Zbuild-std` in any case
+// (`docs/wasm64.md`).
+#![cfg_attr(target_arch = "wasm64", feature(alloc_error_hook))]
+
 pub mod arg;
 pub mod auth;
 pub mod bufio;
@@ -31,6 +37,7 @@ pub mod p9any;
 pub mod styx;
 pub mod sys;
 pub mod task;
+pub mod thread;
 pub mod time;
 
 use crate::fd::{FromRawFd, OwnedFd};
@@ -610,6 +617,26 @@ pub mod rt {
             werrstr(&msg);
             exits(&format!("panic: {msg}"));
         }));
+        // What `std` prints in a wasm32 guest before it aborts.
+        #[cfg(target_arch = "wasm64")]
+        std::alloc::set_alloc_error_hook(|layout| {
+            // Formatted on the stack: there is no memory to allocate.
+            struct Line([u8; 80], usize);
+            impl fmt::Write for Line {
+                fn write_str(&mut self, s: &str) -> fmt::Result {
+                    let n = s.len().min(self.0.len() - self.1);
+                    self.0[self.1..self.1 + n].copy_from_slice(&s.as_bytes()[..n]);
+                    self.1 += n;
+                    Ok(())
+                }
+            }
+            let mut line = Line([0; 80], 0);
+            let _ = fmt::Write::write_fmt(
+                &mut line,
+                format_args!("memory allocation of {} bytes failed\n", layout.size()),
+            );
+            unsafe { sys::write(2, line.0.as_ptr(), line.1) };
+        });
         sync_cwd();
         let args = args();
         let argv0 = args.first().cloned().unwrap_or_default();

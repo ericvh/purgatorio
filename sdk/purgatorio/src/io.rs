@@ -89,7 +89,26 @@ mod wide {
 
     /// The prog's error string as an `io::Error`.
     pub fn last_error() -> io::Error {
-        io::Error::other(crate::errstr())
+        let s = crate::errstr();
+        io::Error::new(kind(&s), s)
+    }
+
+    /// The `ErrorKind` WASI gives a wasm32 guest for an Inferno error
+    /// string, for the kinds that programs test.
+    fn kind(s: &str) -> io::ErrorKind {
+        use crate::abi::error;
+        // A server may put a name before its reason: `'x' does not exist`.
+        if s.ends_with(error::ENONEXIST) || s.ends_with("does not exist") {
+            io::ErrorKind::NotFound
+        } else if s.ends_with(error::EPERM) {
+            io::ErrorKind::PermissionDenied
+        } else if s.ends_with(error::EINTR) {
+            io::ErrorKind::Interrupted
+        } else if s.ends_with(error::EEXIST) {
+            io::ErrorKind::AlreadyExists
+        } else {
+            io::ErrorKind::Other
+        }
     }
 
     /// `sys->read`.
