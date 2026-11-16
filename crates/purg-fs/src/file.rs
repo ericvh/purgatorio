@@ -104,69 +104,129 @@ pub struct Copied {
 pub struct Stamp<'a> {
     /// The owner and group.
     pub user: &'a str,
-    /// The permission bits of a host file or directory.
-    pub perm: &'a dyn Fn(&Path, &std::fs::Metadata) -> u32,
-    /// A fixed modification time, or `None` for the host's.
+    /// A fixed modification time, or `None` for the source's.
     pub mtime: Option<u32>,
 }
 
-/// Copies the host directory `src` (its contents, recursively, in name
-/// order) into directory `dir` of `fs`. Anything that is neither a file
-/// nor a directory is skipped.
+/// What an entry of a source directory is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    File,
+    /// Neither: skipped.
+    Other,
+}
+
+/// An entry of a source directory.
+#[derive(Clone, Debug)]
+pub struct Entry {
+    pub name: String,
+    pub kind: Kind,
+    /// The permission bits.
+    pub perm: u32,
+    /// The modification time, in seconds since 1970.
+    pub mtime: u32,
+}
+
+/// Where [`add_tree`] copies from. `xtask` reads the host's files
+/// ([`HostTree`]); a guest reads its name space, through the SDK, so
+/// that it builds as wasm64, where `std::fs` is a stub (`docs/wasm64.md`).
+pub trait Tree {
+    /// The entries of directory `dir`, in any order.
+    fn entries(&self, dir: &Path) -> std::io::Result<Vec<Entry>>;
+    /// The contents of file `path`.
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>>;
+}
+
+/// The build host's files, with their permission bits as `perm` gives
+/// them.
+pub struct HostTree<'a> {
+    pub perm: &'a dyn Fn(&std::fs::Metadata) -> u32,
+}
+
+impl Tree for HostTree<'_> {
+    fn entries(&self, dir: &Path) -> std::io::Result<Vec<Entry>> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir)? {
+            let e = e?;
+            let meta = std::fs::metadata(e.path())?;
+            out.push(Entry {
+                name: e.file_name().to_string_lossy().into_owned(),
+                kind: if meta.is_dir() {
+                    Kind::Dir
+                } else if meta.is_file() {
+                    Kind::File
+                } else {
+                    Kind::Other
+                },
+                perm: (self.perm)(&meta),
+                mtime: meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_secs() as u32),
+            });
+        }
+        Ok(out)
+    }
+
+    fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        std::fs::read(path)
+    }
+}
+
+/// Copies the directory `src` of `tree` (its contents, recursively, in
+/// name order) into directory `dir` of `fs`. Anything that is neither a
+/// file nor a directory is skipped.
 pub fn add_tree<D: Disk>(
     fs: &mut Fs<D>,
     dir: Loc,
+    tree: &dyn Tree,
     src: &Path,
     stamp: &Stamp<'_>,
 ) -> Result<Copied> {
     let mut copied = Copied::default();
-    copy_dir(fs, dir, src, stamp, &mut copied)?;
+    copy_dir(fs, dir, tree, src, stamp, &mut copied)?;
     Ok(copied)
 }
 
 fn copy_dir<D: Disk>(
     fs: &mut Fs<D>,
     dir: Loc,
+    tree: &dyn Tree,
     src: &Path,
     stamp: &Stamp<'_>,
     copied: &mut Copied,
 ) -> Result<()> {
     let at = |e: std::io::Error| Cow::Owned(alloc::format!("{}: {e}", src.display()));
-    let mut entries: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(src)
-        .map_err(at)?
-        .filter_map(|e| e.ok())
-        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
-        .collect();
-    entries.sort();
-    for (name, path) in entries {
-        let meta = std::fs::metadata(&path).map_err(at)?;
-        let perm = (stamp.perm)(&path, &meta) & 0o777;
-        let mtime = stamp.mtime.unwrap_or_else(|| {
-            meta.modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_secs() as u32)
-        });
+    let mut entries = tree.entries(src).map_err(at)?;
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    for entry in entries {
+        let (name, path) = (&entry.name, src.join(&entry.name));
+        let perm = entry.perm & 0o777;
+        let mtime = stamp.mtime.unwrap_or(entry.mtime);
         let named = |e: crate::Error| Cow::Owned(alloc::format!("{}: {e}", path.display()));
-        let loc = if meta.is_dir() {
-            let loc = fs
-                .create(dir, &name, DMDIR | 0o777, stamp.user)
-                .map_err(named)?;
-            copy_dir(fs, loc, &path, stamp, copied)?;
-            copied.dirs += 1;
-            loc
-        } else if meta.is_file() {
-            let loc = fs.create(dir, &name, perm, stamp.user).map_err(named)?;
-            let data = std::fs::read(&path).map_err(at)?;
-            let n = fs.write(loc.me, 0, &data, stamp.user).map_err(named)?;
-            if n != data.len() {
-                return Err(named(Cow::Borrowed(purg_abi::error::ENOSPACE)));
+        let loc = match entry.kind {
+            Kind::Dir => {
+                let loc = fs
+                    .create(dir, name, DMDIR | 0o777, stamp.user)
+                    .map_err(named)?;
+                copy_dir(fs, loc, tree, &path, stamp, copied)?;
+                copied.dirs += 1;
+                loc
             }
-            copied.files += 1;
-            copied.bytes += n as u64;
-            loc
-        } else {
-            continue;
+            Kind::File => {
+                let loc = fs.create(dir, name, perm, stamp.user).map_err(named)?;
+                let data = tree.read(&path).map_err(at)?;
+                let n = fs.write(loc.me, 0, &data, stamp.user).map_err(named)?;
+                if n != data.len() {
+                    return Err(named(Cow::Borrowed(purg_abi::error::ENOSPACE)));
+                }
+                copied.files += 1;
+                copied.bytes += n as u64;
+                loc
+            }
+            Kind::Other => continue,
         };
         // The parent's permissions masked the create's.
         let w = WStat {

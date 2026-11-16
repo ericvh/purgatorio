@@ -6,7 +6,8 @@
 //! summary: files, directories, blocks used and free, and the journal
 //! transaction a mount would replay.
 
-use std::fs::File;
+use purgatorio::fs::File;
+use purgatorio::println;
 
 use purg_fs::file::FileDisk;
 use purg_fs::{Fs, Mount};

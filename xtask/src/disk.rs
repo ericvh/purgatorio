@@ -4,7 +4,7 @@
 use std::fs::{File, OpenOptions};
 use std::path::Path;
 
-use purg_fs::file::{Copied, FileDisk, Stamp, add_tree, parse_size};
+use purg_fs::file::{Copied, FileDisk, HostTree, Stamp, add_tree, parse_size};
 use purg_fs::layout::BSIZE;
 use purg_fs::{Format, Fs, Mount, Report};
 
@@ -36,17 +36,17 @@ pub fn build(out: &Path, src: Option<&Path>, size: u64, bsize: usize) -> Result<
     let mut fs = Fs::format(FileDisk::new(file, size, 512), &format).map_err(|e| at(&e))?;
     let mut copied = Copied::default();
     if let Some(src) = src {
-        let perm = |_: &Path, m: &std::fs::Metadata| {
+        let perm = |m: &std::fs::Metadata| {
             use std::os::unix::fs::PermissionsExt;
             m.permissions().mode()
         };
         let stamp = Stamp {
             user: USER,
-            perm: &perm,
             mtime: None,
         };
         let root = fs.root();
-        copied = add_tree(&mut fs, root, src, &stamp).map_err(|e| at(&e))?;
+        copied =
+            add_tree(&mut fs, root, &HostTree { perm: &perm }, src, &stamp).map_err(|e| at(&e))?;
     }
     fs.sync().map_err(|e| at(&e))?;
     fs.into_disk().into_inner().sync_all().map_err(|e| at(&e))?;
