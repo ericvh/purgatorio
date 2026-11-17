@@ -120,7 +120,8 @@ a tenth or two), medians of 5 runs, speed-up over one thread:
 | `lock`: one contended mutex | 0.32 | 0.25 | 0.19 | 0.12 | 1.38, 0.69 |
 
 On an AMD Ryzen Threadripper 1950X under Linux (16 cores, 32 with SMT),
-on an idle machine, medians of 5 runs:
+on an idle machine, medians of 5 runs (the last `alloc` row is from a
+later run than the others):
 
 | workload | emu, 8 threads | emu, 16 | emu, 32 | native, 8 | native, 16 | native, 32 | emu time over native, 1 and 32 threads |
 |---|---:|---:|---:|---:|---:|---:|---|
@@ -128,6 +129,7 @@ on an idle machine, medians of 5 runs:
 | `memory` | 4.82 | 4.52 | 4.49 | 1.44 | 1.42 | 1.35 | 3.19, 0.96 |
 | `alloc`, with wasi-libc's allocator | 0.09 | 0.07 | 0.07 | 7.59 | 6.62 | 6.79 | 7.8, 753 |
 | `alloc`, with the SDK's, shards by hash | 7.27 | 2.46 | 4.72 | 6.19 | 15.29 | 14.44 | 8.1, 24.7 |
+| `alloc`, with the SDK's, a shard a thread | 7.10 | 13.08 | 17.62 | 6.41 | 8.77 | 14.61 | 7.9, 6.6 |
 | `lock` | 0.33 | 0.33 | 0.31 | 0.28 | 0.26 | 0.22 | 1.05, 0.74 |
 
 What the two hosts agree on:
@@ -149,13 +151,14 @@ What the two hosts agree on:
   7.6 times as long as one on the M1, and 32 threads 14 times as long
   on the Threadripper, 28.6 s against 38 ms native. With the allocator
   below, 8 threads on the M1 are 4 times faster than one, and faster
-  than the native build; on the Threadripper 8 threads are 7.3 times
-  faster and 32 threads take 445 ms. That run picked a thread's shard by
-  a hash, and 16 threads often shared one (2.5 times, not 16); each
-  thread now has a shard of its own, which this host shows fixes it, and
-  a Threadripper run of that is to come. A single thread is 8 times
-  slower than native on the Threadripper and faster than native on the
-  M1; the cause is not known.
+  than the native build. On the Threadripper 16 threads are 13 times
+  faster than one and 32 threads 17.6 times, 118 ms where it was
+  28.6 s, a better curve than the native allocator's. The allocator's
+  first version picked a thread's shard by a hash, and 16 threads often
+  shared one (2.5 times, not 13); a shard a thread fixed that. A single
+  thread is still 8 times slower than native on the Threadripper, at
+  every thread count, and faster than native on the M1; the cause is
+  not known.
 - **A contended mutex gets slower with threads everywhere**; the emu
   loses less than the native build, on both hosts.
 
