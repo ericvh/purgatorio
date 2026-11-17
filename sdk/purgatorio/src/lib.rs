@@ -21,6 +21,7 @@
 // (`docs/wasm64.md`).
 #![cfg_attr(target_arch = "wasm64", feature(alloc_error_hook))]
 
+pub mod alloc;
 pub mod arg;
 pub mod auth;
 pub mod bufio;
@@ -42,6 +43,14 @@ pub mod time;
 
 use crate::fd::{FromRawFd, OwnedFd};
 use std::fmt;
+
+/// A threaded guest's allocator (`docs/threads.md`): every threaded guest
+/// that links the SDK gets it. `cargo xtask` sets the cfg when it builds
+/// for `wasm32-wasip1-threads`, which stable Rust cannot tell from
+/// `wasm32-wasip1` by a cfg of its own.
+#[cfg(purgatorio_threads)]
+#[global_allocator]
+static THREADED: alloc::Threaded = alloc::Threaded::new();
 
 pub use purg_abi as abi;
 pub use purg_styx::{DMAPPEND, DMAUTH, DMDIR, DMEXCL, Dir, Qid};

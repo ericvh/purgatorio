@@ -245,6 +245,32 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         big.is_ok_and(|v| v.len() == 32 << 20 && v[v.len() - 1] == 0xa5),
     );
 
+    // The allocator: blocks one thread makes, another checks and frees,
+    // while every thread allocates. (The SDK's allocator for threads
+    // moves freed blocks between threads.)
+    let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(64);
+    let makers: Vec<_> = (0..4u8)
+        .map(|t| {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                for i in 0..20_000usize {
+                    let _ = tx.send(vec![t; 1 + (i * 13) % 1500]);
+                }
+            })
+        })
+        .collect();
+    drop(tx);
+    let mut blocks = 0;
+    let mut sound = true;
+    for v in rx {
+        sound &= v.iter().all(|b| *b == v[0]);
+        blocks += 1;
+    }
+    for m in makers {
+        let _ = m.join();
+    }
+    check("allocator", sound && blocks == 80_000);
+
     // Many threads at once.
     let n = Arc::new(AtomicU64::new(0));
     let many: Vec<_> = (0..64)

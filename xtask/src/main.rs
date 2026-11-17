@@ -129,6 +129,12 @@ const GUEST64_TARGET: &str = "wasm64-unknown-unknown";
 /// with a shared memory, atomics and `std::thread`.
 const GUEST_THREADS_TARGET: &str = "wasm32-wasip1-threads";
 
+/// What a threaded guest is built with, as encoded rustflags: the cfg
+/// that gives it the SDK's allocator for threads (`purgatorio::alloc`).
+/// Stable Rust has no cfg of its own that tells the threads target from
+/// `wasm32-wasip1`.
+const THREADS_CFG: &str = "--cfg\x1fpurgatorio_threads";
+
 /// Where wasm64 guests are installed under `root/bin`: `bin/test` is
 /// `bin/64/test` there.
 const GUEST64_DIR: &str = "64";
@@ -368,7 +374,10 @@ fn guest_rustflags(ws: &Path) -> Result<String> {
 fn guest_cargo(ws: &Path, verb: &str, target: &str) -> Result<Command> {
     let mut cmd = cargo();
     cmd.current_dir(ws).args([verb, "--target", target]);
-    let flags = guest_rustflags(ws)?;
+    let mut flags = guest_rustflags(ws)?;
+    if target == GUEST_THREADS_TARGET {
+        flags = format!("{flags}\x1f{THREADS_CFG}");
+    }
     if target == GUEST64_TARGET {
         // `std` is built from source: the nightly-only `-Zbuild-std` is
         // let through on the pinned stable compiler, which is the one
@@ -476,6 +485,7 @@ fn clippy_guests() -> Result<()> {
         "-p",
         "purgatorio",
     ]);
+    cmd.env("CARGO_ENCODED_RUSTFLAGS", THREADS_CFG);
     for g in guests(&ws)?.iter().filter(|g| g.threads) {
         cmd.args(["-p", &g.package]);
     }
