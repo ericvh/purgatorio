@@ -590,6 +590,20 @@ and `usize` an `i64`, without `load` and `call`, and with `read`,
 layout rules and how such guests are built and found. Adding the module
 did not change what a wasm32 guest sees, so the version stayed 0.13.
 
+## Threaded guests: `wasi.thread-spawn`
+
+A guest built for `wasm32-wasip1-threads` imports its memory, shared,
+as `env.memory`, and wasi-threads' one function:
+
+| call | result | what |
+|---|---|---|
+| `wasi.thread-spawn(arg)` | `i32` | starts a thread: a new prog on the same memory, which the host starts at the module's `wasi_thread_start(tid, arg)`. Returns the thread id, which is the new prog's pid, or -1 with the errstr set. |
+
+Only an engine with threads registers it: wasmtime on the emu.
+`docs/threads.md` says what a thread is, how a threaded program ends and
+what the limits are. A wasm32 guest that is not threaded sees nothing
+new, so the version stayed 0.13.
+
 ## `/prog/<pid>/status` and `ppid`
 
 `status` is prog(3)'s line, with no newline: pid and process group

@@ -230,6 +230,59 @@ on_each_vm! {
         assert!(o.status.success(), "{vm}");
     }
 
+    /// A threaded module (`docs/threads.md`): `std::thread` on a shared
+    /// heap, each thread a prog. Only wasmtime has threads; wasmi refuses
+    /// the module, and says why.
+    fn threads_conformance(vm) {
+        let o = emu(vm, &["/bin/test/threads.wasm", "/tmp"], b"");
+        let out = stdout(&o);
+        if vm == "wasmi" {
+            assert!(!o.status.success(), "{vm}:\n{out}");
+            assert_eq!(
+                String::from_utf8_lossy(&o.stderr),
+                "emu: /bin/test/threads.wasm: bad executable: threads are not supported by wasmi\n",
+                "{vm}"
+            );
+            return;
+        }
+        assert!(o.status.success(), "{vm}:\n{out}");
+        assert!(!out.contains("FAIL"), "{vm}:\n{out}");
+        assert!(out.contains("ok sleeps overlap\n"), "{vm}:\n{out}");
+        assert!(out.ends_with("ok 64 threads\n"), "{vm}:\n{out}");
+        assert_eq!(out.lines().count(), 17, "{vm}:\n{out}");
+    }
+
+    /// The threads of a program are progs in `/prog`, and they end with
+    /// it: a kill of a thread that waits on a lock ends them all, and so
+    /// does a kill of the program's own prog. The emu then exits, having
+    /// no prog left.
+    fn threads_end_together(vm) {
+        if vm == "wasmi" {
+            return;
+        }
+        let script = "test/threads hang &
+sleep 1
+ps | grep -c threads
+ps | grep threads | sed 1d | sed 1q | sed 's/^ *([0-9]+).*/\\1/' > /tmp/tid
+echo kill > /prog/`{cat /tmp/tid}^/ctl
+sleep 1
+echo a thread killed: `{ps | grep -c threads}
+test/threads hang &
+sleep 1
+echo kill > /prog/$apid/ctl
+sleep 1
+echo the program killed: `{ps | grep -c threads}
+";
+        let o = emu_inferno(vm, &["sh", "-c", script], b"");
+        assert_eq!(
+            stdout(&o),
+            "3\na thread killed: 0\nthe program killed: 0\n",
+            "{vm}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(o.status.success(), "{vm}");
+    }
+
     fn abi_conformance(vm) {
         let o = emu(vm, &["/bin/test/abi.wasm"], b"");
         let out = stdout(&o);

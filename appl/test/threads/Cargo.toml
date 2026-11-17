@@ -1,0 +1,20 @@
+[package]
+name = "appl-test-threads"
+description = "Threads conformance: a threaded module, each thread a prog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[package.metadata.purgatorio]
+threads = true
+
+[[bin]]
+name = "threads"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true
