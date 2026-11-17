@@ -100,6 +100,40 @@ started from a thread, memory grown by a thread, and 64 threads at once.
 The acceptance tests run it on wasmtime, check that wasmi refuses it,
 and check the kills and the detaching above.
 
+## Scaling
+
+`cargo xtask thread-scale [--max N] [--reps R] [--all]` runs
+`appl/test/threadscale` with 1 to N threads in the release emu, and the
+same source built as a native program, and prints a table for each of
+four workloads (also in `target/thread-scale/results.md`). Run it on the
+machine you care about.
+
+On an Apple M1 under Linux (4 fast and 4 slow cores, so about 5.9 times
+one fast core at best), medians of 5 runs, speed-up over one thread:
+
+| workload | emu, 4 threads | emu, 8 | native, 4 | native, 8 | emu time over native, 1 and 8 threads |
+|---|---:|---:|---:|---:|---|
+| `primes`: computation alone | 3.94 | 5.23 | 3.83 | 4.72 | 1.52, 1.37 |
+| `memory`: sums over 256 MiB | 3.80 | 5.19 | 1.08 | 1.00 | 10.3, 1.98 |
+| `alloc`: 20 million small allocations | 0.16 | 0.13 | 2.83 | 4.27 | 0.92, 29.8 |
+| `lock`: one contended mutex | 0.35 | 0.25 | 0.19 | 0.12 | 1.38, 0.67 |
+
+- Computation scales as the hardware does: nearly 4 times on the four
+  fast cores and on to 5.2 with the slow ones, a little better than the
+  native build, at a steady 1.4 to 1.5 times its cost.
+- The array sums scale the same way in the emu, where they are bound by
+  computation (no vector code at the guests' `opt-level = "s"`, and
+  bounds checks); the native build is at the memory's bandwidth with one
+  thread and gains nothing from more.
+- Allocation is the weak point. A threaded guest's allocator, wasi-libc's,
+  has one lock, so threads that allocate all the time run one after the
+  other and pay for the waits: 8 threads take 7.6 times as long as one.
+  The native allocator has an arena a thread. A threaded guest should
+  allocate outside its inner loops, or bring an allocator with a heap a
+  thread.
+- A contended mutex gets slower with threads everywhere; the emu loses
+  less than the native build here.
+
 ## In the host
 
 - `purg_vm::shared_memory` tells a threaded module by its memory's

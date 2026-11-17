@@ -62,7 +62,7 @@ pub fn in_image(path: &str, names: bool) -> bool {
         return false;
     }
     // Threaded modules run on the emu's wasmtime alone (`docs/threads.md`).
-    if path.starts_with("bin/test/threads.") {
+    if path.starts_with("bin/test/threads.") || path.starts_with("bin/test/threadscale.") {
         return false;
     }
     names || !path.ends_with(".names") || path.starts_with("bin/test/")
