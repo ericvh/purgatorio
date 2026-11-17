@@ -87,7 +87,7 @@ members = [
 exclude = ["appl/cmd/ndb", "appl/cmd/install", "appl/cmd/disk", "appl/cmd/ip", "appl/cmd/auth", "appl/cmd/auxi", "appl/cmd/dbm", "appl/cmd/draw"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.99"
 license = "Apache-2.0"
