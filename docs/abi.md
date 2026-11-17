@@ -599,6 +599,9 @@ as `env.memory`, and wasi-threads' one function:
 |---|---|---|
 | `wasi.thread-spawn(arg)` | `i32` | starts a thread: a new prog on the same memory, which the host starts at the module's `wasi_thread_start(tid, arg)`. Returns the thread id, which is the new prog's pid, or -1 with the errstr set. |
 
+A thread detaches from its program by writing `detach` to its own
+`/prog/<pid>/ctl`; like `interrupt`, that is no part of the import ABI.
+
 Only an engine with threads registers it: wasmtime on the emu.
 `docs/threads.md` says what a thread is, how a threaded program ends and
 what the limits are. A wasm32 guest that is not threaded sees nothing

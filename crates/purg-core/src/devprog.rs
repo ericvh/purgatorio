@@ -424,6 +424,7 @@ impl Dev for DevProg {
             },
             "catchint on" => p.set_catch_interrupt(true),
             "catchint off" => p.set_catch_interrupt(false),
+            "detach" => p.detach(),
             "trace on" => p.debug.set_trace(true),
             "trace off" => p.debug.set_trace(false),
             "prof on" => p.debug.set_prof(true),

@@ -52,6 +52,24 @@ module follows Rust:
   it; neither would ever be released. The program's status is then
   `killed`; a panic's message is on fd 2.
 
+### Detaching: a Limbo `spawn`
+
+A thread can leave the program's fate: `purgatorio::thread::detach()`,
+which writes `detach` to the thread's own `/prog/<pid>/ctl`. A detached
+thread is not killed when the program's prog ends or another thread
+fails, and its own failure does not kill the program. It is then what a
+Limbo `spawn` makes: a prog on its own that still shares the heap, the
+fds and the name space. It shows in `/prog` until it ends, and an emu
+that waits for its last prog waits for it. If the program's own prog
+detaches, its end kills nobody.
+
+This is for a thread written for it: a server's worker that may be
+shed, or one that must finish after the command returns. Nothing
+releases a lock a detached thread held when it died, and nothing wakes a
+`join` on it. There is no way back, and `detach` on a prog that is not a
+thread does nothing. Any prog that may write the thread's `ctl` can
+detach it, as it can kill it.
+
 A thread that waits on a lock or a condition variable is in
 `memory.atomic.wait`, parked inside wasmtime, where a kill's note does
 not reach. The engine wakes it: every tick (10 ms), for a group with a
@@ -80,7 +98,7 @@ thread-local storage, a pid each in `/prog`, overlapping sleeps, shared
 fds and name space, a blocked read another thread satisfies, a prog
 started from a thread, memory grown by a thread, and 64 threads at once.
 The acceptance tests run it on wasmtime, check that wasmi refuses it,
-and check the kills above.
+and check the kills and the detaching above.
 
 ## In the host
 
