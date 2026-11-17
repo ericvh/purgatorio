@@ -23,7 +23,7 @@ use purg_abi::mode;
 use purg_core::{Chan, Error, Prog};
 
 pub use host::{purgatorio, wasi};
-pub use loader::{Malformed, abi_version, load_module, memory64};
+pub use loader::{Malformed, abi_version, load_module, memory64, shared_memory};
 pub use mem::{Fault, Mem, Ptr};
 
 /// Why the guest stopped before returning from its entry point. Host
@@ -119,6 +119,11 @@ pub trait Engine: Send + Sync {
     /// it has compiled them: a prog does not hold a copy of its module's
     /// file for as long as it runs.
     fn run(&self, wasm: Vec<u8>, ctx: Ctx) -> (Ctx, Result<Stop, Error>);
+    /// Whether the engine runs threaded modules, whose memory is shared
+    /// (`docs/threads.md`). One that does not is not handed one.
+    fn threads(&self) -> bool {
+        false
+    }
 }
 
 /// Opens the standard fds every command starts with: 0, 1 and 2 on
@@ -198,6 +203,26 @@ pub fn table_growing(ctx: &Ctx, current: usize, desired: usize) -> bool {
 /// Runs an already loaded module in `ctx`'s prog until it exits. Returns the
 /// Inferno exit status (`""` is success), or an error prefixed with `path`.
 pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, Error>) {
+    if shared_memory(&wasm) && !ctx.engine.threads() {
+        let e = alloc::format!(
+            "{path}: {}: threads are not supported by {}",
+            purg_abi::error::EBADEXEC,
+            ctx.engine.name()
+        );
+        return (ctx, Err(Error::from(e)));
+    }
+    let engine = ctx.engine.clone();
+    run_with(ctx, path, move |ctx| engine.run(wasm, ctx))
+}
+
+/// Runs guest code in `ctx`'s prog until it stops: `start` hands the
+/// context to an engine and gets it back. [`run_module`] starts a module
+/// at its entry point; an engine with threads starts a thread this way.
+pub fn run_with(
+    ctx: Ctx,
+    path: &str,
+    start: impl FnOnce(Ctx) -> (Ctx, Result<Stop, Error>),
+) -> (Ctx, Result<String, Error>) {
     let platform = ctx.prog.kernel.platform.clone();
     platform.set_current_pid(ctx.prog.pid);
     platform.set_note(Some(ctx.prog.proc.note.clone()));
@@ -209,9 +234,8 @@ pub fn run_module(ctx: Ctx, wasm: Vec<u8>, path: &str) -> (Ctx, Result<String, E
         platform.set_note(None);
         return (ctx, Ok(String::from(KILLED)));
     }
-    let engine = ctx.engine.clone();
     ctx.prog.proc.clear_mem();
-    let (ctx, res) = engine.run(wasm, ctx);
+    let (ctx, res) = start(ctx);
     platform.set_note(None);
     let res = match res {
         Ok(Stop::Exit(status)) => Ok(status),
@@ -286,17 +310,28 @@ pub fn spawn(
     // A child started under tracing runs a module that keeps a call stack.
     let wasm = trace::prepare(&child.proc, wasm);
     init_preopens(&mut child)?;
-    let pid = child.pid;
-    let platform = child.kernel.platform.clone();
     let ctx = Ctx::new(child, argv, engine.clone());
     let path = String::from(path);
+    start_kproc(ctx, path.clone(), move |ctx| run_module(ctx, wasm, &path))
+}
+
+/// Starts a new prog's kproc, on which `run` runs the prog to its end;
+/// the prog's status is what `run` returns, and an error is also printed
+/// on its fd 2. Returns the pid.
+fn start_kproc(
+    ctx: Ctx,
+    path: String,
+    run: impl FnOnce(Ctx) -> (Ctx, Result<String, Error>) + Send + 'static,
+) -> Result<u32, Error> {
+    let pid = ctx.prog.pid;
+    let platform = ctx.prog.kernel.platform.clone();
     let name = String::from(module_name(&path));
     platform.spawn_kproc(
         &name,
         Box::new(move || {
             let mut ctx = ctx;
             ctx.prog.started();
-            let (mut ctx, res) = run_module(ctx, wasm, &path);
+            let (mut ctx, res) = run(ctx);
             ctx.prog.status = match res {
                 Ok(s) => s,
                 Err(e) => {
@@ -309,6 +344,34 @@ pub fn spawn(
         }),
     )?;
     Ok(pid)
+}
+
+/// Starts a thread of `parent`'s threaded module (`docs/threads.md`): a
+/// new prog that shares all of `parent`'s groups, as a Limbo `spawn`
+/// does, on a kproc of its own, where `start` runs the thread's instance.
+/// The engine's `thread-spawn` calls this. Returns the pid, which is the
+/// thread's id.
+pub fn spawn_thread(
+    parent: &Ctx,
+    start: impl FnOnce(Ctx) -> (Ctx, Result<Stop, Error>) + Send + 'static,
+) -> Result<u32, Error> {
+    let child = parent.prog.spawn(0, &[])?;
+    if parent.prog.proc.note.killed() {
+        return Err(Error::new(purg_abi::error::EINTR));
+    }
+    // The thread's kproc stack is memory it holds, within its limits.
+    let stack = child.kernel.platform.prog_stack() as u64;
+    if stack != 0 && !child.kernel.procs.charge_mem(&child.proc, 0, stack) {
+        return Err(Error::new(purg_abi::error::ENOMEM));
+    }
+    let path = parent.prog.proc.name();
+    let ctx = Ctx {
+        prog: child,
+        argv: parent.argv.clone(),
+        env: parent.env.clone(),
+        engine: parent.engine.clone(),
+    };
+    start_kproc(ctx, path.clone(), move |ctx| run_with(ctx, &path, start))
 }
 
 /// Invokes `$m!` once per import, as

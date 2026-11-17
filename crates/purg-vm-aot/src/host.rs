@@ -107,10 +107,26 @@ pub fn stop(res: wasmtime_runtime::Result<()>) -> Stop {
 pub fn memory<'c>(
     caller: &'c mut Caller<'_, Ctx>,
 ) -> wasmtime_runtime::Result<(&'c mut [u8], &'c mut Ctx)> {
-    let Some(Extern::Memory(mem)) = caller.get_export(purg_abi::MEMORY) else {
-        return Err(wasmtime_runtime::Error::msg("guest exports no memory"));
-    };
-    Ok(mem.data_and_store_mut(caller.as_context_mut()))
+    match caller.get_export(purg_abi::MEMORY) {
+        Some(Extern::Memory(mem)) => Ok(mem.data_and_store_mut(caller.as_context_mut())),
+        // A threaded module's memory (`docs/threads.md`), which only an
+        // engine with threads makes.
+        Some(Extern::SharedMemory(mem)) => {
+            let cells = mem.data();
+            let (at, len) = (cells.as_ptr() as *mut u8, cells.len());
+            // SAFETY: a shared memory is never moved or shrunk, and the
+            // caller's instance keeps it alive for the borrow, so the
+            // slice stays in bounds. It is not exclusive: other threads
+            // of the guest can write these bytes during a host call. A
+            // program that does so has a race of its own making, but the
+            // host then holds a `&mut [u8]` (and `&str`s checked from it)
+            // that Rust assumes nobody else writes. `docs/threads.md`
+            // lists this with the feature's other limits.
+            let data = unsafe { core::slice::from_raw_parts_mut(at, len) };
+            Ok((data, caller.data_mut()))
+        }
+        _ => Err(wasmtime_runtime::Error::msg("guest exports no memory")),
+    }
 }
 
 /// Errors that end the module's start, as `bad executable: ...`.

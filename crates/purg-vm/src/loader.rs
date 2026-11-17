@@ -82,13 +82,11 @@ pub fn abi_version(wasm: &[u8]) -> Result<Option<&[u8]>, Malformed> {
     Ok(None)
 }
 
-/// Whether `wasm` is a wasm64 module: one whose memory, defined or
-/// imported, is indexed by `i64` (`docs/wasm64.md`). A module that is not
-/// well formed is not.
-pub fn memory64(wasm: &[u8]) -> bool {
-    // The limits of a memory start with a flags byte; bit 2 is `i64`.
-    const MEMORY64: u8 = 0x04;
-    let scan = || -> Result<bool, Malformed> {
+/// The flags byte of the limits of `wasm`'s memory, defined or imported:
+/// bit 1 is `shared` and bit 2 is `i64`. `None` for a module with no
+/// memory, or one that is not well formed.
+fn memory_flags(wasm: &[u8]) -> Option<u8> {
+    let scan = || -> Result<Option<u8>, Malformed> {
         if wasm.get(..8) != Some(b"\0asm\x01\0\0\0") {
             return Err(Malformed);
         }
@@ -107,7 +105,7 @@ pub fn memory64(wasm: &[u8]) -> bool {
                 // The memory section: a count, then each memory's limits.
                 5 => {
                     if leb_u32(body, &mut p)? > 0 {
-                        return Ok(body.get(p).ok_or(Malformed)? & MEMORY64 != 0);
+                        return Ok(Some(*body.get(p).ok_or(Malformed)?));
                     }
                 }
                 // The import section: an imported memory comes first.
@@ -123,10 +121,10 @@ pub fn memory64(wasm: &[u8]) -> bool {
                             // A function: its type index.
                             0 => drop(leb_u32(body, &mut p)?),
                             // A memory.
-                            2 => return Ok(body.get(p).ok_or(Malformed)? & MEMORY64 != 0),
+                            2 => return Ok(Some(*body.get(p).ok_or(Malformed)?)),
                             // A table, global or tag: none in a guest
                             // this host runs, and nothing after it is read.
-                            _ => return Ok(false),
+                            _ => return Ok(None),
                         }
                     }
                 }
@@ -134,9 +132,23 @@ pub fn memory64(wasm: &[u8]) -> bool {
             }
             pos = end;
         }
-        Ok(false)
+        Ok(None)
     };
-    scan().unwrap_or(false)
+    scan().unwrap_or(None)
+}
+
+/// Whether `wasm` is a wasm64 module: one whose memory, defined or
+/// imported, is indexed by `i64` (`docs/wasm64.md`). A module that is not
+/// well formed is not.
+pub fn memory64(wasm: &[u8]) -> bool {
+    memory_flags(wasm).is_some_and(|f| f & 0x04 != 0)
+}
+
+/// Whether `wasm` is a threaded module: one whose memory is shared, so
+/// that several instances, one a thread, can run on it
+/// (`docs/threads.md`).
+pub fn shared_memory(wasm: &[u8]) -> bool {
+    memory_flags(wasm).is_some_and(|f| f & 0x02 != 0)
 }
 
 #[cfg(test)]
@@ -184,6 +196,14 @@ mod tests {
         assert!(!memory64(&module(&[])));
         assert!(!memory64(b"#!/bin/sh"));
         assert!(!memory64(&module(&[(5, &[1])])));
+        // Shared, with a maximum, as a threaded module imports it.
+        let shared = [
+            1, 3, b'e', b'n', b'v', 6, b'm', b'e', b'm', b'o', b'r', b'y', 2, 0x03, 17, 64,
+        ];
+        assert!(shared_memory(&module(&[(2, &shared)])));
+        assert!(!memory64(&module(&[(2, &shared)])));
+        assert!(!shared_memory(&module(&[(5, &[1, 0x04, 1])])));
+        assert!(!shared_memory(&module(&[])));
     }
 
     #[test]

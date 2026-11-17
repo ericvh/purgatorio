@@ -473,7 +473,9 @@ pub fn rewrite(wasm: &[u8], opts: Options) -> Option<(Vec<u8>, Layout)> {
 /// was started under tracing, `wasm` rewritten to keep a call stack, and
 /// to count what the prog's profiles ask for.
 pub fn prepare(proc: &Proc, wasm: Vec<u8>) -> Vec<u8> {
-    if !proc.debug.trace() {
+    // A threaded module runs untraced for now (`docs/threads.md`): each
+    // thread would need a stack of its own in the prog's record.
+    if !proc.debug.trace() || crate::shared_memory(&wasm) {
         return wasm;
     }
     let opts = Options {
