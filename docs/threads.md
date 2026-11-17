@@ -118,21 +118,43 @@ one fast core at best), medians of 5 runs, speed-up over one thread:
 | `alloc`: 20 million small allocations | 0.16 | 0.13 | 2.83 | 4.27 | 0.92, 29.8 |
 | `lock`: one contended mutex | 0.35 | 0.25 | 0.19 | 0.12 | 1.38, 0.67 |
 
-- Computation scales as the hardware does: nearly 4 times on the four
-  fast cores and on to 5.2 with the slow ones, a little better than the
-  native build, at a steady 1.4 to 1.5 times its cost.
-- The array sums scale the same way in the emu, where they are bound by
-  computation (no vector code at the guests' `opt-level = "s"`, and
-  bounds checks); the native build is at the memory's bandwidth with one
-  thread and gains nothing from more.
-- Allocation is the weak point. A threaded guest's allocator, wasi-libc's,
-  has one lock, so threads that allocate all the time run one after the
-  other and pay for the waits: 8 threads take 7.6 times as long as one.
-  The native allocator has an arena a thread. A threaded guest should
+On an AMD Ryzen Threadripper 1950X under Linux (16 cores, 32 with SMT),
+medians of 5 runs. Other users logged in during the run, so the 16 and
+32 thread points may be low:
+
+| workload | emu, 8 threads | emu, 16 | emu, 32 | native, 8 | native, 16 | native, 32 | emu time over native, 1 and 32 threads |
+|---|---:|---:|---:|---:|---:|---:|---|
+| `primes` | 7.49 | 9.86 | 13.70 | 7.45 | 9.81 | 13.63 | 1.01, 1.00 |
+| `memory` | 5.10 | 4.89 | 4.83 | 1.22 | 1.16 | 1.17 | 4.10, 1.00 |
+| `alloc` | 0.09 | 0.07 | 0.07 | 7.59 | 6.62 | 6.79 | 7.8, 753 |
+| `lock` | 0.34 | 0.33 | 0.31 | 0.25 | 0.23 | 0.22 | 1.03, 0.73 |
+
+What the two hosts agree on:
+
+- **Computation scales as the hardware does, and as native code does.**
+  On the M1, nearly 4 times on the four fast cores and 5.2 with the slow
+  ones, at 1.4 to 1.5 times the native build's cost. On the
+  Threadripper, 7.5 times on 8 threads and 13.7 on 32, the same curve
+  as the native build to within 1%, at the same cost. The engine adds
+  nothing that grows with the thread count. (Past 8 threads both builds
+  fall short of the core count there: 9.9 times on 16 cores. That is the
+  machine or its other load, not the emu.)
+- **The array sums scale until the memory is the limit.** The emu's
+  single thread is bound by computation (no vector code at the guests'
+  `opt-level = "s"`, and bounds checks), 4 to 10 times slower than
+  native, so it has room to scale: to about 5 times, where it meets the
+  native build at the memory's bandwidth and both stop.
+- **Allocation is the weak point, badly.** A threaded guest's allocator,
+  wasi-libc's, has one lock, so threads that allocate all the time run
+  one after the other and pay for the waits. On the M1, 8 threads take
+  7.6 times as long as one. On the Threadripper, 32 threads take 14
+  times as long as one, 28 s against 38 ms for the native build, whose
+  allocator has an arena a thread; even one thread is 8 times slower
+  than native there, though not on the M1. A threaded guest should
   allocate outside its inner loops, or bring an allocator with a heap a
-  thread.
-- A contended mutex gets slower with threads everywhere; the emu loses
-  less than the native build here.
+  thread. This is the first thing to fix for threaded guests.
+- **A contended mutex gets slower with threads everywhere**; the emu
+  loses less than the native build, on both hosts.
 
 ## In the host
 
