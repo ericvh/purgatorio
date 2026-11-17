@@ -30,6 +30,7 @@ cargo xtask probe --smp 4        # the probe on four CPUs
 cargo xtask kernel               # purg-kernel under QEMU TCG: GICv2, GICv3, EL2 boot
 cargo xtask kernel --kvm         # the same under KVM (aarch64 host, GICv3 only, PSCI exit)
 cargo xtask initrd               # the kernel's root as target/initrd/root.tar
+cargo xtask thread-scale         # how threaded guests scale, emu against native (docs/threads.md)
 cargo xtask clippy-guests        # lint the SDK and every guest for wasm32-wasip1 (and wasm64)
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings

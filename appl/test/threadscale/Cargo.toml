@@ -1,0 +1,20 @@
+[package]
+name = "appl-test-threadscale"
+description = "A scaling benchmark for threaded modules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[package.metadata.purgatorio]
+threads = true
+
+[[bin]]
+name = "threadscale"
+path = "src/main.rs"
+
+[dependencies]
+purgatorio.workspace = true
+
+[lints]
+workspace = true

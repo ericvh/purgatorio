@@ -103,6 +103,7 @@ mod letheperf;
 mod phases;
 mod size;
 mod tar;
+mod threadscale;
 mod tz;
 mod wasm;
 
@@ -517,6 +518,7 @@ fn check_wide_sources(ws: &Path) -> Result<()> {
             "appl/test/wasi/",
             "appl/test/net/",
             "appl/test/threads/",
+            "appl/test/threadscale/",
         ]
         .iter()
         .any(|s| p.contains(s))
@@ -3101,6 +3103,7 @@ fn main() -> ExitCode {
         Some("check-wasm") => check_wasm(&rest).map(|()| ExitCode::SUCCESS),
         Some("sign") => sign(&rest).map(|()| ExitCode::SUCCESS),
         Some("aot") => aot(&rest).map(|()| ExitCode::SUCCESS),
+        Some("thread-scale") => threadscale::thread_scale(&rest).map(|()| ExitCode::SUCCESS),
         Some("probe") => {
             // `--smp N` boots QEMU with N CPUs; the rest are image flags.
             let mut smp = 1;
