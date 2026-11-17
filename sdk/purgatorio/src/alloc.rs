@@ -10,9 +10,11 @@
 //! - A block of up to [`SMALL`] bytes comes from a size class, a multiple
 //!   of 16 bytes.
 //! - There are [`SHARDS`] shards, each with a free list a class behind
-//!   one spin lock held for a few instructions. A thread uses the shard
-//!   its stack's address picks: there is no thread-local storage to set
-//!   up or tear down, which an allocator cannot easily have.
+//!   one spin lock held for a few instructions. Each thread is given a
+//!   shard in turn the first time it allocates, so threads share one
+//!   only when more than [`SHARDS`] have been started. The thread keeps
+//!   its shard's number in a thread-local word that needs no setting up
+//!   or tearing down, which an allocator could not do.
 //! - A free goes to the freeing thread's shard, whoever allocated the
 //!   block. A list that grows past [`HIGH`] blocks sends half of them to
 //!   the class's central list, and an empty list takes a batch from there
@@ -22,9 +24,10 @@
 //!   holds is its high-water mark, as with most allocators of this kind.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::cell::UnsafeCell;
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// The largest block that comes from a size class.
 pub const SMALL: usize = 1024;
@@ -32,7 +35,7 @@ pub const SMALL: usize = 1024;
 const STEP: usize = 16;
 const CLASSES: usize = SMALL / STEP;
 /// The number of shards, a power of two.
-pub const SHARDS: usize = 64;
+pub const SHARDS: usize = 128;
 /// A free list longer than this sends half its blocks to the central
 /// list.
 pub const HIGH: usize = 256;
@@ -92,6 +95,11 @@ impl List {
 
 /// A spin lock around a `T`. It is held for a few instructions, by code
 /// that cannot block or allocate, so a waiter spins.
+///
+/// It is aligned to, and so padded to, 128 bytes, the largest cache line
+/// in use (Apple's): two threads on neighbouring shards otherwise write
+/// the same line, and two threads took nearly as long as one.
+#[repr(align(128))]
 struct Spin<T> {
     locked: AtomicBool,
     value: UnsafeCell<T>,
@@ -155,15 +163,27 @@ impl Threaded {
             .then(|| layout.size().max(1).div_ceil(STEP) - 1)
     }
 
-    /// The calling thread's shard: a hash of where its stack is. Each
-    /// thread has a stack of its own, megabytes from the next, so two
-    /// threads seldom share a shard; one thread may use a few as its
-    /// stack grows across a 64 KiB line, which does no harm.
+    /// The calling thread's shard: the next in turn, chosen when the
+    /// thread first allocates. (An earlier version picked one by a hash
+    /// of the stack's address; on a 16-core machine two of 16 threads
+    /// then often shared a shard and spun on its lock.)
     fn shard(&self) -> &Spin<Lists> {
-        let here = 0u8;
-        let at = (ptr::from_ref(&here) as usize) >> 16;
-        let hash = at.wrapping_mul(0x9e37_79b9) >> 7;
-        &self.shards[hash % SHARDS]
+        thread_local! {
+            // The shard's number plus one; 0 before the first use. A
+            // `const` initializer and no destructor: reading it neither
+            // allocates nor registers anything.
+            static MINE: Cell<usize> = const { Cell::new(0) };
+        }
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let mine = MINE.with(|m| match m.get() {
+            0 => {
+                let n = NEXT.fetch_add(1, Ordering::Relaxed) % SHARDS + 1;
+                m.set(n);
+                n
+            }
+            n => n,
+        });
+        &self.shards[mine - 1]
     }
 
     /// Blocks for an empty list of `class`: a batch from the central
