@@ -432,6 +432,10 @@ impl Inner {
     /// when it did not end cleanly: a thread that traps, is killed or
     /// exits with a status leaves locks held and joins that would never
     /// return.
+    ///
+    /// A detached prog (`detach` on its `ctl`) is outside this both ways:
+    /// its end kills nobody, and nobody's end kills it. It is a Limbo
+    /// `spawn`, which the program has said it is written for.
     fn leave_group(&self, pid: u32, clean: bool) {
         let group = self
             .threaded
@@ -442,9 +446,10 @@ impl Inner {
             return;
         };
         let mut members = group.members();
-        members.remove(&pid);
-        if pid == group.main || !clean {
-            for p in members.values() {
+        let me = members.remove(&pid);
+        let detached = me.is_some_and(|p| p.detached());
+        if !detached && (pid == group.main || !clean) {
+            for p in members.values().filter(|p| !p.detached()) {
                 p.kill();
             }
         }

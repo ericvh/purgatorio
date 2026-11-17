@@ -41,6 +41,36 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         thread::sleep(Duration::from_secs(3600));
         return Ok(());
     }
+    // `threads orphan file`: a detached thread outlives the program and
+    // then writes `file`.
+    if args.get(1).is_some_and(|a| a == "orphan") {
+        let file = args.get(2).cloned().unwrap_or_default();
+        let started = Arc::new(Barrier::new(2));
+        let go = started.clone();
+        thread::spawn(move || {
+            let detached = purgatorio::thread::detach();
+            go.wait();
+            thread::sleep(Duration::from_millis(1500));
+            let _ = purgatorio::fs::write(&file, format!("outlived: {}\n", detached.is_ok()));
+        });
+        started.wait();
+        println!("program ends");
+        return Ok(());
+    }
+    // `threads shed`: a detached thread fails, and the program goes on;
+    // then one that is not detached fails, and the program ends with it.
+    if args.get(1).is_some_and(|a| a == "shed") {
+        thread::spawn(|| {
+            let _ = purgatorio::thread::detach();
+            purgatorio::exits("fail:shed");
+        });
+        thread::sleep(Duration::from_millis(300));
+        println!("still running");
+        thread::spawn(|| purgatorio::exits("fail:worker"));
+        thread::sleep(Duration::from_secs(3600));
+        println!("FAIL outlived a failed thread");
+        return Ok(());
+    }
     let dir = args.get(1).map_or("/tmp", String::as_str);
 
     // A heap the threads share: a mutex, an atomic and joins.

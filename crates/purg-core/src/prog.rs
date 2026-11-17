@@ -76,6 +76,10 @@ pub struct Proc {
     /// The prog survives an interrupt (`catchint on` on `ctl`): it gets
     /// the note instead of being killed. Not inherited.
     catchint: AtomicBool,
+    /// The prog is a thread that has left its program's fate (`detach`
+    /// on `ctl`, `docs/threads.md`): it is not killed with the program,
+    /// and the program is not killed with it. Not inherited.
+    detached: AtomicBool,
     pub kgrp: Arc<Kgrp>,
     waits: Mutex<VecDeque<String>>,
     waitr: Rendez,
@@ -291,6 +295,18 @@ impl Proc {
 
     pub fn set_catch_interrupt(&self, on: bool) {
         self.catchint.store(on, Ordering::Release);
+    }
+
+    /// Whether the prog has detached from its threaded program
+    /// (`docs/threads.md`).
+    pub fn detached(&self) -> bool {
+        self.detached.load(Ordering::Acquire)
+    }
+
+    /// Detaches the prog. There is no way back: the program may already
+    /// have ended.
+    pub fn detach(&self) {
+        self.detached.store(true, Ordering::Release);
     }
 
     /// `running` until [`Proc::kill`] or a trap under tracing, then
@@ -627,6 +643,7 @@ impl Procs {
             pgrp: Mutex::new(pgrp),
             note: Arc::new(Note::new()),
             catchint: AtomicBool::new(false),
+            detached: AtomicBool::new(false),
             kgrp: Arc::new(Kgrp::new()),
             waits: Mutex::new(VecDeque::new()),
             waitr: Rendez::new(),

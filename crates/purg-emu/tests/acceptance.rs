@@ -283,6 +283,35 @@ echo the program killed: `{ps | grep -c threads}
         assert!(o.status.success(), "{vm}");
     }
 
+    /// A thread that detaches (`detach` on its `ctl`) is a Limbo `spawn`:
+    /// it outlives the program, and its failure does not end the
+    /// program. A thread that has not detached still does.
+    fn threads_detach(vm) {
+        if vm == "wasmi" {
+            return;
+        }
+        let script = "test/threads orphan /tmp/orphan
+echo program status: $status
+echo left running: `{ps | grep -c threads}
+sleep 3
+cat /tmp/orphan
+echo then: `{ps | grep -c threads}
+test/threads shed
+echo shed status: $status
+sleep 1
+echo after: `{ps | grep -c threads}
+";
+        let o = emu_inferno(vm, &["sh", "-c", script], b"");
+        assert_eq!(
+            stdout(&o),
+            "program ends\nprogram status: \nleft running: 1\noutlived: true\nthen: 0\n\
+             still running\nshed status: killed\nafter: 0\n",
+            "{vm}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert!(o.status.success(), "{vm}");
+    }
+
     fn abi_conformance(vm) {
         let o = emu(vm, &["/bin/test/abi.wasm"], b"");
         let out = stdout(&o);
