@@ -124,6 +124,10 @@ const GUEST_PROFILE: &str = "wasm";
 /// `rust-src` component with the pinned compiler.
 const GUEST64_TARGET: &str = "wasm64-unknown-unknown";
 
+/// The target of threaded guests (`docs/threads.md`): `wasm32-wasip1`
+/// with a shared memory, atomics and `std::thread`.
+const GUEST_THREADS_TARGET: &str = "wasm32-wasip1-threads";
+
 /// Where wasm64 guests are installed under `root/bin`: `bin/test` is
 /// `bin/64/test` there.
 const GUEST64_DIR: &str = "64";
@@ -158,6 +162,10 @@ struct Guest {
     /// Whether the crate is also built as a wasm64 guest: its manifest
     /// says `wasm64 = true` under `[package.metadata.purgatorio]`.
     wide: bool,
+    /// Whether the crate is a threaded guest, built for
+    /// [`GUEST_THREADS_TARGET`] instead of [`GUEST_TARGET`]: its manifest
+    /// says `threads = true` there.
+    threads: bool,
 }
 
 impl Guest {
@@ -250,11 +258,13 @@ fn guest(path: &Path, dir: String) -> Result<Guest> {
         .or_else(|| manifest_name(&manifest, "[lib]"))
         .unwrap_or_else(|| package.clone());
     let wide = manifest_flag(&manifest, "[package.metadata.purgatorio]", "wasm64");
+    let threads = manifest_flag(&manifest, "[package.metadata.purgatorio]", "threads");
     Ok(Guest {
         package,
         bin,
         dir,
         wide,
+        threads,
     })
 }
 
@@ -390,7 +400,11 @@ fn build_root() -> Result<()> {
     let guests = guests(&ws)?;
     let tmp = ws.join("root/tmp");
     fs::create_dir_all(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    build_guests(&ws, &guests.iter().collect::<Vec<_>>(), GUEST_TARGET)?;
+    let (threaded, narrow): (Vec<&Guest>, Vec<&Guest>) = guests.iter().partition(|g| g.threads);
+    build_guests(&ws, &narrow, GUEST_TARGET)?;
+    if !threaded.is_empty() {
+        build_guests(&ws, &threaded, GUEST_THREADS_TARGET)?;
+    }
     let wide: Vec<&Guest> = guests.iter().filter(|g| g.wide).collect();
     if !wide.is_empty() {
         build_guests(&ws, &wide, GUEST64_TARGET)?;
@@ -448,7 +462,20 @@ fn clippy_guests() -> Result<()> {
     let mut cmd = cargo();
     cmd.current_dir(&ws)
         .args(["clippy", "--target", GUEST_TARGET, "-p", "purgatorio"]);
-    for g in guests(&ws)? {
+    for g in guests(&ws)?.iter().filter(|g| !g.threads) {
+        cmd.args(["-p", &g.package]);
+    }
+    run(cmd.args(["--", "-D", "warnings"]))?;
+    // The SDK and the threaded guests.
+    let mut cmd = cargo();
+    cmd.current_dir(&ws).args([
+        "clippy",
+        "--target",
+        GUEST_THREADS_TARGET,
+        "-p",
+        "purgatorio",
+    ]);
+    for g in guests(&ws)?.iter().filter(|g| g.threads) {
         cmd.args(["-p", &g.package]);
     }
     run(cmd.args(["--", "-D", "warnings"]))?;
@@ -489,6 +516,7 @@ fn check_wide_sources(ws: &Path) -> Result<()> {
             "appl/test/abi/",
             "appl/test/wasi/",
             "appl/test/net/",
+            "appl/test/threads/",
         ]
         .iter()
         .any(|s| p.contains(s))
@@ -2973,10 +3001,12 @@ fn rustc_wrapper(args: &[String]) -> ExitCode {
         eprintln!("xtask: rustc wrapper called without rustc");
         return ExitCode::FAILURE;
     };
-    let guest = [GUEST_TARGET, GUEST64_TARGET].iter().any(|t| {
-        rest.windows(2).any(|w| w[0] == "--target" && w[1] == *t)
-            || rest.iter().any(|a| *a == format!("--target={t}"))
-    });
+    let guest = [GUEST_TARGET, GUEST_THREADS_TARGET, GUEST64_TARGET]
+        .iter()
+        .any(|t| {
+            rest.windows(2).any(|w| w[0] == "--target" && w[1] == *t)
+                || rest.iter().any(|a| *a == format!("--target={t}"))
+        });
     let crate_name = rest
         .iter()
         .position(|a| a == "--crate-name")
