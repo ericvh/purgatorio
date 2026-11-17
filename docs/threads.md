@@ -109,14 +109,15 @@ four workloads (also in `target/thread-scale/results.md`). Run it on the
 machine you care about.
 
 On an Apple M1 under Linux (4 fast and 4 slow cores, so about 5.9 times
-one fast core at best), medians of 5 runs, speed-up over one thread:
+one fast core at best; other work was running on it, and runs differ by
+a tenth or two), medians of 5 runs, speed-up over one thread:
 
 | workload | emu, 4 threads | emu, 8 | native, 4 | native, 8 | emu time over native, 1 and 8 threads |
 |---|---:|---:|---:|---:|---|
-| `primes`: computation alone | 3.94 | 5.23 | 3.83 | 4.72 | 1.52, 1.37 |
-| `memory`: sums over 256 MiB | 3.80 | 5.19 | 1.08 | 1.00 | 10.3, 1.98 |
-| `alloc`: 20 million small allocations | 0.16 | 0.13 | 2.83 | 4.27 | 0.92, 29.8 |
-| `lock`: one contended mutex | 0.35 | 0.25 | 0.19 | 0.12 | 1.38, 0.67 |
+| `primes`: computation alone | 3.13 | 3.92 | 3.22 | 3.94 | 0.91, 0.91 |
+| `memory`: sums over 256 MiB | 3.08 | 4.96 | 1.06 | 1.06 | 10.0, 2.14 |
+| `alloc`: 20 million small allocations | 2.35 | 3.53 | 2.80 | 4.26 | 0.72, 0.87 |
+| `lock`: one contended mutex | 0.32 | 0.25 | 0.19 | 0.12 | 1.38, 0.69 |
 
 On an AMD Ryzen Threadripper 1950X under Linux (16 cores, 32 with SMT),
 medians of 5 runs. Other users logged in during the run, so the 16 and
@@ -126,35 +127,52 @@ medians of 5 runs. Other users logged in during the run, so the 16 and
 |---|---:|---:|---:|---:|---:|---:|---|
 | `primes` | 7.49 | 9.86 | 13.70 | 7.45 | 9.81 | 13.63 | 1.01, 1.00 |
 | `memory` | 5.10 | 4.89 | 4.83 | 1.22 | 1.16 | 1.17 | 4.10, 1.00 |
-| `alloc` | 0.09 | 0.07 | 0.07 | 7.59 | 6.62 | 6.79 | 7.8, 753 |
+| `alloc`, with wasi-libc's allocator | 0.09 | 0.07 | 0.07 | 7.59 | 6.62 | 6.79 | 7.8, 753 |
 | `lock` | 0.34 | 0.33 | 0.31 | 0.25 | 0.23 | 0.22 | 1.03, 0.73 |
 
 What the two hosts agree on:
 
 - **Computation scales as the hardware does, and as native code does.**
-  On the M1, nearly 4 times on the four fast cores and 5.2 with the slow
-  ones, at 1.4 to 1.5 times the native build's cost. On the
-  Threadripper, 7.5 times on 8 threads and 13.7 on 32, the same curve
-  as the native build to within 1%, at the same cost. The engine adds
-  nothing that grows with the thread count. (Past 8 threads both builds
-  fall short of the core count there: 9.9 times on 16 cores. That is the
-  machine or its other load, not the emu.)
+  On both hosts the emu's curve is the native build's, at about the
+  native build's cost: 3.9 times on the M1's 8 uneven cores, 7.5 times
+  on 8 of the Threadripper's and 13.7 on its 32 threads, within 1% of
+  native there. The engine adds nothing that grows with the thread
+  count. (Past 8 threads both builds fall short of the Threadripper's
+  core count, 9.9 times on 16: that is the machine or its other load,
+  not the emu.)
 - **The array sums scale until the memory is the limit.** The emu's
   single thread is bound by computation (no vector code at the guests'
   `opt-level = "s"`, and bounds checks), 4 to 10 times slower than
   native, so it has room to scale: to about 5 times, where it meets the
   native build at the memory's bandwidth and both stop.
-- **Allocation is the weak point, badly.** A threaded guest's allocator,
-  wasi-libc's, has one lock, so threads that allocate all the time run
-  one after the other and pay for the waits. On the M1, 8 threads take
-  7.6 times as long as one. On the Threadripper, 32 threads take 14
-  times as long as one, 28 s against 38 ms for the native build, whose
-  allocator has an arena a thread; even one thread is 8 times slower
-  than native there, though not on the M1. A threaded guest should
-  allocate outside its inner loops, or bring an allocator with a heap a
-  thread. This is the first thing to fix for threaded guests.
+- **Allocation scales with the SDK's allocator, and not without it.**
+  wasi-libc's allocator has one lock, so threads that allocate all the
+  time ran one after the other and paid for the waits: 8 threads took
+  7.6 times as long as one on the M1, and 32 threads 14 times as long
+  on the Threadripper, 28 s against 38 ms native. With the allocator
+  below, 8 threads on the M1 are 3.5 times faster than one, and faster
+  than the native build: 129 ms where it was 5.5 s.
 - **A contended mutex gets slower with threads everywhere**; the emu
   loses less than the native build, on both hosts.
+
+## The allocator
+
+A threaded guest that links the SDK gets `purgatorio::alloc::Threaded`
+as its global allocator. Blocks of up to 1 KiB come from size classes,
+16 bytes apart, kept in free lists that are sharded: there are 64
+shards, each behind a spin lock held for a few instructions, and a
+thread uses the shard its stack's address picks, so two threads seldom
+meet and there is no thread-local storage to manage. A free goes to the
+freeing thread's shard. A list that passes 256 blocks sends half to a
+central list a class, from which an empty list takes a batch before it
+asks for a new slab, so what one thread frees comes back to the threads
+that allocate. Larger blocks, and slabs of 32 KiB, come from wasi-libc.
+Slabs are not given back: a guest's heap is its high-water mark.
+
+Stable Rust has no cfg that tells `wasm32-wasip1-threads` from
+`wasm32-wasip1`, so `cargo xtask` passes `--cfg purgatorio_threads` when
+it builds for the threads target, and the SDK installs the allocator
+under it. A threaded guest built some other way keeps wasi-libc's.
 
 ## In the host
 

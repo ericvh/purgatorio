@@ -249,7 +249,7 @@ on_each_vm! {
         assert!(!out.contains("FAIL"), "{vm}:\n{out}");
         assert!(out.contains("ok sleeps overlap\n"), "{vm}:\n{out}");
         assert!(out.ends_with("ok 64 threads\n"), "{vm}:\n{out}");
-        assert_eq!(out.lines().count(), 17, "{vm}:\n{out}");
+        assert_eq!(out.lines().count(), 18, "{vm}:\n{out}");
     }
 
     /// The threads of a program are progs in `/prog`, and they end with
