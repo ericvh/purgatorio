@@ -29,7 +29,12 @@ Release 1.1 adds wasm64 guests (`docs/wasm64.md`): a program can be a
 64-bit module, built for `wasm64-unknown-unknown`, beside the 32-bit
 ones. Every command is built in both widths, into `/bin` and `/bin/64`,
 and `run /lib/sh/wide` puts the 64-bit builds first. wasm32 stays the
-default. Work deferred past 1.1 is listed in the GitHub issues.
+default.
+
+After 1.1, on `next`: threaded guests (`docs/threads.md`). A program
+built for `wasm32-wasip1-threads` runs `std::thread` on a shared heap,
+each thread a prog in `/prog`. This works on the emu under wasmtime
+only. Work deferred is listed in the GitHub issues.
 
 
 `emu` boots a namespace like Inferno's emu. `#/` is the root, the host tree
@@ -300,7 +305,8 @@ alignment throughout.
 Use Rust 1.99.1. The file `rust-toolchain.toml` pins it: channel `1.99.1`,
 profile `minimal`, components `rustfmt`, `clippy` and `rust-src` (wasm64
 guests build `std` from source, `docs/wasm64.md`), and targets
-`wasm32-wasip1`, `wasm32-unknown-unknown`, and `aarch64-unknown-none`. The
+`wasm32-wasip1`, `wasm32-wasip1-threads`, `wasm32-unknown-unknown`, and
+`aarch64-unknown-none`. The
 host target comes with the toolchain. This covers Linux and macOS, including
 aarch64. Do not use a distro `rustc` package.
 

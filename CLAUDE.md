@@ -12,6 +12,8 @@ with `bind`/`mount`, and one protocol, Styx (9P2000).
   grouped by milestone (K1–K4, Phase G) and label. `docs/roadmap.md` only
   points there.
 - `docs/abi.md`: the guest ABI (WASI p1 plus the `purgatorio` module).
+- `docs/threads.md`: threaded guests (`wasm32-wasip1-threads`): each thread
+  a prog on one shared memory; wasmtime on the emu only.
 - `docs/wasm64.md`: wasm64 guests: the `purgatorio64` module, the SDK's
   width-neutral `fs`, `fd`, `io` and `time`, and `/bin/64`.
 - `README.md`: user-facing status, layout and build instructions.
@@ -73,6 +75,10 @@ If the probe's output changes, update `crates/purg-probe/expected.out`.
 - **Host-only attributes in guest crates must be gated to wasm.** The
   `purgatorio.abi` custom section is `#[cfg_attr(target_family = "wasm", ...)]`:
   host clippy builds every guest crate, and Mach-O rejects that section name.
+- **Threads are the one feature that does not pass the both-engines gate**
+  (owner's decision, `docs/threads.md`): a crate with `threads = true` under
+  `[package.metadata.purgatorio]` runs on the emu's wasmtime only. Do not
+  make a command threaded that the kernel or wasmi must run.
 - Do not add non-standard functions to the `wasi_snapshot_preview1` namespace.
   New host calls go in the `purgatorio` module; bump `purg_abi::ABI_VERSION`
   and update `docs/abi.md` when the ABI changes.
@@ -104,7 +110,7 @@ sdk/purgatorio, sdk/purgatorio-macros              guest SDK, #[purgatorio::main
 appl/cmd/<name>/                                   commands -> root/bin/<name>.wasm
 appl/lib/<name>/                                   cdylib crates are loadable reactors -> root/bin/lib/<name>.wasm;
                                                    others (regexp) are ordinary libraries
-appl/test/{abi,procs,m3,net,wasi,draw,wide}/       conformance guests -> root/bin/test/ (wasm64 builds -> root/bin/64/)
+appl/test/{abi,procs,m3,net,wasi,draw,wide,threads}/       conformance guests -> root/bin/test/ (wasm64 builds -> root/bin/64/)
 root/                                              the tree emu serves as #U
 root/lib/test/sh/                                  sh script corpus with .out goldens
 xtask/                                             build-root, run-emu, probe, clippy-guests
