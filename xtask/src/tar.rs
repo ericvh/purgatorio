@@ -61,6 +61,10 @@ pub fn in_image(path: &str, names: bool) -> bool {
     if path.starts_with("bin/64/") && !WIDE.iter().any(|w| path.starts_with(w)) {
         return false;
     }
+    // Threaded modules run on the emu's wasmtime alone (`docs/threads.md`).
+    if path.starts_with("bin/test/threads.") {
+        return false;
+    }
     names || !path.ends_with(".names") || path.starts_with("bin/test/")
 }
 

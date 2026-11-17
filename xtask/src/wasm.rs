@@ -16,6 +16,11 @@ fn host_imports() -> BTreeSet<(&'static str, &'static str)> {
     // that engine's store, which the shared host functions do not have.
     set.insert((purg_abi::MODULE, purg_abi::sys::LOAD));
     set.insert((purg_abi::MODULE, purg_abi::sys::CALL));
+    // wasi-threads' one import, which an engine with threads registers
+    // (`docs/threads.md`).
+    set.insert(("wasi", "thread-spawn"));
+    // The shared memory of a threaded module, which the engine makes.
+    set.insert(("env", "memory"));
     set.insert((purg_abi::MODULE64, purg_abi::sys::LOAD));
     set.insert((purg_abi::MODULE64, purg_abi::sys::CALL));
     set
