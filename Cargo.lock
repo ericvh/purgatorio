@@ -1934,6 +1934,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "appl-test-threads"
+version = "1.1.0"
+dependencies = [
+ "purgatorio",
+]
+
+[[package]]
 name = "appl-test-wasi"
 version = "1.1.0"
 
