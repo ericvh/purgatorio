@@ -123,7 +123,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "appl-archive"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "miniz_oxide",
  "purgatorio",
@@ -131,7 +131,7 @@ dependencies = [
 
 [[package]]
 name = "appl-authlib"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-styx",
  "purgatorio",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-9660srv"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-iso9660",
  "appl-lib-styxserv",
@@ -148,14 +148,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-9export"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-acme"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-plumbmsg",
  "appl-lib-regexp",
@@ -165,14 +165,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ar"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-archfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purgatorio",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-aescbc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aes",
  "hmac",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-ai2key"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -199,14 +199,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-authsrv"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-auth-changelogin"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-countersigner"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -222,7 +222,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-createsignerkey"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-factotum"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-getpk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-keyfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-keysrv"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-mkauthinfo"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-modpolicy"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-passwd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-secstore"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-sign"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-signer"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -310,7 +310,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auth-verify"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -318,14 +318,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-auxi-cpuslave"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-auxi-rstyxd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-rstyx",
  "purgatorio",
@@ -333,7 +333,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-b"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-plumbmsg",
  "purgatorio",
@@ -341,21 +341,21 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-basename"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-bind"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-bit2gif"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-gif",
  "purgatorio",
@@ -363,84 +363,84 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-broke"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-bytes"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-cal"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-calc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-cat"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-chgrp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-chmod"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-cleanname"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-cmp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-comm"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-cp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-cprof"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-progdebug",
  "purgatorio",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-cpu"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-rstyx",
  "purgatorio",
@@ -456,14 +456,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-cron"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-crypt"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -471,21 +471,21 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-cs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-date"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-dbfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purgatorio",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-dbm-delete"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-dbm",
  "purgatorio",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-dbm-fetch"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-dbm",
  "purgatorio",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-dbm-keys"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-dbm",
  "purgatorio",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-dbm-list"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-dbm",
  "purgatorio",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-dbm-store"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-dbm",
  "purgatorio",
@@ -533,28 +533,28 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-dd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-dial"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-diff"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-disk-chkdisk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-fs",
  "purgatorio",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-disk-fdisk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-disk",
  "purgatorio",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-disk-format"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-fat",
  "purgatorio",
@@ -578,7 +578,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-disk-kfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-kfs",
  "appl-lib-styxserv",
@@ -588,14 +588,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-disk-kfscmd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-disk-mbr"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-disk",
  "purgatorio",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-disk-mkdisk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-fs",
  "purgatorio",
@@ -611,7 +611,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-disk-mkext"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "purgatorio",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-disk-mkfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "purgatorio",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-disk-prep"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-disk",
  "purgatorio",
@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-dossrv"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-fat",
  "appl-lib-styxserv",
@@ -645,56 +645,56 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-draw-clock"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-draw-coffee"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-draw-demo"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-draw-faces"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-draw-sh"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-du"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-echo"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ed"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-regexp",
  "purgatorio",
@@ -702,49 +702,49 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-emuinit"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-env"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-export"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-fc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-fcp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-fmt"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-fontgen"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "fontdue",
  "purgatorio",
@@ -752,14 +752,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-freq"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-fs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-filepat",
  "appl-lib-proto",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ftpfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purg-styx",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-getauthinfo"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-gettar"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-archive",
  "purgatorio",
@@ -795,7 +795,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-gif2bit"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-gif",
  "purgatorio",
@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-grep"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-regexp",
  "purgatorio",
@@ -811,7 +811,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-gunzip"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-archive",
  "purgatorio",
@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-gzip"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-archive",
  "purgatorio",
@@ -827,14 +827,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-import"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-install-applylog"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "appl-lib-wrap",
@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-ckproto"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "purgatorio",
@@ -851,7 +851,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-create"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "appl-lib-wrap",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-info"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "appl-lib-wrap",
@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-inst"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "appl-lib-wrap",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-mergelog"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-wrap",
  "purgatorio",
@@ -886,7 +886,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-mkproto"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "purgatorio",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-proto2list"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "purgatorio",
@@ -902,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-updatelog"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "appl-lib-wrap",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-wdiff"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "appl-lib-wrap",
@@ -920,7 +920,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-wfind"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "appl-lib-wrap",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-install-wrap2list"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "appl-lib-wrap",
@@ -938,7 +938,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-iostats"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purg-styx",
@@ -947,7 +947,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ip-bootpd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-ndb",
  "purgatorio",
@@ -955,70 +955,70 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ip-dhcp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ip-ping"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ip-rip"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ip-sntp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ip-tftpd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ip-virgild"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-kill"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-lethe"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-listen"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-lockfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purg-styx",
@@ -1027,28 +1027,28 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-logfile"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-look"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ls"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-lstar"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-archive",
  "purgatorio",
@@ -1056,14 +1056,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-m4"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-mash"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-filepat",
  "appl-lib-regexp",
@@ -1072,21 +1072,21 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-mc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-mcpd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-mcpfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-styx",
  "purgatorio",
@@ -1094,14 +1094,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-md5sum"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-mdb"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-progdebug",
  "appl-lib-wasmobj",
@@ -1110,14 +1110,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-memfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-mk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-regexp",
  "purgatorio",
@@ -1125,28 +1125,28 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-mkdir"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-mntgen"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-mount"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-mprof"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-progdebug",
  "purgatorio",
@@ -1154,14 +1154,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-mv"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ndb-cs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-ndb",
  "purgatorio",
@@ -1169,14 +1169,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ndb-csquery"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ndb-dns"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-ndb",
  "purgatorio",
@@ -1184,14 +1184,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ndb-dnsquery"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ndb-mkhash"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-ndb",
  "purgatorio",
@@ -1199,7 +1199,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ndb-query"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-ndb",
  "purgatorio",
@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ndb-registry"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-ndb",
  "purgatorio",
@@ -1215,7 +1215,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ndb-regquery"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-ndb",
  "purgatorio",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-netkey"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-authlib",
  "purgatorio",
@@ -1231,56 +1231,56 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-netstat"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-newer"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ns"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-nsbuild"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-os"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-p"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-pause"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-plumb"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-plumbmsg",
  "purgatorio",
@@ -1288,7 +1288,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-plumber"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-plumbmsg",
  "appl-lib-regexp",
@@ -1297,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-prof"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-progdebug",
  "purgatorio",
@@ -1305,14 +1305,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-ps"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-puttar"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-archive",
  "purgatorio",
@@ -1320,28 +1320,28 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-pwd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-ramfile"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-randpass"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-rawdbfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purgatorio",
@@ -1349,7 +1349,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-rcmd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-rstyx",
  "purgatorio",
@@ -1357,14 +1357,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-read"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-rio"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-plumbmsg",
  "purg-styx",
@@ -1373,21 +1373,21 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-rm"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-runas"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-sed"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-regexp",
  "purgatorio",
@@ -1395,14 +1395,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-sendmail"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-sh"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-filepat",
  "appl-lib-regexp",
@@ -1411,28 +1411,28 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-sha1sum"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-sleep"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-sort"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-stack"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-wasmobj",
  "purgatorio",
@@ -1440,21 +1440,21 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-stream"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-strings"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-styxchat"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purg-styx",
@@ -1463,14 +1463,14 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-styxlisten"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-styxmon"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purg-styx",
@@ -1479,21 +1479,21 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-sum"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-tail"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-tar"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-archive",
  "purgatorio",
@@ -1501,7 +1501,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-tarfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-archive",
  "appl-lib-styxserv",
@@ -1510,77 +1510,77 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-tcs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-tee"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-telnet"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-test"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-time"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-timestamp"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-tokenize"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-touch"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-tr"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-trace"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-trfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "purgatorio",
@@ -1588,56 +1588,56 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-tsort"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-unicode"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-uniq"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-units"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-unmount"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-uudecode"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-uuencode"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-vacfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-styxserv",
  "appl-lib-venti",
@@ -1647,7 +1647,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-vacget"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-venti",
  "purgatorio",
@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-vacput"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-venti",
  "purgatorio",
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-wasmdep"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-wasmobj",
  "purgatorio",
@@ -1671,7 +1671,7 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-wasmdump"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-wasmobj",
  "purgatorio",
@@ -1679,122 +1679,122 @@ dependencies = [
 
 [[package]]
 name = "appl-cmd-wc"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-webgrab"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-whois"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-win"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-window"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-xargs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-xd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-cmd-zeros"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-add"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-lib-dbm"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-disk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-fat"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-lib-filepat"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-gif"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-lib-iso9660"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-lib-kfs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-mashcase"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-lib-ndb"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-plumbmsg"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-lib-progdebug"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-wasmobj",
  "purgatorio",
@@ -1802,25 +1802,25 @@ dependencies = [
 
 [[package]]
 name = "appl-lib-proto"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-regexp"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-lib-rstyx"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-styxserv"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-styx",
  "purgatorio",
@@ -1828,18 +1828,18 @@ dependencies = [
 
 [[package]]
 name = "appl-lib-venti"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-lib-wasmobj"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-lib-wrap"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-proto",
  "purgatorio",
@@ -1847,63 +1847,63 @@ dependencies = [
 
 [[package]]
 name = "appl-test-abi"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-acmefs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-bench"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-debug"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-draw"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-fsperf"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-ftpd"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-m3"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-mkimg"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-fat",
  "appl-lib-iso9660",
@@ -1912,14 +1912,14 @@ dependencies = [
 
 [[package]]
 name = "appl-test-net"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-netsrv"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-ndb",
  "appl-lib-venti",
@@ -1928,18 +1928,18 @@ dependencies = [
 
 [[package]]
 name = "appl-test-procs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "appl-test-wasi"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "appl-test-wide"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
@@ -4128,7 +4128,7 @@ dependencies = [
 
 [[package]]
 name = "purg-aarch64"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "loom",
  "purg-abi",
@@ -4140,11 +4140,11 @@ dependencies = [
 
 [[package]]
 name = "purg-abi"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "purg-auth"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -4164,7 +4164,7 @@ dependencies = [
 
 [[package]]
 name = "purg-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "embedded-io 0.7.1",
  "embedded-tls",
@@ -4182,7 +4182,7 @@ dependencies = [
 
 [[package]]
 name = "purg-cwasm"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-auth",
  "purg-vm-aot",
@@ -4191,7 +4191,7 @@ dependencies = [
 
 [[package]]
 name = "purg-emu"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "libc",
  "miniz_oxide",
@@ -4217,7 +4217,7 @@ dependencies = [
 
 [[package]]
 name = "purg-fs"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
  "purg-core",
@@ -4227,7 +4227,7 @@ dependencies = [
 
 [[package]]
 name = "purg-kernel"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-aarch64",
  "purg-abi",
@@ -4245,7 +4245,7 @@ dependencies = [
 
 [[package]]
 name = "purg-lethe"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "chacha20",
  "chacha20poly1305",
@@ -4260,11 +4260,11 @@ dependencies = [
 
 [[package]]
 name = "purg-memdraw"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "purg-platform"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "loom",
  "spin 0.10.1",
@@ -4272,7 +4272,7 @@ dependencies = [
 
 [[package]]
 name = "purg-probe"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-aarch64",
  "purg-abi",
@@ -4285,7 +4285,7 @@ dependencies = [
 
 [[package]]
 name = "purg-styx"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "proptest",
  "purg-abi",
@@ -4293,7 +4293,7 @@ dependencies = [
 
 [[package]]
 name = "purg-system"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
  "purg-core",
@@ -4304,7 +4304,7 @@ dependencies = [
 
 [[package]]
 name = "purg-vm"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
  "purg-auth",
@@ -4316,7 +4316,7 @@ dependencies = [
 
 [[package]]
 name = "purg-vm-aot"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
  "purg-auth",
@@ -4329,7 +4329,7 @@ dependencies = [
 
 [[package]]
 name = "purg-vm-wasmi"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
  "purg-core",
@@ -4341,7 +4341,7 @@ dependencies = [
 
 [[package]]
 name = "purg-vm-wasmtime"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
  "purg-core",
@@ -4352,7 +4352,7 @@ dependencies = [
 
 [[package]]
 name = "purgatorio"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
  "purg-auth",
@@ -4364,7 +4364,7 @@ dependencies = [
 
 [[package]]
 name = "purgatorio-macros"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "quick-xml"
@@ -5997,7 +5997,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "appl-lib-wasmobj",
  "purg-abi",

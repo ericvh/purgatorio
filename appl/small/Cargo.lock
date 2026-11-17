@@ -438,11 +438,11 @@ dependencies = [
 
 [[package]]
 name = "purg-abi"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "purg-auth"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -461,18 +461,18 @@ dependencies = [
 
 [[package]]
 name = "purg-memdraw"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "purg-styx"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
 ]
 
 [[package]]
 name = "purgatorio"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
  "purg-auth",
@@ -484,7 +484,7 @@ dependencies = [
 
 [[package]]
 name = "purgatorio-macros"
-version = "1.0.0"
+version = "1.1.0"
 
 [[package]]
 name = "quote"
@@ -572,42 +572,42 @@ dependencies = [
 
 [[package]]
 name = "small-cat"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "small-rt",
 ]
 
 [[package]]
 name = "small-echo"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "small-rt",
 ]
 
 [[package]]
 name = "small-multi"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "small-rt",
 ]
 
 [[package]]
 name = "small-multi-std"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purgatorio",
 ]
 
 [[package]]
 name = "small-rt"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "purg-abi",
 ]
 
 [[package]]
 name = "small-sleep"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "small-rt",
 ]

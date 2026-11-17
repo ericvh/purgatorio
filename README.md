@@ -18,12 +18,18 @@ The work is phased:
 Every milestone is validated on aarch64. CI runs natively on Linux aarch64 and
 macOS arm64, and the shared kernel crates build for `aarch64-unknown-none`.
 
-## Status: 1.0
+## Status: 1.1
 
 Release 1.0 covers milestones M1 to M5 on the hosted emu (Linux and
 macOS, wasmtime and wasmi), the native aarch64 kernel (Phase K, under
 QEMU TCG and KVM), and the graphics stack on the emu (draw, fonts,
-rio, acme). Work deferred past 1.0 is listed in the GitHub issues.
+rio, acme).
+
+Release 1.1 adds wasm64 guests (`docs/wasm64.md`): a program can be a
+64-bit module, built for `wasm64-unknown-unknown`, beside the 32-bit
+ones. Every command is built in both widths, into `/bin` and `/bin/64`,
+and `run /lib/sh/wide` puts the 64-bit builds first. wasm32 stays the
+default. Work deferred past 1.1 is listed in the GitHub issues.
 
 
 `emu` boots a namespace like Inferno's emu. `#/` is the root, the host tree
