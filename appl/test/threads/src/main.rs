@@ -29,20 +29,25 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     // this one sleeps; for tests that kill them.
     if args.get(1).is_some_and(|a| a == "hang") {
         let lock = Arc::new((Mutex::new(false), Condvar::new()));
+        let started = Arc::new(Barrier::new(3));
         for _ in 0..2 {
-            let lock = lock.clone();
+            let (lock, started) = (lock.clone(), started.clone());
             thread::spawn(move || {
+                started.wait();
                 let mut done = lock.0.lock().unwrap();
                 while !*done {
                     done = lock.1.wait(done).unwrap();
                 }
             });
         }
+        // Says so once both threads run, for a test to wait on.
+        started.wait();
+        println!("hanging");
         thread::sleep(Duration::from_secs(3600));
         return Ok(());
     }
-    // `threads orphan file`: a detached thread outlives the program and
-    // then writes `file`.
+    // `threads orphan file`: a detached thread outlives the program, waits
+    // until `file.go` exists and then writes `file`.
     if args.get(1).is_some_and(|a| a == "orphan") {
         let file = args.get(2).cloned().unwrap_or_default();
         let started = Arc::new(Barrier::new(2));
@@ -50,7 +55,10 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         thread::spawn(move || {
             let detached = purgatorio::thread::detach();
             go.wait();
-            thread::sleep(Duration::from_millis(1500));
+            let told = format!("{file}.go");
+            while purgatorio::stat(&told).is_err() {
+                thread::sleep(Duration::from_millis(50));
+            }
             let _ = purgatorio::fs::write(&file, format!("outlived: {}\n", detached.is_ok()));
         });
         started.wait();
@@ -64,7 +72,8 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             let _ = purgatorio::thread::detach();
             purgatorio::exits("fail:shed");
         });
-        thread::sleep(Duration::from_millis(300));
+        // Long enough for the failed thread's prog to have gone.
+        thread::sleep(Duration::from_millis(1000));
         println!("still running");
         thread::spawn(|| purgatorio::exits("fail:worker"));
         thread::sleep(Duration::from_secs(3600));
