@@ -260,23 +260,28 @@ on_each_vm! {
         if vm == "wasmi" {
             return;
         }
-        let script = "test/threads hang &
-sleep 1
+        // Nothing here waits a fixed time for a prog to start or to go:
+        // a busy machine takes seconds to start one.
+        let script = "load std
+fn started {while {! grep -s hanging $1 >[2] /dev/null} {sleep 1}}
+fn gone {while {ps | grep -s threads} {sleep 1}}
+test/threads hang > /tmp/a &
+started /tmp/a
 ps | grep -c threads
 ps | grep threads | sed 1d | sed 1q | sed 's/^ *([0-9]+).*/\\1/' > /tmp/tid
 echo kill > /prog/`{cat /tmp/tid}^/ctl
-sleep 1
-echo a thread killed: `{ps | grep -c threads}
-test/threads hang &
-sleep 1
+gone
+echo a thread killed
+test/threads hang > /tmp/b &
+started /tmp/b
 echo kill > /prog/$apid/ctl
-sleep 1
-echo the program killed: `{ps | grep -c threads}
+gone
+echo the program killed
 ";
         let o = emu_inferno(vm, &["sh", "-c", script], b"");
         assert_eq!(
             stdout(&o),
-            "3\na thread killed: 0\nthe program killed: 0\n",
+            "3\na thread killed\nthe program killed\n",
             "{vm}: {}",
             String::from_utf8_lossy(&o.stderr)
         );
@@ -290,22 +295,24 @@ echo the program killed: `{ps | grep -c threads}
         if vm == "wasmi" {
             return;
         }
-        let script = "test/threads orphan /tmp/orphan
+        let script = "load std
+fn gone {while {ps | grep -s threads} {sleep 1}}
+test/threads orphan /tmp/orphan
 echo program status: $status
 echo left running: `{ps | grep -c threads}
-sleep 3
+echo go > /tmp/orphan.go
+gone
 cat /tmp/orphan
-echo then: `{ps | grep -c threads}
 test/threads shed
 echo shed status: $status
-sleep 1
-echo after: `{ps | grep -c threads}
+gone
+echo all gone
 ";
         let o = emu_inferno(vm, &["sh", "-c", script], b"");
         assert_eq!(
             stdout(&o),
-            "program ends\nprogram status: \nleft running: 1\noutlived: true\nthen: 0\n\
-             still running\nshed status: killed\nafter: 0\n",
+            "program ends\nprogram status: \nleft running: 1\noutlived: true\n\
+             still running\nshed status: killed\nall gone\n",
             "{vm}: {}",
             String::from_utf8_lossy(&o.stderr)
         );

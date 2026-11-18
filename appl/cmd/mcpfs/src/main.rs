@@ -69,8 +69,12 @@ const PROTOCOL: &str = "2025-11-25";
 /// `server/discover` with it among its versions.
 const MODERN: &str = "2026-07-28";
 /// How long `server/discover` waits for an answer before the server is
-/// taken to be of the earlier revision.
-const PROBE_MS: i32 = 5000;
+/// taken to be of the earlier revision. A server answers an unknown
+/// method with an error at once, so only one that says nothing waits
+/// this long; and it must outlast a server that is slow to start (5 s
+/// was too short for `mcpd` on a busy machine, whose `server` file then
+/// showed the earlier revision).
+const PROBE_MS: i32 = 30_000;
 /// A longer line from the server is refused.
 const MAX_LINE: usize = 16 << 20;
 /// Pages of `tools/list` followed before giving up.
