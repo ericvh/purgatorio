@@ -226,3 +226,90 @@ fn mounted_dirs_carry_the_mount_device() {
         assert_eq!(d.dev, root.dev);
     }
 }
+
+/// What a mount without authentication sends before anything is asked of
+/// it: the version, the attach and one stat of the root, which is the
+/// check for a server that cannot answer a stat at this msize (issue
+/// #313). The attach is the mount's own: there is no second one.
+#[test]
+fn a_mount_stats_the_root_once() {
+    let (mut p, _) = setup();
+    let log = mount_logged(&mut p);
+    let log = log.lock().unwrap();
+    let sent: Vec<&str> = log
+        .iter()
+        .map(|s| s.text.split([' ', '{']).next().unwrap_or(""))
+        .collect();
+    assert_eq!(sent, ["Tversion", "Tattach", "Tstat"], "{sent:?}");
+    assert!(log.iter().all(|s| !s.failed));
+}
+
+/// A server with stock Inferno's fault: at an msize above 65544 its room
+/// for an `Rstat` wraps in 16 bits and every stat fails. The mount finds
+/// that on its stat of the root, starts the conversation again at 65544,
+/// and everything then works, stats too.
+#[test]
+fn a_server_that_cannot_stat_at_64k_is_mounted_smaller() {
+    let (mut p, _) = setup();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let [srv, cli] = p.pipe().unwrap();
+    let fd = p.fgrp.get(srv).unwrap();
+    p.close(srv).unwrap();
+    let seen = log.clone();
+    thread::spawn(move || {
+        let mut fs = One {
+            fids: Default::default(),
+        };
+        let mut msize = MAX_MSIZE;
+        while let Ok(buf) = read_msg(&fd, msize) {
+            let msg = Msg::decode(&buf, msize).unwrap();
+            let short = matches!(msg.fcall, purg_styx::Fcall::Tstat { .. }) && msize > 65544;
+            let reply = if short {
+                Msg {
+                    tag: msg.tag,
+                    fcall: purg_styx::Fcall::Rerror {
+                        ename: error::ESHORTSTAT,
+                    },
+                }
+                .encode()
+                .unwrap()
+            } else {
+                // A version exchange starts afresh: the fids are gone.
+                if matches!(msg.fcall, purg_styx::Fcall::Tversion { .. }) {
+                    fs.fids.clear();
+                }
+                dispatch(&mut fs, &msg, &mut msize)
+            };
+            seen.lock()
+                .unwrap()
+                .push((format!("{:?}", msg.fcall), short, msize));
+            if write_full(&fd, &reply).is_err() {
+                break;
+            }
+        }
+    });
+    p.mount(cli, -1, "#R/mnt", MREPL | MNOAUTH, "").unwrap();
+    p.close(cli).unwrap();
+    // Stats work, of the root and of a file, and so does a read.
+    assert!(p.stat("#R/mnt").unwrap().qid.is_dir());
+    assert_eq!(p.stat("#R/mnt/f").unwrap().name, "f");
+    let fd = p.open("#R/mnt", mode::OREAD).unwrap();
+    let mut buf = [0u8; 512];
+    assert!(p.read(fd, &mut buf).unwrap() > 0);
+    let log = log.lock().unwrap();
+    let kinds: Vec<&str> = log
+        .iter()
+        .take(5)
+        .map(|s| s.0.split([' ', '{']).next().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        kinds,
+        ["Tversion", "Tattach", "Tstat", "Tversion", "Tattach"],
+        "{kinds:?}"
+    );
+    // One stat was refused, the probe; and the second version agreed on
+    // the smaller size, which every later message was sent under.
+    assert_eq!(log.iter().filter(|s| s.1).count(), 1);
+    assert!(log[3].0.contains("65544"), "{}", log[3].0);
+    assert!(log[4..].iter().all(|s| s.2 == 65544));
+}

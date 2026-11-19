@@ -488,6 +488,22 @@ sent early would take data the program did not ask for. Inferno's hosted
 emu accepts `MCACHE` and does nothing with it; its native kernels cache
 file data.
 
+### The message size of a mount
+
+`#M` asks a server for an msize of 65560: 64 KiB of data and the header.
+A server may agree to less.
+
+A mount without authentication also attaches and stats the root before
+its session starts, one round trip more than the attach alone. That is
+a check for a server that cannot answer a stat in messages this large:
+stock Inferno's `export` keeps the room for an `Rstat` in 16 bits, and
+at 65560 it wraps, so every stat fails with `stat buffer too small`
+though reads and writes work (issue #313). When the stat of the root
+fails that way, the mount starts the conversation again with a new
+`Tversion` asking for 65544, at which the room fits, and attaches again.
+A mount that authenticates is to one of our own servers and is not
+checked.
+
 ### Read-only `export`
 
 `export_key(fd, dir, dlen, flags, key, klen)` (v0.9) is `export` whose
