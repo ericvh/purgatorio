@@ -36,6 +36,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let Some(data) = conn.data.as_ref() else {
             continue;
         };
-        purgatorio::spawn(&cmd, &argv, NEWFD, &[(data.as_raw_fd(), 0)])?;
+        // A `{command}` block is run by sh, as Inferno's listen(1) and
+        // styxlisten(1) run one, with the connection as its standard
+        // input and output. `-A` is the block's own business then.
+        match cmd.strip_prefix('{').and_then(|c| c.strip_suffix('}')) {
+            Some(block) => purgatorio::spawn(
+                "/bin/sh.wasm",
+                &[String::from("sh"), String::from("-c"), String::from(block)],
+                NEWFD,
+                &[(data.as_raw_fd(), 0), (data.as_raw_fd(), 1), (2, 2)],
+            )?,
+            None => purgatorio::spawn(&cmd, &argv, NEWFD, &[(data.as_raw_fd(), 0)])?,
+        };
     }
 }

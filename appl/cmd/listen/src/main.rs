@@ -1,4 +1,7 @@
 //! listen [-A] addr cmd [args...]: like styxlisten, and print each remote.
+//!
+//! As in Inferno's listen(1), `cmd` may be a `{command}` block, which sh
+//! runs with the connection as its standard input and output.
 
 use purgatorio::eprintln;
 use purgatorio::fd::AsRawFd;
@@ -31,6 +34,14 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
         let Some(data) = conn.data.as_ref() else {
             continue;
         };
-        purgatorio::spawn(&cmd, &argv, NEWFD, &[(data.as_raw_fd(), 0)])?;
+        match cmd.strip_prefix('{').and_then(|c| c.strip_suffix('}')) {
+            Some(block) => purgatorio::spawn(
+                "/bin/sh.wasm",
+                &[String::from("sh"), String::from("-c"), String::from(block)],
+                NEWFD,
+                &[(data.as_raw_fd(), 0), (data.as_raw_fd(), 1), (2, 2)],
+            )?,
+            None => purgatorio::spawn(&cmd, &argv, NEWFD, &[(data.as_raw_fd(), 0)])?,
+        };
     }
 }

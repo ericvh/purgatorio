@@ -319,6 +319,37 @@ echo all gone
         assert!(o.status.success(), "{vm}");
     }
 
+    /// listen(1) takes a `{command}` block, as Inferno's does, and still
+    /// takes a command and its arguments.
+    fn listen_runs_a_block(vm) {
+        // A port nothing else has: the kernel picks one, and it is free
+        // again when the listener is dropped.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map(|a| a.port())
+            .unwrap();
+        let script = format!(
+            "load std
+mkdir -p /tmp/srv /tmp/n
+echo served > /tmp/srv/f
+listen -A tcp!127.0.0.1!{port} {{export -A /tmp/srv}} >[2] /dev/null &
+block=$apid
+sleep 1
+mount -A tcp!127.0.0.1!{port} /tmp/n
+cat /tmp/n/f
+unmount /tmp/n
+kill $block
+sleep 1
+listen -A tcp!127.0.0.1!{port} export -A /tmp/srv >[2] /dev/null &
+sleep 1
+mount -A tcp!127.0.0.1!{port} /tmp/n
+cat /tmp/n/f
+"
+        );
+        let o = emu(vm, &["sh", "-c", &script], b"");
+        assert_eq!(stdout(&o), "served\nserved\n", "{vm}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+
     fn abi_conformance(vm) {
         let o = emu(vm, &["/bin/test/abi.wasm"], b"");
         let out = stdout(&o);
