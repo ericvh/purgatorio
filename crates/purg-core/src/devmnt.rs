@@ -883,6 +883,11 @@ impl DevMnt {
             Fcall::Rattach { qid } => qid,
             _ => return Err(Error::new(error::EIO)),
         };
+        Ok(self.root(session, fid, qid, aname))
+    }
+
+    /// The root Chan of `session`, attached as `fid` with `qid`.
+    fn root(self: &Arc<Self>, session: &Arc<Session>, fid: u32, qid: Qid, aname: &str) -> Chan {
         let aux = Arc::new(MntFile::new(session, fid, aname));
         let dev: Arc<dyn Dev> = self.clone();
         let id = session.id;
@@ -890,7 +895,7 @@ impl DevMnt {
         if qid.is_dir() {
             c.qid.qtype |= QTDIR;
         }
-        Ok(c)
+        c
     }
 
     /// Version and attach on `fd`, returning the attached root.
@@ -919,20 +924,21 @@ impl DevMnt {
         self.live.check(&fd)?;
         // The version exchange runs on the caller's thread, with `NOTAG`
         // as version(5) requires: tags belong to the session it starts.
-        let msize = sync_rpc(
-            &fd,
-            MAX_MSIZE,
-            Fcall::Tversion {
-                msize: MAX_MSIZE,
-                version: VERSION,
-            },
-            |f| match f {
-                Fcall::Rversion { msize, version } if version == VERSION => {
-                    Ok(msize.clamp(IOHDRSZ, MAX_MSIZE))
-                }
-                _ => Err(Error::new(BAD_VERSION)),
-            },
-        )?;
+        let mut msize = version(&fd, MAX_MSIZE)?;
+        // A mount without authentication attaches here too, and stats the
+        // root, to find a server that cannot answer a stat in messages
+        // this large; with such a server the conversation starts again
+        // with smaller ones. (A server that authenticates is one of ours.)
+        let mut attached = None;
+        if noauth && msize > STAT_SAFE_MSIZE {
+            match probe_stat(&fd, msize, user, aname) {
+                Probe::Attached(qid) => attached = Some(qid),
+                // A new version exchange forgets the fid.
+                Probe::ShortStat => msize = version(&fd, STAT_SAFE_MSIZE)?,
+                // The attach below reports why.
+                Probe::NotAttached => {}
+            }
+        }
         let session = self.start(fd, msize)?;
         let established = (|| {
             let afid = if noauth {
@@ -951,7 +957,10 @@ impl DevMnt {
                 }
                 session.check_server(afid, check)?;
             }
-            self.attach(&session, afid, user, aname)
+            match attached {
+                Some(qid) => Ok(self.root(&session, PROBE_FID, qid, aname)),
+                None => self.attach(&session, afid, user, aname),
+            }
         })();
         if established.is_err() {
             session.note.kill();
@@ -986,20 +995,7 @@ impl DevMnt {
     pub fn auth(self: &Arc<Self>, fd: Arc<Chan>, aname: &str, user: &str) -> Result<Chan> {
         self.sealed.check(&fd)?;
         self.live.check(&fd)?;
-        let msize = sync_rpc(
-            &fd,
-            MAX_MSIZE,
-            Fcall::Tversion {
-                msize: MAX_MSIZE,
-                version: VERSION,
-            },
-            |f| match f {
-                Fcall::Rversion { msize, version } if version == VERSION => {
-                    Ok(msize.clamp(IOHDRSZ, MAX_MSIZE))
-                }
-                _ => Err(Error::new(BAD_VERSION)),
-            },
-        )?;
+        let msize = version(&fd, MAX_MSIZE)?;
         let aqid = sync_rpc(
             &fd,
             msize,
@@ -1067,6 +1063,73 @@ const BAD_VERSION: &str = "bad 9P version";
 
 /// The fid `Tauth` uses. Session fids count up from 1 and do not reach it.
 const AUTH_FID: u32 = NOFID - 1;
+
+/// The fid of a root attached before its session starts (see
+/// [`probe_stat`]). A session's own fids count up from 1.
+const PROBE_FID: u32 = 0;
+
+/// The largest msize at which every server can answer a stat. Inferno's
+/// `export` works out the room for an `Rstat` as the msize less 9 and
+/// keeps it in 16 bits, so at our 65560 the room wraps and every `Tstat`
+/// fails with `stat buffer too small`, though reads and writes work
+/// (issue #313). At 65544 the room is 65535.
+const STAT_SAFE_MSIZE: u32 = 65544;
+
+/// What [`probe_stat`] found.
+enum Probe {
+    /// The root is attached as [`PROBE_FID`], and the server stats it.
+    Attached(Qid),
+    /// The server cannot answer a stat at this msize.
+    ShortStat,
+    /// The attach failed; nothing is attached.
+    NotAttached,
+}
+
+/// `Tversion` on `fd`, on the caller's thread, asking for `msize`.
+/// Returns the msize agreed. A version exchange starts the conversation
+/// afresh: the server forgets every fid.
+fn version(fd: &Chan, msize: u32) -> Result<u32> {
+    sync_rpc(
+        fd,
+        MAX_MSIZE,
+        Fcall::Tversion {
+            msize,
+            version: VERSION,
+        },
+        |f| match f {
+            Fcall::Rversion {
+                msize: agreed,
+                version,
+            } if version == VERSION => Ok(agreed.clamp(IOHDRSZ, msize)),
+            _ => Err(Error::new(BAD_VERSION)),
+        },
+    )
+}
+
+/// Attaches without authentication as [`PROBE_FID`] and stats the root,
+/// on the caller's thread, before the conversation has a session. The
+/// attach is the mount's own, so a server that answers the stat costs
+/// one round trip more than a mount without the check.
+fn probe_stat(fd: &Chan, msize: u32, user: &str, aname: &str) -> Probe {
+    let attach = Fcall::Tattach {
+        fid: PROBE_FID,
+        afid: NOFID,
+        uname: user,
+        aname,
+    };
+    let Ok(Some(qid)) = sync_rpc(fd, msize, attach, |f| match f {
+        Fcall::Rattach { qid } => Ok(Some(qid)),
+        _ => Ok(None),
+    }) else {
+        return Probe::NotAttached;
+    };
+    match sync_rpc(fd, msize, Fcall::Tstat { fid: PROBE_FID }, |_| Ok(())) {
+        Err(e) if e.as_str() == error::ESHORTSTAT => Probe::ShortStat,
+        // Any other answer, an error too, is the server's to give again
+        // when the stat is asked for.
+        _ => Probe::Attached(qid),
+    }
+}
 
 /// Sends one message on `fd` and reads the reply on this thread, before a
 /// session's reader exists.
