@@ -50,6 +50,7 @@ mod string;
 
 use std::io::Read;
 
+use purgatorio::abi::pctl;
 use purgatorio::arg::Arg;
 use purgatorio::{Context, Error};
 
@@ -142,6 +143,12 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
             _ => return Err(arg.usage()),
         }
     }
+    // As Inferno's sh does, take a copy of the fd table: a shell may share
+    // its parent's (mk starts recipes that way), and fds the parent or a
+    // sibling shell closes later must not vanish from under this one.
+    let _ = purgatorio::pctl(pctl::FORKFD, &[]);
+    // The file2chan server's ready fd is its own, not one to pass on.
+    exec::note_inherited_fds(if serve { &[f2c::READY_FD] } else { &[] });
     let mut rest = arg.argv();
     if serve {
         let mut sh = Shell::new("sh", Vec::new());

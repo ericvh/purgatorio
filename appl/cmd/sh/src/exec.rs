@@ -60,11 +60,48 @@ pub struct Io {
     map: Vec<(i32, i32)>,
 }
 
-impl Io {
-    pub fn std() -> Io {
-        Io {
-            map: vec![(0, 0), (1, 1), (2, 2)],
+/// The fds above 2 this shell was started with, set once by
+/// [`note_inherited_fds`] before the shell opens any file of its own.
+static INHERITED: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
+
+/// Records the fds above 2 the shell was started with, such as one a
+/// redirection opened around the block this shell runs. Inferno's sh
+/// shares its fd group with what it starts; here each command is given
+/// only the fds in its `Io`, so a shell that did not list its own fds
+/// would lose them. They are read from `#d`, leaving out the WASI
+/// preopens, the fd the directory is read on and those in `skip`.
+pub fn note_inherited_fds(skip: &[i32]) {
+    let mut fds = Vec::new();
+    if let Ok(dir) = purgatorio::open("#d", mode::OREAD) {
+        let dfd = dir.as_raw_fd();
+        while let Ok(batch) = purgatorio::dirread(dfd) {
+            if batch.is_empty() {
+                break;
+            }
+            fds.extend(
+                batch
+                    .iter()
+                    .filter_map(|d| d.name.parse::<i32>().ok())
+                    .filter(|&fd| {
+                        fd > 2
+                            && fd != dfd
+                            && fd != purgatorio::abi::PREOPEN_DOT_FD
+                            && fd != purgatorio::abi::PREOPEN_ROOT_FD
+                            && !skip.contains(&fd)
+                    }),
+            );
         }
+    }
+    fds.sort_unstable();
+    let _ = INHERITED.set(fds);
+}
+
+impl Io {
+    /// The standard fds and any other fd the shell was started with.
+    pub fn std() -> Io {
+        let mut map = vec![(0, 0), (1, 1), (2, 2)];
+        map.extend(INHERITED.get().into_iter().flatten().map(|&fd| (fd, fd)));
+        Io { map }
     }
 
     pub fn get(&self, fd: i32) -> Option<i32> {
