@@ -320,8 +320,20 @@ Install rustup from [https://rustup.rs](https://rustup.rs):
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Then, in this repo, run `rustup show`. That installs 1.99.1 plus those
-components and targets.
+Then, in this repo, run `rustup toolchain install`. That installs 1.99.1
+plus those components and targets. (rustup 1.28 and later no longer
+install them on `rustup show`.) The build also needs a C compiler, because
+`ring` and `wasmtime` compile C code.
+
+The quickest way to build everything is `make`. It checks that `cargo` is
+rustup's and not a distro package, installs the pinned toolchain, and runs
+`cargo xtask build-root` and `cargo build -p purg-emu`. `make run` starts
+the emu, `make test` runs the tests and `make help` lists the rest. The
+Makefile only names these steps; the commands below do the same by hand.
+
+A plain `cargo build` compiles every crate, guests included, for the host.
+That checks they compile, but the guests are only useful as wasm, which
+`cargo xtask build-root` builds.
 
 ```sh
 cargo xtask build-root                       # build apps into root/bin/*.wasm

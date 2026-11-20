@@ -34,9 +34,17 @@ fn main(_ctx: Context, args: Vec<String>) -> Result<(), Error> {
     }
 }
 
+#[cfg(target_family = "wasm")]
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
 unsafe extern "C" {
     fn sock_accept(fd: i32, flags: i32, result: *mut i32) -> i32;
+}
+
+/// A host build (`cargo build`, clippy) has no WASI imports to link; the
+/// program only runs as wasm, so this stub fails with ENOSYS.
+#[cfg(not(target_family = "wasm"))]
+unsafe fn sock_accept(_fd: i32, _flags: i32, _result: *mut i32) -> i32 {
+    52
 }
 
 fn wasi_dial(addr: &str) -> Result<(), Error> {
