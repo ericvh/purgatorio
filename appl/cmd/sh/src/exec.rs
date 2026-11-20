@@ -548,7 +548,7 @@ impl Shell {
         let CmdKind::Simple(words) = &cmd.kind else {
             unreachable!("only simple commands are spawned directly");
         };
-        let argv = self.expand_all(words)?;
+        let argv = self.expand_all(words, io)?;
         let Some(name) = argv.first() else {
             return Err(Error::from("empty command"));
         };
@@ -629,7 +629,7 @@ impl Shell {
             Err(e) => return self.cmd_err(e, outer),
         };
         match &cmd.kind {
-            CmdKind::Assign { name, local, value } => match self.expand_all(value) {
+            CmdKind::Assign { name, local, value } => match self.expand_all(value, outer) {
                 Ok(v) => {
                     self.set_var(name, v, *local);
                     Ok(String::new())
@@ -641,7 +641,7 @@ impl Shell {
                 Ok(self.status.clone())
             }
             CmdKind::Simple(words) => {
-                let argv = match self.expand_all(words) {
+                let argv = match self.expand_all(words, outer) {
                     Ok(a) => a,
                     Err(e) => return self.cmd_err(e, &io),
                 };
@@ -726,6 +726,9 @@ impl Shell {
     /// Opens redirection targets and points `io` at them. The returned fds
     /// must outlive the command's use of `io`.
     fn redirect(&mut self, redirs: &[Redir], io: &mut Io) -> Result<Vec<OwnedFd>, Error> {
+        // Targets are expanded with the fds from before the command's own
+        // redirections, as Inferno's sh expands them first.
+        let outer = io.clone();
         let mut files = Vec::new();
         for r in redirs {
             match r.kind {
@@ -743,7 +746,7 @@ impl Shell {
                 _ => {}
             }
             let target = r.target.as_ref().expect("file redirections have targets");
-            let names = self.expand(target)?;
+            let names = self.expand(target, &outer)?;
             let [name] = names.as_slice() else {
                 return Err(Error::from("redirection needs one file name"));
             };
@@ -768,23 +771,27 @@ impl Shell {
         Ok(files)
     }
 
-    fn expand_all(&mut self, words: &[Word]) -> Result<Vec<String>, Error> {
+    /// The words `words` stand for. `io` is the fds a `` `{} `` or `${}`
+    /// in them sees: those of the command's surroundings, without its own
+    /// redirections, as Inferno's sh expands a command before it
+    /// redirects it.
+    fn expand_all(&mut self, words: &[Word], io: &Io) -> Result<Vec<String>, Error> {
         let mut out = Vec::new();
         for w in words {
-            out.extend(self.expand(w)?);
+            out.extend(self.expand(w, io)?);
         }
         Ok(out)
     }
 
     /// The list a word stands for, with the file names its patterns match.
-    fn expand(&mut self, w: &Word) -> Result<Vec<String>, Error> {
-        let words = self.expand_raw(w)?;
+    fn expand(&mut self, w: &Word, io: &Io) -> Result<Vec<String>, Error> {
+        let words = self.expand_raw(w, io)?;
         Ok(words.into_iter().flat_map(Glob::names).collect())
     }
 
     /// The list a word stands for, before file name patterns are expanded:
     /// that waits until the whole word has been put together.
-    fn expand_raw(&mut self, w: &Word) -> Result<Vec<Glob>, Error> {
+    fn expand_raw(&mut self, w: &Word, io: &Io) -> Result<Vec<Glob>, Error> {
         let mut acc: Option<Vec<Glob>> = None;
         for p in &w.parts {
             let v = match p {
@@ -797,12 +804,12 @@ impl Shell {
                         VarKind::Join => vec![v.join(" ")],
                     })
                 }
-                Part::Subst(src) => Glob::plain(self.substitute(src)?),
-                Part::Builtin(src) => Glob::plain(self.builtin_subst(src)?),
+                Part::Subst(src) => Glob::plain(self.substitute(src, io)?),
+                Part::Builtin(src) => Glob::plain(self.builtin_subst(src, io)?),
                 Part::List(words) => {
                     let mut l = Vec::new();
                     for w in words {
-                        l.extend(self.expand_raw(w)?);
+                        l.extend(self.expand_raw(w, io)?);
                     }
                     l
                 }
@@ -816,9 +823,10 @@ impl Shell {
     }
 
     /// `` `{src} ``: the words a sub-shell running `src` writes.
-    fn substitute(&mut self, src: &str) -> Result<Vec<String>, Error> {
+    /// It sees the fds in `io`, with its standard output on a pipe.
+    fn substitute(&mut self, src: &str, io: &Io) -> Result<Vec<String>, Error> {
         let [r, w] = purgatorio::pipe()?;
-        let mut io = Io::std();
+        let mut io = io.clone();
         io.set(1, w.as_raw_fd());
         let pid = self.sub_shell(src, &io)?;
         drop(w);
@@ -899,7 +907,7 @@ impl Shell {
     }
 
     /// `${...}`: run one loaded builtin and substitute its result.
-    fn builtin_subst(&mut self, src: &str) -> Result<Vec<String>, Error> {
+    fn builtin_subst(&mut self, src: &str, io: &Io) -> Result<Vec<String>, Error> {
         let items = parse::parse(src).map_err(|e| Error(format!("syntax error: {e:?}")))?;
         let [item] = items.as_slice() else {
             return Err(Error::from("builtin must be one command"));
@@ -910,7 +918,7 @@ impl Shell {
         let CmdKind::Simple(words) = &cmd.kind else {
             return Err(Error::from("builtin must be one command"));
         };
-        let argv = self.expand_all(words)?;
+        let argv = self.expand_all(words, io)?;
         if argv.is_empty() {
             return Err(Error::from("empty builtin"));
         }

@@ -21,4 +21,8 @@ cat $d/fd5
 cat $d/fd5
 {echo sub | @{cat >[1=5]}} >[5] $d/fd5
 cat $d/fd5
+# So does a `{} in a redirected block.
+{x=`{echo subst >[1=5]}} >[5] $d/fd5
+cat $d/fd5
+{echo `{cat}} < $d/f
 rm -r $d
