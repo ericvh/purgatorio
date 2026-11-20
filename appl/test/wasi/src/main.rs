@@ -14,6 +14,7 @@ use std::time::Duration;
 #[cfg_attr(target_family = "wasm", unsafe(link_section = "purgatorio.abi"))]
 static ABI: [u8; 4] = *b"0.13";
 
+#[cfg(target_family = "wasm")]
 #[link(wasm_import_module = "wasi_snapshot_preview1")]
 unsafe extern "C" {
     fn clock_res_get(id: i32, resolution: *mut u64) -> i32;
@@ -21,6 +22,30 @@ unsafe extern "C" {
     fn fd_allocate(fd: i32, offset: i64, len: i64) -> i32;
     fn proc_raise(sig: i32) -> i32;
     fn sock_accept(fd: i32, flags: i32, result: *mut i32) -> i32;
+}
+
+/// A host build (`cargo build`, clippy) has no WASI imports to link; the
+/// program only runs as wasm, so these stubs fail with ENOSYS.
+#[cfg(not(target_family = "wasm"))]
+use host::*;
+#[cfg(not(target_family = "wasm"))]
+mod host {
+    const ENOSYS: i32 = 52;
+    pub unsafe fn clock_res_get(_id: i32, _resolution: *mut u64) -> i32 {
+        ENOSYS
+    }
+    pub unsafe fn fd_advise(_fd: i32, _offset: i64, _len: i64, _advice: i32) -> i32 {
+        ENOSYS
+    }
+    pub unsafe fn fd_allocate(_fd: i32, _offset: i64, _len: i64) -> i32 {
+        ENOSYS
+    }
+    pub unsafe fn proc_raise(_sig: i32) -> i32 {
+        ENOSYS
+    }
+    pub unsafe fn sock_accept(_fd: i32, _flags: i32, _result: *mut i32) -> i32 {
+        ENOSYS
+    }
 }
 
 fn ok(name: &str) {
