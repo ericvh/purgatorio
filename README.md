@@ -18,7 +18,7 @@ The work is phased:
 Every milestone is validated on aarch64. CI runs natively on Linux aarch64 and
 macOS arm64, and the shared kernel crates build for `aarch64-unknown-none`.
 
-## Status: 1.1
+## Status: 1.2
 
 Release 1.0 covers milestones M1 to M5 on the hosted emu (Linux and
 macOS, wasmtime and wasmi), the native aarch64 kernel (Phase K, under
@@ -31,10 +31,14 @@ ones. Every command is built in both widths, into `/bin` and `/bin/64`,
 and `run /lib/sh/wide` puts the 64-bit builds first. wasm32 stays the
 default.
 
-After 1.1, on `next`: threaded guests (`docs/threads.md`). A program
-built for `wasm32-wasip1-threads` runs `std::thread` on a shared heap,
-each thread a prog in `/prog`. This works on the emu under wasmtime
-only. Work deferred is listed in the GitHub issues.
+Release 1.2 adds threaded guests (`docs/threads.md`). A program built
+for `wasm32-wasip1-threads` runs `std::thread` on a shared heap, each
+thread a prog in `/prog`, with an allocator of the SDK's that scales
+with the threads. This works on the emu under wasmtime only; wasmi and
+the kernel refuse a threaded module. It also has the first fixes from
+tests against real Inferno: `listen` takes a `{command}` block, and a
+mount of a stock Inferno `export` can stat. Work deferred is listed in
+the GitHub issues.
 
 
 `emu` boots a namespace like Inferno's emu. `#/` is the root, the host tree
