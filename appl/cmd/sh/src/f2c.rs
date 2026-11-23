@@ -23,7 +23,7 @@ use crate::shmods::{Ex, Fail, is_block};
 
 /// The fd on which the server says it is ready.
 /// (3 and 4 are the WASI preopens.)
-const READY_FD: i32 = 5;
+pub(crate) const READY_FD: i32 = 5;
 
 const USAGE: &str = "usage: file2chan file {readcmd} {writecmd} [ {closecmd} ]";
 

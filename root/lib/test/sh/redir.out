@@ -6,3 +6,8 @@ to stderr
 closed errors
 out
 cat: /nonexistent: file does not exist
+kept
+twice
+sub
+subst
+first second
